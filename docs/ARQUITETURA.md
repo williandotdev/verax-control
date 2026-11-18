@@ -2570,14 +2570,23 @@ panel.domain_wait → access.ready`. Sem `terraform.*`, `secrets.smtp_password`,
     `{email, password, expiresAt}` (72 h, a janela da senha temporária) como versão nova de `vx-<slug>-admin-bootstrap`
     no projeto dos nós (o mesmo cofre que o `access.ready`, a revelação e o `secrets.destroy_bootstrap` usam; o
     `cp-worker` o cria se faltar) e marca `readyAt`; repetido, não grava outra versão. `error` grava o código. 204.
+  - **Reinstalação de um ambiente pronto** (`waiting_customer_connection` ou `active`): o `ready` da VM nova abre um
+    ciclo novo de revelação, porque o banco novo tem outra senha temporária. As marcas da revelação e do e-mail saem,
+    `access.reissuedAt` abre de novo a janela de 72 h do e-mail, `active` volta a `waiting_customer_connection` (sem
+    conta conectada no banco novo) e o `access.reveal_email` vai à fila com outra execução. A revelação continua de uso
+    único; tudo auditado (`tenant.enrollment_ready` com `reissued: true`, `access.revealed`).
+  - O código gerado com a execução ainda no `preflight` garante a task dessa execução (id determinístico), como o
+    `provision`: uma falha da fila no primeiro pedido não deixa o cliente parado.
 - **Permissões:** como não há `envs/tenant`, o `envs/nodes-platform` dá ao `cp-worker` o `cpBootstrapSecretCreator`
   (só `secrets.create`, no projeto: a criação não se condiciona pelo nome) e o `cpBootstrapSecretWriter` (gravar, ler e
-  destruir versões) com condição pelo nome `vx-*-admin-bootstrap`.
+  destruir versões e apagar o cofre) com condição pelo nome `vx-*-admin-bootstrap`.
 - **Instalação no console:** a leitura da instalação traz, além da versão, o `installer` (`verax-install.sh` e o
   SHA-256, do campo opcional `installer` do manifesto assinado) e o porte do contrato (`size`), para o console montar
   o comando e o perfil da VM. A versão é a da execução quando o `preflight` já a escolheu.
-- **Exclusão:** a Exclusão 1 apaga o túnel, o DNS e o site (só os passos `deletion.cloudflare` e `deletion.firebase`, e
-  só se algum código foi gerado); nada de Terraform, cofres ou backups. O registro da VM sai com o acesso.
+- **Exclusão:** a Exclusão 1 apaga o túnel, o DNS, o site e o cofre `vx-<slug>-admin-bootstrap` com todas as versões,
+  revelado ou não (os passos `deletion.cloudflare`, `deletion.firebase` e `deletion.bootstrap_secret`, este só para a
+  VM do cliente; e só se algum código foi gerado); nada de Terraform, cofre de credenciais ou backups. O registro da VM
+  sai com o acesso.
 
 ### Exclusão em dois tempos
 

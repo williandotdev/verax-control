@@ -31,19 +31,23 @@ export const ENROLLMENT_CODE_STATES: readonly TenantState[] = [
   'provisioning_failed',
   'waiting_customer_connection',
   'active',
-  'past_due',
 ];
 
 /**
  * Estados em que a VM pode fazer o `claim` e o `report`: o provisionamento em andamento (a primeira instalação) e o
- * ambiente pronto (uma reinstalação com um código novo).
+ * ambiente pronto (uma reinstalação com um código novo). `past_due` fica de fora: é só da cobrança pela Stripe, e o
+ * ambiente na VM do cliente é sempre contrato direto.
  */
 export const ENROLLMENT_ACTIVE_STATES: ReadonlySet<TenantState> = new Set([
   'provisioning',
   'waiting_customer_connection',
   'active',
-  'past_due',
 ]);
+
+/** O cofre da senha temporária do primeiro admin no projeto dos nós (o mesmo nome do módulo `node`). */
+export function adminBootstrapSecret(slug: string): string {
+  return `vx-${slug}-admin-bootstrap`;
+}
 
 /** Um segredo novo do registro (o código ou a chave do nó). */
 export function newEnrollmentSecret(): string {

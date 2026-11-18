@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { AccessStore } from '../src/access/access-store.js';
 import { AuditService } from '../src/audit/audit.service.js';
 import { newUlid } from '../src/common/ulid.js';
 import { enrollmentHash } from '../src/enrollment/enrollment.js';
@@ -445,6 +446,167 @@ describe('cp-worker: registro da VM do cliente e provisionamento reduzido', () =
     expect((await claim(reinstall.code)).status).toBe(200);
   });
 
+  /** A VM registra e fica pronta com `password`; devolve a chave do nó. */
+  async function installVm(code: string, password: string): Promise<string> {
+    const claimed = await claim(code);
+    expect(claimed.status).toBe(200);
+    const nodeKey = (claimed.body as { nodeKey: string }).nodeKey;
+    const ready = await report(nodeKey, {
+      status: 'ready',
+      version: RELEASE,
+      adminBootstrapPassword: password,
+    });
+    expect(ready.status).toBe(204);
+    return nodeKey;
+  }
+
+  /** O link de uso único do último e-mail "ambiente pronto". */
+  function lastRevealLink(): string {
+    const text = mail.sent.at(-1)?.text ?? '';
+    const match = /#acesso=([A-Za-z0-9_-]{43})/.exec(text);
+    expect(match).not.toBeNull();
+    return match?.[1] ?? '';
+  }
+
+  it('a fila falhou ao pôr o preflight: o código seguinte garante a task da execução gravada', async () => {
+    const tenant = await customerTenant();
+    queue.failNext(new Error('fila indisponível'));
+    const failed = await request(app.getHttpServer())
+      .post(`/internal/tenants/${tenant.id}/enrollment-code`)
+      .set('Authorization', bearer(OWNER))
+      .send({ confirmSlug: tenant.slug });
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+    const stalled = await tenants.require(tenant.id);
+    expect(stalled.state).toBe('provisioning');
+    expect(stalled.provisioning?.step).toBe('preflight');
+    expect(queue.tasks).toEqual([]);
+    // O código seguinte não muda o estado de novo, mas põe a task da execução que ficou gravada.
+    const again = await issueCode(tenant);
+    expect(again).toMatchObject({ runId: stalled.provisioning?.runId, step: 'preflight' });
+    expect(queue.tasks.map((task) => [task.step, task.runId])).toEqual([
+      ['preflight', stalled.provisioning?.runId],
+    ]);
+    // Repetir não põe outra (o id da task é o mesmo).
+    await issueCode(tenant);
+    expect(queue.tasks).toHaveLength(1);
+    expect((await drain(1))[0]).toMatchObject({ step: 'preflight', outcome: 'done' });
+  });
+
+  it('reinstalação depois da senha revelada: revelação nova, de uso único, com o e-mail de novo', async () => {
+    const tenant = await customerTenant();
+    const first = await issueCode(tenant);
+    await drain(4);
+    const firstPassword = `Temporaria-${'a'.repeat(16)}`;
+    const oldKey = await installVm(first.code, firstPassword);
+    await drain();
+    expect((await tenants.require(tenant.id)).state).toBe('waiting_customer_connection');
+    expect(mail.sent).toHaveLength(1);
+    // O cliente viu a senha (a revelação marcada) e o ambiente ficou ativo.
+    const access = new AccessStore(documents, clock, audit);
+    await access.claimReveal(lastRevealLink(), 'email_reveal');
+    await tenants.transition(tenant.id, { to: 'active', reason: 'teste', audit: { actor: 'system' } });
+
+    // Reinstalar: um código novo revoga a chave antiga; a VM nova registra e manda outra senha.
+    clock.set(new Date(clock.now().getTime() + 5 * DAY_MS));
+    const reinstall = await issueCode(tenant);
+    expect(reinstall).toMatchObject({ reinstall: true });
+    expect(reinstall.runId).toBeUndefined();
+    expect((await report(oldKey, { status: 'error', code: 'x' })).status).toBe(401);
+    const newPassword = `Temporaria-${'b'.repeat(16)}`;
+    const newKey = await installVm(reinstall.code, newPassword);
+    const reissued = await tenants.require(tenant.id);
+    expect(reissued.state).toBe('waiting_customer_connection');
+    expect(reissued.access).toEqual({ reissuedAt: clock.now() });
+    const versions = cloud.secretVersions.get(`${NODES}/vx-${tenant.slug}-admin-bootstrap`) ?? [];
+    expect(JSON.parse(versions.at(-1)?.payload ?? '{}')).toMatchObject({ password: newPassword });
+
+    // O e-mail "ambiente pronto" sai de novo (fila `lifecycle`, outra execução), com um link novo de uso único.
+    const sent = await drain();
+    expect(sent.map((entry) => [entry.step, entry.outcome])).toEqual([['access.reveal_email', 'sent']]);
+    expect(mail.sent).toHaveLength(2);
+    const link = lastRevealLink();
+    await expect(access.claimReveal(link, 'email_reveal')).resolves.toMatchObject({ kind: 'email_reveal' });
+    // Uso único: o mesmo link não serve de novo.
+    await expect(access.claimReveal(link, 'email_reveal')).rejects.toBeInstanceOf(Error);
+    // Um `ready` repetido não abre outro ciclo, nem grava outra versão, nem manda outro e-mail.
+    expect(
+      (await report(newKey, { status: 'ready', version: RELEASE, adminBootstrapPassword: newPassword }))
+        .status,
+    ).toBe(204);
+    expect(cloud.secretVersions.get(`${NODES}/vx-${tenant.slug}-admin-bootstrap`)).toHaveLength(
+      versions.length,
+    );
+    expect(await drain()).toEqual([]);
+    const revealed = await tenants.require(tenant.id);
+    expect(revealed.access?.passwordRevealedAt).toBeInstanceOf(Date);
+    const records = (await documents.query(COLLECTIONS.auditLog, {})).map((doc) => doc.data);
+    expect(records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: 'tenant.enrollment_ready',
+          details: expect.objectContaining({ reissued: true }) as unknown,
+        }),
+      ]),
+    );
+  });
+
+  it('reinstalação ainda esperando a conexão, dias depois: a janela do e-mail conta da reinstalação', async () => {
+    const tenant = await customerTenant();
+    const first = await issueCode(tenant);
+    await drain(4);
+    await installVm(first.code, `Temporaria-${'d'.repeat(16)}`);
+    await drain();
+    expect(mail.sent).toHaveLength(1);
+    // Sem revelar nada, 10 dias depois (a janela de 72 h do primeiro e-mail já fechou).
+    clock.set(new Date(clock.now().getTime() + 10 * DAY_MS));
+    const reinstall = await issueCode(tenant);
+    expect(reinstall.reinstall).toBe(true);
+    await installVm(reinstall.code, `Temporaria-${'e'.repeat(16)}`);
+    const current = await tenants.require(tenant.id);
+    expect(current.state).toBe('waiting_customer_connection');
+    expect(current.access).toEqual({ reissuedAt: clock.now() });
+    expect((await drain()).map((entry) => [entry.step, entry.outcome])).toEqual([
+      ['access.reveal_email', 'sent'],
+    ]);
+    expect(mail.sent).toHaveLength(2);
+  });
+
+  it('a exclusão de um cliente da VM própria apaga o túnel, o site e o cofre da senha, mesmo sem revelação', async () => {
+    const tenant = await customerTenant();
+    const issued = await issueCode(tenant);
+    await drain(4);
+    await installVm(issued.code, `Temporaria-${'c'.repeat(16)}`);
+    await drain();
+    const secretKey = `${NODES}/vx-${tenant.slug}-admin-bootstrap`;
+    expect(cloud.createdSecrets.has(secretKey)).toBe(true);
+    expect((await tenants.require(tenant.id)).access?.passwordRevealedAt).toBeUndefined();
+    for (const operation of ['cancel', 'delete-now']) {
+      const response = await request(app.getHttpServer())
+        .post(`/internal/tenants/${tenant.id}/${operation}`)
+        .set('Authorization', bearer(OWNER))
+        .send({ confirmSlug: tenant.slug });
+      expect(response.status, operation).toBe(200);
+    }
+    const deletion = await drain();
+    expect(stepsOf(deletion)).toEqual(
+      expect.arrayContaining([
+        'deletion.cloudflare',
+        'deletion.firebase',
+        'deletion.bootstrap_secret',
+        'deletion.record',
+      ]),
+    );
+    expect(deletion.every((entry) => entry.status === 200)).toBe(true);
+    expect((await tenants.require(tenant.id)).state).toBe('deleted');
+    expect(cloud.createdSecrets.has(secretKey)).toBe(false);
+    expect(cloud.secretVersions.has(secretKey)).toBe(false);
+    expect(cloud.tunnels.size).toBe(0);
+    expect(cloud.count('DELETE', `/secrets/vx-${tenant.slug}-admin-bootstrap`)).toBe(1);
+    expect(cloud.executions.size).toBe(0);
+    const actions = (await documents.query(COLLECTIONS.auditLog, {})).map((doc) => doc.data['action']);
+    expect(actions).toContain('access.bootstrap_deleted');
+  });
+
   it('a espera do registro avisa em 3 dias e para com enrollment_timeout em 30', async () => {
     const tenant = await customerTenant();
     await issueCode(tenant);
@@ -470,7 +632,7 @@ describe('cp-worker: registro da VM do cliente e provisionamento reduzido', () =
     });
     expect(terraform.outcome).toBe('not_in_sequence');
     slugSequence += 1;
-    const managed = await tenantIn(tenants, `cliente-gerido-${slugSequence}`, 'provisioning');
+    const managed = await tenantIn(tenants, `gerido-${slugSequence}`, 'provisioning');
     const managedRun = newUlid(clock.now().getTime());
     await tenants.change(managed.id, () => ({
       reason: 'teste',

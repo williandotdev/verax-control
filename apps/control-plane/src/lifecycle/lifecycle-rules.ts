@@ -61,12 +61,14 @@ export function mayHaveExternalResources(tenant: Tenant): boolean {
 
 /**
  * Os passos da Exclusão 1 que alcançam o que a Verax cria para o ambiente na VM do cliente (o provisionamento reduzido):
- * o túnel e o DNS no Cloudflare e o site do painel no Firebase. O Terraform, o cofre de credenciais e o bucket de
+ * o túnel e o DNS no Cloudflare, o site do painel no Firebase e o cofre da senha inicial (`vx-<slug>-admin-bootstrap`,
+ * criado pelo cp-worker no `report ready`). O Terraform, o cofre de credenciais e o bucket de
  * backups nunca existiram para ele.
  */
 export const CUSTOMER_EDGE_DELETION_STEPS: ReadonlySet<string> = new Set([
   'deletion.cloudflare',
   'deletion.firebase',
+  'deletion.bootstrap_secret',
 ]);
 
 /**

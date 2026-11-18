@@ -5998,7 +5998,10 @@ painel como o cliente".
 fmt`/`validate`/`test` do `envs/nodes-platform`.
 - **Manual:** aplicar o `envs/nodes-platform`; publicar uma versão com `installer` no manifesto; gerar um código no
   console (quando a tela existir) e instalar uma VM de teste.
-- **Riscos:** o `secrets.create` do `cp-worker` vale no projeto inteiro (cofres vazios, sem leitura nem gravação);
-  numa reinstalação depois de a senha já ter sido revelada, a senha nova vai ao cofre, mas a revelação continua marcada
-  (o responsável lê o cofre); o cofre `vx-<slug>-admin-bootstrap` fica (com as versões destruídas depois da revelação)
-  na exclusão do cliente da VM própria.
+- **Revisão (Codex, PR #150):** o código com a execução ainda no `preflight` garante a task da execução gravada (a
+  fila que falhou no primeiro pedido não deixa o cliente parado); a reinstalação de um ambiente pronto abre uma
+  revelação nova no `ready` (marcas zeradas, `access.reissuedAt`, `active` → `waiting_customer_connection`, o e-mail de
+  novo); a exclusão apaga o cofre `vx-<slug>-admin-bootstrap` (passo `deletion.bootstrap_secret`, com
+  `secretmanager.secrets.delete` no `cpBootstrapSecretWriter`, condicionado pelo nome). `past_due` saiu dos estados do
+  registro (é só da Stripe).
+- **Riscos:** o `secrets.create` do `cp-worker` vale no projeto inteiro (cofres vazios, sem leitura nem gravação).

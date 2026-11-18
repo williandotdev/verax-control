@@ -260,8 +260,10 @@ resource "google_project_iam_custom_role" "tenant_sa_toggle" {
 # - `cpBootstrapSecretWriter`: no cofre e nas versões, só nos `vx-<...>-admin-bootstrap` (a condição pelo nome), o que
 #   o envs/tenant já dá ao cp-worker no cofre de cada nó gerenciado (`secretAccessor` e `secretVersionManager`): gravar a
 #   senha (`versions.add`), ver o estado da `latest` (`access.ready`), ler uma vez na revelação e destruir as versões
-#   depois (`secrets.destroy_bootstrap`). Nos nós gerenciados não é poder novo (o cp-worker já tem o mesmo em cada um);
-#   fora desse nome (o cofre de credenciais, o token do túnel, a conta de suporte), nada.
+#   depois (`secrets.destroy_bootstrap`), e apagar o cofre na exclusão do cliente da VM própria
+#   (`deletion.bootstrap_secret`; no gerenciado, quem apaga é o `destroy` do Terraform). Fora o `secrets.delete`, nos nós
+#   gerenciados não é poder novo (o cp-worker já tem o mesmo em cada um); fora desse nome (o cofre de credenciais, o
+#   token do túnel, a conta de suporte), nada.
 resource "google_project_iam_custom_role" "bootstrap_secret_creator" {
   count = local.control_plane_enabled ? 1 : 0
 
@@ -288,8 +290,9 @@ resource "google_project_iam_custom_role" "bootstrap_secret_writer" {
   project     = var.project_id
   role_id     = "cpBootstrapSecretWriter"
   title       = "Verax Control: senha inicial no cofre da VM do cliente"
-  description = "Gravar, ler e destruir as versões do cofre admin-bootstrap. Concedido com condição pelo nome (vx-*-admin-bootstrap)."
+  description = "Gravar, ler e destruir as versões do cofre admin-bootstrap e apagá-lo na exclusão. Concedido com condição pelo nome (vx-*-admin-bootstrap)."
   permissions = [
+    "secretmanager.secrets.delete",
     "secretmanager.secrets.get",
     "secretmanager.versions.access",
     "secretmanager.versions.add",

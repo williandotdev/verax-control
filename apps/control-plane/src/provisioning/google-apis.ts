@@ -661,6 +661,21 @@ export class SecretVersionsApi extends GoogleApi {
     return true;
   }
 
+  /**
+   * Apaga o cofre inteiro, com todas as versões (o conteúdo some). Já apagado (404) conta como feito: devolve `false`.
+   * Só o `admin-bootstrap` da VM do cliente, na exclusão (`deletion.bootstrap_secret`).
+   */
+  async deleteSecret(project: string, secretId: string): Promise<boolean> {
+    const response = await this.call(
+      'DELETE',
+      'secret_delete',
+      `${this.base}/projects/${project}/secrets/${secretId}`,
+    );
+    if (response.status === 404) return false;
+    expectOk(this.service, 'secret_delete', response);
+    return true;
+  }
+
   /** Grava uma versão nova com `value`. O valor só vai no corpo da requisição. */
   async addVersion(project: string, secretId: string, value: string): Promise<void> {
     const response = await this.call(

@@ -1353,10 +1353,17 @@ describe('cp-worker: suspensão, reativação, cancelamento e exclusão (CP-11)'
       await drain();
       expect((await reload(id)).lifecycle?.purgedAt).toBeInstanceOf(Date);
       // Com uma execução gravada (o provisionamento reduzido da VM do cliente começou), só o que a Verax cria para ele:
-      // o túnel e o DNS no Cloudflare (o site, sem id gravado, nem é procurado). Nenhuma chamada a Compute, Storage,
-      // Secret Manager nem ao executor, nem com a VM forjada.
+      // o túnel e o DNS no Cloudflare (o site, sem id gravado, nem é procurado) e o cofre da senha inicial. Nenhuma
+      // chamada a Compute, Storage, a outro cofre nem ao executor, nem com a VM forjada.
       expect(cloud.requests.length).toBeGreaterThan(0);
-      expect(cloud.requests.every((call) => call.path.startsWith('/cloudflare/'))).toBe(true);
+      expect(
+        cloud.requests.every(
+          (call) =>
+            call.path.startsWith('/cloudflare/') ||
+            (call.method === 'DELETE' &&
+              call.path === `/secrets/v1/projects/${NODES}/secrets/vx-no-cliente-a-admin-bootstrap`),
+        ),
+      ).toBe(true);
       expect(cloud.executions.size).toBe(0);
     });
 

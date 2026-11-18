@@ -757,6 +757,17 @@ export class FakeCloud {
       return;
     }
     if (
+      (match = /^\/secrets\/v1\/projects\/([a-z0-9-]+)\/secrets\/([a-z0-9-]+)$/.exec(url.pathname)) !==
+        null &&
+      method === 'DELETE'
+    ) {
+      const key = `${match[1]}/${match[2]}`;
+      const existed = this.createdSecrets.delete(key) || this.secretVersions.has(key);
+      this.secretVersions.delete(key);
+      this.send(res, existed ? 200 : 404, existed ? {} : { error: { status: 'NOT_FOUND' } });
+      return;
+    }
+    if (
       (match = /^\/secrets\/v1\/projects\/([a-z0-9-]+)\/secrets\/([a-z0-9-]+):addVersion$/.exec(
         url.pathname,
       )) !== null &&

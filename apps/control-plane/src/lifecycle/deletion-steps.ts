@@ -30,6 +30,7 @@ import {
   type DeletionStep,
   type DeletionStepRun,
 } from './deletion-engine.js';
+import { adminBootstrapSecret } from '../enrollment/enrollment.js';
 import { buildDeletionRecord } from './deletion-record.js';
 import { afterDeletion, minimalRecord } from './lifecycle-rules.js';
 
@@ -401,6 +402,44 @@ export class DeletionFirebaseStep extends BaseDeletionStep {
 }
 
 /**
+ * `deletion.bootstrap_secret`: só na VM do cliente, apaga o cofre `vx-<slug>-admin-bootstrap` do projeto dos nós (com
+ * todas as versões: o e-mail e a senha temporária do primeiro admin, revelada ou não). No gerenciado, o cofre é do
+ * Terraform do cliente e sai no `deletion.terraform`: o passo segue sem chamada. Já apagado conta como feito.
+ */
+@Injectable()
+export class DeletionBootstrapSecretStep extends BaseDeletionStep {
+  readonly name = 'deletion.bootstrap_secret';
+  readonly kind = 'delete' as const;
+  readonly external = true;
+
+  constructor(
+    engine: DeletionEngine,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(PROVISIONING_APIS) private readonly apis: ProvisioningApis,
+    private readonly audit: AuditService,
+  ) {
+    super(engine);
+  }
+
+  async execute({ tenant, requestId }: DeletionStepRun): Promise<DeletionOutcome> {
+    if (hostingOf(tenant) !== 'customer') return { kind: 'next', outputs: { skipped: true } };
+    const project = tenant.resources?.nodesProject ?? this.config.NODES_PROJECT_ID;
+    if (project === undefined) throw new DefinitiveStepError('nodes_project_unknown');
+    const deleted = await this.apis.secrets.deleteSecret(project, adminBootstrapSecret(tenant.slug));
+    if (deleted) {
+      await this.audit.write({
+        actor: 'system',
+        action: 'access.bootstrap_deleted',
+        tenantId: tenant.id,
+        details: { secret: 'admin-bootstrap' },
+        requestId,
+      });
+    }
+    return { kind: 'next', outputs: { deleted } };
+  }
+}
+
+/**
  * `deletion.record`: o registro de exclusão por e-mail ao admin do cliente, depois o cliente perde o e-mail, o acesso e
  * os recursos que a Exclusão 2 não usa (`afterDeletion`). Sem SMTP configurado, ou com o envio falhando até a última
  * tentativa da fila, a exclusão segue sem o e-mail (a linha `event=deletion_record_unsent` avisa a Verax): apagar o dado
@@ -673,6 +712,7 @@ export const DELETION_STEP_CLASSES = [
   DeletionTerraformWaitStep,
   DeletionCloudflareStep,
   DeletionFirebaseStep,
+  DeletionBootstrapSecretStep,
   DeletionRecordStep,
   CryptoDestroyKeyStep,
   CryptoPurgeStep,

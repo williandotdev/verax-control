@@ -15,6 +15,8 @@ import type { TenantState } from './tenant.schema.js';
  *   instalação (o provisionamento reduzido: túnel e site na Verax, a VM no cliente, `enrollment/`), ou é cancelado;
  * - `waiting_customer_connection`: `active` quando o nó vê a 1.ª conta conectada; cobrança e disputa valem igual;
  * - `active` ↔ `past_due` ↔ `suspended`: inadimplência, carência e reativação por `invoice.paid`;
+ * - `active` → `waiting_customer_connection`: só a reinstalação da VM do cliente (`enrollment/`), que entrega um banco
+ *   novo, sem conta conectada, e uma revelação nova da senha do primeiro admin;
  * - `suspended` volta a `waiting_customer_connection` quando o cliente nunca chegou a conectar;
  * - `canceled` → `deleted` em D+30 (exclusão em dois tempos: a cripto-destruição em D+97 não muda o estado). É a
  *   única entrada de `deleted`, e só por dois caminhos (CP-11, `lifecycle/`): o `tick` com `deleteAfter` vencido e o
@@ -34,7 +36,7 @@ export const TENANT_TRANSITIONS: Readonly<Record<TenantState, readonly TenantSta
   provisioning_failed: ['provisioning', 'suspended', 'canceled'],
   waiting_customer_install: ['provisioning', 'canceled'],
   waiting_customer_connection: ['active', 'past_due', 'suspended', 'canceled'],
-  active: ['past_due', 'suspended', 'canceled'],
+  active: ['past_due', 'suspended', 'waiting_customer_connection', 'canceled'],
   past_due: ['active', 'waiting_customer_connection', 'suspended', 'canceled'],
   suspended: ['active', 'waiting_customer_connection', 'canceled'],
   canceled: ['deleted'],

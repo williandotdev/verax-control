@@ -26,6 +26,8 @@ describe('tabela de transições (plano §4b e §4d)', () => {
     ['past_due', 'active'],
     ['suspended', 'active'],
     ['suspended', 'canceled'],
+    // A reinstalação da VM do cliente: banco novo, sem conta conectada, e uma revelação nova.
+    ['active', 'waiting_customer_connection'],
     // O contrato direto na VM do cliente sai da espera com o primeiro código de instalação, ou cancelado.
     ['waiting_customer_install', 'provisioning'],
     ['waiting_customer_install', 'canceled'],

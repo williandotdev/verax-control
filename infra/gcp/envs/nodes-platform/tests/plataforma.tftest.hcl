@@ -255,7 +255,7 @@ run "com_o_plano_de_controle" {
   }
 
   # A VM do cliente: o cp-worker cria o cofre vazio (só `secrets.create`, sem condição: a criação é conferida contra o
-  # projeto) e, só nos `vx-*-admin-bootstrap`, grava, lê e destrói as versões. Nada disso ao cp-terraform.
+  # projeto) e, só nos `vx-*-admin-bootstrap`, grava, lê e destrói as versões e apaga o cofre. Nada disso ao cp-terraform.
   assert {
     condition = (
       google_project_iam_custom_role.bootstrap_secret_creator[0].role_id == "cpBootstrapSecretCreator" &&
@@ -263,7 +263,7 @@ run "com_o_plano_de_controle" {
       google_project_iam_member.worker_bootstrap_secret_creator[0].role == google_project_iam_custom_role.bootstrap_secret_creator[0].id &&
       google_project_iam_member.worker_bootstrap_secret_creator[0].member == "serviceAccount:cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com" &&
       google_project_iam_custom_role.bootstrap_secret_writer[0].role_id == "cpBootstrapSecretWriter" &&
-      google_project_iam_custom_role.bootstrap_secret_writer[0].permissions == toset(["secretmanager.secrets.get", "secretmanager.versions.access", "secretmanager.versions.add", "secretmanager.versions.destroy", "secretmanager.versions.get", "secretmanager.versions.list"]) &&
+      google_project_iam_custom_role.bootstrap_secret_writer[0].permissions == toset(["secretmanager.secrets.delete", "secretmanager.secrets.get", "secretmanager.versions.access", "secretmanager.versions.add", "secretmanager.versions.destroy", "secretmanager.versions.get", "secretmanager.versions.list"]) &&
       google_project_iam_member.worker_bootstrap_secret_writer[0].role == google_project_iam_custom_role.bootstrap_secret_writer[0].id &&
       google_project_iam_member.worker_bootstrap_secret_writer[0].member == "serviceAccount:cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com" &&
       strcontains(google_project_iam_member.worker_bootstrap_secret_writer[0].condition[0].expression, "-admin-bootstrap") &&
@@ -271,7 +271,7 @@ run "com_o_plano_de_controle" {
       !contains([for member in google_project_iam_member.terraform_nodes : member.role], google_project_iam_custom_role.bootstrap_secret_writer[0].id) &&
       !contains([for member in google_project_iam_member.terraform_nodes : member.role], google_project_iam_custom_role.bootstrap_secret_creator[0].id)
     )
-    error_message = "VM do cliente: o cp-worker só cria cofres e, só nos vx-*-admin-bootstrap, grava, lê e destrói versões."
+    error_message = "VM do cliente: o cp-worker só cria cofres e, só nos vx-*-admin-bootstrap, grava, lê e destrói versões e apaga o cofre."
   }
 
   # Nenhuma concessão do cp-worker no projeto além do ciclo de vida das VMs (os cofres são por tenant).

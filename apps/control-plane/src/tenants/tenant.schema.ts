@@ -307,6 +307,11 @@ const tenantObjectSchema = z.strictObject({
     .strictObject({
       passwordRevealedAt: z.date().optional(),
       revealEmailSentAt: z.date().optional(),
+      /**
+       * Só na VM do cliente: a reinstalação de um ambiente já pronto abriu um ciclo novo de revelação (a VM nova tem
+       * outra senha temporária). A janela do e-mail "ambiente pronto" conta daqui (`RevealEmailService.send`).
+       */
+      reissuedAt: z.date().optional(),
     })
     .optional(),
   /**

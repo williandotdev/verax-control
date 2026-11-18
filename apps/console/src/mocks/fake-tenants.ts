@@ -123,7 +123,6 @@ function actionsOf(tenant: Omit<TenantDetail, 'actions'>, now: Date): TenantActi
         'provisioning_failed',
         'waiting_customer_connection',
         'active',
-        'past_due',
       ].includes(tenant.state),
   };
 }

@@ -225,7 +225,7 @@ describe('regras do ciclo de vida (CP-11)', () => {
       billing: { mode: 'contract' },
       provisioning: { runId: RUN.runId, attempts: 0 },
     };
-    for (const step of ['deletion.cloudflare', 'deletion.firebase']) {
+    for (const step of ['deletion.cloudflare', 'deletion.firebase', 'deletion.bootstrap_secret']) {
       expect(deletionStepReachesCloud(tenant('deleted', customer), step)).toBe(true);
     }
     for (const step of [

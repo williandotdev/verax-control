@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { TEMPORARY_PASSWORD_HOURS } from '@verax/shared';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { REVEAL_EMAIL_STEP } from '../access/reveal-email.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
@@ -21,6 +22,7 @@ import { FIRST_PROVISIONING_STEP, STEP_QUEUE, type StepQueue } from '../queue/st
 import { LockNotHeldError, TenantNotFoundError, TenantStore } from '../tenants/tenant-store.js';
 import { hostingOf, type Tenant, type TenantRecord } from '../tenants/tenant.schema.js';
 import {
+  adminBootstrapSecret,
   type ClaimRequest,
   type ClaimResponse,
   codeClaimable,
@@ -31,11 +33,6 @@ import {
   nodeKeyValid,
   type ReportRequest,
 } from './enrollment.js';
-
-/** O cofre da senha temporária do primeiro admin no projeto dos nós (o mesmo nome do módulo `node`). */
-export function adminBootstrapSecret(slug: string): string {
-  return `vx-${slug}-admin-bootstrap`;
-}
 
 export type IssueOutcome =
   | {
@@ -171,12 +168,32 @@ export class EnrollmentService {
       return { issued: false, reason: refusal };
     }
     const tenant = result.tenant;
-    if (result.transitioned && tenant.provisioning?.runId === runId) {
-      await this.queue.enqueue({ queue: 'provisioning', step: FIRST_PROVISIONING_STEP, tenantId, runId });
-      this.logger.info(
-        { event: 'enrollment_provisioning_started', tenantId, runId },
-        'provisionamento reduzido da VM do cliente iniciado',
-      );
+    // Com a execução ainda no `preflight`, garante a task pela execução gravada (o id é determinístico): é o que completa
+    // um pedido anterior que mudou o estado e falhou ao enfileirar, como no `ProvisioningStartService`. Sem isso, o
+    // cliente ficaria em `provisioning` sem task nenhuma, e um código novo não mudaria o estado de novo.
+    const persistedRun = tenant.provisioning?.runId;
+    if (
+      tenant.state === 'provisioning' &&
+      persistedRun !== undefined &&
+      (tenant.provisioning?.step ?? FIRST_PROVISIONING_STEP) === FIRST_PROVISIONING_STEP
+    ) {
+      try {
+        await this.queue.enqueue({
+          queue: 'provisioning',
+          step: FIRST_PROVISIONING_STEP,
+          tenantId,
+          runId: persistedRun,
+        });
+      } catch (error) {
+        forgetLiveSecret(code);
+        throw error;
+      }
+      if (result.transitioned) {
+        this.logger.info(
+          { event: 'enrollment_provisioning_started', tenantId, runId: persistedRun },
+          'provisionamento reduzido da VM do cliente iniciado',
+        );
+      }
     }
     await this.audit.write({
       actor,
@@ -376,8 +393,12 @@ export class EnrollmentService {
       }
       return { ok: true };
     }
-    // Idempotente: um `ready` repetido da mesma instalação não grava outra versão no cofre.
-    if (tenant.enrollment?.readyAt !== undefined) return { ok: true };
+    // Idempotente: um `ready` repetido da mesma instalação não grava outra versão no cofre (só garante o e-mail de uma
+    // reinstalação, se a fila falhou no primeiro).
+    if (tenant.enrollment?.readyAt !== undefined) {
+      if (reissuePending(tenant)) await this.enqueueReissueEmail(tenant.id);
+      return { ok: true };
+    }
     const resolved = resolveProvisioningSettings(this.config);
     const adminEmail = tenant.adminEmail;
     if (!resolved.ready || adminEmail === undefined) {
@@ -409,29 +430,83 @@ export class EnrollmentService {
       );
       return { ok: false, reason: 'unavailable' };
     }
-    await this.tenants.change(tenant.id, (current) => {
+    const marked = await this.tenants.change(tenant.id, (current) => {
       if (!nodeKeyValid(current, nodeKeyHash) || current.enrollment === undefined) return undefined;
       if (current.enrollment.readyAt !== undefined) return undefined;
       const { lastError: _cleared, ...enrollment } = current.enrollment;
+      const ready = { ...enrollment, readyAt: now, readyVersion: report.version };
+      if (!REISSUE_STATES.has(current.state)) {
+        return {
+          reason: 'enrollment_ready',
+          audit: { actor: 'system', requestId },
+          mutate: (t) => ({ ...t, enrollment: ready }),
+        };
+      }
+      // Uma reinstalação de um ambiente que já estava pronto: a VM nova tem outro banco, com outra senha temporária,
+      // e a anterior já pode ter sido revelada. Um ciclo novo de revelação: as marcas da revelação e do e-mail saem,
+      // `reissuedAt` abre a janela do e-mail "ambiente pronto" de novo, e o cliente volta a esperar a conexão (o banco
+      // novo não tem conta conectada). A revelação continua de uso único (`AccessStore.claimReveal`).
+      const access = { reissuedAt: now };
       return {
-        reason: 'enrollment_ready',
+        ...(current.state === 'waiting_customer_connection'
+          ? {}
+          : { to: 'waiting_customer_connection' as const }),
+        reason: 'enrollment_reinstall_ready',
         audit: { actor: 'system', requestId },
-        mutate: (t) => ({ ...t, enrollment: { ...enrollment, readyAt: now, readyVersion: report.version } }),
+        mutate: (t) => ({ ...t, enrollment: ready, access }),
       };
     });
+    const reissued = marked.changed && REISSUE_STATES.has(marked.before.state);
     await this.audit.write({
       actor: 'system',
       action: 'tenant.enrollment_ready',
       tenantId: tenant.id,
-      details: { version: report.version },
+      details: { version: report.version, reissued },
       requestId,
     });
+    if (reissued) {
+      await this.enqueueReissueEmail(tenant.id);
+      this.logger.info(
+        { event: 'enrollment_reveal_reissued', tenantId: tenant.id },
+        'reinstalação pronta: revelação nova da senha do primeiro admin',
+      );
+    }
     this.logger.info(
       { event: 'enrollment_ready', tenantId: tenant.id, version: report.version },
       'VM do cliente pronta; senha do primeiro admin no cofre',
     );
     return { ok: true };
   }
+
+  /**
+   * O e-mail "ambiente pronto" da revelação nova, na fila `lifecycle`. Com um id de execução novo: o do primeiro e-mail
+   * (`access_reveal_email-<tenantId>`) pode ainda estar na janela de nomes repetidos do Cloud Tasks. O passo é
+   * idempotente pelo `revealEmailSentAt`.
+   */
+  private async enqueueReissueEmail(tenantId: string): Promise<void> {
+    await this.queue.enqueue({
+      queue: 'lifecycle',
+      step: REVEAL_EMAIL_STEP,
+      tenantId,
+      runId: newUlid(this.clock.now().getTime()),
+    });
+  }
+}
+
+/**
+ * Estados em que um `ready` é de uma reinstalação de um ambiente que já ficou pronto (o provisionamento terminou): o
+ * ciclo de revelação recomeça. Durante o provisionamento, o `access.ready` e o motor cuidam do e-mail, como sempre.
+ */
+const REISSUE_STATES: ReadonlySet<string> = new Set(['waiting_customer_connection', 'active']);
+
+/** Uma revelação nova aberta por reinstalação, sem o e-mail enviado nem a senha vista ainda. */
+function reissuePending(tenant: TenantRecord): boolean {
+  return (
+    tenant.state === 'waiting_customer_connection' &&
+    tenant.access?.reissuedAt !== undefined &&
+    tenant.access.revealEmailSentAt === undefined &&
+    tenant.access.passwordRevealedAt === undefined
+  );
 }
 
 /** O motivo curto de uma falha, para o log (nunca a mensagem de um terceiro). */

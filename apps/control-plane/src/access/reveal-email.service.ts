@@ -83,7 +83,9 @@ export class RevealEmailService {
     if (tenant.access?.passwordRevealedAt !== undefined) return 'already_revealed';
     if (tenant.access?.revealEmailSentAt !== undefined) return 'already_sent';
     if (tenant.state !== REVEAL_STATE || tenant.adminEmail === undefined) return 'not_waiting';
-    const waitingMs = this.clock.now().getTime() - tenant.stateUpdatedAt.getTime();
+    // Uma reinstalação da VM do cliente abre a janela de novo (`access.reissuedAt`, `enrollment/`).
+    const since = Math.max(tenant.stateUpdatedAt.getTime(), tenant.access?.reissuedAt?.getTime() ?? 0);
+    const waitingMs = this.clock.now().getTime() - since;
     // O cliente de contrato direto recebe o e-mail assim que o ambiente fica pronto (é o caminho dele até a senha); o
     // da Stripe, só depois de 48 h sem revelar (o plano B). O fim da janela é o mesmo: a senha temporária vence em 72 h.
     const after = billingModeOf(tenant) === 'contract' ? 0 : REVEAL_EMAIL_AFTER_MS;
