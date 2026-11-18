@@ -51,8 +51,8 @@ export function newEnrollmentSecret(): string {
 }
 
 /** O SHA-256 em hexadecimal, a única forma em que o código e a chave do nó são guardados. */
-export function enrollmentHash(secret: string): string {
-  return createHash('sha256').update(secret, 'utf8').digest('hex');
+export function enrollmentHash(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
 /** Compara dois hashes em tempo constante (os dois têm 64 caracteres hexadecimais quando bem formados). */
