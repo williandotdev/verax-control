@@ -141,12 +141,13 @@ describe('endereços de antes', () => {
       `?severidade=high&status=new&conta=111122223333&periodo=24h&achado=${FINDING}`,
       `/?severidade=high&status=new&conta=111122223333&periodo=24h&alerta=${FINDING}`,
     ],
-    ['/relatorios', '', '/'],
+    ['/relatorios', '', '/?analise=resumo'],
     ['/relatorios', '?aba=mitre&periodo=90d', '/?analise=mitre&periodo=90d'],
     ['/relatorios', '?aba=cobertura', '/?analise=cobertura'],
-    ['/relatorios', '?aba=incidentes&periodo=90d', '/?visao=incidentes&periodo=90d'],
-    ['/relatorios', '?aba=deteccoes', '/'],
-    ['/relatorios', '?aba=excecoes', '/cadastros/excecoes'],
+    ['/relatorios', '?aba=incidentes&periodo=90d', '/?analise=resposta&periodo=90d'],
+    ['/relatorios', '?aba=deteccoes', '/?analise=regras'],
+    ['/relatorios', '?aba=entidades', '/?analise=entidades'],
+    ['/relatorios', '?aba=excecoes', '/?analise=excecoes'],
     ['/incidentes/', '', '/?visao=incidentes'],
   ])('%s%s → %s', (path, search, target) => {
     expect(legacyDetectionsUrl(path, search)).toBe(target);

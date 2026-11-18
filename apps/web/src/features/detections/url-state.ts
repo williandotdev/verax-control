@@ -46,13 +46,25 @@ export const INCIDENTS_VIEW = 'incidentes';
 /** "Alertas" (o padrão, sem parâmetro): todos os alertas a validar e já validados; "Incidentes": só os confirmados. */
 export type DetectionView = 'alerts' | 'incidents';
 /** A lista (o padrão) ou uma das análises que vieram dos Relatórios. */
-export type DetectionAnalysis = 'list' | 'mitre' | 'coverage';
+export type DetectionAnalysis =
+  'list' | 'summary' | 'mitre' | 'rules' | 'entities' | 'response' | 'coverage' | 'exceptions';
 
 export const ANALYSIS_SLUGS: Readonly<Record<DetectionAnalysis, string | null>> = {
   list: null,
+  summary: 'resumo',
   mitre: 'mitre',
+  rules: 'regras',
+  entities: 'entidades',
+  response: 'resposta',
   coverage: 'cobertura',
+  exceptions: 'excecoes',
 };
+
+const ANALYSIS_BY_SLUG: ReadonlyMap<string, DetectionAnalysis> = new Map(
+  (Object.entries(ANALYSIS_SLUGS) as [DetectionAnalysis, string | null][]).flatMap(([analysis, slug]) =>
+    slug === null ? [] : [[slug, analysis] as const],
+  ),
+);
 
 /** O período do seletor: um dos períodos, o personalizado ou nenhum (todo o histórico). */
 export type PeriodChoice = FindingPeriod | 'custom' | undefined;
@@ -127,7 +139,7 @@ export function readDetectionState(params: URLSearchParams): DetectionState {
   const analysisParam = get('analysis');
   return {
     view: get('view') === INCIDENTS_VIEW ? 'incidents' : 'alerts',
-    analysis: analysisParam === 'mitre' ? 'mitre' : analysisParam === 'cobertura' ? 'coverage' : 'list',
+    analysis: (analysisParam !== null && ANALYSIS_BY_SLUG.get(analysisParam)) || 'list',
     periodChoice,
     customDates,
     filters: {

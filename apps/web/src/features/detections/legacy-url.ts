@@ -15,14 +15,13 @@ const INCIDENT_STATUS_PARAM: Readonly<Record<string, string>> = {
 
 /** As abas dos Relatórios e para onde cada uma foi. */
 const REPORT_TAB_TARGET: Readonly<Record<string, { view?: string; analysis?: string; path?: string }>> = {
-  resumo: {},
+  resumo: { analysis: 'resumo' },
   mitre: { analysis: 'mitre' },
-  deteccoes: {},
-  entidades: {},
-  incidentes: { view: INCIDENTS_VIEW },
+  deteccoes: { analysis: 'regras' },
+  entidades: { analysis: 'entidades' },
+  incidentes: { analysis: 'resposta' },
   cobertura: { analysis: 'cobertura' },
-  // As exceções e quantos alertas cada uma silenciou ficam no cadastro de Exceções.
-  excecoes: { path: '/cadastros/excecoes' },
+  excecoes: { analysis: 'excecoes' },
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
