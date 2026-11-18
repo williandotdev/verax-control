@@ -28,8 +28,12 @@ const INCIDENT = DEMO_INCIDENTS.chaveComprometida;
 const FINDING = '018f2c1e-0000-7000-8000-000000001001';
 /** "Política de bucket alterada para permitir leitura pública": alerta a validar, com um relacionado (o bloqueio). */
 const BUCKET_ALERT = '018f2c1e-0000-7000-8000-00000000100e';
-/** Espera maior para o que depende de várias respostas em sequência (a suíte inteira roda em paralelo). */
-const SLOW = { timeout: 5_000 };
+/**
+ * Espera maior para o que depende de várias respostas em sequência (a suíte inteira roda em paralelo). No runner da CI,
+ * sob carga, o painel do incidente passou de 5 s de vez em quando (#150, #152): o prazo é folgado, o que se confere é o
+ * mesmo.
+ */
+const SLOW = { timeout: 12_000 };
 
 function renderAt(path: string, state: MockState = { me: demoMe('analista_cliente') }) {
   server.use(...createHandlers(state));
@@ -254,7 +258,7 @@ describe('Detecções: o detalhe e a triagem', () => {
 
   it(
     'promover a incidente: os relacionados vêm marcados, e o incidente confirmado abre no painel',
-    { timeout: 15_000 },
+    { timeout: 40_000 },
     async () => {
       const router = renderAt(`/?alerta=${BUCKET_ALERT}`);
       const panel = await screen.findByRole('dialog', {
@@ -287,7 +291,7 @@ describe('Detecções: o detalhe e a triagem', () => {
 
   it(
     'anexar a um incidente aberto e remover do incidente: o alerta volta para a validação',
-    { timeout: 15_000 },
+    { timeout: 40_000 },
     async () => {
       const router = renderAt(`/?alerta=${BUCKET_ALERT}`);
       const panel = await screen.findByRole('dialog', {
