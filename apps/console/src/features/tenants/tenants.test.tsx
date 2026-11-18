@@ -466,16 +466,12 @@ describe('clientes', () => {
     const network = within(installation).getByRole('region', { name: '2. Rede' });
     expect(within(network).getByText('Nenhuma porta de entrada.')).toBeInTheDocument();
     const egress = within(network).getByRole('table', { name: 'Destinos de saída da VM' });
-    expect(
-      within(egress).getByRole('row', { name: (name) => name.includes('argotunnel.com') }),
-    ).toHaveTextContent('443 e 7844');
-    expect(
-      within(egress).getByRole('row', { name: (name) => name.includes('conta.veraxsistemas.com.br') }),
-    ).toBeInTheDocument();
-    expect(within(egress).getByRole('row', { name: (name) => name.includes('ghcr.io') })).toBeInTheDocument();
-    expect(
-      within(egress).getByRole('row', { name: (name) => name.includes('registry-1.docker.io') }),
-    ).toBeInTheDocument();
+    // Cada destino pela célula exata (o texto da tabela), e a linha dela.
+    const rowOf = (hosts: string) => within(egress).getByRole('cell', { name: hosts }).closest('tr');
+    expect(rowOf('*.argotunnel.com, *.cftunnel.com')).toHaveTextContent('443 e 7844');
+    expect(rowOf('conta.veraxsistemas.com.br')).toHaveTextContent('O registro da VM na Verax');
+    expect(rowOf('ghcr.io, pkg-containers.githubusercontent.com')).toHaveTextContent('As imagens do Verax');
+    expect(rowOf('registry-1.docker.io, auth.docker.io, *.docker.com')).toHaveTextContent('Docker');
     expect(within(egress).getByRole('row', { name: /NTP/ })).toHaveTextContent('123');
     // 3. O comando: o botão, sem o comando antes de gerar.
     const command = within(installation).getByRole('region', { name: '3. Comando de instalação' });
