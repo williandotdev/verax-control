@@ -35,6 +35,7 @@ import {
 } from './auth/admin-auth.controller.js';
 import { AdminAuthService } from './auth/admin-auth.service.js';
 import { ADMIN_SECRETS, type AdminSecretSource, SecretManagerAdminSecrets } from './auth/admin-secrets.js';
+import { ADMIN_TURNSTILE_FETCH, AdminTurnstile, type TurnstileFetch } from './auth/turnstile.js';
 import { GoogleAuthIdTokenSource } from './google-id-token.js';
 import { OwnerGuard } from './owner.guard.js';
 import { SSO_GLOBAL, SSO_LIMITS, SSO_PER_IP, SsoController, type SsoLimits } from './sso/sso.controller.js';
@@ -60,6 +61,8 @@ export interface AdminModuleOptions {
   workerOwnerClient?: WorkerOwnerClient;
   /** Só nos testes: o cliente da frota no cp-worker (em produção, o HTTP com o token da conta do cp-admin). */
   workerFleetClient?: WorkerFleetClient;
+  /** Só nos testes: o siteverify do Turnstile num dublê (em produção, o `fetch` global até a Cloudflare). */
+  turnstileFetch?: TurnstileFetch;
 }
 
 /**
@@ -86,6 +89,11 @@ export class AdminModule {
       ],
       providers: [
         AdminAuthService,
+        AdminTurnstile,
+        {
+          provide: ADMIN_TURNSTILE_FETCH,
+          useValue: options.turnstileFetch ?? ((input: string, init: RequestInit) => fetch(input, init)),
+        },
         AdminFleetService,
         FleetStore,
         AdminLegalService,

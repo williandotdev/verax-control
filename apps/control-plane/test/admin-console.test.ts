@@ -81,9 +81,22 @@ describe('cp-admin: as telas do console no mesmo serviço', () => {
       expect(page.headers['cache-control']).toBe('private, no-store');
       expect(page.headers['x-content-type-options']).toBe('nosniff');
     }
-    expect(CONSOLE_CSP).toContain("script-src 'self'");
     expect(CONSOLE_CSP).toContain("frame-ancestors 'none'");
     expect(CONSOLE_CSP).not.toContain('unsafe-inline');
+    // O Turnstile do login: a origem da Cloudflare só no script e no frame do widget, e nenhuma outra origem de fora.
+    const directives = new Map(
+      CONSOLE_CSP.split('; ').map((directive) => {
+        const [name = '', ...values] = directive.split(' ');
+        return [name, values] as const;
+      }),
+    );
+    expect(directives.get('script-src')).toEqual(["'self'", 'https://challenges.cloudflare.com']);
+    expect(directives.get('frame-src')).toEqual(['https://challenges.cloudflare.com']);
+    expect(directives.get('connect-src')).toEqual(["'self'"]);
+    const external = [...directives.values()].flat().filter((value) => /^(?:https?:.*|.*\*.*)$/.test(value));
+    expect(new Set(external)).toEqual(new Set(['https://challenges.cloudflare.com']));
+    // Duas ocorrências da origem (script-src e frame-src), contadas como texto, sem regex.
+    expect(CONSOLE_CSP.split('https://challenges.cloudflare.com').length - 1).toBe(2);
   });
 
   it('os arquivos com hash ficam em cache privado imutável; os outros, sem cache', async () => {

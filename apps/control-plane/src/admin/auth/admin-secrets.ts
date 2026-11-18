@@ -2,8 +2,8 @@ import { loadSecretManagerApi, type SecretManagerApi } from '../../access/bootst
 
 /**
  * O cofre do login do console no Secret Manager do projeto do plano de controle (`ADMIN_SECRETS_PROJECT_ID`), lido pela
- * API na versão `latest`: `cp-admin-totp-key`, a chave mestra (`admin-crypto.ts`), e `cp-admin-sso-signing-key`, a chave
- * de assinatura da entrada única no SIEM. Não é montado como variável: o
+ * API na versão `latest`: `cp-admin-totp-key`, a chave mestra (`admin-crypto.ts`), `cp-admin-sso-signing-key`, a chave
+ * de assinatura da entrada única no SIEM, e `cp-admin-turnstile-key`, a chave secreta do Turnstile do login. Não é montado como variável: o
  * serviço sobe com o cofre vazio (o login responde 503 até o responsável gravar). Lido uma vez e guardado na memória do
  * processo.
  *
@@ -21,6 +21,13 @@ export const TOTP_KEY_VAULT = 'cp-admin-totp-key';
  */
 export const SSO_SIGNING_KEY_VAULT = 'cp-admin-sso-signing-key';
 
+/**
+ * A chave secreta do Cloudflare Turnstile do login do console (`turnstile.ts`): a do widget cuja chave do site está em
+ * `ADMIN_TURNSTILE_SITE_KEY`. Lida só pelo cp-admin, pela API, e só com o Turnstile ligado; vai no corpo do POST ao
+ * siteverify e a mais nenhum lugar.
+ */
+export const TURNSTILE_KEY_VAULT = 'cp-admin-turnstile-key';
+
 export const ADMIN_SECRETS = Symbol('ADMIN_SECRETS');
 
 export interface AdminSecretSource {
@@ -28,6 +35,8 @@ export interface AdminSecretSource {
   totpKey(): Promise<string | undefined>;
   /** O PEM da chave de assinatura da entrada única; `undefined` sem versão habilitada. */
   ssoSigningKey(): Promise<string | undefined>;
+  /** A chave secreta do Turnstile do login; `undefined` sem versão habilitada. */
+  turnstileSecretKey(): Promise<string | undefined>;
 }
 
 /** A API do Secret Manager falhou (rede, permissão): o console responde 503, sem detalhe. */
@@ -67,6 +76,10 @@ export class SecretManagerAdminSecrets implements AdminSecretSource {
 
   ssoSigningKey(): Promise<string | undefined> {
     return this.read(SSO_SIGNING_KEY_VAULT);
+  }
+
+  turnstileSecretKey(): Promise<string | undefined> {
+    return this.read(TURNSTILE_KEY_VAULT);
   }
 
   private async read(secretId: string): Promise<string | undefined> {

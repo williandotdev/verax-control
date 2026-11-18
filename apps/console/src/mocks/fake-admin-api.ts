@@ -248,13 +248,23 @@ export function handleAdminRequest(
   method: string,
   path: string,
   body: unknown,
+  /** Os headers do pedido, em minúsculas (só o login com o Turnstile os lê). */
+  headers: Readonly<Record<string, string | undefined>> = {},
 ): FakeResponse {
   const now = state.now();
   const parts = path.split('?')[0]?.split('/').filter(Boolean).slice(2) ?? [];
   const [first, second, third] = parts.map(decodeURIComponent);
 
   // O acesso (entrada, saída e conta) e, sem sessão, o 401 de toda rota protegida.
-  const access = handleAuthRequest(state.auth, state.email, now, method, [first, second, third], body);
+  const access = handleAuthRequest(
+    state.auth,
+    state.email,
+    now,
+    method,
+    [first, second, third],
+    body,
+    headers,
+  );
   if (access !== undefined) return access;
 
   if (method === 'GET' && first === 'me' && parts.length === 1)

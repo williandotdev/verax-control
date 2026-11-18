@@ -12,6 +12,7 @@ export function adminHandlers(state: FakeAdminState = createFakeState()) {
         request.method,
         url.pathname,
         text === '' ? undefined : JSON.parse(text),
+        Object.fromEntries(request.headers.entries()),
       );
       if (response.status === 204) return new HttpResponse(null, { status: 204 });
       return HttpResponse.json(response.body as Record<string, unknown>, { status: response.status });

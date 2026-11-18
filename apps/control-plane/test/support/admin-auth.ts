@@ -36,6 +36,16 @@ export class MemoryAdminSecrets implements AdminSecretSource {
     if (this.failing) return Promise.reject(new SecretUnavailableError());
     return Promise.resolve(this.sso);
   }
+
+  /** A chave secreta do Turnstile (um valor gerado no teste); vazia por padrão, como o cofre recém-criado. */
+  turnstile: string | undefined = undefined;
+  turnstileReads = 0;
+
+  turnstileSecretKey(): Promise<string | undefined> {
+    this.turnstileReads += 1;
+    if (this.failing) return Promise.reject(new SecretUnavailableError());
+    return Promise.resolve(this.turnstile);
+  }
 }
 
 /** Uma chave Ed25519 nova em PEM (PKCS #8), como a que o responsável grava no cofre `cp-admin-sso-signing-key`. */

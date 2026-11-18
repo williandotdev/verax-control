@@ -523,6 +523,60 @@ describe('loadConfig (CP-01)', () => {
         ]);
       });
     });
+
+    describe('Turnstile do login (ADMIN_TURNSTILE_SITE_KEY e ADMIN_CONSOLE_HOSTNAME)', () => {
+      const testKey = '1x00000000000000000000AA';
+      const realShapedKey = '0x0000000000000000000000AA';
+
+      it('desligado por padrão; a chave do site no formato da Cloudflare', () => {
+        const off = loadConfig(adminEnv, () => undefined);
+        expect(off.ADMIN_TURNSTILE_SITE_KEY).toBeUndefined();
+        expect(off.ADMIN_CONSOLE_HOSTNAME).toBeUndefined();
+        expect(loadConfig({ ...adminEnv, ADMIN_TURNSTILE_SITE_KEY: testKey }).ADMIN_TURNSTILE_SITE_KEY).toBe(
+          testKey,
+        );
+        for (const bad of ['x00000000000000000000AA', '0x123', '0x0000000000000000000000AA!', 'segredo']) {
+          expect(problemsOf({ ...adminEnv, ADMIN_TURNSTILE_SITE_KEY: bad }), bad).toEqual([
+            'ADMIN_TURNSTILE_SITE_KEY: chave do site do Turnstile em formato inválido',
+          ]);
+        }
+      });
+
+      it('com uma chave real, o domínio do console é obrigatório (com a de teste, não)', () => {
+        expect(problemsOf({ ...adminEnv, ADMIN_TURNSTILE_SITE_KEY: realShapedKey })).toEqual([
+          'ADMIN_CONSOLE_HOSTNAME: obrigatória e não definida',
+        ]);
+        const config = loadConfig({
+          ...adminEnv,
+          ADMIN_TURNSTILE_SITE_KEY: realShapedKey,
+          ADMIN_CONSOLE_HOSTNAME: 'admin.example.com',
+        });
+        expect(config.ADMIN_CONSOLE_HOSTNAME).toBe('admin.example.com');
+        expect(
+          loadConfig({ ...adminEnv, ADMIN_TURNSTILE_SITE_KEY: testKey }).ADMIN_CONSOLE_HOSTNAME,
+        ).toBeUndefined();
+        expect(
+          problemsOf({
+            ...adminEnv,
+            ADMIN_TURNSTILE_SITE_KEY: realShapedKey,
+            ADMIN_CONSOLE_HOSTNAME: 'https://admin.example.com',
+          }),
+        ).toEqual(['ADMIN_CONSOLE_HOSTNAME: nome de domínio inválido']);
+      });
+
+      it('só do admin: nos outros papéis é ignorada com aviso', () => {
+        expect(
+          warningsOf({
+            ...validEnv,
+            ADMIN_TURNSTILE_SITE_KEY: testKey,
+            ADMIN_CONSOLE_HOSTNAME: 'admin.example.com',
+          }),
+        ).toEqual([
+          'ADMIN_TURNSTILE_SITE_KEY: só o papel admin usa; ignorada no papel public',
+          'ADMIN_CONSOLE_HOSTNAME: só o papel admin usa; ignorada no papel public',
+        ]);
+      });
+    });
   });
 
   it('MAIL_FROM e MAIL_FROM_NODES aceitam o e-mail puro ou "Nome <e-mail>"', () => {

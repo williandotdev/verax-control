@@ -25,6 +25,11 @@ project_id = "projeto-exemplo"
 # célula (docs/runbooks/console-do-responsavel.md, seção 3). Vazio, desligada.
 # sso_redirect_uris = ["https://api-verax.veraxsistemas.com.br/v1/auth/sso/callback"]
 
+# Cloudflare Turnstile no login do console: a chave do site (pública) do widget do Cloudflare com o hostname
+# veraxsistemas.com.br (o mesmo widget do painel serve). Antes, grave a chave secreta no segredo
+# cp-admin-turnstile-key (docs/runbooks/console-do-responsavel.md, "Turnstile no login"). Vazia, desligado.
+# admin_turnstile_site_key = "0x..."
+
 # Entrada do cp-worker: INGRESS_TRAFFIC_ALL é o padrão (a revelação da senha e o console dependem dela; a barreira é o
 # IAM). Só para fechar a entrada de novo (a revelação passa a responder 503): ver o GUIA, "Revelação da senha e a
 # entrada do cp-worker".
