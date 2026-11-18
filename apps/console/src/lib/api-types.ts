@@ -360,6 +360,12 @@ export interface RecoveryCodes {
 /** O segundo fator: o código do aplicativo ou, sem o celular, um código de recuperação. */
 export type SecondFactor = { code: string } | { recoveryCode: string };
 
+/** `GET /v1/admin/client-config`: o que a entrada precisa saber antes do login (sem sessão). */
+export interface AdminClientConfig {
+  /** A chave do site do Cloudflare Turnstile (pública); `null` com ele desligado. */
+  turnstileSiteKey: string | null;
+}
+
 /** `POST /v1/admin/login`. */
 export type LoginRequest = { email: string; password: string } & SecondFactor;
 

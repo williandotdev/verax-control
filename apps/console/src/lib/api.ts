@@ -1,4 +1,5 @@
 import type {
+  AdminClientConfig,
   AdminSession,
   CheckResult,
   LoginRequest,
@@ -71,6 +72,9 @@ export class SessionExpiredError extends Error {
 
 type Method = 'GET' | 'POST' | 'PUT';
 
+/** O header do token do Turnstile na entrada (`features/auth/turnstile.ts`), o mesmo do painel. */
+export const TURNSTILE_TOKEN_HEADER = 'X-Turnstile-Token';
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -101,7 +105,12 @@ function costModelVersionOf(details: unknown): string | undefined {
  * sessão que terminou (`SessionExpiredError`); o 401 da entrada (`login_failed`) é um erro comum do formulário. 204
  * devolve `undefined`.
  */
-export async function request<T>(method: Method, path: string, body?: unknown): Promise<T> {
+export async function request<T>(
+  method: Method,
+  path: string,
+  body?: unknown,
+  extraHeaders: Readonly<Record<string, string>> = {},
+): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
@@ -111,6 +120,7 @@ export async function request<T>(method: Method, path: string, body?: unknown): 
       headers: {
         Accept: 'application/json',
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...extraHeaders,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -207,7 +217,16 @@ const ACCOUNT = `${BASE}/account`;
  * aplicativo. Nada disso vai para a URL, o `localStorage` ou o log: só no corpo do pedido.
  */
 export const authApi = {
-  login: (body: LoginRequest): Promise<AdminSession> => request('POST', `${BASE}/login`, body),
+  /** A configuração pública da entrada (sem sessão): a chave do site do Turnstile, ou `null` com ele desligado. */
+  clientConfig: (): Promise<AdminClientConfig> => request('GET', `${BASE}/client-config`),
+  /** Com o Turnstile ligado, o token do widget vai no header `X-Turnstile-Token` (nunca no corpo nem na URL). */
+  login: (body: LoginRequest, turnstileToken?: string): Promise<AdminSession> =>
+    request(
+      'POST',
+      `${BASE}/login`,
+      body,
+      turnstileToken === undefined ? {} : { [TURNSTILE_TOKEN_HEADER]: turnstileToken },
+    ),
   logout: (): Promise<void> => request('POST', `${BASE}/logout`, {}),
   changePassword: (body: PasswordChangeRequest): Promise<void> =>
     request('POST', `${ACCOUNT}/password`, body),

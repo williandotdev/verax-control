@@ -47,6 +47,8 @@ export interface CreateAppOptions {
   workerOwnerClient?: Parameters<typeof AppModule.register>[1]['workerOwnerClient'];
   /** O cliente da frota do console para o cp-worker. */
   workerFleetClient?: Parameters<typeof AppModule.register>[1]['workerFleetClient'];
+  /** O siteverify do Turnstile do login do console num dublê (nada sai para a rede). */
+  turnstileFetch?: Parameters<typeof AppModule.register>[1]['turnstileFetch'];
   /**
    * Só com `role: 'admin'`: a pasta com os arquivos do console. Sem ela, nenhuma (`null`): o teste não depende de um
    * build do `apps/console` que pode ou não existir na máquina.
@@ -85,6 +87,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         adminSecrets: options.adminSecrets,
         workerOwnerClient: options.workerOwnerClient,
         workerFleetClient: options.workerFleetClient,
+        turnstileFetch: options.turnstileFetch,
       }),
     ],
   }).compile();

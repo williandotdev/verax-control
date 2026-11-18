@@ -36,6 +36,14 @@ export interface FakeAuthState {
   enrollment?: { id: string; email: string };
   /** O que a tela mandou por último (para o teste conferir o corpo). */
   lastBody?: unknown;
+  /**
+   * O Turnstile ligado: a chave do site que `GET /client-config` devolve e, com ela, o token obrigatório no header do
+   * login, como o cp-admin (sem ele, 400 `turnstile_required`). `turnstileRejects` imita a Cloudflare recusando o token.
+   */
+  turnstileSiteKey?: string;
+  turnstileRejects?: boolean;
+  /** Os tokens que chegaram no header do login, na ordem (para o teste conferir que cada envio levou um novo). */
+  turnstileTokens?: string[];
 }
 
 export function createFakeAuth(options: { loggedIn?: boolean } = {}): FakeAuthState {
@@ -93,9 +101,25 @@ export function handleAuthRequest(
   method: string,
   parts: readonly (string | undefined)[],
   body: unknown,
+  headers: Readonly<Record<string, string | undefined>> = {},
 ): FakeResponse | undefined {
   const [first, second, third] = parts;
   if (method !== 'GET') auth.lastBody = body;
+
+  if (method === 'GET' && first === 'client-config' && second === undefined) {
+    return { status: 200, body: { turnstileSiteKey: auth.turnstileSiteKey ?? null } };
+  }
+
+  if (method === 'POST' && first === 'login' && second === undefined && auth.turnstileSiteKey !== undefined) {
+    const token = headers['x-turnstile-token'];
+    if (token === undefined || token === '') {
+      return fail(400, 'Conclua a verificação de segurança e tente de novo.', 'turnstile_required');
+    }
+    (auth.turnstileTokens ??= []).push(token);
+    if (auth.turnstileRejects === true) {
+      return fail(400, 'A verificação de segurança não foi aceita. Tente de novo.', 'turnstile_failed');
+    }
+  }
 
   if (method === 'POST' && first === 'login' && second === undefined) {
     const email = (field(body, 'email') ?? '').trim().toLowerCase();

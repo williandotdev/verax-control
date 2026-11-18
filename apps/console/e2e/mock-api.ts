@@ -17,6 +17,7 @@ export async function mockAdminApi(
       request.method(),
       new URL(request.url()).pathname,
       body === null || body === '' ? undefined : (JSON.parse(body) as unknown),
+      request.headers(),
     );
     if (response.status === 204) {
       await route.fulfill({ status: 204 });

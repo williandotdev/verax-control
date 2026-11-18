@@ -323,6 +323,19 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
   });
 
   describe('login', () => {
+    it('sem ADMIN_TURNSTILE_SITE_KEY, o Turnstile fica desligado: a tela não recebe chave e o login não pede token', async () => {
+      const config = await request(app.getHttpServer())
+        .get('/v1/admin/client-config')
+        .set('X-Forwarded-For', ip)
+        .expect(200);
+      expect(config.body).toEqual({ turnstileSiteKey: null });
+      const owner = await enroll();
+      nextStep();
+      await login(OWNER, owner.password, { code: await totpAt(owner.secret, clock.now()) }).expect(200);
+      // Nem o cofre da chave secreta é lido.
+      expect(secrets.turnstileReads).toBe(0);
+    });
+
     it('senha e código certos: sessão nova (id novo a cada login) com o cookie __session endurecido', async () => {
       const owner = await enroll();
       nextStep();

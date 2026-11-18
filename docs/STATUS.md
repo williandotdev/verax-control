@@ -5904,3 +5904,33 @@ painel como o cliente".
   topo do painel e em Minha conta), `layout.test.tsx`, `account-page.test.tsx` e este registro. Os códigos dos papéis
   (`admin_cliente`, `analista_cliente`) não mudam.
 - **Testes:** `vitest` do web (552) e do shared (390).
+
+## Turnstile no login do console do responsável ⚠️ altera `admin/auth` e `infra/`
+
+- **Pedido (17/11/2026):** o Cloudflare Turnstile do login do painel também na entrada do console (`cp-admin`),
+  desligado até ser configurado.
+- **Arquivos:** cp-admin: `admin/auth/turnstile.ts` (novo, com `turnstile.test.ts`), `admin/auth/admin-auth.controller.ts`
+  (o token conferido dentro dos limites do login, antes da senha, e `GET /v1/admin/client-config`),
+  `admin/auth/admin-secrets.ts` (o cofre `cp-admin-turnstile-secret-key`), `admin/admin.module.ts`, `app.module.ts`,
+  `admin/console-assets.ts` (CSP), `common/config/env.schema.ts` e os testes (`test/admin-turnstile.test.ts` novo,
+  `admin-auth`, `admin-console`, `console-contract`, `load-config`, os apoios). Console: `features/auth/turnstile.ts`,
+  `turnstile-widget.tsx`, `client-config.ts` (novos, no desenho do painel), `login-page.tsx`, `lib/api.ts`,
+  `lib/api-types.ts`, os mocks, `vite.config.ts` (a mesma CSP), `turnstile.test.tsx` e `e2e/turnstile.spec.ts`
+  (novos). Infra: `envs/control-plane` (`secrets.tf`, `admin.tf`, `variables.tf`, `terraform.tfvars.example` e os
+  testes `console` e `servicos`). Docs: runbook do console (seção 1.1) e GUIA.
+- **Decisões:** liga com `ADMIN_TURNSTILE_SITE_KEY` (Terraform: `admin_turnstile_site_key`, mesmo formato da API);
+  a chave secreta fica no cofre `cp-admin-turnstile-secret-key`, lida pela API do Secret Manager só pelo `cp-admin`
+  (cofre vazio com a chave do site: erro na partida e login 503, nunca aberto; gravar uma versão vale sem reiniciar).
+  Token no header `X-Turnstile-Token`; siteverify com chave, token e `req.ip` (a regra de proxies do cp-admin), prazo de
+  5 s, sem seguir redirecionamento. Com chave real, `hostname` igual a `ADMIN_CONSOLE_HOSTNAME` (o Terraform deriva de
+  `admin_hosting_domain`; o app não sobe com chave real sem ele) e `action` `console-login` (o token do login do painel
+  não vale). Recusa: 400 `turnstile_required`/`turnstile_failed` com mensagem genérica, contando nos limites por IP e
+  global como a senha errada; indisponível: 503, devolvendo a tentativa. A senha nem é conferida sem o Turnstile.
+  Token e chave nunca vão ao log (`admin_turnstile_*`). Só o login é protegido: as trocas de senha e do aplicativo já
+  exigem sessão, e o console não tem outro formulário público. CSP do console: `script-src` e `frame-src` com
+  `https://challenges.cloudflare.com`, nada mais.
+- **Testes:** `pnpm lint`, `pnpm typecheck`; control-plane (vitest inteiro: 1019, os 3 do emulador do Firestore
+  pulados como sempre); console (vitest 99, Playwright 22 com axe e a CSP do cp-admin, o Turnstile com um widget falso
+  servido em `challenges.cloudflare.com` pelo `page.route`); `terraform fmt -check`, `validate` e `terraform test`
+  (56).
+- **Manual:** ligar no ambiente real (runbook, seção 1.1) e entrar pelo domínio com o widget de verdade.

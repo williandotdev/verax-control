@@ -81,6 +81,9 @@ describe('contrato com as telas do console', () => {
       Awaited<ReturnType<AdminAuthController['totpConfirm']>>
     >().toEqualTypeOf<Console.RecoveryCodes>();
     expectTypeOf<Awaited<ReturnType<AdminAuthController['login']>>>().toEqualTypeOf<Console.AdminSession>();
+    expectTypeOf<
+      ReturnType<AdminAuthController['clientConfig']>
+    >().toEqualTypeOf<Console.AdminClientConfig>();
     // Os textos legais: a lista, a versão com o texto e a trilha.
     expectTypeOf<Json<LegalVersionSummary>>().toEqualTypeOf<Console.LegalVersionSummary>();
     expectTypeOf<Json<LegalOverview>>().toEqualTypeOf<Console.LegalOverview>();

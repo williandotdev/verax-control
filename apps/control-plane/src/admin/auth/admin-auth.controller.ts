@@ -1,4 +1,4 @@
-import { Body, Controller, HttpCode, HttpStatus, Inject, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Post, Req, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { APP_CONFIG, type AppConfig } from '../../common/config/config.module.js';
 import { ApiError } from '../../common/http/api-error.js';
@@ -19,6 +19,7 @@ import {
   sessionCookieOptions,
   sessionCookieValues,
 } from './session-cookie.js';
+import { AdminTurnstile, TURNSTILE_TOKEN_HEADER, turnstileTokenOf } from './turnstile.js';
 
 /**
  * Limites do login e da conta, em memória (o cp-admin roda com uma instância só). Só contam as tentativas
@@ -87,6 +88,11 @@ async function counted<T>(buckets: readonly Bucket[], res: Response, run: () => 
   }
 }
 
+/** O que a tela de entrada precisa saber antes do login: só a chave do site do Turnstile (pública), ou `null`. */
+export interface AdminClientConfig {
+  turnstileSiteKey: string | null;
+}
+
 /**
  * O login próprio do console (`/v1/admin/...`, só no cp-admin): entrar, sair e, com sessão, a troca da senha e do
  * aplicativo autenticador. Não existe cadastro por HTTP: a conta nasce pela linha de comando do operador
@@ -99,12 +105,28 @@ export class AdminAuthController {
 
   constructor(
     private readonly auth: AdminAuthService,
+    private readonly turnstile: AdminTurnstile,
     @Inject(ADMIN_AUTH_LIMITS) private readonly limits: AdminAuthLimits,
     @Inject(APP_CONFIG) config: AppConfig,
   ) {
     this.zone = config.CLOUDFLARE_ZONE_NAME;
   }
 
+  /**
+   * A configuração pública da tela de entrada (sem sessão): a chave do site do Turnstile, que já vai no HTML de quem
+   * usa o widget. Nada de segredo entra aqui.
+   */
+  @PublicAdminRoute()
+  @Get('client-config')
+  clientConfig(): AdminClientConfig {
+    return { turnstileSiteKey: this.turnstile.siteKey };
+  }
+
+  /**
+   * Com o Turnstile ligado, o token do widget (header `X-Turnstile-Token`) é conferido dentro dos limites, antes da
+   * senha: a recusa (400) conta como falha no balde do IP e no global, como uma senha errada, e a indisponibilidade
+   * (503) devolve a tentativa. Sem passar pelo Turnstile, a senha nem é olhada.
+   */
   @PublicAdminRoute()
   @Post('login')
   @HttpCode(HttpStatus.OK)
@@ -120,7 +142,10 @@ export class AdminAuthController {
         { limiter: this.limits.loginGlobal, key: GLOBAL_KEY },
       ],
       res,
-      () => this.auth.login(request, contextOf(req)),
+      async () => {
+        await this.turnstile.assertLogin(turnstileTokenOf(req.headers[TURNSTILE_TOKEN_HEADER]), req.ip);
+        return this.auth.login(request, contextOf(req));
+      },
     );
     clearTossedSessionCookies(res, this.zone);
     res.cookie(SESSION_COOKIE_NAME, grant.sessionId, sessionCookieOptions());

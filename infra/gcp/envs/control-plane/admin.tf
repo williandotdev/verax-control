@@ -14,7 +14,7 @@
 #
 # Por isso o serviço aceita invocação anônima (`allUsers`), como o cp-public: o rewrite do Hosting chama o Cloud Run sem
 # token de identidade e exige isso. A barreira é o app: toda rota fora de `/health` e do login exige uma sessão de
-# responsável. A conta do serviço lê e grava o Firestore, lê a chave do console e, com os serviços no
+# responsável. A conta do serviço lê e grava o Firestore, lê as chaves do console (secrets.tf) e, com os serviços no
 # ar, invoca o cp-worker (só `run.invoker` nele, abaixo): é assim que as operações do responsável chegam ao worker, com o
 # token da própria conta e o e-mail da sessão no corpo (o worker aceita essa conta só nas operações do responsável,
 # `ADMIN_SA_EMAIL` em run.tf). Da Stripe, só o id da alíquota do imposto por cima (`STRIPE_TAX_RATE_ID`), sem chave.
@@ -46,6 +46,11 @@ locals {
     # ficam vazias (não vão), e o /sso/* responde indisponível.
     SSO_ISSUER        = length(var.sso_redirect_uris) > 0 ? "https://${var.admin_hosting_domain}" : ""
     SSO_REDIRECT_URIS = join(",", var.sso_redirect_uris)
+    # Cloudflare Turnstile no login (admin/auth/turnstile.ts): a chave do site (pública) liga o desafio, e o domínio do
+    # console é o hostname que o siteverify precisa devolver. A chave secreta fica no cofre cp-admin-turnstile-secret-key
+    # (secrets.tf), lida pela API. Sem a chave do site, as duas ficam vazias (não vão), e o login segue sem o desafio.
+    ADMIN_TURNSTILE_SITE_KEY = var.admin_turnstile_site_key
+    ADMIN_CONSOLE_HOSTNAME   = var.admin_turnstile_site_key != "" ? var.admin_hosting_domain : ""
   }
 }
 

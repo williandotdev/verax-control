@@ -39,7 +39,7 @@ variable "terraform_image" {
 }
 
 variable "admin_enabled" {
-  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com login próprio (e-mail de owner_principals, senha e código do aplicativo autenticador) e invocação anônima, o site do Firebase Hosting com o domínio admin_hosting_domain, a conta cp-admin (Firestore, leitura do segredo cp-admin-totp-key e, com services_enabled, run.invoker só no cp-worker para as operações do responsável), a implantação pelo workflow e os alertas do console. Exige owner_principals. Grave antes a chave do console, cp-admin-totp-key (docs/runbooks/console-do-responsavel.md)."
+  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com login próprio (e-mail de owner_principals, senha e código do aplicativo autenticador) e invocação anônima, o site do Firebase Hosting com o domínio admin_hosting_domain, a conta cp-admin (Firestore, leitura dos segredos do console, cp-admin-totp-key, cp-admin-sso-signing-key e cp-admin-turnstile-secret-key, e, com services_enabled, run.invoker só no cp-worker para as operações do responsável), a implantação pelo workflow e os alertas do console. Exige owner_principals. Grave antes a chave do console, cp-admin-totp-key (docs/runbooks/console-do-responsavel.md)."
   type        = bool
   default     = false
 
@@ -88,7 +88,7 @@ locals {
   # variáveis (cada uma tem a sua: alert_email, nodes_project_id, firebase_panel_projects...), as que o workflow de
   # implantação reafirma (ROLE, NODE_ENV), a que o Cloud Run reserva (PORT) e os cinco segredos, que vêm do Secret
   # Manager. Recusar é melhor do que ignorar em silêncio (o `merge` de run.tf põe o que o Terraform sabe por último).
-  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|CELL_PUSH_SA_EMAILS|ADMIN_SECRETS_PROJECT_ID|SSO_.*|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
+  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|CELL_PUSH_SA_EMAILS|ADMIN_SECRETS_PROJECT_ID|ADMIN_TURNSTILE_.*|ADMIN_CONSOLE_HOSTNAME|SSO_.*|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
 }
 
 variable "service_env" {
@@ -98,7 +98,7 @@ variable "service_env" {
 
   validation {
     condition     = alltrue([for name in keys(var.service_env) : !can(regex(local.reserved_env_keys, name))])
-    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, CELL_PUSH_SA_EMAILS, ADMIN_SECRETS_PROJECT_ID, SSO_*, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
+    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, CELL_PUSH_SA_EMAILS, ADMIN_SECRETS_PROJECT_ID, ADMIN_TURNSTILE_*, ADMIN_CONSOLE_HOSTNAME, SSO_*, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
   }
 
   validation {
@@ -247,6 +247,22 @@ variable "sso_redirect_uris" {
   validation {
     condition     = length(var.sso_redirect_uris) == 0 || var.admin_enabled
     error_message = "A entrada única é do console: sso_redirect_uris exige admin_enabled = true."
+  }
+}
+
+variable "admin_turnstile_site_key" {
+  description = "Cloudflare Turnstile no login do console (admin.tf): a chave do site (pública, `0x...`) do widget do Cloudflare cujo hostname cobre o console (um widget com o hostname veraxsistemas.com.br serve ao painel e ao console). Vai para o cp-admin como ADMIN_TURNSTILE_SITE_KEY, e o domínio do console (admin_hosting_domain) como ADMIN_CONSOLE_HOSTNAME, o hostname que o siteverify precisa devolver. A chave secreta não passa por aqui: fica no segredo cp-admin-turnstile-secret-key, que só o cp-admin lê. Vazia (padrão), o login segue sem o desafio. Grave antes a chave secreta (docs/runbooks/console-do-responsavel.md): com a chave do site e o cofre vazio, o login responde 503."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.admin_turnstile_site_key == "" || can(regex("^[0-9]x[0-9A-Za-z_-]{20,40}$", var.admin_turnstile_site_key))
+    error_message = "A chave do site do Turnstile tem o formato da Cloudflare: um dígito, x e de 20 a 40 letras, números, _ ou - (ex.: 0x4AAAAAAA...). É a chave pública do site, nunca a secreta."
+  }
+
+  validation {
+    condition     = var.admin_turnstile_site_key == "" || var.admin_enabled
+    error_message = "O Turnstile do login é do console: admin_turnstile_site_key exige admin_enabled = true."
   }
 }
 

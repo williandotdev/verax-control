@@ -188,12 +188,12 @@ run "console_com_login_proprio" {
       sort([
         for key, member in google_secret_manager_secret_iam_member.readers : key
         if member.member == "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com"
-      ]) == tolist(["cp-admin-sso-signing-key/admin", "cp-admin-totp-key/admin"]) &&
+      ]) == tolist(["cp-admin-sso-signing-key/admin", "cp-admin-totp-key/admin", "cp-admin-turnstile-secret-key/admin"]) &&
       length([for key, member in google_secret_manager_secret_iam_member.readers : key if startswith(key, "cp-admin-setup-token/")]) == 0 &&
       alltrue([for key, member in google_secret_manager_secret_iam_member.readers : member.role == "roles/secretmanager.secretAccessor" if endswith(key, "/admin")]) &&
       !contains([for member in google_service_account_iam_member.invoker_token_users : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com")
     )
-    error_message = "A conta cp-admin lê e grava o Firestore e lê só as duas chaves dela, cp-admin-totp-key e cp-admin-sso-signing-key (no segredo, nunca no projeto); ninguém lê o cp-admin-setup-token aposentado; nenhum actAs na cp-invoker (o console não enfileira nada)."
+    error_message = "A conta cp-admin lê e grava o Firestore e lê só as três chaves dela, cp-admin-totp-key, cp-admin-sso-signing-key e cp-admin-turnstile-secret-key (no segredo, nunca no projeto); ninguém lê o cp-admin-setup-token aposentado; nenhum actAs na cp-invoker (o console não enfileira nada)."
   }
 
   # Sem os serviços (services_enabled = false), o cp-worker não existe, e nem o run.invoker do console nele.
@@ -486,6 +486,98 @@ run "entrada_unica_nao_vem_de_service_env" {
   variables {
     service_env = {
       SSO_ISSUER = "https://outro.example.com"
+    }
+  }
+
+  expect_failures = [var.service_env]
+}
+
+# Cloudflare Turnstile no login do console: sem `admin_turnstile_site_key`, nada vai ao cp-admin (o login segue sem o
+# desafio); com ela, a chave do site e o domínio do console (o hostname que o siteverify precisa devolver). A chave
+# secreta fica no cofre, lida só pelo cp-admin pela API: nunca montada, nunca numa variável.
+run "turnstile_do_console_desligado_por_padrao" {
+  variables {
+    admin_enabled    = true
+    owner_principals = ["user:responsavel@example.com"]
+  }
+
+  assert {
+    condition = (
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "ADMIN_TURNSTILE_SITE_KEY") &&
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "ADMIN_CONSOLE_HOSTNAME")
+    )
+    error_message = "Sem admin_turnstile_site_key, o cp-admin não recebe o Turnstile (o login segue como sempre)."
+  }
+
+  assert {
+    condition = (
+      contains(keys(google_secret_manager_secret.cp), "cp-admin-turnstile-secret-key") &&
+      [for key, member in google_secret_manager_secret_iam_member.readers : member.member if startswith(key, "cp-admin-turnstile-secret-key/")] ==
+      ["serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com"]
+    )
+    error_message = "O cofre da chave secreta do Turnstile existe (para ser gravado antes de ligar) e só a conta cp-admin o lê."
+  }
+}
+
+run "turnstile_do_console_sem_o_console_ninguem_le" {
+  variables {
+    services_enabled = true
+    owner_principals = ["user:responsavel@example.com"]
+  }
+
+  assert {
+    condition     = length([for key, member in google_secret_manager_secret_iam_member.readers : key if startswith(key, "cp-admin-turnstile-secret-key/")]) == 0
+    error_message = "Sem o console, ninguém lê a chave secreta do Turnstile do console (nem o cp-public, nem o cp-worker)."
+  }
+}
+
+run "turnstile_do_console_ligado" {
+  variables {
+    services_enabled         = true
+    admin_enabled            = true
+    owner_principals         = ["user:responsavel@example.com"]
+    admin_turnstile_site_key = "0x0000000000000000000000AA"
+  }
+
+  assert {
+    condition = (
+      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "ADMIN_TURNSTILE_SITE_KEY"]) == "0x0000000000000000000000AA" &&
+      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "ADMIN_CONSOLE_HOSTNAME"]) == "admin.veraxsistemas.com.br" &&
+      alltrue([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : length(env.value_source) == 0]) &&
+      !contains([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.name], "ADMIN_TURNSTILE_SITE_KEY")
+    )
+    error_message = "A chave do site e o domínio do console vão só ao cp-admin; a chave secreta não é montada (lida pela API)."
+  }
+}
+
+run "turnstile_do_console_recusa_chave_fora_do_formato" {
+  command = plan
+
+  variables {
+    admin_enabled            = true
+    owner_principals         = ["user:responsavel@example.com"]
+    admin_turnstile_site_key = "segredo-colado-no-lugar-errado"
+  }
+
+  expect_failures = [var.admin_turnstile_site_key]
+}
+
+run "turnstile_do_console_exige_o_console" {
+  command = plan
+
+  variables {
+    admin_turnstile_site_key = "0x0000000000000000000000AA"
+  }
+
+  expect_failures = [var.admin_turnstile_site_key]
+}
+
+run "turnstile_do_console_nao_vem_de_service_env" {
+  command = plan
+
+  variables {
+    service_env = {
+      ADMIN_TURNSTILE_SITE_KEY = "0x0000000000000000000000AA"
     }
   }
 

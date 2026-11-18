@@ -23,6 +23,8 @@ Como o acesso funciona:
 - **Login** (`/entrar`): e-mail, senha e o código de 6 dígitos do aplicativo (ou um código de recuperação), num
   formulário só. Qualquer erro (e-mail desconhecido, senha errada, código errado ou já usado, bloqueio) dá a mesma
   mensagem genérica, de propósito.
+- **Turnstile (opcional, seção 1.1):** com a chave do site configurada, o login mostra o desafio do Cloudflare
+  Turnstile, e o `cp-admin` confere o token na Cloudflare antes de olhar a senha. Sem ela, o login é o de sempre.
 - **Bloqueio:** 5 tentativas com a **senha certa e o código errado** em 15 minutos bloqueiam o login daquele e-mail por
   15 minutos (o alerta "login do console do responsável bloqueado" avisa). A senha errada não bloqueia a conta (o
   e-mail do responsável é público, e ninguém deve conseguir trancá-lo do lado de fora só com ele): ela conta nos
@@ -92,6 +94,59 @@ Como o acesso funciona:
    balde da saída do Hosting, e quem chama o `run.app` direto, no do próprio IP. Os limites só contam **falhas** (um
    login certo devolve a tentativa, e um pedido malformado nem conta): 10 por IP e 100 no total a cada 15 minutos. O
    que segura a adivinhação do segundo fator é o bloqueio da conta, que só a senha certa aciona (seção 2.4).
+
+### 1.1. Turnstile no login (opcional)
+
+O mesmo desafio do Cloudflare Turnstile do login do painel, agora na entrada do console (`/entrar`). Ligado, o botão
+"Entrar" só funciona depois do desafio, e o `cp-admin` confere o token no siteverify da Cloudflare (com a chave
+secreta, o token e o IP do pedido) **antes** de olhar a senha: token ausente ou recusado dá 400 com uma mensagem
+genérica; a Cloudflare fora do ar, fora do prazo (5 s) ou o cofre vazio dão 503 (a porta fecha, nunca abre). Com uma
+chave real, o token só vale se foi resolvido em `admin.veraxsistemas.com.br` (`admin_hosting_domain`) e no formulário do
+console (`action` `console-login`): o token do login do painel não serve aqui. As recusas contam nos mesmos limites por
+IP e no total que a senha errada (seção 1, item 5); nada dos limites e do bloqueio muda. O IP mandado à Cloudflare é o
+mesmo dos limites: quem chega pelo Hosting aparece com a saída do Hosting.
+
+1. **O widget no Cloudflare:** um widget só, com o hostname **`veraxsistemas.com.br`**, serve ao painel e ao console
+   (o hostname vale também para os subdomínios). Se o painel já tem um widget com esse hostname, use o mesmo (a mesma
+   chave do site e a mesma chave secreta). Senão, no painel do Cloudflare: Turnstile → Add widget, modo **Managed**,
+   hostname `veraxsistemas.com.br`. Anote a chave do site (pública, `0x...`) e a chave secreta.
+2. **A chave secreta no cofre** (o Terraform já criou o `cp-admin-turnstile-secret-key`, vazio). Pelo `gcloud`, sem
+   passar pelo Terraform, pelo histórico do shell nem pela tela:
+
+   ```bash
+   read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-admin-turnstile-secret-key --project SEU_PROJETO --data-file=- && unset VALOR
+   ```
+
+   Cole a chave secreta e tecle Enter (nada aparece). Só o `cp-admin` lê esse cofre, pela API, e só com o Turnstile
+   ligado.
+
+3. **A chave do site no Terraform** (`infra/gcp/envs/control-plane`): `admin_turnstile_site_key = "0x..."` no
+   `terraform.tfvars`, depois `terraform plan` (só o `cp-admin` muda no lugar: uma revisão nova com
+   `ADMIN_TURNSTILE_SITE_KEY` e `ADMIN_CONSOLE_HOSTNAME`, este derivado de `admin_hosting_domain`) e `terraform apply`.
+   A versão do `cp-admin` precisa ser a que já tem o Turnstile (uma versão antiga ignora as duas variáveis). Grave a
+   chave secreta **antes** do `apply`: com a chave do site e o cofre vazio, o login responde "indisponível" (e o log
+   do `cp-admin` diz `admin_turnstile_secret_missing`) até alguém gravar uma versão, que vale sem reiniciar.
+4. **Conferir:** abra `https://admin.veraxsistemas.com.br/entrar` numa janela anônima. O desafio aparece acima do
+   "Entrar", que só liga depois dele; entre como sempre.
+
+**Trocar a chave secreta** (rotação no Cloudflare, ou ao suspeitar dela): grave a versão nova com o mesmo comando do
+item 2 e rode o workflow "Plano de controle" (Actions → Run workflow) para o `cp-admin` subir numa revisão nova: a
+chave é lida uma vez por instância. Depois, destrua a versão antiga
+(`gcloud secrets versions destroy <NÚMERO> --secret=cp-admin-turnstile-secret-key --project SEU_PROJETO`).
+
+**Desligar:** `admin_turnstile_site_key = ""` e `terraform apply`. O login volta a ser o de sempre.
+
+**Se o login recusar todo mundo** (o log do `cp-admin`, eventos `admin_turnstile_*`; nunca com o token nem a chave):
+
+- `admin_turnstile_secret_missing` ou `admin_turnstile_unavailable` com `secret-unavailable`: o cofre está vazio ou a
+  conta `cp-admin` não o lê (item 2);
+- `admin_turnstile_failed` com `hostname-mismatch`: o widget do Cloudflare não cobre `admin.veraxsistemas.com.br`, ou
+  `admin_hosting_domain` não é o endereço por onde se entra (pelo endereço direto do Cloud Run, `run_url`, o desafio
+  não vale: entre pelo domínio);
+- `admin_turnstile_failed` com `error-codes` `invalid-input-secret`: a chave secreta gravada não é a do widget da
+  chave do site;
+- `admin_turnstile_unavailable` com `error`: a Cloudflare não respondeu a tempo (o login volta sozinho quando ela
+  voltar). Para entrar mesmo assim numa emergência, desligue o Turnstile (acima).
 
 ### Migração de um console que estava atrás do IAP
 

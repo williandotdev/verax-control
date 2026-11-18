@@ -93,6 +93,15 @@ export function isHttpsOrigin(value: string): boolean {
   }
 }
 
+/**
+ * Chave do site do Turnstile: um dígito, `x` e de 20 a 40 caracteres (as reais começam com `0x`; as de teste da
+ * Cloudflare, como `1x00000000000000000000AA`, com `1x`, `2x` ou `3x`). A mesma expressão da API do nó
+ * (`apps/api/src/common/config/env.schema.ts`).
+ */
+export const TURNSTILE_SITE_KEY_PATTERN = /^[0-9]x[0-9A-Za-z_-]{20,40}$/;
+/** Chave de site real da Cloudflare: com ela, o `hostname` do siteverify precisa ser o do console. */
+export const REAL_TURNSTILE_SITE_KEY_PREFIX = '0x';
+
 const REDIRECT_URI_ERROR =
   'deve ser um endereço https completo e canônico, sem consulta nem fragmento (ex.: https://api-equipe.exemplo.com.br/v1/auth/sso/callback)';
 
@@ -350,6 +359,17 @@ const envShape = {
     })
     .optional(),
   SSO_REDIRECT_URIS: list(z.string().refine(isExactRedirectUri, { error: REDIRECT_URI_ERROR })).optional(),
+  // Cloudflare Turnstile no login do console (cp-admin, só ROLE=admin; `admin/auth/turnstile.ts`). Ligado só com a
+  // chave do site: sem ela, o login segue como sempre. A chave do site é pública (vai às telas por
+  // `GET /v1/admin/client-config`); a secreta não é variável: fica no cofre `cp-admin-turnstile-secret-key`, lida pela
+  // API do Secret Manager (cofre vazio com a chave do site definida: o login responde 503, fechado). Com uma chave real
+  // (`0x…`), o `hostname` que o siteverify devolve precisa ser ADMIN_CONSOLE_HOSTNAME (o domínio do console, que o
+  // Terraform deriva de `admin_hosting_domain`); com as chaves de teste da Cloudflare, a conferência não se aplica.
+  ADMIN_TURNSTILE_SITE_KEY: z
+    .string()
+    .regex(TURNSTILE_SITE_KEY_PATTERN, { error: 'chave do site do Turnstile em formato inválido' })
+    .optional(),
+  ADMIN_CONSOLE_HOSTNAME: hostname.optional(),
 
   // Provisionamento (CP-07): desligado até existir o projeto dos nós; ligado, exige o grupo inteiro na partida
   // (`PROVISIONING_REQUIRED` e, no worker, `PROVISIONING_WORKER_REQUIRED`). Desligado, o passo `preflight` termina o
@@ -474,7 +494,16 @@ export const ROLE_ONLY: Readonly<Record<Role, { secrets: readonly EnvKey[]; sett
         'CELL_PUSH_SA_EMAILS',
       ],
     },
-    admin: { secrets: [], settings: ['ADMIN_SECRETS_PROJECT_ID', 'SSO_ISSUER', 'SSO_REDIRECT_URIS'] },
+    admin: {
+      secrets: [],
+      settings: [
+        'ADMIN_SECRETS_PROJECT_ID',
+        'SSO_ISSUER',
+        'SSO_REDIRECT_URIS',
+        'ADMIN_TURNSTILE_SITE_KEY',
+        'ADMIN_CONSOLE_HOSTNAME',
+      ],
+    },
   };
 
 /**
@@ -582,6 +611,21 @@ export const envSchema = z.object(envShape).superRefine((env, ctx) => {
         ctx.addIssue({ code: 'custom', path: [key], message: 'obrigatória com ROLE=admin' });
       }
     }
+  }
+  // Turnstile do console com uma chave real: sem o domínio do console, o token resolvido em qualquer outro site com a
+  // mesma chave (o painel, por exemplo) valeria aqui. Não sobe.
+  const siteKey = env.ADMIN_TURNSTILE_SITE_KEY;
+  if (
+    siteKey !== undefined &&
+    TURNSTILE_SITE_KEY_PATTERN.test(siteKey) &&
+    siteKey.startsWith(REAL_TURNSTILE_SITE_KEY_PREFIX) &&
+    env.ADMIN_CONSOLE_HOSTNAME === undefined
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['ADMIN_CONSOLE_HOSTNAME'],
+      message: 'obrigatória com uma chave real (0x…) em ADMIN_TURNSTILE_SITE_KEY',
+    });
   }
   // A entrada única: a origem do console e os endereços de retorno andam juntos.
   if ((env.SSO_ISSUER === undefined) !== (env.SSO_REDIRECT_URIS === undefined)) {

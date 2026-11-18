@@ -1,5 +1,6 @@
 # Os segredos do plano de controle (plano, seção 2.1): os cinco montados nos serviços, a senha da caixa de envio dos
-# nós e os dois do console do responsável (a chave do TOTP e o antigo token do primeiro cadastro, aposentado). O
+# nós e os do console do responsável (a chave do TOTP, a chave da entrada única, a chave secreta do Turnstile do login e
+# o antigo token do primeiro cadastro, aposentado). O
 # Terraform cria só o
 # "cofre" vazio de cada um: o valor é gravado por você com o gcloud (GUIA, plano de
 # controle, passo 4) e nunca passa pelo Terraform nem pelo estado dele. Nenhum recurso de versão de segredo (regional ou
@@ -13,10 +14,11 @@
 # a lê pela API do Secret Manager só na hora de copiá-la para o cofre de cada nó (o passo `secrets.smtp_password` e a
 # recópia da troca de senha), sempre a versão `latest`, sem precisar de uma revisão nova do serviço; e o cofre pode
 # ficar vazio (o Cloud Run recusa subir com um segredo montado sem versão), com os nós nascendo sem e-mail. É também o
-# caso da chave do console (`readers = ["admin"]`): o cp-admin a lê pela API na hora do login
-# (`ADMIN_SECRETS_PROJECT_ID`, admin.tf), e sobe com ela vazia (só o login responde 503). O cofre existe sempre, para o
-# responsável gravar o valor antes de ligar o console; a leitura só é concedida à conta cp-admin, que só existe com
-# `admin_enabled` (o cadastro pela linha de comando a lê com as credenciais de dono do projeto).
+# caso das chaves do console (`readers = ["admin"]`): o cp-admin as lê pela API na hora do uso
+# (`ADMIN_SECRETS_PROJECT_ID`, admin.tf), e sobe com elas vazias (só o login, ou a função daquela chave, responde 503).
+# O cofre existe sempre, para o responsável gravar o valor antes de ligar o console; a leitura só é concedida à conta
+# cp-admin, que só existe com `admin_enabled` (o cadastro pela linha de comando lê a chave do TOTP com as credenciais
+# de dono do projeto).
 
 locals {
   # Cada segredo: a descrição, quem lê e o nome da variável de ambiente em que o Cloud Run o monta (run.tf).
@@ -66,6 +68,15 @@ locals {
     # pública sai em /sso/jwks e fica fixada no node.conf da célula. Nenhum nó, nenhuma célula e nenhum outro serviço lê.
     "cp-admin-sso-signing-key" = {
       description = "Chave privada Ed25519 (PEM, PKCS #8) que assina os tokens da entrada única no SIEM da Verax. Só o cp-admin lê. Trocar invalida a chave fixada na célula: troque as duas juntas (runbook do console)."
+      readers     = ["admin"]
+      env         = null
+    }
+    # A chave secreta do Cloudflare Turnstile do login do console (admin.tf, admin_turnstile_site_key): a do widget cuja
+    # chave do site o cp-admin recebe em ADMIN_TURNSTILE_SITE_KEY. Só o cp-admin lê, pela API, e só a manda ao
+    # siteverify da Cloudflare. Vazia, com a chave do site definida, o login responde 503 (fecha); sem a chave do site,
+    # ninguém a lê.
+    "cp-admin-turnstile-secret-key" = {
+      description = "Chave secreta do Cloudflare Turnstile do login do console (o widget da chave do site admin_turnstile_site_key). Só o cp-admin lê."
       readers     = ["admin"]
       env         = null
     }

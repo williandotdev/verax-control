@@ -20,10 +20,15 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 /**
  * CSP das telas (a API continua com `default-src 'none'`): scripts, estilos, fontes e imagens só da própria origem,
  * chamadas só à própria API. Nada inline (o tema é aplicado por um arquivo, `theme-init.js`), nada embutido em frame.
+ * A única origem de fora é a do Cloudflare Turnstile do login (`auth/turnstile.ts`), e só para o script do widget e o
+ * frame dele (`script-src` e `frame-src`); as chamadas do widget saem de dentro do frame, não desta página.
  */
+export const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com';
+
 export const CONSOLE_CSP = [
   "default-src 'none'",
-  "script-src 'self'",
+  `script-src 'self' ${TURNSTILE_ORIGIN}`,
+  `frame-src ${TURNSTILE_ORIGIN}`,
   "style-src 'self'",
   "img-src 'self' data:",
   "font-src 'self'",
