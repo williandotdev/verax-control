@@ -179,6 +179,40 @@ jq -e 'has("panel") | not' "$work/manifest.json" >/dev/null || fail 'o manifesto
 cp "$panel_file" "$work/outro-nome.tar.gz"
 expect_fail "panel-$commit.tar.gz" release manifest "${manifest_args[@]}" --panel "$work/outro-nome.tar.gz"
 
+scenario='instalador da VM própria: a versão, o verificador e as chaves do commit embutidos, igual byte a byte'
+mkdir -p "$work/inst-a" "$work/inst-b"
+(umask 022 && release installer "$commit" node-v1.2.3 "$work/inst-a/verax-install.sh")
+echo '# mudança fora do commit' >>"$repo/infra/node/bin/verax-install.sh"
+(umask 077 && release installer "$commit" node-v1.2.3 "$work/inst-b/verax-install.sh")
+git -C "$repo" checkout -q -- infra/node/bin/verax-install.sh
+cmp -s "$work/inst-a/verax-install.sh" "$work/inst-b/verax-install.sh" || fail 'o instalador muda com a máquina ou a pasta'
+installer_file=$work/inst-a/verax-install.sh
+grep -qx "installer_release='node-v1.2.3'" "$installer_file" || fail 'a versão não foi embutida'
+# As funções embutidas devolvem o verificador e a chave do commit, byte a byte.
+sed -n '/^embedded_verifier() {$/,/^}$/p; /^embedded_keys() {$/,/^}$/p' "$installer_file" >"$work/embutido.sh"
+# shellcheck source=/dev/null
+source "$work/embutido.sh"
+cmp -s <(embedded_verifier) "$repo/infra/node/bin/verify-release.sh" || fail 'o verificador embutido não é o do commit'
+expected_keys=$(for key in "$repo"/infra/node/keys/release-*.pem; do printf '%s %s\n' "${key##*/}" "$(base64 -w0 <"$key")"; done)
+[[ $(embedded_keys) == "$expected_keys" ]] || fail "chaves embutidas: $(embedded_keys)"
+grep -qx "release-teste-v1.pem $(base64 -w0 <"$repo/infra/node/keys/release-teste-v1.pem")" <<<"$expected_keys" ||
+  fail 'a chave de teste não foi embutida'
+# Fora o que foi embutido, o resto é o arquivo do commit.
+diff <(grep -v -e '^installer_release=' -e '^[A-Za-z0-9+/=]*$' -e '^release-[A-Za-z0-9._-]*\.pem ' "$installer_file") \
+  <(grep -v -e '^installer_release=' -e '^[A-Za-z0-9+/=]*$' "$repo/infra/node/bin/verax-install.sh") >/dev/null ||
+  fail 'o instalador montado mudou além da versão, do verificador e das chaves'
+expect_fail 'versão inválida' release installer "$commit" v1.2.3 "$work/x/verax-install.sh"
+expect_fail 'se chama verax-install.sh' release installer "$commit" node-v1.2.3 "$work/x/instalador.sh"
+
+scenario='manifesto com o instalador'
+release manifest "${manifest_args[@]}" --installer "$installer_file" >"$work/manifest-instalador.json"
+jq -e --arg sha "$(sha256sum "$installer_file" | cut -d' ' -f1)" '.installer == {name: "verax-install.sh", sha256: $sha}' \
+  "$work/manifest-instalador.json" >/dev/null || fail "campo installer: $(jq -c .installer "$work/manifest-instalador.json")"
+jq -e 'has("installer") | not' "$work/manifest.json" >/dev/null || fail 'o manifesto sem --installer ganhou o campo installer'
+args=("${manifest_args[@]}")
+args[3]=node-v1.2.4
+expect_fail 'não é o de node-v1.2.4' release manifest "${args[@]}" --installer "$installer_file"
+
 scenario='manifesto: imagem de terceiro sem digest'
 sed -i -E 's#image: (postgres:[^@]+)@sha256:[0-9a-f]{64}#image: \1#' "$repo/infra/node/compose.yaml"
 git -C "$repo" commit -q -am 'postgres sem digest'

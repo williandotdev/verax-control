@@ -34,10 +34,13 @@ cliente segue é `docs/runbooks/instalacao-no-cliente.md`.
      dependências), o bundle do painel do commit (`scripts/node-release.sh panel`): o build único do `apps/web`
      (`VITE_API_URL=https://api-{tenant}.veraxsistemas.com.br`) em `panel-<commit>.tar.gz`, um tar ustar com data, dono
      e permissões fixos; o job `assinar` confere o SHA-256 que o job `painel` disse;
-   - escreve o `manifest.json` (com o `panel`) e só então pede o token da GCP e assina no Cloud KMS. A assinatura só
-     vale se fechar com as chaves do próprio pacote e com as da `main`;
-   - cria a tag no commit e o release com `verax-node.tar.gz`, `panel-<commit>.tar.gz`, `manifest.json` e
-     `manifest.json.sig` (o pacote e o bundle com atestação de origem).
+   - monta o instalador da VM própria do cliente (`scripts/node-release.sh installer`): o
+     `infra/node/bin/verax-install.sh` do commit com a versão, o `verify-release.sh` e as chaves de `infra/node/keys`
+     do mesmo commit embutidos, igual byte a byte em qualquer máquina;
+   - escreve o `manifest.json` (com o `panel` e o `installer`) e só então pede o token da GCP e assina no Cloud KMS. A
+     assinatura só vale se fechar com as chaves do próprio pacote e com as da `main`;
+   - cria a tag no commit e o release com `verax-node.tar.gz`, `verax-install.sh`, `panel-<commit>.tar.gz`,
+     `manifest.json` e `manifest.json.sig` (o pacote, o instalador e o bundle com atestação de origem).
 4. **O nó confere no host.** `infra/node/bin/verify-release.sh manifest.json manifest.json.sig` usa só o `openssl`,
    com as chaves públicas do pacote **já instalado** (`keys/release-*.pem`). Nunca com as do pacote novo: quem
    trocasse o pacote trocaria a chave junto.
@@ -55,6 +58,11 @@ cliente segue é `docs/runbooks/instalacao-no-cliente.md`.
 | `thirdPartyImages` | As imagens de terceiros exatamente como os compose do pacote as fixam (nome, tag e digest), sem repetição |
 | `notes`            | O endereço do release                                                                                     |
 | `panel`            | `url` do `panel-<commit>.tar.gz` no release e o `sha256` dele: o painel que anda com o nó (a frota)       |
+| `installer`        | `name` (`verax-install.sh`) e o `sha256` do instalador da VM própria do cliente, que o console mostra     |
+
+O `installer` é opcional, como o `panel`: o `verify-release.sh` só confere a assinatura, e quem lê o manifesto (o
+`boot-install.sh`, o `update.sh` e o plano de controle) ignora campos que não usa, então as versões de antes dele
+continuam valendo. Só o `verax-install.sh` o exige: ele confere que é o instalador que o manifesto da versão descreve.
 
 A assinatura é ECDSA P-256 com SHA-256 sobre os bytes exatos do arquivo, no formato DER que o Cloud KMS devolve. Uma
 versão sem `panel` (promovida antes de 16/11/2026) não vai para a frota (`panel_bundle_missing`): o painel não teria

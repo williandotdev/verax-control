@@ -27,7 +27,8 @@
 # foram gerados pelo install.sh e ficam em /var/lib/verax/secrets (0600, só root). A chave do cofre de credenciais (nó
 # de cliente) foi gerada pelo install.sh direto no Secret Manager; as versões ativas dela passam pela memória (um
 # arquivo numa pasta de /run/verax montada só leitura no worker), nunca por variável de ambiente. Nenhum valor é
-# impresso.
+# impresso. No modo vm (NODE_PLATFORM=vm, a VM própria do cliente, fora da GCP), os segredos de fora e a chave do cofre
+# vêm de arquivos do cofre local, /etc/verax/vault (ver `vm` abaixo).
 set -euo pipefail
 umask 077
 
@@ -112,6 +113,18 @@ re_tenant_id='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 re_tenant_slug='^[a-z][a-z0-9-]{1,14}[a-z0-9]$'
 re_cell_domain='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
 is_tenant_slug() { [[ $1 =~ $re_tenant_slug && ${1:2:2} != '--' ]]; }
+# VM própria do cliente (NODE_PLATFORM=vm no node.conf; sem a linha, gcp): o nó fora da GCP, instalado pelo
+# bin/verax-install.sh. Nada fala com o servidor de metadados do Google: os segredos de fora vêm de arquivos do cofre
+# local (vault_dir, um arquivo por segredo, 0600 de root), a chave do cofre de credenciais também (gerada na própria VM
+# pelo install.sh), as entradas do primeiro acesso vêm de arquivos que o instalador grava (customer_inputs) e a senha
+# temporária do administrador fica num arquivo só de root (customer_output) até o instalador entregá-la ao plano de
+# controle. A guarda do metadata é a da VM própria (vm-metadata-guard.sh: nenhum contêiner alcança o metadata da nuvem,
+# nem o worker); sem token do Google para a AWS e sem guest attributes. Os nós da GCP não mudam: sem a linha, tudo é
+# como antes.
+vm() { [[ ${NODE_PLATFORM:-gcp} == vm ]]; }
+vault_dir=/etc/verax/vault
+customer_inputs=/etc/verax/customer
+customer_output=/var/lib/verax/enrollment
 # Servidor de metadados da VM e API do Secret Manager (o teste do pacote troca pelos falsos), e a versão instalada.
 metadata_url=http://metadata.google.internal/computeMetadata/v1
 secretmanager_url=https://secretmanager.googleapis.com/v1
@@ -144,6 +157,10 @@ internal_secret() { cat "$secrets/$1"; }
 # ambiente e poderia injetar outra variável). Sai com 3 quando o cofre ainda não tem valor (NOT_FOUND) e com 1 em
 # qualquer outro erro (permissão, rede, valor inválido), mostrando o motivo que o gcloud deu.
 external_secret() {
+  if vm; then
+    vault_secret "$1"
+    return
+  fi
   local value errors status=0
   errors=$(mktemp)
   value=$(gcloud secrets versions access latest --project "$VERAX_GCP_PROJECT" \
@@ -164,6 +181,27 @@ external_secret() {
   value=${value%$'\n'}
   if [[ -z $value || $value == *$'\n'* || $value == *$'\r'* ]]; then
     echo "Segredo $VERAX_SECRET_PREFIX-$1 vazio ou com quebra de linha." >&2
+    return 1
+  fi
+  printf '%s' "$value"
+}
+
+# Modo vm: o segredo de fora num arquivo do cofre local (o instalador grava os que vêm do plano de controle). As mesmas
+# saídas do external_secret: 3 sem o arquivo, 1 com um arquivo que não é comum, aberto para outros (o modo tem de ser
+# 0600 ou 0400) ou com o valor vazio ou com quebra de linha.
+vault_secret() { # <nome>
+  local file=$vault_dir/$1 value
+  if [[ ! -e $file && ! -L $file ]]; then
+    echo "Segredo $1 ainda sem valor no cofre local ($vault_dir)." >&2
+    return 3
+  fi
+  if [[ -L $file || ! -f $file || ! $(stat -c %a "$file") =~ ^[46]00$ ]]; then
+    echo "O segredo $file não é um arquivo comum só do dono (0600)." >&2
+    return 1
+  fi
+  value=$(<"$file")
+  if [[ -z $value || $value == *$'\n'* || $value == *$'\r'* ]]; then
+    echo "Segredo $1 vazio ou com quebra de linha." >&2
     return 1
   fi
   printf '%s' "$value"
@@ -203,6 +241,10 @@ vault_key_bits() { # <base64 do PEM>
 # listas vazias e o arquivo vazio: a API e o worker sobem sem o cofre. Qualquer outro erro (permissão, rede, conteúdo
 # que não é chave) para a partida, e nada do cofre fica na memória (nem o arquivo da partida anterior).
 credentials_vault() {
+  if vm; then
+    vm_credentials_vault
+    return
+  fi
   local secret=$VERAX_SECRET_PREFIX-credentials-key version=1 data errors status bits keys=() current=''
   local disabled=() destroyed=()
   errors=$(mktemp)
@@ -278,6 +320,39 @@ credentials_vault() {
   write_worker_keys "${keys[@]}"
   vault_api=("CREDENTIALS_PUBLIC_KEY=$public" "CREDENTIALS_KEY_VERSION=$current")
   vault_worker=("CREDENTIALS_PRIVATE_KEYS_FILE=$WORKER_KEYS_MOUNT" "CREDENTIALS_KEY_CURRENT=$current")
+}
+
+# Modo vm: a chave do cofre de credenciais é o arquivo `credentials-key` do cofre local (PEM, gerado na VM pelo
+# install.sh), a versão 1 e única. A mesma conferência e as mesmas saídas do credentials_vault: sem o arquivo, avisa e
+# sobe sem o cofre; um arquivo que não é chave RSA de 3072 a 4096 bits para a partida.
+vm_credentials_vault() {
+  local file=$vault_dir/credentials-key data bits public
+  if [[ ! -e $file && ! -L $file ]]; then
+    echo "AVISO: o cofre de credenciais ($file) não tem chave: a API e o worker sobem sem ele, e o token do" \
+      "Cloudflare não pode ser gravado nem lido. Rode o instalador de novo (sudo bash verax-install.sh --atualizar)," \
+      "que gera a chave, e reinicie: sudo systemctl restart verax-node" >&2
+    write_worker_keys
+    return 0
+  fi
+  if [[ -L $file || ! -f $file || ! $(stat -c %a "$file") =~ ^[46]00$ ]]; then
+    echo "A chave do cofre $file não é um arquivo comum só do dono (0600)." >&2
+    discard_worker_keys
+    return 1
+  fi
+  data=$(base64 -w0 <"$file")
+  if ! bits=$(vault_key_bits "$data") || ((bits < 3072 || bits > 4096)); then
+    echo "A chave do cofre $file não é uma chave privada RSA de 3072 a 4096 bits em PEM, e o worker não subiria com ela." >&2
+    discard_worker_keys
+    return 1
+  fi
+  public=$(printf '%s' "$data" | base64 -d | openssl pkey -pubout 2>/dev/null | base64 -w0) || {
+    echo "A chave do cofre $file não é uma chave privada legível." >&2
+    discard_worker_keys
+    return 1
+  }
+  write_worker_keys "1:$data"
+  vault_api=("CREDENTIALS_PUBLIC_KEY=$public" CREDENTIALS_KEY_VERSION=1)
+  vault_worker=("CREDENTIALS_PRIVATE_KEYS_FILE=$WORKER_KEYS_MOUNT" CREDENTIALS_KEY_CURRENT=1)
 }
 
 # O arquivo das chaves privadas do worker (WORKER_KEYS, na pasta WORKER_VAULT de /run/verax): uma linha
@@ -549,6 +624,21 @@ render() {
       return 1
       ;;
   esac
+  # Modo vm: só o que não depende da GCP. A célula (canal pelo Pub/Sub, cofres no Secret Manager), os agentes (portas de
+  # entrada; a VM só tem saída) e a fonte `gcp` (o token do Google pelo metadata) ficam de fora.
+  case ${NODE_PLATFORM:-gcp} in
+    gcp) ;;
+    vm)
+      if cell || agents || [[ ,${SYNC_SOURCES:-}, == *,gcp,* ]]; then
+        echo 'NODE_PLATFORM=vm não aceita NODE_MODE=cell, WAZUH_AGENTS=true nem a fonte gcp em SYNC_SOURCES (/etc/verax/node.conf).' >&2
+        return 1
+      fi
+      ;;
+    *)
+      echo 'NODE_PLATFORM inválido em /etc/verax/node.conf: use gcp ou vm.' >&2
+      return 1
+      ;;
+  esac
   if standard; then wazuh_passwords; fi
   local cell_api=() cell_worker=() sso_api=()
   node_mode || return 1
@@ -564,6 +654,7 @@ render() {
   esac
   # Modo cliente: o worker publica o estado do nó nos guest attributes, com a versão instalada (o commit que o
   # install.sh grava em /etc/verax/images.env). Conferido antes de qualquer arquivo ser escrito. Sem a linha, nada muda.
+  # No modo vm não há guest attributes: o worker não publica nada.
   local node_status=() version
   case ${CUSTOMER_MODE:-false} in
     true)
@@ -572,7 +663,7 @@ render() {
         echo "NODE_VERSION ausente ou fora do formato em $images_env: rode o deploy.sh (ou o install.sh na VM) de novo." >&2
         return 1
       fi
-      node_status=(NODE_STATUS=true "VERAX_NODE_COMMIT=$version")
+      if ! vm; then node_status=(NODE_STATUS=true "VERAX_NODE_COMMIT=$version"); fi
       ;;
     false) ;;
     *)
@@ -655,9 +746,10 @@ render() {
   # já confere): com um node.conf editado depois fora delas, a variável fica de fora e a API sobe mesmo assim, com
   # Contas cloud mostrando o comando com o tópico a preencher.
   # Na célula, o tópico é de cada conta (`vxc-<célula>-gcp-<UUID da conta>`, envs/cell-tenant), nunca o do nome do
-  # projeto (que voltaria depois da exclusão de um cliente): a API sobe sem o prefixo.
+  # projeto (que voltaria depois da exclusão de um cliente): a API sobe sem o prefixo. No modo vm não há projeto do nó
+  # (a coleta da GCP fica para outra entrega): também sem o prefixo, e sem aviso.
   local sink_topic=()
-  if cell; then
+  if cell || vm; then
     :
   elif [[ $VERAX_GCP_PROJECT =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ && $VERAX_SECRET_PREFIX =~ ^[a-z][a-z0-9-]{3,18}$ ]]; then
     sink_topic=("GCP_SINK_TOPIC_PREFIX=projects/$VERAX_GCP_PROJECT/topics/$VERAX_SECRET_PREFIX-security-")
@@ -693,6 +785,10 @@ render() {
   if cell && [[ -n ${NODE_SA_UNIQUE_ID:-} ]]; then
     echo "AVISO: NODE_SA_UNIQUE_ID não vale na célula (a conta de serviço da VM é de todos os clientes): a API e o" \
       "worker sobem sem ela, e a conexão da AWS espera a identidade de cada cliente." >&2
+  elif vm && [[ -n ${NODE_SA_UNIQUE_ID:-} ]]; then
+    # Fora da GCP não há conta de serviço da VM: com a variável, o worker pediria o token ao metadata do Google.
+    echo "AVISO: NODE_SA_UNIQUE_ID não vale no modo vm (não há conta de serviço do Google na VM): a API e o worker" \
+      "sobem sem ela." >&2
   elif [[ -n ${NODE_SA_UNIQUE_ID:-} ]]; then
     if [[ $NODE_SA_UNIQUE_ID =~ ^[0-9]{21}$ ]]; then
       aws_reader+=("NODE_SA_UNIQUE_ID=$NODE_SA_UNIQUE_ID")
@@ -837,8 +933,11 @@ wazuh_up() {
   bash "$wazuh/scripts/configure-indexer.sh"
   # O token do Google antes do manager (o módulo da AWS roda ao subir). Uma falha não para o Wazuh: o timer tenta de
   # novo em 10 min, o token anterior vale até 1 hora, e o worker avisa se ele envelhecer.
-  /opt/verax/bin/aws-token.sh ||
-    echo 'AVISO: o token do Google para a AWS não foi renovado agora; o verax-aws-token.timer tenta de novo.' >&2
+  # No modo vm não há identidade do Google: sem token (a coleta da AWS por chave de leitura é outra entrega).
+  if ! vm; then
+    /opt/verax/bin/aws-token.sh ||
+      echo 'AVISO: o token do Google para a AWS não foi renovado agora; o verax-aws-token.timer tenta de novo.' >&2
+  fi
   /opt/verax/bin/wazuh-apply.sh
   compose up --detach --wait --wait-timeout 900 wazuh.manager
   # O usuário verax_stats da API do manager (só manager:read), que o worker usa no medidor (PR-V6): criado ou acertado
@@ -873,8 +972,13 @@ wazuh_down() {
 
 up() {
   # A guarda do metadata já está valendo desde antes do Docker (verax-metadata-guard.service); aqui ela é só
-  # reafirmada, para uma partida sem reboot logo depois de uma atualização do script.
-  /opt/verax/bin/metadata-guard.sh
+  # reafirmada, para uma partida sem reboot logo depois de uma atualização do script. No modo vm, a guarda é a da VM
+  # própria (verax-vm-metadata-guard.service: todos os contêineres sem o metadata da nuvem).
+  if vm; then
+    /opt/verax/bin/vm-metadata-guard.sh
+  else
+    /opt/verax/bin/metadata-guard.sh
+  fi
   render
   # Standard: a pasta dos sinais do Wazuh antes de o worker subir (o compose.wazuh.yaml a monta nele, com escrita). Sem
   # ela, o Docker a criaria só para o root, e a tarefa wazuh-config do worker falharia até o wazuh-up.
@@ -1040,9 +1144,9 @@ secret_add_version_to() { # <segredo> <conteúdo>
 # As senhas que o node-bootstrap deixou na pasta, cada uma para o seu segredo; o arquivo sai só depois de o Secret
 # Manager confirmar (numa falha, fica no tmpfs para a próxima execução). A pasta é do usuário do contêiner: um arquivo
 # que não seja regular (um link para outro arquivo do host, por exemplo) ou fora do formato do contrato é recusado sem
-# ser enviado.
+# ser enviado. No modo vm não há prefixo (nem Secret Manager): o keep_payload guarda a senha na VM.
 push_customer_secrets() { # <pasta>
-  push_payloads "$1" "$VERAX_SECRET_PREFIX" "${CUSTOMER_SECRETS[@]}"
+  push_payloads "$1" "${VERAX_SECRET_PREFIX:-}" "${CUSTOMER_SECRETS[@]}"
 }
 
 # O mesmo, para os nomes dados, cada um no segredo `<prefixo>-<nome>`.
@@ -1061,10 +1165,48 @@ push_payloads() { # <pasta> <prefixo do segredo> <nome...>
       echo "$file fora do formato do contrato: nada foi gravado no Secret Manager." >&2
       return 1
     fi
+    if vm; then
+      keep_payload "$name" "$content" "$file"
+      continue
+    fi
     secret_add_version_to "$prefix-$name" "$content" || return 1
     rm -f "$file"
     echo "Senha nova gravada no Secret Manager ($prefix-$name)."
   done
+}
+
+# Modo vm (sem Secret Manager): a senha do administrador do cliente vai para um arquivo só de root
+# (customer_output/admin-bootstrap.json, 0600, troca de uma vez), de onde o instalador a entrega ao plano de controle e
+# a apaga. A da conta de suporte da Verax não fica na VM nem sai dela (a Verax não tem acesso à VM): é descartada.
+keep_payload() { # <nome> <conteúdo> <arquivo da pasta montada>
+  local file
+  if [[ $1 == admin-bootstrap ]]; then
+    install -d -m 0700 "$customer_output"
+    file=$(mktemp "$customer_output/.admin-bootstrap.XXXXXX")
+    printf '%s' "$2" >"$file"
+    mv -fT "$file" "$customer_output/admin-bootstrap.json"
+    echo "Senha temporária do administrador guardada para o instalador ($customer_output, só root)."
+  else
+    echo 'Senha da conta de suporte descartada: no modo vm ela não fica na VM nem sai dela.'
+  fi
+  rm -f "$3"
+}
+
+# Modo vm: uma entrada do primeiro acesso, do arquivo que o instalador gravou (com o nome da chave dos metadados), com
+# as mesmas regras do metadata_attribute. Sai com 3 sem o arquivo e com 1 com um arquivo fora das regras.
+local_attribute() { # <chave>
+  local file=$customer_inputs/$1 value
+  [[ -e $file || -L $file ]] || return 3
+  if [[ -L $file || ! -f $file ]]; then
+    echo "$file não é um arquivo comum." >&2
+    return 1
+  fi
+  value=$(<"$file")
+  if [[ -z $value || $value == *$'\n'* || $value == *$'\r'* ]] || ((${#value} > 254)); then
+    echo "$file vazio, com quebra de linha ou longo demais." >&2
+    return 1
+  fi
+  printf '%s' "$value"
 }
 
 # Modo cliente: o primeiro acesso do nó (verax-customer-bootstrap.service, depois do verax-node). Lê dos metadados da VM
@@ -1096,7 +1238,15 @@ customer_bootstrap() {
     key=${pair%%=*}
     variable=${pair#*=}
     status=0
-    value=$(metadata_attribute "$key") || status=$?
+    if vm; then
+      value=$(local_attribute "$key") || status=$?
+      if ((status == 3)); then
+        echo "Falta $customer_inputs/$key: o instalador (verax-install.sh) o grava a partir do registro." >&2
+        return 1
+      fi
+    else
+      value=$(metadata_attribute "$key") || status=$?
+    fi
     if ((status == 3)); then
       echo "Falta o metadado $key na VM: o Terraform do nó de cliente o grava." >&2
       return 1

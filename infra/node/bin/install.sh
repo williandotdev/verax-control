@@ -10,6 +10,8 @@
 # --config   configuração do nó (só na primeira vez; depois fica em /etc/verax/node.conf)
 # --release  a versão do release do GitHub de onde o pacote veio (a instalação sem operador). Vai para o images.env como
 #            NODE_RELEASE, ao lado do commit (NODE_VERSION). O deploy.sh não passa: sem ela, o images.env é o de sempre.
+# Na VM própria do cliente (NODE_PLATFORM=vm no node.conf), quem chama é o bin/verax-install.sh, que já instalou o
+# Docker (Debian 12 ou Ubuntu 22.04/24.04): sem guarda do metadata, sem atualizador da frota e sem Secret Manager.
 set -euo pipefail
 umask 077
 
@@ -103,7 +105,27 @@ if [[ ${NODE_MODE:-dedicated} == cell ]]; then
     exit 2
   fi
 fi
-required=(VERAX_GCP_PROJECT VERAX_SECRET_PREFIX IMAGES_REPOSITORY WEB_ORIGIN API_ORIGIN MAIL_FROM SYNC_SOURCES BACKUP_BUCKET)
+# VM própria do cliente (NODE_PLATFORM=vm; sem a linha, gcp): o nó fora da GCP, instalado pelo bin/verax-install.sh.
+# Sem projeto, cofres do Secret Manager nem bucket (o cofre e os backups ficam na VM), as imagens só do GHCR (públicas,
+# sem credencial) e nada da célula, dos agentes (pedem porta de entrada; a VM só tem saída) nem da fonte gcp (o token
+# do Google). O start.sh confere de novo. Os nós da GCP não mudam.
+[[ ${NODE_PLATFORM:-gcp} =~ ^(gcp|vm)$ ]] ||
+  { echo 'NODE_PLATFORM inválido em /etc/verax/node.conf: use gcp ou vm.' >&2; exit 2; }
+vm=false
+if [[ ${NODE_PLATFORM:-gcp} == vm ]]; then
+  vm=true
+  if $cell || [[ ${WAZUH_AGENTS:-false} == true || ,${SYNC_SOURCES:-}, == *,gcp,* ]]; then
+    echo 'NODE_PLATFORM=vm não aceita NODE_MODE=cell, WAZUH_AGENTS=true nem a fonte gcp em SYNC_SOURCES.' >&2
+    exit 2
+  fi
+  [[ ${IMAGES_REPOSITORY:-} == ghcr.io/* ]] ||
+    { echo 'NODE_PLATFORM=vm: IMAGES_REPOSITORY tem de ser o do GHCR (ghcr.io/...).' >&2; exit 2; }
+fi
+if $vm; then
+  required=(IMAGES_REPOSITORY WEB_ORIGIN API_ORIGIN MAIL_FROM SYNC_SOURCES)
+else
+  required=(VERAX_GCP_PROJECT VERAX_SECRET_PREFIX IMAGES_REPOSITORY WEB_ORIGIN API_ORIGIN MAIL_FROM SYNC_SOURCES BACKUP_BUCKET)
+fi
 if ! $cell; then required+=(PLAN); fi
 # E-mail opcional (MAIL_TRANSPORT=none por padrão): com smtp, os dados da caixa de envio passam a ser obrigatórios.
 if [[ ${MAIL_TRANSPORT:-none} == smtp ]]; then required+=(SMTP_HOST SMTP_PORT SMTP_USER); fi
@@ -127,9 +149,10 @@ fi
 # Projeto do nó e prefixo dos cofres: o start.sh monta com eles o tópico do sink de projeto de cliente que o painel
 # mostra (GCP_SINK_TOPIC_PREFIX), e a API só o aceita no formato do Terraform do nó. As regras são as do módulo
 # (project_id e name_prefix em infra/gcp/modules/node/variables.tf) e a do deploy.sh; um teste da API confere as três.
-[[ $VERAX_GCP_PROJECT =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] ||
+# No modo vm, não existem.
+$vm || [[ $VERAX_GCP_PROJECT =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] ||
   { echo 'VERAX_GCP_PROJECT inválido em /etc/verax/node.conf: use o ID do projeto (6 a 30 caracteres, minúsculas, números e hífen).' >&2; exit 2; }
-[[ $VERAX_SECRET_PREFIX =~ ^[a-z][a-z0-9-]{3,18}$ ]] ||
+$vm || [[ $VERAX_SECRET_PREFIX =~ ^[a-z][a-z0-9-]{3,18}$ ]] ||
   { echo 'VERAX_SECRET_PREFIX inválido em /etc/verax/node.conf: use o name_prefix do Terraform do nó (4 a 19 caracteres: minúsculas, números e hífen, começando com letra).' >&2; exit 2; }
 # IP de saída do nó (o IP fixo do Cloud NAT), que o papel de leitura da AWS do cliente libera: um ou mais IPv4 com /32,
 # separados por vírgula. Opcional (o nó da Verax não tem); quando presente, o formato é conferido aqui.
@@ -214,7 +237,16 @@ shopt -s nullglob
 release_keys=("$here"/keys/release-*.pem)
 shopt -u nullglob
 if ((${#release_keys[@]} > 0)); then install -m 0644 "${release_keys[@]}" /opt/verax/keys/; fi
-install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/
+if $vm; then
+  # Modo vm: a guarda do metadata da VM própria (todos os contêineres sem o metadata da nuvem) no lugar da dos nós da
+  # GCP, e sem o atualizador da frota (atualizar é rodar o instalador da versão nova com --atualizar). O verax-node é o
+  # de systemd/vm, que exige essa guarda; o backup é o mesmo (local, no backup.sh).
+  install -m 0750 "$here/bin/vm-metadata-guard.sh" /opt/verax/bin/
+  install -m 0644 "$here/systemd/vm/verax-node.service" "$here/systemd/vm/verax-vm-metadata-guard.service" \
+    "$here/systemd/verax-backup.service" "$here/systemd/verax-backup.timer" /etc/systemd/system/
+else
+  install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/
+fi
 # Perfil standard: o Wazuh (o compose.wazuh.yaml, a cópia de infra/wazuh que o deploy.sh põe no pacote, a aplicação da
 # configuração do manager com as contas AWS, a renovação do token do Google para a AWS e a limpeza diária dos alertas
 # antigos). O nó da Verax (lean) não recebe nada disso.
@@ -232,8 +264,14 @@ if $standard; then
   find /opt/verax/wazuh -type d -exec chmod 0755 {} +
   find /opt/verax/wazuh -type f -exec chmod 0644 {} +
   install -m 0750 "$here/bin/wazuh-apply.sh" "$here/bin/wazuh-alerts-cleanup.sh" "$here/bin/aws-token.sh" /opt/verax/bin/
-  install -m 0644 "$here"/systemd/wazuh/*.service "$here"/systemd/wazuh/*.timer "$here"/systemd/wazuh/*.path \
-    /etc/systemd/system/
+  if $vm; then
+    # Modo vm: as unidades do Wazuh menos as do token do Google para a AWS (verax-aws-token.*).
+    install -m 0644 "$here"/systemd/wazuh/verax-wazuh*.service "$here"/systemd/wazuh/verax-wazuh*.timer \
+      "$here"/systemd/wazuh/*.path /etc/systemd/system/
+  else
+    install -m 0644 "$here"/systemd/wazuh/*.service "$here"/systemd/wazuh/*.timer "$here"/systemd/wazuh/*.path \
+      /etc/systemd/system/
+  fi
   # O verax-node passa a querer (Wants) o verax-wazuh: o restart do nó o sobe de novo mesmo quando ele tinha falhado.
   install -d -m 0755 /etc/systemd/system/verax-node.service.d
   install -m 0644 "$here/systemd/wazuh/verax-node.service.d/wazuh.conf" /etc/systemd/system/verax-node.service.d/wazuh.conf
@@ -333,7 +371,21 @@ fi
 # acrescenta versões nesse segredo (secretVersionAdder) e lê as dele (secretAccessor). A versão 1 decide: sem ela
 # (NOT_FOUND), o cofre nunca teve chave e uma nasce agora; com ela (ativa, desativada ou destruída), nada muda, porque
 # trocar a chave é uma versão nova feita de propósito.
-if [[ ${CREDENTIALS_VAULT:-false} == true ]]; then
+# No modo vm não há Secret Manager: a chave nasce no cofre local (/etc/verax/vault/credentials-key, 0600 de root), só
+# quando o arquivo ainda não existe; depois, nada muda.
+if $vm && [[ ${CREDENTIALS_VAULT:-false} == true ]]; then
+  echo '== Chave do cofre de credenciais (só na primeira vez)'
+  install -d -m 0700 /etc/verax/vault
+  if [[ -e /etc/verax/vault/credentials-key ]]; then
+    echo 'O cofre local já tem chave.'
+  else
+    rm -f /etc/verax/vault/.credentials-key.tmp
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /etc/verax/vault/.credentials-key.tmp 2>/dev/null
+    chmod 0600 /etc/verax/vault/.credentials-key.tmp
+    mv -f /etc/verax/vault/.credentials-key.tmp /etc/verax/vault/credentials-key
+    echo 'Chave nova (RSA-3072) gravada no cofre local.'
+  fi
+elif [[ ${CREDENTIALS_VAULT:-false} == true ]]; then
   echo '== Chave do cofre de credenciais (só na primeira vez)'
   vault_secret=$VERAX_SECRET_PREFIX-credentials-key
   vault_errors=$(mktemp)
@@ -372,8 +424,12 @@ chmod 0640 /etc/verax/images.env
 echo '== Serviços e backup diário'
 systemctl daemon-reload
 # A guarda do metadata passa a ser exigida pelo Docker (RequiredBy) e roda antes dele a cada boot; agora, com o Docker
-# já no ar, ela só entra em vigor (o restart do verax-node a exige).
-systemctl enable verax-metadata-guard.service verax-node.service verax-backup.timer >/dev/null
+# já no ar, ela só entra em vigor (o restart do verax-node a exige). No modo vm, a guarda é a da VM própria.
+if $vm; then
+  systemctl enable verax-vm-metadata-guard.service verax-node.service verax-backup.timer >/dev/null
+else
+  systemctl enable verax-metadata-guard.service verax-node.service verax-backup.timer >/dev/null
+fi
 if $standard; then systemctl enable verax-wazuh.service >/dev/null; fi
 # Modo cliente: o primeiro acesso sobe com o nó (o restart abaixo o dispara pelo complemento) e a cada boot.
 if $customer; then
@@ -383,16 +439,22 @@ elif [[ -f /etc/systemd/system/verax-customer-bootstrap.service ]]; then
 fi
 systemctl restart verax-node.service
 systemctl start verax-backup.timer
-# O atualizador: sem pedido nos metadados da VM (o nó da Verax, a homologação), ele sai sem fazer nada.
-systemctl enable --now verax-update.timer >/dev/null
+# O atualizador: sem pedido nos metadados da VM (o nó da Verax, a homologação), ele sai sem fazer nada. No modo vm,
+# não existe.
+if ! $vm; then systemctl enable --now verax-update.timer >/dev/null; fi
 # Standard: o restart do verax-node sobe o verax-wazuh junto (o Wants do drop-in, mesmo se ele tinha falhado); o
 # `start` espera o Wazuh ficar saudável (nada acontece a mais se já estiver subindo).
 # O token do Google renovado a cada 10 min e a configuração do manager refeita quando o worker grava uma geração nova
 # das contas AWS (e a cada 15 min): os dois não fazem nada enquanto o Wazuh não estiver no ar.
 if $standard; then
   systemctl start verax-wazuh.service
-  systemctl enable --now verax-wazuh-alerts.timer verax-aws-token.timer verax-wazuh-apply.timer \
-    verax-wazuh-apply.path >/dev/null
+  if $vm; then
+    # Modo vm: sem o token do Google.
+    systemctl enable --now verax-wazuh-alerts.timer verax-wazuh-apply.timer verax-wazuh-apply.path >/dev/null
+  else
+    systemctl enable --now verax-wazuh-alerts.timer verax-aws-token.timer verax-wazuh-apply.timer \
+      verax-wazuh-apply.path >/dev/null
+  fi
 fi
 # A lista dos agentes, depois do Wazuh no ar. Desligado o interruptor num nó que já o teve, o timer para (o script, se
 # rodar, só apaga a lista da memória).
