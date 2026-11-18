@@ -421,8 +421,8 @@ o checkout responde 503 `checkout_unavailable`, mesmo com a tabela e a Stripe pr
 
 A tela **Clientes** lista os clientes (os do site e os de contrato direto, os mais novos primeiro) com o estado, a
 cobrança, onde o ambiente roda e, no provisionamento, o passo e o código de quem parou. O detalhe de um cliente mostra
-o contratado e o preço, a linha do tempo dos passos do provisionamento (ou, no ambiente do cliente, o que mandar a ele
-para instalar), o acesso do administrador (quando o e-mail saiu e quando a senha foi vista; nunca a senha), o ciclo de
+o contratado e o preço, a linha do tempo dos passos do provisionamento (ou, no ambiente do cliente, a situação da
+instalação e o que mandar a ele), o acesso do administrador (quando o e-mail saiu e quando a senha foi vista; nunca a senha), o ciclo de
 vida e o histórico de estados. Enquanto o cliente provisiona, a página se atualiza sozinha.
 
 **Pelo site, só o SIEM Cloud, na infraestrutura da Verax** (decisões de 06/11/2026 e 10/11/2026). O SIEM Dedicado, o SIEM + vCISO
@@ -437,8 +437,9 @@ paga a nuvem, e a DRE mostra isso); o SIEM Cloud é a célula da Verax e nunca r
 2. **Onde o ambiente roda** (obrigatório, nada marcado de início):
    - **Infraestrutura da Verax:** o provisionamento de sempre (o nó e o painel na Verax, com custo de nuvem); o
      administrador recebe o e-mail com o link para ver a senha;
-   - **Infraestrutura do cliente:** nada é criado na Verax; o cliente instala a versão publicada com o guia
-     (`docs/runbooks/instalacao-no-cliente.md`) e apaga o próprio ambiente no fim do contrato.
+   - **Infraestrutura do cliente:** o painel fica na Verax e só o backend roda numa VM Linux do cliente, que se liga à
+     Verax pelo túnel (só saída); o cliente instala com um comando (`docs/runbooks/instalacao-no-cliente.md`) e apaga a
+     própria VM no fim do contrato.
 3. O **plano** (SIEM Cloud, SIEM Dedicado ou SIEM + vCISO) e o **volume em GB/dia**, e **Calcular a cotação**: o preço de
    referência da tabela vigente (abaixo do mínimo do plano, o volume sobe até ele), o porte que o volume pede e, se
    houver, o que ainda não se cria (na Verax, hoje só o porte P; no cliente, qualquer porte, com os limites nas faixas
@@ -460,14 +461,24 @@ paga a nuvem, e a DRE mostra isso); o SIEM Cloud é a célula da Verax e nunca r
    administrador do cliente recebe na hora o e-mail "ambiente pronto" com o link de uso único (24 h) para ver a senha
    temporária uma vez. Você não vê a senha nem o link; se o cliente não receber, confira o SMTP do `cp-worker` e, com
    o link vencido, o caminho de uma senha nova (`docs/runbooks/onboarding-cliente.md`, item 7).
-7. **No cliente**, o cliente nasce "Aguardando instalação pelo cliente" (`waiting_customer_install`), sem linha do
-   tempo. O detalhe mostra, em "Instalação na infraestrutura do cliente", o que mandar a ele: a versão do nó (a
-   vigente, lida e conferida pelo `cp-worker` no bucket de releases), os endereços do manifesto assinado, da
-   assinatura e do pacote, as imagens pelo digest, o guia de instalação, as linhas do plano no `node.conf` e a
-   **impressão digital da chave que assinou**: mande a impressão digital por um canal do contrato (fora do GitHub),
-   porque é ela que o cliente compara antes de confiar na primeira instalação. Se o painel disser que a versão não está
-   configurada, confira `release_bucket` e `NODE_RELEASE` (`worker_env`) no GUIA, "O provisionamento (CP-07)". A Verax
-   não vê a instalação do cliente: o estado fica "Aguardando instalação pelo cliente" até o fim do contrato.
+7. **No cliente**, o cliente nasce "Aguardando instalação pelo cliente" (`waiting_customer_install`). O detalhe mostra,
+   em "Instalação na infraestrutura do cliente", a situação da instalação e três blocos para mandar a ele:
+   - **1. Perfil da VM:** vCPU, memória e disco do porte do contrato (P: 2, 8 GB, 60 GB; M: 4, 16 GB, 120 GB; G: 8,
+     32 GB, 240 GB, os mínimos que o instalador confere), Debian 12 ou Ubuntu 22.04/24.04 x86_64, swap desligado ou
+     cifrado;
+   - **2. Rede:** nenhuma porta de entrada, e a lista da saída que a VM precisa liberar;
+   - **3. Comando de instalação:** **Gerar comando…**, com o subdomínio digitado. O console mostra **uma vez** o comando
+     (baixa o instalador da versão vigente, confere o SHA-256 dele e roda `--codigo <código>`), o botão de copiar e o
+     vencimento. O código é de uso único e vale 7 dias; mande por um canal seguro. Gerar outro revoga o anterior; com o
+     ambiente pronto, a VM atual deixa de valer e o cliente reinstala. Sair da página ou **Ocultar** some com o comando:
+     para mandar de novo, gere outro.
+
+   O primeiro código põe o cliente em `provisioning` (a execução reduzida), e a situação passa por "Esperando a VM do
+   cliente", "VM registrada" e "Pronto"; se parar, mostra o código (`node_error:<código>` do instalador ou
+   `enrollment_timeout`, 30 dias sem registro) e o que fazer: corrigido, gere um comando novo, que recomeça. Se a versão
+   vigente do nó for de antes do instalador, o botão fica desligado com o aviso: publique uma versão nova
+   (`docs/runbooks/versao-no.md`). Se o painel disser que a versão não está configurada, confira `release_bucket` e
+   `NODE_RELEASE` (`worker_env`) no GUIA, "O provisionamento (CP-07)". A versão e o guia ficam em "Detalhes técnicos".
 
 Se o detalhe disser "Cliente criado, mas o provisionamento não começou", o console não alcançou o `cp-worker` (a
 entrada dele, GUIA, "Operações do responsável no `cp-worker`"): corrija e use **Iniciar provisionamento…**.
@@ -483,9 +494,11 @@ novo):
 | Cancelar contrato       | Contrato direto vivo                                               | Agora, ou numa data (o fim do contrato, até 2 anos); cancelado: exportação por 30 dias, exclusão em D+30 e D+97    |
 | Exportar dados          | Cliente cancelado, dentro de 30 dias                               | O link de 24 h de um backup (o nome vem do `gcloud storage ls`, `docs/runbooks/ciclo-de-vida.md`); aparece uma vez |
 | Apagar agora            | Cliente cancelado (ou uma exclusão que parou)                      | A Exclusão 1 agora, sem volta (`docs/runbooks/ciclo-de-vida.md`)                                                   |
+| Gerar comando           | Ambiente no cliente, esperando, provisionando, parado ou pronto    | O código de uso único (7 dias) e o comando de instalação, uma vez; revoga o anterior                               |
 
 Num cliente da Stripe, suspender, reativar e cancelar seguem a assinatura (Portal do cliente ou Dashboard da Stripe); o
-console não os oferece. **Com o ambiente no cliente**, só **Cancelar contrato** e, depois, **Apagar agora**: cancelar
+console não os oferece. **Com o ambiente no cliente**, só **Gerar comando**, **Cancelar contrato** e, depois, **Apagar
+agora**: cancelar
 registra o fim do contrato (sem exportação, sem parar VM nenhuma) e apagar remove só o cadastro na Verax (o e-mail do
 administrador e o acesso), com o registro de exclusão ao administrador dizendo que o ambiente é dele e que quem apaga é
 ele. Iniciar, retomar, suspender, reativar e exportar não existem para ele, e o `cp-worker` recusa de novo

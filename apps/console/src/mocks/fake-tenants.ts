@@ -28,6 +28,8 @@ export interface FakeTenantsState {
   tenants: Map<string, TenantDetail>;
   /** O cp-worker fora do alcance do console: o cadastro fica em `pending`, e as operações respondem 503. */
   workerDown: boolean;
+  /** A versão vigente do nó é de antes do instalador da VM do cliente (o manifesto sem `installer`). */
+  withoutInstaller?: boolean;
 }
 
 export interface FakeResponse {
@@ -128,10 +130,18 @@ function actionsOf(tenant: Omit<TenantDetail, 'actions'>, now: Date): TenantActi
 }
 
 /** A versão FICTÍCIA que o cliente instala na infraestrutura dele (o manifesto conferido pelo cp-worker, simulado). */
-function installationOf(tenant: TenantDetail): TenantInstallation {
+function installationOf(tenant: TenantDetail, withInstaller: boolean): TenantInstallation {
   const github = 'https://github.com/williandotdev/verax-control';
   const release = 'node-v1.2.3';
   return {
+    ...(withInstaller
+      ? {
+          installer: {
+            url: `${github}/releases/download/${release}/verax-install.sh`,
+            sha256: '5'.repeat(64),
+          },
+        }
+      : {}),
     release,
     commit: 'abcdef0123456789abcdef0123456789abcdef01',
     releasedAt: '2026-11-05T12:00:00Z',
@@ -710,6 +720,72 @@ function act(
   }
 }
 
+/** Os passos da execução reduzida, na VM do cliente. */
+const CUSTOMER_STEPS: readonly ProvisioningStepName[] = [
+  'preflight',
+  'cloudflare.tunnel',
+  'firebase.site',
+  'enrollment.wait',
+  'node.health',
+  'panel.domain_wait',
+  'access.ready',
+];
+
+/** Um código FICTÍCIO no formato do de verdade (32 bytes em base64url: 43 caracteres). */
+let codeSequence = 0;
+function fakeEnrollmentCode(): string {
+  codeSequence += 1;
+  return `FICTICIO${String(codeSequence).padStart(4, '0')}`.padEnd(43, 'x');
+}
+
+/**
+ * `POST .../enrollment-code`: o código de uso único (7 dias), como o cp-worker: revoga o anterior; na espera da
+ * instalação ou parado, começa a execução reduzida; com o ambiente pronto, é uma reinstalação.
+ */
+function enrollmentCode(
+  state: FakeTenantsState,
+  tenant: TenantDetail,
+  body: Record<string, unknown>,
+  now: Date,
+): FakeResponse {
+  if (body['confirmSlug'] !== tenant.slug) {
+    return error(400, 'O subdomínio não confere com o do cliente: nada mudou.', 'confirmation_mismatch', {
+      issues: [{ path: 'confirmSlug', message: 'Digite o subdomínio do cliente, igual, para confirmar.' }],
+    });
+  }
+  if (tenant.hosting !== 'customer') {
+    return error(
+      409,
+      'O ambiente deste cliente roda na infraestrutura da Verax: não há instalação para enviar.',
+      'not_customer_hosted',
+    );
+  }
+  if (state.workerDown) return error(503, 'Serviço indisponível', 'worker_unavailable');
+  if (!tenant.actions.enrollmentCode) {
+    return error(409, 'O cliente não está num estado que permita isso.', 'not_allowed');
+  }
+  const code = fakeEnrollmentCode();
+  const expiresAt = new Date(now.getTime() + 7 * DAY).toISOString();
+  const reinstall = tenant.state === 'waiting_customer_connection' || tenant.state === 'active';
+  if (tenant.state === 'waiting_customer_install' || tenant.state === 'provisioning_failed') {
+    const runId = nextRunId();
+    state.tenants.set(
+      tenant.id,
+      transition(tenant, 'provisioning', 'enrollment_provisioning_started', now, {
+        provisioning: { runId, step: 'preflight', attempts: 0 },
+        run: { runId, kind: 'provision', startedAt: now.toISOString() },
+        timeline: CUSTOMER_STEPS.map((name, index) =>
+          index === 0
+            ? { name, status: 'running', attempts: 1, startedAt: now.toISOString() }
+            : { name, status: 'pending', attempts: 0 },
+        ),
+      }),
+    );
+    return { status: 200, body: { code, expiresAt, reinstall, runId, step: 'preflight' } };
+  }
+  return { status: 200, body: { code, expiresAt, reinstall } };
+}
+
 /** Atende `/v1/admin/tenants...` (as partes do caminho depois de `/v1/admin/tenants`). */
 export function handleTenantsRequest(
   state: FakeTenantsState,
@@ -771,7 +847,10 @@ export function handleTenantsRequest(
       );
     }
     if (state.workerDown) return error(503, 'Serviço indisponível', 'worker_unavailable');
-    return { status: 200, body: installationOf(tenant) };
+    return { status: 200, body: installationOf(tenant, state.withoutInstaller !== true) };
+  }
+  if (third === 'enrollment-code' && method === 'POST') {
+    return enrollmentCode(state, tenant, isRecord(body) ? body : {}, now);
   }
   if (third !== undefined && method === 'POST')
     return act(state, tenant, third, isRecord(body) ? body : {}, now);

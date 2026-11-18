@@ -6049,3 +6049,27 @@ fmt`/`validate`/`test` do `envs/nodes-platform`.
 - **Runbook:** swap da VM desligado ou cifrado; o `--atualizar` faz backup e não volta sozinho (como restaurar o
   backup local).
 - **Manual:** um release de teste e uma VM Debian 12 e outra Ubuntu 24.04 limpas, com o comando do console.
+
+## VM própria do cliente, parte do console: perfil da VM, rede e o comando único de instalação
+
+- **O que mudou:** no detalhe de um cliente com o ambiente na infraestrutura dele, o painel "Instalação na
+  infraestrutura do cliente" ficou em três blocos: o **perfil da VM** do porte do contrato (os mínimos do
+  `verax-install.sh`: P 2 vCPU/8 GB/60 GB, M 4/16/120, G 8/32/240; Debian 12 ou Ubuntu 22.04/24.04 x86_64; swap
+  desligado ou cifrado), a **rede** (nenhuma porta de entrada e a lista da saída do guia) e o **comando de
+  instalação** (`Gerar comando…` com o subdomínio digitado; o comando com o SHA-256 do instalador e `--codigo`, o
+  copiar e o vencimento, mostrados uma vez). Em cima, a situação da instalação (aguardando o comando, esperando a VM,
+  VM registrada, pronto, ou parou com o código e o que fazer). Saíram da tela o commit, a chave do release, as imagens
+  pelo digest, as linhas do `node.conf` e os links do release; ficam só a versão e o guia, fechados em "Detalhes
+  técnicos". O acesso do administrador no cliente passa a dizer o e-mail "ambiente pronto" (como no contrato na Verax).
+- **Arquivos:** console: `features/tenants/installation-panel.tsx` (reescrito), `tenant-detail-page.tsx` (o aviso do
+  cadastro e o acesso), `lib/api.ts` (`tenantsApi.enrollmentCode`), `mocks/fake-tenants.ts` (o `installer` na
+  instalação, a versão sem ele e o `POST .../enrollment-code` com a execução reduzida) e `tenants.test.tsx`. Docs:
+  `runbooks/console-do-responsavel.md` (seção 7).
+- **Decisões:** o perfil sai de `configuration.size` do cliente (o mesmo `size` da instalação), para aparecer mesmo
+  sem a versão; o comando só é montado com o endereço `https://github.com/...`, o SHA-256 em hexadecimal e o código no
+  formato (senão, o erro e nada na tela); o comando fica só no estado da tela (sumir com "Ocultar" ou ao sair). A
+  situação sai do estado do cliente e do passo `enrollment.wait` da linha do tempo (a API não expõe mais nada do
+  registro). Os textos de `node_error:host_below_size` e `node_error:tunnel_unreachable` vêm dos códigos do instalador
+  (PR #151).
+- **Testes:** console (vitest inteiro), `eslint`, `typecheck` do console.
+- **Manual:** com o PR #151 publicado numa versão do nó, gerar um código no console e instalar uma VM de teste.

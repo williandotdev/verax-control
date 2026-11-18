@@ -98,7 +98,7 @@ function createdNotice(
     return {
       text: created.replayed
         ? 'Este cadastro já tinha sido enviado: é o mesmo cliente, nada novo foi criado.'
-        : 'Cliente criado. O ambiente roda na infraestrutura do cliente: envie a ele a versão e o guia abaixo.',
+        : 'Cliente criado. O ambiente roda numa VM do cliente: gere o comando de instalação abaixo e envie a ele.',
       warning: false,
     };
   }
@@ -118,7 +118,8 @@ function createdNotice(
 
 /**
  * Um cliente: quem é, como paga, onde o ambiente roda, o que contratou, a linha do tempo do provisionamento (cada
- * passo, com o código de quem parou) ou, no ambiente do cliente, o que mandar a ele para instalar; o acesso do
+ * passo, com o código de quem parou) ou, no ambiente do cliente, a situação da instalação e o que mandar a ele (o perfil
+ * da VM, a rede e o comando único); o acesso do
  * administrador e o histórico de estados; e as operações do responsável, com o subdomínio digitado como confirmação.
  * Enquanto provisiona, a página se atualiza sozinha.
  */
@@ -284,12 +285,12 @@ export function TenantDetailPage() {
       <Panel title="Acesso do administrador" id="acesso">
         <p className="text-sm">
           {customer
-            ? 'O primeiro administrador é criado na instalação, pelo próprio cliente (guia de instalação, “Primeiro acesso”). A Verax não envia e-mail de acesso nem vê a senha.'
+            ? 'Quando a VM do cliente avisa que está pronta, o administrador recebe o e-mail “ambiente pronto” com um link de uso único (24 horas) para ver a senha temporária. A senha nunca passa por este console nem pelo e-mail.'
             : contract
               ? 'Quando o ambiente fica pronto, o administrador recebe o e-mail “ambiente pronto” com um link de uso único (24 horas) para ver a senha temporária. A senha nunca passa por este console nem pelo e-mail.'
               : 'O cliente vê a senha temporária uma vez, na página de status do site; se não vir em 48 horas, recebe o e-mail com o link de uso único.'}
         </p>
-        {!customer && (
+        {(!customer || data.state !== 'waiting_customer_install') && (
           <dl className="grid gap-3 sm:grid-cols-2">
             <Meta label="E-mail de acesso enviado">
               {data.access.revealEmailSentAt === undefined
