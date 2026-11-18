@@ -126,3 +126,47 @@ describe('onde o ambiente roda (hosting)', () => {
     expect(paths({ ...base, hosting: 'nuvem' })).toEqual(['hosting']);
   });
 });
+
+describe('valores do contrato direto (contractPricing)', () => {
+  const at = new Date('2026-11-17T12:00:00.000Z');
+  const base = { ...demoTenant(), state: 'pending', stateUpdatedAt: at, createdAt: at, updatedAt: at };
+  const { consent: _consent, stripe: _stripe, ...withoutStripe } = base;
+  const contract = { ...withoutStripe, billing: { mode: 'contract' } };
+  // FICTÍCIOS: a referência é o mensal da cotação gravada; o contratado, um negociado qualquer.
+  const reference = { monthlyTotal: base.pricing.monthlyTotal, additionalGbDayAmount: 30_000 };
+  const contracted = { monthlyTotal: base.pricing.monthlyTotal - 100, additionalGbDayAmount: 25_000 };
+
+  function paths(input: unknown): string[] {
+    const result = tenantSchema.safeParse(input);
+    return result.success ? [] : result.error.issues.map((issue) => issue.path.join('.'));
+  }
+
+  it('opcional: um contrato direto de antes do campo continua legível; com o campo, a referência e o contratado', () => {
+    expect(tenantSchema.parse(contract).contractPricing).toBeUndefined();
+    expect(
+      tenantSchema.parse({ ...contract, contractPricing: { reference, contracted } }).contractPricing,
+    ).toEqual({
+      reference,
+      contracted,
+    });
+  });
+
+  it('só no contrato direto, com a referência igual ao mensal da cotação, e estrito', () => {
+    expect(paths({ ...base, contractPricing: { reference, contracted } })).toEqual(['contractPricing']);
+    expect(
+      paths({
+        ...contract,
+        contractPricing: {
+          reference: { ...reference, monthlyTotal: reference.monthlyTotal + 1 },
+          contracted,
+        },
+      }),
+    ).toEqual(['contractPricing.reference.monthlyTotal']);
+    expect(paths({ ...contract, contractPricing: { reference, contracted, extra: 1 } })).toEqual([
+      'contractPricing',
+    ]);
+    expect(
+      paths({ ...contract, contractPricing: { reference, contracted: { ...contracted, monthlyTotal: 0 } } }),
+    ).toEqual(['contractPricing.contracted.monthlyTotal']);
+  });
+});

@@ -18,6 +18,7 @@ import {
 } from '@/form/fields';
 import { ApiError, tenantsApi } from '@/lib/api';
 import type {
+  ContractValues,
   DirectConfiguration,
   DirectTenantPreview,
   DirectTenantRequest,
@@ -29,6 +30,8 @@ import { CONTACT_REASON_LABELS, configurationSummary, PLAN_LABELS, PLANS } from 
 import { formatCents, formatInteger } from '@/lib/numbers';
 import { newUlid } from '@/lib/ulid';
 import { ConfirmBySlug } from './confirm-by-slug';
+import { completeContractValues, type ContractField, prefillContracted } from './contract-values';
+import { ContractValueLine, ContractValuesSection } from './contract-values-view';
 import { CUSTOMER_PROBLEM_LABELS, HOSTING_LABELS, PROBLEM_LABELS } from './labels';
 import { useInvalidateTenants } from './queries';
 import { QuoteSummary } from './quote-summary';
@@ -56,9 +59,13 @@ const HOSTING_REQUIRED: ValidationIssue = {
   message: 'Escolha onde o ambiente roda: na infraestrutura da Verax ou na do cliente.',
 };
 
-/** O formulário como documento (os campos do cadastro, onde roda, o plano e o volume), antes de ir à API. */
-type Draft = Partial<Omit<DirectTenantRequest, 'configuration'>> & {
+/**
+ * O formulário como documento (os campos do cadastro, onde roda, o plano, o volume e os valores do contrato), antes de
+ * ir à API.
+ */
+type Draft = Partial<Omit<DirectTenantRequest, 'configuration' | 'contracted'>> & {
   configuration?: Partial<DirectConfiguration>;
+  contracted?: Partial<Record<ContractField, unknown>>;
 };
 
 /** O que cada plano cota na tabela vigente, para a dica do volume. */
@@ -113,6 +120,8 @@ export function NewTenantPage() {
 
   const [issues, setIssues] = useState<readonly ValidationIssue[]>([]);
   const [preview, setPreview] = useState<{ result: DirectTenantPreview; for: string } | undefined>(undefined);
+  // A referência que preencheu o contratado por último: o que ainda está igual a ela não foi mexido.
+  const [prefilledFrom, setPrefilledFrom] = useState<ContractValues | undefined>(undefined);
   const [previewError, setPreviewError] = useState<unknown>(undefined);
   const [previewing, setPreviewing] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -125,7 +134,9 @@ export function NewTenantPage() {
     configuration: value.configuration ?? {},
   });
   const currentPreview = preview?.for === previewKey ? preview.result : undefined;
-  const provisionable = currentPreview?.contactUs === false && currentPreview.problems.length === 0;
+  const contracted = completeContractValues(value.contracted);
+  const quoted = currentPreview?.contactUs === false && currentPreview.problems.length === 0;
+  const provisionable = quoted && contracted !== undefined;
 
   async function calculate(): Promise<void> {
     if (hosting === undefined) {
@@ -137,6 +148,18 @@ export function NewTenantPage() {
     try {
       const result = await tenantsApi.preview(hosting, value.configuration as DirectConfiguration);
       setPreview({ result, for: previewKey });
+      if (!result.contactUs) {
+        // Preenche com a tabela sem apagar o que foi negociado (`prefillContracted`).
+        const reference = result.reference;
+        setDraft((current: unknown) => {
+          const draftNow = current as Draft;
+          return {
+            ...draftNow,
+            contracted: prefillContracted(draftNow.contracted, reference, prefilledFrom),
+          };
+        });
+        setPrefilledFrom(reference);
+      }
       setIssues((current) =>
         current.filter((issue) => !issue.path.startsWith('configuration') && issue.path !== 'hosting'),
       );
@@ -157,6 +180,7 @@ export function NewTenantPage() {
     try {
       const created = await tenantsApi.create({
         ...(value as DirectTenantRequest),
+        ...(contracted === undefined ? {} : { contracted }),
         idempotencyKey,
         confirmSlug,
       });
@@ -170,6 +194,15 @@ export function NewTenantPage() {
     } finally {
       setCreating(false);
     }
+  }
+
+  function resetToTable(field: ContractField): void {
+    if (currentPreview?.contactUs !== false) return;
+    const reference = currentPreview.reference;
+    setDraft((current: unknown) => {
+      const draftNow = current as Draft;
+      return { ...draftNow, contracted: { ...draftNow.contracted, [field]: reference[field] } };
+    });
   }
 
   const slug = typeof value.slug === 'string' ? value.slug : '';
@@ -187,7 +220,9 @@ export function NewTenantPage() {
           Para um contrato negociado direto com a Verax, sem checkout e sem cobrança pela Stripe (a cobrança é
           a do contrato). Você escolhe onde o ambiente roda: na infraestrutura da Verax, ele sobe pelos mesmos
           passos de uma compra no site; na do cliente, nada é criado aqui, e o detalhe mostra a versão e o
-          guia para enviar a ele. A cotação abaixo é a referência da tabela vigente.
+          guia para enviar a ele. A cotação abaixo é a referência da tabela vigente, calculada como na
+          infraestrutura da Verax nos dois casos; os valores do contrato vêm preenchidos com ela e podem ser
+          mudados numa negociação por fora.
         </p>
       </header>
 
@@ -262,7 +297,9 @@ export function NewTenantPage() {
           <span className="text-sm text-muted-foreground">
             {preview !== undefined && currentPreview === undefined
               ? 'A configuração mudou: calcule a cotação de novo.'
-              : 'Calcule a cotação para revisar e confirmar.'}
+              : quoted
+                ? 'Preencha os valores do contrato (o mensal a partir de R$ 0,01; o GB/dia adicional pode ser 0).'
+                : 'Calcule a cotação para revisar e confirmar.'}
           </span>
         )}
       </div>
@@ -296,65 +333,92 @@ export function NewTenantPage() {
             )}
           </QuoteSummary>
         )}
+        {currentPreview?.contactUs === false && (
+          <DraftForm value={draft} onChange={setDraft} issues={issues} readOnly={confirming || creating}>
+            <ContractValuesSection
+              reference={currentPreview.reference}
+              value={value.contracted}
+              readOnly={confirming || creating}
+              onReset={resetToTable}
+            />
+          </DraftForm>
+        )}
       </div>
 
-      {confirming && currentPreview?.contactUs === false && hosting !== undefined && (
-        <section aria-labelledby="confirmar-cadastro" className="space-y-3 rounded-xl border bg-surface p-4">
-          <h2 id="confirmar-cadastro" className="text-base font-semibold">
-            Confirmar o cadastro
-          </h2>
-          <ConfirmBySlug
-            slug={slug}
-            actionLabel={customer ? 'Criar o cliente' : 'Criar e provisionar'}
-            busyLabel="Criando…"
-            busy={creating}
-            onConfirm={(typed) => void create(typed)}
-            onCancel={() => setConfirming(false)}
+      {confirming &&
+        currentPreview?.contactUs === false &&
+        hosting !== undefined &&
+        contracted !== undefined && (
+          <section
+            aria-labelledby="confirmar-cadastro"
+            className="space-y-3 rounded-xl border bg-surface p-4"
           >
-            <dl className="grid gap-2 sm:grid-cols-2">
-              <div>
-                <dt className="text-xs text-muted-foreground">Cliente</dt>
-                <dd>
-                  {value.companyName} · CNPJ {value.cnpj}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">Administrador</dt>
-                <dd>{value.adminEmail}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">Onde o ambiente roda</dt>
-                <dd>{HOSTING_LABELS[hosting]}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">Contratado</dt>
-                <dd>{configurationSummary(currentPreview.quote.configuration)}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">Preço de referência</dt>
-                <dd className="tabular-nums">
-                  {formatCents(currentPreview.quote.monthlyTotal)} por mês
-                  {currentPreview.quote.setupTotal > 0 &&
-                    `, implantação ${formatCents(currentPreview.quote.setupTotal)}`}
-                </dd>
-              </div>
-            </dl>
-            {customer ? (
-              <p>
-                Nada é criado na infraestrutura da Verax: nenhum nó, túnel nem painel. O cliente nasce
-                “Aguardando instalação pelo cliente”, e o detalhe mostra a versão, as imagens e o guia para
-                você enviar a ele. Nenhuma cobrança é feita pela Stripe.
-              </p>
-            ) : (
-              <p>
-                Cria o nó <span className="font-mono">vx-{slug}</span> na infraestrutura da Verax (tem custo)
-                e o painel em <span className="font-mono">{slug}</span>. Nenhuma cobrança é feita pela Stripe.
-                O e-mail com o acesso vai para o administrador quando o ambiente ficar pronto.
-              </p>
-            )}
-          </ConfirmBySlug>
-        </section>
-      )}
+            <h2 id="confirmar-cadastro" className="text-base font-semibold">
+              Confirmar o cadastro
+            </h2>
+            <ConfirmBySlug
+              slug={slug}
+              actionLabel={customer ? 'Criar o cliente' : 'Criar e provisionar'}
+              busyLabel="Criando…"
+              busy={creating}
+              onConfirm={(typed) => void create(typed)}
+              onCancel={() => setConfirming(false)}
+            >
+              <dl className="grid gap-2 sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs text-muted-foreground">Cliente</dt>
+                  <dd>
+                    {value.companyName} · CNPJ {value.cnpj}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Administrador</dt>
+                  <dd>{value.adminEmail}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Onde o ambiente roda</dt>
+                  <dd>{HOSTING_LABELS[hosting]}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Contratado</dt>
+                  <dd>{configurationSummary(currentPreview.quote.configuration)}</dd>
+                </div>
+                <ContractValueLine
+                  field="monthlyTotal"
+                  contracted={contracted.monthlyTotal}
+                  reference={currentPreview.reference.monthlyTotal}
+                />
+                <ContractValueLine
+                  field="additionalGbDayAmount"
+                  contracted={contracted.additionalGbDayAmount}
+                  reference={currentPreview.reference.additionalGbDayAmount}
+                />
+                <div>
+                  <dt className="text-xs text-muted-foreground">Referência da tabela</dt>
+                  <dd className="tabular-nums">
+                    Tabela {currentPreview.priceTableVersion}:{' '}
+                    {formatCents(currentPreview.quote.monthlyTotal)} por mês
+                    {currentPreview.quote.setupTotal > 0 &&
+                      `, implantação ${formatCents(currentPreview.quote.setupTotal)}`}
+                  </dd>
+                </div>
+              </dl>
+              {customer ? (
+                <p>
+                  Nada é criado na infraestrutura da Verax: nenhum nó, túnel nem painel. O cliente nasce
+                  “Aguardando instalação pelo cliente”, e o detalhe mostra a versão, as imagens e o guia para
+                  você enviar a ele. Nenhuma cobrança é feita pela Stripe.
+                </p>
+              ) : (
+                <p>
+                  Cria o nó <span className="font-mono">vx-{slug}</span> na infraestrutura da Verax (tem
+                  custo) e o painel em <span className="font-mono">{slug}</span>. Nenhuma cobrança é feita
+                  pela Stripe. O e-mail com o acesso vai para o administrador quando o ambiente ficar pronto.
+                </p>
+              )}
+            </ConfirmBySlug>
+          </section>
+        )}
       {createError !== undefined && <ErrorState error={createError} />}
     </div>
   );

@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { fictitiousPriceTable } from '../../test/support/pricing-fixtures.js';
 import { type ConfigurationInput, type PriceTable, priceTableSchema } from './pricing.schema.js';
-import { gbDayRange, minimalConfiguration, type Quote, quote, sizeFor, startingAt } from './quote.js';
+import {
+  additionalGbDayAmount,
+  contractReference,
+  gbDayRange,
+  minimalConfiguration,
+  type Quote,
+  quote,
+  sizeFor,
+  startingAt,
+} from './quote.js';
 
 /**
  * O motor da cotação sobre a tabela FICTÍCIA (`pricing-fixtures.ts`): Plataforma com base de 1.000 e 2 GB/dia
@@ -159,5 +168,52 @@ describe('cotação', () => {
   it('determinística: a mesma configuração dá sempre a mesma cotação', () => {
     const input: ConfigurationInput = { plan: 'vciso', gbDay: 7, mode: 'managed' };
     expect(quote(input, table)).toEqual(quote(input, table));
+  });
+});
+
+describe('referência do contrato direto', () => {
+  it('o GB/dia adicional é o que um GB/dia a mais soma ao mensal pelo motor, em cada plano', () => {
+    expect(additionalGbDayAmount(table, 'plataforma')).toBe(30_000);
+    expect(additionalGbDayAmount(table, 'dedicado')).toBe(50_000);
+    expect(additionalGbDayAmount(table, 'vciso')).toBe(50_000);
+    // A mesma conta que o motor faz: a diferença do mensal entre N e N+1 GB/dia.
+    for (const [plan, gbDay] of [
+      ['plataforma', 3],
+      ['dedicado', 4],
+      ['vciso', 7],
+    ] as const) {
+      const delta =
+        quoted({ plan, gbDay: gbDay + 1, mode: 'managed' }).monthlyTotal -
+        quoted({ plan, gbDay, mode: 'managed' }).monthlyTotal;
+      expect(additionalGbDayAmount(table, plan)).toBe(delta);
+    }
+  });
+
+  it('o excedente medido da Plataforma não é o GB/dia adicional do contrato', () => {
+    const other = priceTableSchema.parse({
+      ...fictitiousPriceTable(),
+      plans: {
+        ...fictitiousPriceTable().plans,
+        plataforma: {
+          ...fictitiousPriceTable().plans.plataforma,
+          overageGbDay: { amount: 45_000, lookupKey: 'vc_over_v1' },
+        },
+      },
+    });
+    expect(additionalGbDayAmount(other, 'plataforma')).toBe(30_000);
+  });
+
+  it('no cliente, a referência é exatamente a da infraestrutura da Verax (Dedicado e vCISO)', () => {
+    for (const plan of ['dedicado', 'vciso'] as const) {
+      const verax = quoted({ plan, gbDay: 8, mode: 'managed' });
+      const customer = quoted({ plan, gbDay: 8, mode: 'self_hosted' });
+      expect(customer.lineItems).toEqual(verax.lineItems);
+      expect([customer.monthlyTotal, customer.setupTotal]).toEqual([verax.monthlyTotal, verax.setupTotal]);
+      expect(contractReference(customer, table)).toEqual(contractReference(verax, table));
+    }
+    expect(contractReference(quoted({ plan: 'vciso', gbDay: 4, mode: 'self_hosted' }), table)).toEqual({
+      monthlyTotal: 4 * 50_000 + 200_000,
+      additionalGbDayAmount: 50_000,
+    });
   });
 });

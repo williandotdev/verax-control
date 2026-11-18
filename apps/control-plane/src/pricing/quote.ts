@@ -2,6 +2,7 @@ import { monthlyGibFor } from './node-limits.js';
 import {
   type Configuration,
   type ConfigurationInput,
+  type ContractValues,
   type NodeLimits,
   PLAN_MODES,
   type PlanId,
@@ -179,6 +180,26 @@ export function quote(input: ConfigurationInput, table: PriceTable): QuoteOutcom
         users: table.users.max,
       },
     },
+  };
+}
+
+/**
+ * O preço de um GB/dia a mais, por mês, como o motor cota: na Plataforma, o GB/dia adicional da franquia (o item
+ * `additional_gb_day`); no Dedicado e no vCISO, o preço do GB/dia do Dedicado (o item `gb_day`, cuja quantidade é o
+ * volume: um GB/dia a mais soma exatamente esse valor ao mensal). O excedente medido da Plataforma (`overageGbDay`) é
+ * outra coisa: o uso acima da franquia, cobrado depois pela Stripe.
+ */
+export function additionalGbDayAmount(table: PriceTable, plan: PlanId): number {
+  return plan === 'plataforma'
+    ? table.plans.plataforma.additionalGbDay.amount
+    : table.plans.dedicado.gbDay.amount;
+}
+
+/** A referência da tabela para os valores de um contrato direto: o mensal da cotação e o preço de um GB/dia a mais. */
+export function contractReference(quoted: Quote, table: PriceTable): ContractValues {
+  return {
+    monthlyTotal: quoted.monthlyTotal,
+    additionalGbDayAmount: additionalGbDayAmount(table, quoted.configuration.plan),
   };
 }
 

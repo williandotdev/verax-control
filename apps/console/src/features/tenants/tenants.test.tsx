@@ -89,6 +89,90 @@ describe('clientes', () => {
     expect(router.state.location.pathname).toBe(`/clientes/${created?.id}`);
   });
 
+  it('valores do contrato: preenchidos com a tabela, negociados, mantidos ao recalcular, de volta à tabela e enviados', async () => {
+    const state = createFakeState();
+    const { user, router } = renderConsole('/clientes/novo', state);
+    await waitFor(() => expect(screen.getByLabelText('Volume de logs (GB/dia)')).toHaveValue('3'));
+    await user.type(screen.getByLabelText('Razão social'), 'Cliente Demo H Ltda');
+    await user.type(screen.getByLabelText('CNPJ'), '11.222.333/0001-81');
+    await user.type(
+      screen.getByLabelText('E-mail do administrador do cliente'),
+      'admin@cliente-demo-h.example',
+    );
+    await user.type(screen.getByLabelText('Subdomínio'), 'cliente-demo-h');
+    await user.click(screen.getByRole('radio', { name: 'Infraestrutura do cliente' }));
+    // Antes da cotação, nada de valores do contrato.
+    expect(screen.queryByRole('region', { name: 'Valores do contrato' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
+
+    // Pré-preenchidos com a tabela (Dedicado, 3 GB/dia, FICTÍCIO): R$ 1.500,00 por mês e R$ 500,00 por GB/dia.
+    const values = await screen.findByRole('region', { name: 'Valores do contrato' });
+    const monthly = within(values).getByLabelText('Valor mensal do contrato');
+    const additional = within(values).getByLabelText('Valor por GB/dia adicional');
+    expect(monthly).toHaveValue('1.500,00');
+    expect(additional).toHaveValue('500,00');
+    expect(monthly).toHaveAccessibleDescription(/Tabela: R\$\s1\.500,00 por mês/);
+    expect(within(values).getAllByText('Tabela')).toHaveLength(2);
+    expect(
+      within(values).queryByRole('button', { name: /Voltar ao valor da tabela/ }),
+    ).not.toBeInTheDocument();
+
+    // Negociado por fora: o marcador diz quanto difere da tabela.
+    await user.clear(monthly);
+    await user.type(monthly, '1.350');
+    expect(values).toHaveTextContent('Negociado, 10,0% abaixo da tabela');
+    expect(
+      within(values).getByRole('button', { name: 'Voltar ao valor da tabela: Valor mensal do contrato' }),
+    ).toBeInTheDocument();
+
+    // Outra configuração: a cotação nova não apaga o negociado; o que não foi mexido segue a tabela nova.
+    await user.click(screen.getByRole('radio', { name: 'Infraestrutura da Verax' }));
+    await user.selectOptions(screen.getByLabelText('Plano'), 'SIEM Cloud');
+    expect(screen.queryByRole('region', { name: 'Valores do contrato' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
+    const recalculated = await screen.findByRole('region', { name: 'Valores do contrato' });
+    // SIEM Cloud, 3 GB/dia (FICTÍCIO): R$ 1.300,00 por mês e R$ 300,00 por GB/dia adicional.
+    expect(within(recalculated).getByLabelText('Valor mensal do contrato')).toHaveValue('1.350,00');
+    expect(within(recalculated).getByLabelText('Valor por GB/dia adicional')).toHaveValue('300,00');
+    expect(recalculated).toHaveTextContent('Negociado, 3,8% acima da tabela');
+
+    // De volta à tabela, e o GB/dia adicional negociado; sem valor, a confirmação não abre.
+    await user.click(
+      within(recalculated).getByRole('button', {
+        name: 'Voltar ao valor da tabela: Valor mensal do contrato',
+      }),
+    );
+    expect(within(recalculated).getByLabelText('Valor mensal do contrato')).toHaveValue('1.300,00');
+    const additionalNow = within(recalculated).getByLabelText('Valor por GB/dia adicional');
+    await user.clear(additionalNow);
+    expect(screen.getByRole('button', { name: 'Revisar e confirmar…' })).toBeDisabled();
+    expect(screen.getByText(/Preencha os valores do contrato/)).toBeInTheDocument();
+    await user.type(additionalNow, '270');
+    expect(recalculated).toHaveTextContent('Negociado, 10,0% abaixo da tabela');
+
+    // A confirmação mostra o contratado com a tabela ao lado, e o cadastro manda o editado.
+    await user.click(screen.getByRole('button', { name: 'Revisar e confirmar…' }));
+    const confirm = screen.getByRole('region', { name: 'Confirmar o cadastro' });
+    expect(confirm).toHaveTextContent('Valor mensal do contratoR$ 1.300,00 por mêsTabela');
+    expect(confirm).toHaveTextContent(
+      'Valor por GB/dia adicionalR$ 270,00 por GB/dia, por mêsNegociado, 10,0% abaixo da tabelatabela: R$ 300,00',
+    );
+    // Confirmando, os campos ficam só para leitura.
+    expect(within(recalculated).getByLabelText('Valor por GB/dia adicional')).toBeDisabled();
+    await user.type(within(confirm).getByLabelText(/Digite o subdomínio/), 'cliente-demo-h');
+    await user.click(within(confirm).getByRole('button', { name: 'Criar e provisionar' }));
+
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/clientes\/[0-9A-Z]{26}$/));
+    const created = [...state.tenants.tenants.values()].find((tenant) => tenant.slug === 'cliente-demo-h');
+    expect(created?.contractPricing).toEqual({
+      reference: { monthlyTotal: 130_000, additionalGbDayAmount: 30_000 },
+      contracted: { monthlyTotal: 130_000, additionalGbDayAmount: 27_000 },
+    });
+    const contracted = await screen.findByRole('region', { name: 'Contratado' });
+    expect(contracted).toHaveTextContent('R$ 270,00 por GB/dia, por mês');
+    expect(contracted).toHaveTextContent('tabela: R$ 300,00');
+  });
+
   it('o que não se instala: o motivo na cotação, e a confirmação não abre; no cliente, os agentes também não', async () => {
     const { user } = renderConsole('/clientes/novo');
     await waitFor(() => expect(screen.getByLabelText('Volume de logs (GB/dia)')).toHaveValue('3'));
@@ -272,11 +356,28 @@ describe('clientes', () => {
     expect(contracted).toHaveTextContent('Contratado no modelo de preço anterior');
   });
 
-  it('o contratado no modelo por GB/dia: o plano e a franquia', async () => {
+  it('o contratado no modelo por GB/dia: o plano, a franquia e os valores negociados com a tabela ao lado', async () => {
     renderConsole(`/clientes/${CUSTOMER_ID}`);
     const contracted = await screen.findByRole('region', { name: 'Contratado' });
     expect(contracted).toHaveTextContent('SIEM Dedicado · 3 GB/dia · no cliente · porte P');
     expect(contracted).toHaveTextContent('Franquia contratada: 3 GB/dia');
+    expect(contracted).toHaveTextContent(
+      'Valor mensal do contratoR$ 1.350,00 por mêsNegociado, 10,0% abaixo da tabelatabela: R$ 1.500,00',
+    );
+    expect(contracted).toHaveTextContent(
+      'Valor por GB/dia adicionalR$ 450,00 por GB/dia, por mêsNegociado, 10,0% abaixo da tabelatabela: R$ 500,00',
+    );
+    expect(contracted).toHaveTextContent(
+      'Preço de referência (tabela teste-v2): R$ 1.500,00 por mês, R$ 500,00 por GB/dia adicional.',
+    );
+  });
+
+  it('contrato direto de antes dos valores do contrato: só a referência, com a explicação', async () => {
+    renderConsole(`/clientes/${PENDING_ID}`);
+    const contracted = await screen.findByRole('region', { name: 'Contratado' });
+    expect(contracted).toHaveTextContent('Preço de referência (tabela teste-v2): R$ 1.000,00 por mês.');
+    expect(contracted).toHaveTextContent('o contratado é o preço de referência');
+    expect(contracted).not.toHaveTextContent('Valor mensal do contrato');
   });
 
   it('a exportação sem a conta que assina: o que configurar, não o erro genérico', async () => {

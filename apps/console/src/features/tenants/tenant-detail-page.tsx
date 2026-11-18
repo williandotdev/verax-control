@@ -6,6 +6,7 @@ import type { DirectTenantCreated, TimelineStep, TimelineStepStatus } from '@/li
 import { cn } from '@/lib/cn';
 import { configurationSummary, formatDateTime, gbDayLabel } from '@/lib/format';
 import { formatCents, formatInteger } from '@/lib/numbers';
+import { ContractValueLine } from './contract-values-view';
 import { InstallationPanel } from './installation-panel';
 import {
   failureHint,
@@ -205,17 +206,35 @@ export function TenantDetailPage() {
             Contratado no modelo de preço anterior (antes do preço por GB/dia): só para consulta.
           </p>
         )}
+        {data.contractPricing !== undefined && (
+          <dl className="grid gap-3 sm:grid-cols-2">
+            <ContractValueLine
+              field="monthlyTotal"
+              contracted={data.contractPricing.contracted.monthlyTotal}
+              reference={data.contractPricing.reference.monthlyTotal}
+            />
+            <ContractValueLine
+              field="additionalGbDayAmount"
+              contracted={data.contractPricing.contracted.additionalGbDayAmount}
+              reference={data.contractPricing.reference.additionalGbDayAmount}
+            />
+          </dl>
+        )}
         <p className="text-sm tabular-nums">
           {contract ? 'Preço de referência' : 'Preço cotado no checkout'} (tabela{' '}
           {data.pricing.priceTableVersion}): {formatCents(data.pricing.monthlyTotal)} por mês
+          {data.contractPricing !== undefined &&
+            `, ${formatCents(data.contractPricing.reference.additionalGbDayAmount)} por GB/dia adicional`}
           {data.pricing.setupTotal > 0 && `, implantação ${formatCents(data.pricing.setupTotal)}`}.
         </p>
         {contract && (
           <p className="text-xs text-muted-foreground">
             Contrato direto: sem assinatura nem cobrança pela Stripe. A cobrança e a nota fiscal seguem o
             contrato.
+            {data.contractPricing === undefined &&
+              ' Cadastrado antes dos valores do contrato: o contratado é o preço de referência.'}
             {customer &&
-              ' O ambiente roda na infraestrutura do cliente: a referência é o mesmo preço por GB/dia, e a nuvem é paga por ele.'}
+              ' O ambiente roda na infraestrutura do cliente: a referência é calculada como na infraestrutura da Verax (o mesmo preço por GB/dia), e a nuvem é paga por ele.'}
           </p>
         )}
       </Panel>

@@ -476,6 +476,18 @@ export interface OrderPricing {
   setupTotal: number;
 }
 
+/** Os valores de um contrato direto, em centavos: o mensal e o de cada GB/dia adicional (por mês). */
+export interface ContractValues {
+  monthlyTotal: number;
+  additionalGbDayAmount: number;
+}
+
+/** A referência da tabela e o contratado (negociado ou não) de um contrato direto. */
+export interface ContractPricing {
+  reference: ContractValues;
+  contracted: ContractValues;
+}
+
 /** `GET /v1/admin/tenants/:id`. */
 export interface TenantDetail {
   id: string;
@@ -490,6 +502,8 @@ export interface TenantDetail {
   configuration: ContractedConfiguration;
   limits: NodeLimits;
   pricing: OrderPricing;
+  /** Só no contrato direto cadastrado com os valores do contrato: a referência da tabela e o contratado. */
+  contractPricing?: ContractPricing;
   /** Os endereços na infraestrutura da Verax; ausentes no ambiente do cliente. */
   urls?: { panelUrl: string; apiUrl: string };
   provisioning?: {
@@ -539,10 +553,16 @@ export type TenantActions = Record<
 /** As operações do responsável (`POST /v1/admin/tenants/:id/<operação>`). */
 export type TenantAction = 'start' | 'resume' | 'cancel' | 'suspend' | 'reactivate' | 'delete-now' | 'export';
 
-/** `POST /v1/admin/tenants/preview`. */
+/** `POST /v1/admin/tenants/preview`. `reference`: os valores da tabela que preenchem o contratado. */
 export type DirectTenantPreview =
   | { priceTableVersion: string; contactUs: true; reason: ContactReason }
-  | { priceTableVersion: string; contactUs: false; quote: Quote; problems: NodeFitProblem[] };
+  | {
+      priceTableVersion: string;
+      contactUs: false;
+      quote: Quote;
+      reference: ContractValues;
+      problems: NodeFitProblem[];
+    };
 
 /**
  * O pedido ao cp-worker depois do cadastro. Sem sucesso, o código: `worker_unavailable`, `worker_refused`,
@@ -563,6 +583,8 @@ export interface DirectTenantRequest {
   slug: string;
   hosting: Hosting;
   configuration: DirectConfiguration;
+  /** O contratado; ausente, vale a referência da tabela. */
+  contracted?: ContractValues;
   confirmSlug: string;
 }
 

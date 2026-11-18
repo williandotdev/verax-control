@@ -1,6 +1,7 @@
 import type {
   ConfigurationInput,
   ContractedConfiguration,
+  ContractValues,
   Hosting,
   NodeFitProblem,
   PriceTable,
@@ -13,7 +14,7 @@ import type {
   TimelineStep,
   ValidationIssue,
 } from '@/lib/api-types';
-import { quote } from './fake-engine';
+import { additionalGbDayAmount, quote } from './fake-engine';
 
 /**
  * Os clientes na API simulada do console (`/v1/admin/tenants...`), em memória: a lista, o detalhe com a linha do tempo,
@@ -396,6 +397,11 @@ export function createFakeTenants(now: () => Date): FakeTenantsState {
         configuration: { plan: 'dedicado', mode: 'self_hosted', gbDay: 3, size: 'P', historyDays: 30 },
         limits: { maxCloudAccounts: 100, monthlyGib: 87, historyDays: 30, maxAgents: 0, maxUsers: 10 },
         pricing: { ...customerBase.pricing, monthlyTotal: 150_000, setupTotal: 0 },
+        // Negociado por fora (FICTÍCIO): abaixo da referência da tabela.
+        contractPricing: {
+          reference: { monthlyTotal: 150_000, additionalGbDayAmount: 50_000 },
+          contracted: { monthlyTotal: 135_000, additionalGbDayAmount: 45_000 },
+        },
         timeline: [],
         transitions: [
           {
@@ -732,6 +738,10 @@ export function handleTenantsRequest(
         priceTableVersion: tableVersion,
         contactUs: false,
         quote: outcome.quote,
+        reference: {
+          monthlyTotal: outcome.quote.monthlyTotal,
+          additionalGbDayAmount: additionalGbDayAmount(table, outcome.quote.configuration.plan),
+        },
         problems: problemsOf(outcome.quote.configuration, hosting),
       },
     };
@@ -758,6 +768,18 @@ export function handleTenantsRequest(
   return error(404, 'Recurso não encontrado', 'not_found');
 }
 
+/** O contratado do pedido: ausente, `undefined`; fora dos limites da API (`contractValuesSchema`), `invalid`. */
+function contractedOf(value: unknown): ContractValues | undefined | 'invalid' {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Object.keys(value).length !== 2) return 'invalid';
+  const monthly = value['monthlyTotal'];
+  const additional = value['additionalGbDayAmount'];
+  const cents = (amount: unknown, min: number): amount is number =>
+    typeof amount === 'number' && Number.isInteger(amount) && amount >= min && amount <= 100_000_000;
+  if (!cents(monthly, 1) || !cents(additional, 0)) return 'invalid';
+  return { monthlyTotal: monthly, additionalGbDayAmount: additional };
+}
+
 function create(
   state: FakeTenantsState,
   table: PriceTable | undefined,
@@ -782,7 +804,11 @@ function create(
   const hosting = hostingOf(body);
   if (hosting === undefined) issues.push(HOSTING_ISSUE);
   issues.push(...configurationIssues(body['configuration']));
-  if (issues.length > 0 || hosting === undefined) return invalid(issues);
+  const contracted = contractedOf(body['contracted']);
+  if (contracted === 'invalid') {
+    issues.push({ path: 'contracted.monthlyTotal', message: 'Valor fora do permitido.' });
+  }
+  if (issues.length > 0 || hosting === undefined || contracted === 'invalid') return invalid(issues);
   if (body['confirmSlug'] !== slug) {
     return error(400, 'O subdomínio não confere com o do cliente: nada mudou.', 'confirmation_mismatch', {
       issues: [{ path: 'confirmSlug', message: 'Digite o subdomínio do cliente, igual, para confirmar.' }],
@@ -848,6 +874,11 @@ function create(
       },
     );
   }
+  const reference: ContractValues = {
+    monthlyTotal: outcome.quote.monthlyTotal,
+    additionalGbDayAmount: additionalGbDayAmount(table, outcome.quote.configuration.plan),
+  };
+  const contractPricing = { reference, contracted: contracted ?? reference };
   const problems = problemsOf(outcome.quote.configuration, hosting);
   if (problems.length > 0) {
     return error(
@@ -885,6 +916,7 @@ function create(
             monthlyTotal: outcome.quote.monthlyTotal,
             setupTotal: outcome.quote.setupTotal,
           },
+          contractPricing,
           state: 'waiting_customer_install',
           billingMode: 'contract',
           timeline: [],
@@ -916,6 +948,7 @@ function create(
         monthlyTotal: outcome.quote.monthlyTotal,
         setupTotal: outcome.quote.setupTotal,
       },
+      contractPricing,
       state: 'pending',
       billingMode: 'contract',
       timeline: timeline(at, 0),

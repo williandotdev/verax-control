@@ -5896,6 +5896,37 @@ painel como o cliente".
 - **Testes:** `vitest` da tela (9); captura e axe (WCAG 2.2 AA) da lista e do painel no modo de demonstração, sem
   violação.
 
+## Papéis sem o "do cliente"
+
+- **Pedido (17/11/2026):** tirar o "do cliente" dos nomes dos papéis. "Administrador do cliente" vira "Administrador" e
+  "Analista do cliente" vira "Analista"; "Administrador Verax" e "Somente leitura" ficam.
+- **Arquivos:** `packages/shared/src/permissions.ts` (`ROLE_LABELS`, usado no seletor de papel, na lista de usuários, no
+  topo do painel e em Minha conta), `layout.test.tsx`, `account-page.test.tsx` e este registro. Os códigos dos papéis
+  (`admin_cliente`, `analista_cliente`) não mudam.
+- **Testes:** `vitest` do web (552) e do shared (390).
+
+## Contrato direto: valor do contrato e GB/dia adicional negociáveis
+
+- **Pedido (17/11/2026):** no contrato direto, calcular como se o SIEM rodasse no ambiente da Verax e abrir a edição do
+  valor do contrato e do valor por GB adicional, pré-preenchidos, para uma negociação por fora.
+- **Arquivos:** `apps/control-plane/src/pricing/pricing.schema.ts` (`contractValuesSchema`, `contractPricingSchema`),
+  `pricing/quote.ts` (`additionalGbDayAmount`, `contractReference`), `tenants/tenant.schema.ts` e `tenant-store.ts`
+  (o campo `contractPricing` e a auditoria do cadastro), `admin/admin-tenants.schema.ts` e `admin-tenants.service.ts`
+  (`reference` na cotação, `contracted` no cadastro, a repetição e o detalhe); no console,
+  `features/tenants/contract-values.ts`, `contract-values-view.tsx`, `new-tenant-page.tsx`, `tenant-detail-page.tsx`,
+  `lib/api-types.ts` e os simulados; testes; `docs/runbooks/console-do-responsavel.md` e este registro.
+- **Como ficou:** a cotação já não mudava o preço pelo lugar; agora há teste que prova a mesma referência nos dois. O
+  preço de um GB/dia a mais é o que o motor soma ao mensal: GB/dia adicional da franquia no SIEM Cloud e o GB/dia do
+  Dedicado no SIEM Dedicado e no SIEM + vCISO (o excedente medido do SIEM Cloud não entra). O cliente grava
+  `contractPricing: { reference, contracted }` em centavos (mensal de 1 centavo a R$ 1 milhão; GB/dia adicional de 0 ao
+  mesmo teto; estrito), só no contrato direto e com a referência igual ao mensal da cotação. Sem `contracted` no
+  pedido, vale a tabela; um contrato direto de antes do campo continua legível (o contratado é a referência).
+- **Onde o valor negociado não entra ainda:** nada lê preço de cliente de contrato direto fora do console hoje. A DRE é
+  o simulador (sem cliente); o preço do excedente e do GB/dia adicional que vai à célula (`unitPrices`) ainda é sempre
+  `null` e é do SIEM Cloud da Stripe; a medição e a cobrança do excedente são da Stripe. Quando a célula passar a
+  receber preços de um contrato direto, o valor certo é `contractPricing.contracted`.
+- **Testes:** `pnpm lint`, `pnpm typecheck`, `prettier --check`; `@verax/control-plane` e `@verax/console` inteiros.
+
 ## Detecções com todas as análises dos antigos Relatórios
 
 - **Pedido (17/11/2026):** os gráficos e relatórios do SIEM sumiram; devem ficar na tela Detecções. Quando a tela
