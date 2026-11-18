@@ -371,9 +371,9 @@ para instalar), o acesso do administrador (quando o e-mail saiu e quando a senha
 vida e o histórico de estados. Enquanto o cliente provisiona, a página se atualiza sozinha.
 
 **Pelo site, só o SIEM Cloud, na infraestrutura da Verax** (decisões de 06/11/2026 e 10/11/2026). O SIEM Dedicado, o SIEM + vCISO
-e o ambiente na infraestrutura do cliente existem **só por contrato direto**, aqui. O preço por GB/dia é o mesmo nos
-dois lugares (no cliente, a Verax não paga a nuvem, e a DRE mostra isso); o SIEM Cloud é a célula da Verax e nunca
-roda no cliente.
+e o ambiente na infraestrutura do cliente existem **só por contrato direto**, aqui. A cotação de referência é calculada
+como se o SIEM rodasse na infraestrutura da Verax, nos dois lugares: o mesmo preço por GB/dia (no cliente, a Verax não
+paga a nuvem, e a DRE mostra isso); o SIEM Cloud é a célula da Verax e nunca roda no cliente.
 
 **Cadastrar um cliente de contrato direto** (um contrato negociado com você, sem o checkout do site e sem a Stripe):
 
@@ -389,14 +389,23 @@ roda no cliente.
    houver, o que ainda não se cria (na Verax, hoje só o porte P; no cliente, qualquer porte, com os limites nas faixas
    do nó). O SIEM Cloud no cliente é recusado (sob consulta, com o motivo no plano). O preço é só referência: a
    cobrança e a nota fiscal do contrato são suas, fora da Stripe.
-4. **Revisar e confirmar…**, digite o subdomínio e **Criar e provisionar** (na Verax) ou **Criar o cliente** (no
-   cliente). A API confere tudo de novo; um problema aparece ao lado do campo. Criado, o detalhe abre. Enviar duas
-   vezes (clique duplo, conexão que caiu) não cria dois: é o mesmo cadastro.
-5. **Na Verax**, o cliente vai a `provisioning`: acompanhe a linha do tempo. Pronto (`waiting_customer_connection`), o
+4. **Valores do contrato** (aparecem depois da cotação): o **Valor mensal do contrato** e o **Valor por GB/dia
+   adicional** vêm preenchidos com a tabela (o mensal da cotação e o preço de um GB/dia a mais: no SIEM Cloud, o GB/dia
+   adicional da franquia; no SIEM Dedicado e no SIEM + vCISO, o preço do GB/dia). Se houve negociação por fora, mude os
+   valores: cada campo mostra o valor da tabela e o marcador **Tabela** ou **Negociado** (com quanto fica abaixo ou
+   acima). **Voltar ao valor da tabela** desfaz a mudança de um campo. Ao calcular a cotação de novo (outro plano,
+   volume ou lugar), o que você mudou é mantido e o que não mudou segue a tabela nova. O mensal precisa ser de pelo
+   menos R$ 0,01; o GB/dia adicional pode ser 0 (sem custo a mais). A implantação do SIEM + vCISO segue a da tabela.
+5. **Revisar e confirmar…** (mostra os valores do contrato com o da tabela ao lado), digite o subdomínio e **Criar e
+   provisionar** (na Verax) ou **Criar o cliente** (no cliente). A API confere tudo de novo; um problema aparece ao lado
+   do campo. Criado, o detalhe abre, e o cartão **Contratado** mostra os valores do contrato, a marca de negociado e a
+   referência da tabela. Os dois (contratado e tabela) ficam no cliente e na auditoria do cadastro. Enviar duas vezes
+   (clique duplo, conexão que caiu) não cria dois: é o mesmo cadastro; a mesma chave com outros valores é recusada.
+6. **Na Verax**, o cliente vai a `provisioning`: acompanhe a linha do tempo. Pronto (`waiting_customer_connection`), o
    administrador do cliente recebe na hora o e-mail "ambiente pronto" com o link de uso único (24 h) para ver a senha
    temporária uma vez. Você não vê a senha nem o link; se o cliente não receber, confira o SMTP do `cp-worker` e, com
    o link vencido, o caminho de uma senha nova (`docs/runbooks/onboarding-cliente.md`, item 7).
-6. **No cliente**, o cliente nasce "Aguardando instalação pelo cliente" (`waiting_customer_install`), sem linha do
+7. **No cliente**, o cliente nasce "Aguardando instalação pelo cliente" (`waiting_customer_install`), sem linha do
    tempo. O detalhe mostra, em "Instalação na infraestrutura do cliente", o que mandar a ele: a versão do nó (a
    vigente, lida e conferida pelo `cp-worker` no bucket de releases), os endereços do manifesto assinado, da
    assinatura e do pacote, as imagens pelo digest, o guia de instalação, as linhas do plano no `node.conf` e a

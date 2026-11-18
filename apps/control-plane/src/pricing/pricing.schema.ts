@@ -309,6 +309,28 @@ export const orderPricingSchema = z.strictObject({
 export type OrderPricing = z.infer<typeof orderPricingSchema>;
 
 /**
+ * Os dois valores de um contrato direto, em centavos: o mensal do contrato e o de cada GB/dia adicional (por mês). O
+ * mensal precisa ser positivo; o GB/dia adicional pode ser 0 (negociado sem custo a mais). O teto é o mesmo de
+ * sanidade da tabela: barra um número absurdo digitado por engano.
+ */
+export const contractValuesSchema = z.strictObject({
+  monthlyTotal: positiveCents,
+  additionalGbDayAmount: cents,
+});
+export type ContractValues = z.infer<typeof contractValuesSchema>;
+
+/**
+ * `tenants/{id}.contractPricing`, só no contrato direto: a referência da tabela (o mensal da cotação e o preço de um
+ * GB/dia a mais pelo mesmo motor) e o contratado (o mesmo da tabela, ou o negociado por fora pelo responsável). A
+ * referência é congelada no cadastro, como `pricing`: uma tabela nova nunca muda um cliente existente.
+ */
+export const contractPricingSchema = z.strictObject({
+  reference: contractValuesSchema,
+  contracted: contractValuesSchema,
+});
+export type ContractPricing = z.infer<typeof contractPricingSchema>;
+
+/**
  * Modelo de custos (confidencial: só no Firestore e no console do responsável, nunca no site nem no repositório).
  * Custos de nuvem em dólares por mês; tarifas e custos fixos em centavos de real; taxas entre 0 e 1.
  */

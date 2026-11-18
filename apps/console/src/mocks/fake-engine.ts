@@ -103,6 +103,13 @@ function itemsOf(table: PriceTable, plan: PlanId, gbDay: number): QuoteLineItem[
   return items;
 }
 
+/** O preço de um GB/dia a mais, como o motor cota (`additionalGbDayAmount` em `quote.ts`). */
+export function additionalGbDayAmount(table: PriceTable, plan: PlanId): number {
+  return plan === 'plataforma'
+    ? table.plans.plataforma.additionalGbDay.amount
+    : table.plans.dedicado.gbDay.amount;
+}
+
 export function quote(input: ConfigurationInput, table: PriceTable): QuoteOutcome {
   if (!PLAN_MODES[input.plan].includes(input.mode)) return { kind: 'contact_us', reason: 'mode_unavailable' };
   const limits = range(table, input.plan);

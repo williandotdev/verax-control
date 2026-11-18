@@ -346,6 +346,122 @@ export function describeDirectTenantContract(
       expect(worker.calls).toEqual([{ operation: 'provision', tenantId: created.id, actor: OWNER.email }]);
     });
 
+    // --- Os valores do contrato: a referência da tabela e o negociado por fora (FICTÍCIOS) ---------------------------
+
+    it('a cotação traz a referência do contrato: o mensal e o preço de um GB/dia a mais, nos dois lugares', async () => {
+      expect(
+        await service.preview({ hosting: 'verax', configuration: { plan: 'plataforma', gbDay: 3 } }),
+      ).toMatchObject({
+        contactUs: false,
+        quote: { monthlyTotal: 130_000 },
+        reference: { monthlyTotal: 130_000, additionalGbDayAmount: 30_000 },
+      });
+      const verax = await service.preview({ hosting: 'verax', configuration: { plan: 'vciso', gbDay: 4 } });
+      const customer = await service.preview({
+        hosting: 'customer',
+        configuration: { plan: 'vciso', gbDay: 4 },
+      });
+      if (verax.contactUs || customer.contactUs) throw new Error('sob consulta');
+      // No cliente, calculado exatamente como na infraestrutura da Verax.
+      expect(customer.reference).toEqual(verax.reference);
+      expect(customer.reference).toEqual({ monthlyTotal: 400_000, additionalGbDayAmount: 50_000 });
+    });
+
+    it('sem negociação: o contratado é a referência da tabela, no cliente, na auditoria e no detalhe', async () => {
+      const created = await service.create(directRequest(), OWNER);
+      const reference = { monthlyTotal: 100_000, additionalGbDayAmount: 30_000 };
+      expect((await tenants.require(created.id)).contractPricing).toEqual({
+        reference,
+        contracted: reference,
+      });
+      expect((await audit.listForTenant(created.id))[0]?.details).toMatchObject({
+        contractPricing: { reference, contracted: reference },
+      });
+      expect((await service.detail(created.id)).contractPricing).toEqual({
+        reference,
+        contracted: reference,
+      });
+    });
+
+    it('negociado por fora: grava o contratado ao lado da referência, audita os dois e o detalhe mostra', async () => {
+      const contracted = { monthlyTotal: 120_000, additionalGbDayAmount: 40_000 };
+      const request = directRequest({
+        hosting: 'customer',
+        slug: 'cliente-negocia',
+        configuration: { plan: 'dedicado', gbDay: 3 },
+        contracted,
+      });
+      const created = await service.create(request, OWNER);
+      const reference = { monthlyTotal: 150_000, additionalGbDayAmount: 50_000 };
+      const tenant = await tenants.require(created.id);
+      // A referência da tabela continua em `pricing` (a cotação gravada) e em `contractPricing.reference`.
+      expect(tenant.pricing).toMatchObject({ monthlyTotal: 150_000, setupTotal: 0 });
+      expect(tenant.contractPricing).toEqual({ reference, contracted });
+      const createAudit = (await audit.listForTenant(created.id))[0];
+      expect(createAudit).toMatchObject({
+        actor: `owner:${OWNER.email}`,
+        action: 'tenant.create',
+        details: { contractPricing: { reference, contracted } },
+      });
+      expect((await service.detail(created.id)).contractPricing).toEqual({ reference, contracted });
+
+      // O mesmo envio de novo é o mesmo cliente; com outro valor negociado (ou sem ele) é outro cadastro (409).
+      expect(await service.create(request, OWNER)).toMatchObject({ id: created.id, replayed: true });
+      for (const other of [{ ...contracted, monthlyTotal: 120_001 }, undefined]) {
+        const { contracted: _contracted, ...withoutValues } = request;
+        await expectApiError(
+          service.create(other === undefined ? withoutValues : { ...request, contracted: other }, OWNER),
+          409,
+          'idempotency_conflict',
+        );
+      }
+      expect((await tenants.require(created.id)).contractPricing).toEqual({ reference, contracted });
+    });
+
+    it('a repetição sem os valores bate com o cadastro que gravou a referência (o envio de antes do campo)', async () => {
+      const request = directRequest();
+      const created = await service.create(request, OWNER);
+      const reference = { monthlyTotal: 100_000, additionalGbDayAmount: 30_000 };
+      // Explicitamente a referência: é o mesmo pedido.
+      expect(await service.create({ ...request, contracted: reference }, OWNER)).toMatchObject({
+        id: created.id,
+        replayed: true,
+      });
+    });
+
+    it('valores fora dos limites, fracionados ou com campo a mais: 400 no campo, nada gravado, recusa auditada', async () => {
+      const invalid: unknown[] = [
+        { monthlyTotal: 0, additionalGbDayAmount: 30_000 },
+        { monthlyTotal: -1, additionalGbDayAmount: 30_000 },
+        { monthlyTotal: 100_000.5, additionalGbDayAmount: 30_000 },
+        { monthlyTotal: 100_000_001, additionalGbDayAmount: 30_000 },
+        { monthlyTotal: 100_000, additionalGbDayAmount: -1 },
+        { monthlyTotal: 100_000, additionalGbDayAmount: 100_000_001 },
+        { monthlyTotal: 100_000 },
+        { monthlyTotal: 100_000, additionalGbDayAmount: 30_000, setupTotal: 0 },
+        '100000',
+      ];
+      for (const contracted of invalid) {
+        const request = directRequest({ contracted });
+        const error = await expectApiError(service.create(request, OWNER), 400, 'invalid_request');
+        expect(JSON.stringify(error.details)).toContain('contracted');
+        expect(await tenants.get(String(request['idempotencyKey']))).toBeUndefined();
+      }
+      expect(await tenants.getSlug('cliente-direto-a')).toBeUndefined();
+      expect((await auditActions()).filter((entry) => entry.action === 'tenant.create_refused')).toHaveLength(
+        invalid.length,
+      );
+      // Os limites aceitos: o mensal a partir de 1 centavo e o GB/dia adicional sem custo (0).
+      const created = await service.create(
+        directRequest({ contracted: { monthlyTotal: 1, additionalGbDayAmount: 0 } }),
+        OWNER,
+      );
+      expect((await tenants.require(created.id)).contractPricing?.contracted).toEqual({
+        monthlyTotal: 1,
+        additionalGbDayAmount: 0,
+      });
+    });
+
     it('idempotente: o mesmo envio de novo devolve o mesmo cliente, sem outro cadastro nem outra task', async () => {
       const request = directRequest();
       const first = await service.create(request, OWNER);

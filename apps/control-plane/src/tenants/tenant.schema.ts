@@ -4,6 +4,7 @@ import { ULID_PATTERN } from '../common/ulid.js';
 import {
   configurationSchema,
   contractedConfigurationSchema,
+  contractPricingSchema,
   type DeploymentMode,
   nodeLimitsSchema,
   orderPricingSchema,
@@ -196,6 +197,12 @@ const tenantObjectSchema = z.strictObject({
   configuration: contractedConfigurationSchema,
   limits: nodeLimitsSchema,
   pricing: orderPricingSchema,
+  /**
+   * Só no contrato direto (o console): a referência da tabela e o contratado (o mensal e o GB/dia adicional), que o
+   * responsável pode ter negociado por fora. Ausente num contrato direto de antes do campo: o contratado é a referência
+   * (`pricing.monthlyTotal`).
+   */
+  contractPricing: contractPricingSchema.optional(),
   priceId: stripeId.optional(),
   /**
    * A razão social entra pelo checkout e pelo `customer.updated`, ambos com `companyNameSchema` (até 120). A leitura
@@ -354,7 +361,8 @@ const tenantObjectSchema = z.strictObject({
 
 /**
  * O documento com as amarras entre os campos: o ambiente na infraestrutura do cliente é só de contrato direto, com a
- * licença da tabela (`self_hosted`), e o estado de espera da instalação é só dele. Um documento fora disso não é lido
+ * licença da tabela (`self_hosted`), e o estado de espera da instalação é só dele; os valores de contrato também são só
+ * do contrato direto, com a referência igual ao mensal da cotação gravada. Um documento fora disso não é lido
  * nem gravado.
  */
 export const tenantSchema = tenantObjectSchema.superRefine((tenant, ctx) => {
@@ -368,6 +376,22 @@ export const tenantSchema = tenantObjectSchema.superRefine((tenant, ctx) => {
       path: ['configuration', 'mode'],
       message: 'o modo do cliente é self_hosted',
     });
+  }
+  if (tenant.contractPricing !== undefined) {
+    if (tenant.billing?.mode !== 'contract') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['contractPricing'],
+        message: 'valores de contrato só no contrato direto',
+      });
+    }
+    if (tenant.contractPricing.reference.monthlyTotal !== tenant.pricing.monthlyTotal) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['contractPricing', 'reference', 'monthlyTotal'],
+        message: 'a referência é o mensal da cotação',
+      });
+    }
   }
   if (!customer && tenant.state === 'waiting_customer_install') {
     ctx.addIssue({ code: 'custom', path: ['state'], message: 'estado só do ambiente no cliente' });
