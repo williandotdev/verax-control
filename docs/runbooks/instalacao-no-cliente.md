@@ -1,104 +1,124 @@
-# Instalação na infraestrutura do cliente (contrato direto)
+# Instalação na VM própria do cliente (contrato direto)
 
 Pelo site, o Verax Control roda sempre na infraestrutura da Verax. Num **contrato direto**, o responsável pode cadastrar
 o cliente com o ambiente na **infraestrutura do próprio cliente** (console, Clientes → Novo cliente → "Infraestrutura do
-cliente"). Nesse caso o plano de controle da Verax não cria nada: nenhum nó, túnel, DNS, painel nem estado do Terraform
-na Verax, e a Verax não recebe nem pede acesso à conta do cliente. Este é o guia que o cliente segue.
+cliente"). O cliente cria uma VM Linux, em qualquer nuvem ou no datacenter dele, e roda nela um comando. Este é o guia
+que o cliente segue.
 
-O console (detalhe do cliente → "Instalação na infraestrutura do cliente") mostra o que a Verax manda: a versão do nó
-(`node-vX.Y.Z` e o commit), os endereços do release no GitHub (o manifesto `manifest.json`, a assinatura
-`manifest.json.sig` e o pacote `verax-node.tar.gz` com o SHA-256), as imagens pelo digest, a **impressão digital da
-chave que assinou** o manifesto e as linhas do plano no `node.conf` (o contrato). Nada disso é segredo; a impressão
-digital vai por um canal do contrato (e-mail, documento assinado), fora do GitHub.
+## Como fica
 
-## O que muda em relação ao ambiente na Verax
+|                  | Na infraestrutura da Verax                     | Na VM do cliente (este guia)                                       |
+| ---------------- | ---------------------------------------------- | ------------------------------------------------------------------ |
+| O que roda onde  | Tudo na Verax                                  | Na VM: API, worker, banco, Wazuh e o túnel. Na Verax: o painel     |
+| Quem cria e paga | A Verax (provisionamento automático)           | A VM é do cliente, na conta dele                                   |
+| Painel e API     | `<slug>.control.veraxsistemas.com.br`          | Os mesmos endereços: o painel na Verax, a API pelo túnel da Verax  |
+| Primeiro acesso  | E-mail "ambiente pronto" com link de uso único | O mesmo e-mail, depois que a VM avisa que está pronta              |
+| Portas abertas   | Nenhuma                                        | Nenhuma: a VM só faz conexões de saída                             |
+| Acesso da Verax  | Ao ambiente                                    | Nenhum à VM: ela entrega o túnel e a senha do e-mail pelo registro |
+| Atualização      | A Verax                                        | O cliente roda o instalador da versão nova com `--atualizar`       |
+| Fim do contrato  | A Verax apaga tudo (D+30 e D+97)               | A Verax apaga o que é dela; o **cliente apaga a VM** (abaixo)      |
 
-|                  | Na infraestrutura da Verax                     | Na do cliente (este guia)                                                 |
-| ---------------- | ---------------------------------------------- | ------------------------------------------------------------------------- |
-| Quem cria e paga | A Verax (provisionamento automático)           | O cliente, na conta dele                                                  |
-| Painel e API     | `<slug>.control.veraxsistemas.com.br`, Verax   | Domínio do cliente, servido por ele                                       |
-| Primeiro acesso  | E-mail "ambiente pronto" com link de uso único | Senha temporária no cofre do próprio cliente                              |
-| Atualização      | A Verax                                        | O cliente, com cada versão conferida (abaixo)                             |
-| Fim do contrato  | A Verax apaga tudo (D+30 e D+97)               | A Verax apaga só o cadastro dela; o **cliente apaga o ambiente** (abaixo) |
+Na VM roda o mesmo pacote do nó da Verax, no modo `NODE_PLATFORM=vm`: os segredos ficam num cofre local
+(`/etc/verax/vault`, só root), a chave do cofre de credenciais nasce na própria VM, os backups do banco ficam na VM
+(`/var/lib/verax/backups`, 7 dias) e não há atualizador automático. Nesta entrega, o nó coleta o Cloudflare (o token de
+leitura colado no painel) e o que não depende de identidade de nuvem. **A coleta da AWS e do Google com chave de leitura
+cadastrada no painel vem numa entrega seguinte.** Os agentes do Wazuh nas instâncias do cliente pedem portas de entrada
+e não existem na VM própria.
 
-Hoje o pacote do nó roda numa VM Debian 12 da **Google Cloud**: ele usa o Secret Manager, os metadados da VM e a
-conta de serviço da VM. Outra nuvem é sob consulta (o porte está desenhado, não feito).
+## 1. A VM
 
-## 1. Conferir a versão, antes de qualquer coisa
+O console (detalhe do cliente) mostra o porte do contrato. A VM precisa de, no mínimo:
 
-Com `VERSAO` igual à do console (ex.: `node-v1.2.3`), numa máquina com `git`, `curl` e `openssl`:
+| Porte | vCPU | Memória | Disco (onde fica `/var/lib`) |
+| ----- | ---- | ------- | ---------------------------- |
+| P     | 2    | 8 GB    | 60 GB                        |
+| M     | 4    | 16 GB   | 120 GB                       |
+| G     | 8    | 32 GB   | 240 GB                       |
+
+O P é o nó de cliente da Verax (2 vCPU e 8 GB, com o Wazuh completo); o M e o G dobram o anterior. O instalador confere
+com uma folga para o que o sistema reserva (7.500 MiB de memória visível e 55 GiB no sistema de arquivos, no P). Numa VM
+menor que o P, ele para antes de mexer em qualquer coisa; numa VM menor que o porte do contrato, para logo depois do
+registro e avisa a Verax.
+
+- **Sistema:** Debian 12, Ubuntu 22.04 ou Ubuntu 24.04, x86_64 (amd64), instalação limpa. O instalador instala o Docker
+  Engine do repositório oficial da Docker (se a VM já tiver o `docker.io` do sistema, remova-o antes).
+- **Acesso:** um usuário com `sudo`. A Verax não pede nem recebe acesso à VM.
+
+## 2. A rede: só saída
+
+A VM **não abre nenhuma porta de entrada**: o painel chega à API pelo túnel do Cloudflare, que é uma conexão de saída.
+Libere a saída para:
+
+| Destino                                                               | Porta               | Para quê                                                                   |
+| --------------------------------------------------------------------- | ------------------- | -------------------------------------------------------------------------- |
+| Cloudflare (`*.argotunnel.com`, `*.cftunnel.com`)                     | 443 e 7844 TCP/UDP  | O túnel da API                                                             |
+| `github.com`, `objects.githubusercontent.com`                         | 443                 | O instalador, o manifesto e o pacote da versão                             |
+| `ghcr.io`, `pkg-containers.githubusercontent.com`                     | 443                 | As imagens do Verax, pelo digest                                           |
+| Docker Hub (`registry-1.docker.io`, `auth.docker.io`, `*.docker.com`) | 443                 | As imagens de terceiros (Wazuh, PostgreSQL, cloudflared) e o apt do Docker |
+| `conta.veraxsistemas.com.br`                                          | 443                 | O registro do nó no plano de controle da Verax                             |
+| O servidor de e-mail do nó (a Verax informa)                          | a dele (465 ou 587) | Os e-mails do painel (senha, avisos)                                       |
+| `api.cloudflare.com` e as APIs das nuvens monitoradas                 | 443                 | A coleta                                                                   |
+| Os espelhos do sistema (apt) e o NTP                                  | 80/443 e 123        | Os pacotes do sistema e o relógio                                          |
+
+## 3. Instalar: um comando
+
+O console gera um **código de uso único** (vale 7 dias; gerar outro revoga o anterior) e mostra o comando, com a versão
+e o SHA-256 do instalador tirados do manifesto assinado da versão:
 
 ```bash
-git clone --depth 1 --branch "$VERSAO" https://github.com/williandotdev/verax-control.git
-cd verax-control
-base="https://github.com/williandotdev/verax-control/releases/download/$VERSAO"
-curl -fsSLO "$base/manifest.json" && curl -fsSLO "$base/manifest.json.sig"
-# A impressão digital da chave tem de ser a que a Verax mandou pelo contrato:
-openssl pkey -pubin -in infra/node/keys/release-node-manifest-v1.pem -outform DER | openssl dgst -sha256
-bash infra/node/bin/verify-release.sh manifest.json manifest.json.sig infra/node/keys   # tem de dizer OK
+curl -fsSLo verax-install.sh https://github.com/williandotdev/verax-control/releases/download/<versão>/verax-install.sh \
+  && echo "<sha256 do instalador>  verax-install.sh" | sha256sum -c - \
+  && sudo bash verax-install.sh --codigo <código>
 ```
 
-Só depois do `OK`, leia do **mesmo** `manifest.json` o commit (`version`), o `package.sha256` e as imagens (`images` e
-`thirdPartyImages`): são os valores do console. Um manifesto que não fecha com a chave é recusado; não instale. O formato
-do manifesto e como ele é assinado estão em `docs/runbooks/versao-no.md`. Para as versões seguintes, confira sempre com
-as chaves da versão **já instalada** (o clone da versão anterior), nunca com as da versão nova.
+O instalador (`infra/node/bin/verax-install.sh`):
 
-## 2. A infraestrutura no projeto do cliente
+1. confere o sistema, a arquitetura e o tamanho da VM;
+2. instala o `jq` e o Docker e ajusta o kernel para o indexer do Wazuh (`/etc/sysctl.d/90-verax.conf`);
+3. baixa o manifesto da versão e confere a assinatura com as chaves públicas de release **embutidas no instalador**
+   (nada em que confiar é baixado), confere que ele mesmo é o instalador que o manifesto descreve, baixa o pacote e
+   confere o SHA-256 e as imagens;
+4. troca o código pelo registro do nó (`POST https://conta.veraxsistemas.com.br/v1/node-enrollment/claim`): o porte, o
+   plano, os endereços, o e-mail do nó, o token do túnel e a chave do nó;
+5. grava a configuração (`/etc/verax/node.conf`), o cofre local e as entradas do primeiro acesso e instala o nó;
+6. espera o nó, o Wazuh, o primeiro acesso e o túnel (até cerca de 40 minutos na primeira vez, com o download das
+   imagens) e entrega à Verax a senha temporária do administrador (`POST .../v1/node-enrollment/report`), que é apagada
+   da VM em seguida. A Verax manda o e-mail "ambiente pronto"; no primeiro login, o painel pede uma senha nova e o MFA.
 
-O nó é o módulo `infra/gcp/modules/node` (perfil `standard`, com o Wazuh) com a instalação sem operador do PR-N7, o
-mesmo dos nós na Verax, aplicado pelo cliente no projeto dele. O passo a passo é o de `infra/gcp/GUIA.md`, "O projeto
-dos nós e o nó de cada cliente", com estas diferenças:
-
-1. **`envs/nodes-platform`** no projeto do cliente **sem** `control_plane_project_id`: só as APIs e o bucket do estado
-   (nenhuma permissão para contas da Verax).
-2. **`envs/tenant`** no mesmo projeto, com:
-   - `slug`: o subdomínio do contrato (os recursos nascem como `vx-<slug>`);
-   - `node_version` e `node_package_sha256`: a versão e o SHA-256 do passo 1;
-   - `web_origin` e `api_origin`: o painel e a API **no domínio do cliente**, no mesmo domínio registrável (os cookies
-     são `SameSite=strict`), ex.: `https://soc.cliente.com.br` e `https://api-soc.cliente.com.br`;
-   - `plan` e `plan_*`: as linhas do console (`PLAN=enterprise` e os limites do contrato);
-   - `bootstrap_tenant_name`, `bootstrap_admin_email`: a razão social e o e-mail do administrador;
-     `bootstrap_support_email`: o e-mail da conta de suporte que o contrato prevê (a senha dela fica no cofre do
-     cliente, e só sai de lá se o cliente quiser dar acesso de suporte);
-   - `control_plane_sa`: uma conta de serviço `cp-worker` **do projeto do cliente**, criada por ele sem nenhum papel
-     (o módulo dá a ela, só nos cofres deste nó, a leitura da senha temporária e a gravação do token do túnel). Nunca
-     a conta da Verax;
-   - `images_repository`: o padrão (`ghcr.io/williandotdev/verax-control`, público, sem login);
-   - o resto como no `terraform.tfvars.example` (a faixa da rede `subnet_cidr`, o remetente `mail_from` e, se quiser
-     e-mail no nó, o SMTP do próprio cliente).
-3. **Agentes do Wazuh nas instâncias ainda não têm suporte na infraestrutura do cliente:** o `envs/tenant` não liga
-   a entrada deles (o `wazuh_agents` e as faixas de origem do módulo), e o console recusa um contrato no cliente com
-   agentes. O nó do cliente coleta pelas contas de nuvem conectadas no painel (AWS, GCP e Cloudflare), sem agentes.
-
-## 3. Túnel, painel e primeiro acesso
-
-1. **A API:** um túnel do Cloudflare na conta do cliente, com o nome de `api_origin` apontando para `http://api:3000`.
-   Grave o token em até 60 minutos depois do `apply` (a instalação espera por ele):
-   `printf '%s' "$TOKEN" | gcloud secrets versions add vx-<slug>-cloudflare-tunnel-token --data-file=-`.
-2. **O painel:** o build de um destino só, a partir do clone da versão, `VITE_API_URL=<api_origin> pnpm --filter
-@verax/web build` (como o workflow `Painel` faz), servido em `web_origin` com os cabeçalhos de segurança de
-   `firebaseHostingConfig` (`apps/web/src/hosting.ts`: CSP com a API, HSTS, anti-iframe). No Firebase Hosting do
-   próprio cliente, é o `firebase.json` que essa função gera; em outro servidor estático, os mesmos cabeçalhos.
-3. **Pronto:** espere `verax/ready` nos atributos de convidado da VM (até cerca de 40 minutos; o diagnóstico sem SSH
-   está no GUIA, "Aceite da instalação sem operador", passo 4).
-4. **Primeiro acesso:** a senha temporária do administrador está no cofre do cliente. Leia uma vez e destrua a versão:
-   `gcloud secrets versions access latest --secret vx-<slug>-admin-bootstrap` e depois
-   `gcloud secrets versions destroy <versão> --secret vx-<slug>-admin-bootstrap`. No primeiro login, o painel pede uma
-   senha nova e o MFA. A Verax nunca vê essa senha.
+Numa falha depois do registro, o instalador avisa a Verax com um código curto (o console mostra `node_error:<código>`)
+e diz na tela o que houve. Para tentar de novo, gere outro código no console e rode o comando novo: o que já está na VM
+fica, e a instalação continua de onde parou.
 
 ## 4. Atualizar
 
-Uma versão nova não se instala sozinha num nó que já existe. A Verax avisa a versão nova; o cliente confere o manifesto
-dela como no passo 1 (com as chaves da versão instalada), faz um backup (`backup.sh`, que o nó já roda todo dia) e roda
-na VM o `install.sh` do pacote novo conferido, com o commit e os digests do manifesto
-(`--version`, `--api-digest`, `--migrate-digest`, `--release`). O atualizador automático com volta (SH-06) está
-desenhado, não feito.
+A Verax avisa a versão nova. Baixe o instalador **dessa versão** (as duas primeiras linhas do comando do console) e
+rode:
 
-## 5. Desinstalar (fim do contrato)
+```bash
+sudo bash verax-install.sh --atualizar
+```
 
-No fim do contrato, a Verax só registra o fim e apaga o cadastro dela (o e-mail do administrador, em D+30, com o
-registro de exclusão por e-mail ao administrador). **O ambiente é do cliente, e quem apaga é ele**: o disco, os
-snapshots, o bucket de backups e os cofres ficam até ele apagar. Antes, exporte o que quiser guardar (os backups do
-banco estão no bucket `<projeto>-vx-<slug>-backups`). Depois, a mesma sequência do GUIA ("Aceite da instalação sem
-operador", passo 7): `deletion_protection = false` e `apply`, `state rm` do disco e do IP do NAT, o bucket esvaziado,
-`terraform destroy` e o disco e o IP apagados à mão; por fim, o túnel no Cloudflare e o site do painel.
+Ele confere o manifesto e o pacote da versão nova como na instalação, faz um backup do banco antes e reinstala o nó na
+versão nova, com os mesmos dados e a mesma configuração. Ele recusa voltar para uma versão mais antiga. Na mesma
+versão, não reinstala nada: só conclui um registro que ficou pela metade (a senha temporária que não chegou à Verax).
+
+## 5. Diagnóstico
+
+- `sudo systemctl status verax-node verax-wazuh verax-customer-bootstrap` e `sudo journalctl -u verax-node`;
+- os backups em `/var/lib/verax/backups` (`verax-backup.timer`, todo dia; a retenção muda com `BACKUP_RETENTION_DAYS`
+  no `node.conf`, de 1 a 365 dias);
+- o cofre local e o `node.conf` são só do root; nada deles vai para o log.
+
+## 6. Desinstalar (fim do contrato)
+
+No fim do contrato, a Verax apaga o que é dela (o túnel, o endereço, o painel e o cadastro). **A VM é do cliente, e
+quem a apaga é ele.** Antes, guarde o que quiser do banco (um backup novo, `sudo /opt/verax/bin/backup.sh`, e uma cópia
+de `/var/lib/verax/backups`). Depois, apague a VM e o disco dela ou, para manter a VM:
+
+```bash
+sudo systemctl disable --now verax-backup.timer verax-wazuh-alerts.timer verax-wazuh-apply.timer \
+  verax-wazuh-apply.path verax-customer-bootstrap.service verax-wazuh.service verax-node.service
+sudo docker volume rm $(sudo docker volume ls -q --filter label=com.docker.compose.project=verax)
+sudo rm -rf /opt/verax /etc/verax /var/lib/verax /etc/systemd/system/verax-* /etc/sysctl.d/90-verax.conf
+sudo systemctl daemon-reload
+```
