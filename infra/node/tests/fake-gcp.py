@@ -26,7 +26,8 @@ Escuta em 127.0.0.1, numa porta livre, e grava o número em <pasta>/port. Tudo f
   com enrollment/claim.json (e cria enrollment/claimed: uso único); senão, 404. O corpo, sem o código, vai para
   enrollment/claim-request.json. POST /v1/node-enrollment/report: exige `Authorization: Bearer <nodeKey do
   claim.json>` (sem ele, 401), anexa o corpo a enrollment/reports.log (uma linha por pedido) e responde 204.
-  enrollment/fail-claim e enrollment/fail-report: códigos HTTP a responder antes de aceitar, um por pedido.
+  enrollment/fail-claim e enrollment/fail-report: códigos HTTP a responder antes de aceitar, um por pedido (o 429
+  com Retry-After: 1).
 
 O servidor de metadados exige `Metadata-Flavor: Google` (sem ele, 403, como o de verdade), e o Secret Manager, o token
 que o servidor de metadados entregou (sem ele, 401). O corpo do addVersion precisa ser exatamente
@@ -157,6 +158,19 @@ class Handler(BaseHTTPRequestHandler):
                 return int(codes[0])
         return None
 
+    # A falha simulada: o 429 leva o Retry-After (1 s), como o plano de controle.
+    def failure_reply(self, status):
+        data = json.dumps({"error": "unavailable"}).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        if status == 429:
+            self.send_header("Retry-After", "1")
+        self.end_headers()
+        self.wfile.write(data)
+        with (STATE / "enrollment" / "failures.log").open("a", encoding="utf-8") as file:
+            file.write(f"{self.path} {status}\n")
+
     def enrollment(self, raw):
         state = STATE / "enrollment"
         state.mkdir(parents=True, exist_ok=True)
@@ -166,7 +180,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/node-enrollment/claim":
             failure = self.simulated_failure(state / "fail-claim")
             if failure:
-                self.reply(failure, json.dumps({"error": "unavailable"}))
+                self.failure_reply(failure)
                 return
             try:
                 body = json.loads(raw)
@@ -189,7 +203,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             failure = self.simulated_failure(state / "fail-report")
             if failure:
-                self.reply(failure, json.dumps({"error": "unavailable"}))
+                self.failure_reply(failure)
                 return
             with (state / "reports.log").open("ab") as file:
                 file.write(raw + b"\n")

@@ -139,9 +139,23 @@ on_exit() {
 # comando. A resposta vai para <saída>; o código HTTP (000 sem resposta), para a variável `http_code`.
 cp_post() { # <caminho> <arquivo do corpo> <saída> [arquivo do cabeçalho]
   local args=(-sS --proto "$download_proto" --connect-timeout 20 --max-time 60 --max-filesize 65536 -o "$3"
-    -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'Accept: application/json' --data-binary "@$2")
+    -D "$work/cp-headers" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'Accept: application/json'
+    --data-binary "@$2")
   if (($# >= 4)); then args+=(-H "@$4"); fi
+  : >"$work/cp-headers"
   http_code=$(curl "${args[@]}" "$control_plane$1" 2>/dev/null) || http_code=000
+}
+
+# A espera antes da próxima tentativa: no 429, o Retry-After do plano de controle (em segundos, até 300); fora dele,
+# uma espera que cresce a cada tentativa.
+retry_wait() { # <tentativa>
+  local after
+  after=$(sed -n 's/^[Rr]etry-[Aa]fter:[[:space:]]*\([0-9]\{1,3\}\)[[:space:]]*$/\1/p' "$work/cp-headers" | head -n 1)
+  if [[ $http_code == 429 && -n $after ]] && ((10#$after <= 300)); then
+    sleep "$((10#$after))"
+  else
+    sleep $((retry_pause * $1))
+  fi
 }
 
 # O cabeçalho de autorização com a chave do nó, num arquivo da pasta de trabalho (tmpfs, 0600).
@@ -162,7 +176,7 @@ report_error() { # <código>
       000 | 429 | 5??) ;;
       *) break ;;
     esac
-    if ((attempt < 3)); then sleep "$retry_pause"; fi
+    if ((attempt < 3)); then retry_wait "$attempt"; fi
   done
   log "AVISO: o plano de controle não recebeu o aviso de erro (HTTP $http_code)." >&2
 }
@@ -391,8 +405,9 @@ write_from_claim() { # <caminho do jq> <arquivo>
   mv -f "$2.tmp" "$2"
 }
 
-# Troca o código pelo registro. 404 (código desconhecido, vencido ou usado) para sem aviso: ainda não há chave do nó.
-# A rede fora do ar, o limite por IP e o 5xx tentam de novo, até 5 vezes.
+# Troca o código pelo registro. 404 (código desconhecido, vencido ou usado) e 409 (o contrato pede outra versão; o
+# código continua valendo) param sem aviso: ainda não há chave do nó. A rede fora do ar, o limite por IP (com o
+# Retry-After) e o 5xx tentam de novo, até 5 vezes.
 claim() {
   local attempt
   printf '{"code":"%s","release":"%s","host":{"cpus":%d,"memoryMb":%d,"diskGb":%d,"os":"%s","arch":"x86_64"}}' \
@@ -408,10 +423,14 @@ claim() {
         rm -f "$work/claim-body.json"
         fail claim_rejected 'o código não vale (já usado, vencido ou trocado por um novo): gere outro código no console e rode o comando novo.'
         ;;
+      409)
+        rm -f "$work/claim-body.json"
+        fail release_mismatch "o contrato pede outra versão que não a $installer_release deste instalador: copie o comando do console de novo (o código continua valendo)."
+        ;;
       000 | 429 | 5??) ;;
       *) break ;;
     esac
-    if ((attempt < 5)); then sleep $((retry_pause * attempt)); fi
+    if ((attempt < 5)); then retry_wait "$attempt"; fi
   done
   rm -f "$work/claim-body.json"
   [[ $http_code == 200 ]] || fail claim_failed "o plano de controle não registrou o nó (HTTP $http_code)."
@@ -462,8 +481,15 @@ apply_claim() { # <arquivo do node.conf>
     and all(explode[]; . >= 32 and . != 127)' "$work/claim.json" >/dev/null 2>&1 ||
     fail claim_invalid 'tenantName fora do formato.'
 
-  # O e-mail do nó: o remetente sempre; o servidor, a porta, o usuário e a senha, os quatro ou nenhum.
-  mail_from=$(claim_field .mail.from)
+  # O e-mail do nó: o remetente sempre; o servidor, a porta, o usuário e a senha, os quatro ou nenhum. Sem o e-mail do
+  # nó, o plano de controle manda `mail: null`: MAIL_TRANSPORT=none, e o remetente (que o nó exige, mas não usa sem
+  # SMTP) é um endereço do host do painel.
+  if jq -e '.mail == null' "$work/claim.json" >/dev/null 2>&1; then
+    mail_from=nao-responda@${web_origin#https://}
+  else
+    jq -e '.mail | type == "object"' "$work/claim.json" >/dev/null 2>&1 || fail claim_invalid 'mail fora do formato.'
+    mail_from=$(claim_field .mail.from)
+  fi
   smtp_host=$(claim_field .mail.host)
   smtp_port=$(claim_field .mail.port)
   smtp_user=$(claim_field .mail.user)
@@ -619,13 +645,15 @@ finish_enrollment() {
       fail customer_bootstrap_failed "o primeiro acesso não gerou a senha: $(tail -c 300 "$work/renew.out")"
   fi
   [[ -f $file && ! -L $file ]] || fail admin_password_missing 'a senha temporária do administrador não foi gerada.'
-  # O contrato do cofre `admin-bootstrap` (o mesmo JSON que o nó da GCP grava no Secret Manager).
+  # O arquivo que o primeiro acesso grava (o contrato do cofre `admin-bootstrap`, o JSON que o nó da GCP grava no Secret
+  # Manager). Ao plano de controle vai só a senha: ele monta o JSON do cofre (o e-mail e o prazo são dele).
   jq -e 'type == "object" and (keys == ["email", "expiresAt", "password"])
     and (.password | type == "string" and length >= 16 and length <= 256)' "$file" >/dev/null 2>&1 ||
     fail admin_password_missing 'o arquivo da senha temporária está fora do formato.'
   [[ -n $node_key ]] || fail report_failed 'a chave do nó não está no cofre local: gere um código novo no console.'
-  jq -n --arg version "$installer_release" --rawfile password "$file" \
-    '{status: "ready", version: $version, adminBootstrapPassword: $password}' >"$work/report-ready.json"
+  # A senha vai do arquivo para o corpo pelo jq: nunca por argumento de comando.
+  jq --arg version "$installer_release" '{status: "ready", version: $version, adminBootstrapPassword: .password}' \
+    "$file" >"$work/report-ready.json"
   auth_header
   for attempt in 1 2 3 4 5; do
     cp_post /v1/node-enrollment/report "$work/report-ready.json" "$work/report-ready.out" "$work/auth"
@@ -634,14 +662,19 @@ finish_enrollment() {
       000 | 429 | 5??) ;;
       *) break ;;
     esac
-    if ((attempt < 5)); then sleep $((retry_pause * attempt)); fi
+    if ((attempt < 5)); then retry_wait "$attempt"; fi
   done
   rm -f "$work/report-ready.json"
   if [[ $http_code != 200 && $http_code != 204 ]]; then
     # O nó está no ar: nada de aviso de erro. A senha fica no arquivo (só root) para a próxima tentativa.
     report_errors=false
-    log "ERRO (report_failed): o plano de controle não recebeu o aviso de pronto (HTTP $http_code). Rode de novo:" \
-      'sudo bash verax-install.sh --atualizar' >&2
+    if [[ $http_code == 401 ]]; then
+      log 'ERRO (report_failed): o plano de controle não reconhece a chave deste nó (um código novo foi gerado no' \
+        'console depois desta instalação): rode o comando novo do console.' >&2
+    else
+      log "ERRO (report_failed): o plano de controle não recebeu o aviso de pronto (HTTP $http_code). Rode de novo:" \
+        'sudo bash verax-install.sh --atualizar' >&2
+    fi
     exit 1
   fi
   shred -u "$file" 2>/dev/null || rm -f "$file"

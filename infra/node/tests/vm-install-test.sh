@@ -365,10 +365,9 @@ inputs=$root/etc/verax/customer
 [[ $(stat -c %a "$inputs/verax-tenant-name") == 600 ]] || fail "entradas do primeiro acesso fora do 0600"
 jq -e --arg tag "$tag" '. == {release: $tag, host: {cpus: 2, memoryMb: 7957, diskGb: 60, os: "debian-12", arch: "x86_64"}}' \
   "$gcp/enrollment/claim-request.json" >/dev/null || fail "corpo do claim: $(cat "$gcp/enrollment/claim-request.json")"
-expected_payload=$(printf '{"email":"admin@cliente-demo-a.example","password":"%s","expiresAt":"2026-11-25T12:00:00.000Z"}' \
-  "$admin_password")
-jq -e --arg tag "$tag" --arg payload "$expected_payload" \
-  '. == {status: "ready", version: $tag, adminBootstrapPassword: $payload}' <<<"$(reports)" >/dev/null ||
+# Ao plano de controle vai só a senha (ele monta o JSON do cofre).
+jq -e --arg tag "$tag" --arg password "$admin_password" \
+  '. == {status: "ready", version: $tag, adminBootstrapPassword: $password}' <<<"$(reports)" >/dev/null ||
   fail "report: $(reports)"
 [[ ! -e $root/var/lib/verax/enrollment/admin-bootstrap.json ]] || fail "a cópia local da senha ficou"
 [[ $(cat "$root/var/lib/verax/enrollment/ready") == "$tag" && ! -e $root/var/lib/verax/enrollment/pending ]] ||
@@ -483,7 +482,10 @@ scenario='plano de controle instável no claim e no report'
 new_root
 echo '503 429' >"$gcp/enrollment/fail-claim"
 echo '502' >"$gcp/enrollment/fail-report"
+started=$SECONDS
 install_with_code || fail "o instalador falhou: $(cat "$root/out")"
+# O 429 traz Retry-After: 1, e o instalador espera por ele (as outras esperas do teste são zero).
+((SECONDS - started >= 1)) || fail "não esperou o Retry-After"
 [[ $(claims) == 3 ]] || fail "tentativas do claim: $(claims)"
 jq -e '.status == "ready"' <<<"$(reports)" >/dev/null || fail "report: $(reports)"
 
@@ -505,6 +507,38 @@ for filter in '.apiOrigin = "https://api.exemplo.com/$(touch pwned)"' '.webOrigi
   expect_error_report claim_invalid
   [[ $(installs) == 0 && ! -e $root/etc/verax/node.conf ]] || fail "seguiu com o registro inválido"
 done
+
+scenario='o contrato pede outra versão (409): para sem gastar o código'
+new_root
+echo '409' >"$gcp/enrollment/fail-claim"
+if install_with_code; then fail "instalou"; fi
+common_checks
+grep -q 'ERRO (release_mismatch)' "$root/out" || fail "sem o motivo: $(cat "$root/out")"
+[[ -z $(reports) && $(installs) == 0 && ! -e $gcp/enrollment/claimed ]] || fail "gastou o código ou seguiu"
+install_with_code || fail "o código não valia mais depois do 409: $(cat "$root/out")"
+
+scenario='e-mail do nó desligado (mail: null)'
+new_root
+claim_response '.mail = null'
+install_with_code || fail "o instalador falhou: $(cat "$root/out")"
+for line in MAIL_TRANSPORT=none MAIL_FROM=nao-responda@cliente-demo-a.control.example.com; do
+  grep -qx "$line" "$root/etc/verax/node.conf" || fail "node.conf sem $line: $(cat "$root/etc/verax/node.conf")"
+done
+! grep -q '^SMTP_' "$root/etc/verax/node.conf" || fail "SMTP no node.conf"
+[[ ! -e $root/etc/verax/vault/smtp-password ]] || fail "gravou a senha do e-mail sem o e-mail"
+
+scenario='mail que não é objeto'
+new_root
+claim_response '.mail = "smtp.example.com"'
+if install_with_code; then fail "instalou"; fi
+expect_error_report claim_invalid
+
+scenario='report recusado com 401 (a chave do nó foi revogada)'
+new_root
+echo '401' >"$gcp/enrollment/fail-report"
+if install_with_code; then fail "terminou sem o report"; fi
+grep -q 'não reconhece a chave deste nó' "$root/out" || fail "sem o motivo: $(cat "$root/out")"
+[[ -z $(reports) ]] || fail "avisou erro com a chave recusada"
 
 scenario='registro sem a chave do nó (não há como avisar)'
 new_root
@@ -575,7 +609,7 @@ run_installer --atualizar || fail "o --atualizar falhou: $(cat "$root/out")"
 common_checks
 [[ $(installs) == 1 ]] || fail "o --atualizar na mesma versão reinstalou"
 grep -q backup "$root/calls.log" && fail "o --atualizar na mesma versão fez backup"
-jq -e --arg payload "$expected_payload" '.status == "ready" and .adminBootstrapPassword == $payload' <<<"$(reports)" \
+jq -e --arg password "$admin_password" '.status == "ready" and .adminBootstrapPassword == $password' <<<"$(reports)" \
   >/dev/null || fail "report: $(reports)"
 [[ ! -e $root/var/lib/verax/enrollment/admin-bootstrap.json && -f $root/var/lib/verax/enrollment/ready ]] ||
   fail "estado depois do --atualizar"
@@ -589,7 +623,7 @@ rm -f "$gcp/enrollment/claimed" "$gcp/enrollment/reports.log"
 install_with_code || fail "a reinstalação falhou: $(cat "$root/out")"
 common_checks
 grep -q 'start.sh customer-bootstrap renew=true' "$root/calls.log" || fail "não pediu a senha nova"
-jq -e '.adminBootstrapPassword | fromjson | .password | endswith("-nova")' <<<"$(reports)" >/dev/null ||
+jq -e '.adminBootstrapPassword | endswith("-nova")' <<<"$(reports)" >/dev/null ||
   fail "report: $(reports)"
 
 scenario='--atualizar para uma versão nova: backup antes, sem registro'
