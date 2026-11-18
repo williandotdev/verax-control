@@ -220,6 +220,16 @@ jobs:
         # do CLI nunca vira "nenhuma conta"; o sinal `applied` diz ok ou error com a geração. Roda sem root e sem tocar
         # na máquina.
         run: bash infra/node/tests/wazuh-apply-test.sh
+      - name: VM própria do cliente (NODE_PLATFORM=vm; o instalador e o pacote com o release, o registro e o Docker simulados)
+        # Cenários de tests/vm-install-test.sh (o verax-install.sh montado pelo node-release.sh, com o release e o plano
+        # de controle falsos: o claim e o report, o node.conf byte a byte, o cofre local, o host e o porte, o pacote
+        # trocado, outra chave, respostas hostis do registro, as falhas avisadas com o código e o --atualizar) e de
+        # tests/vm-node-test.sh (o install.sh, o start.sh e o backup.sh no modo vm: o cofre local no lugar do Secret
+        # Manager, sem a guarda do metadata, sem o atualizador, sem o token do Google, o primeiro acesso com a senha num
+        # arquivo só de root e o backup local com retenção). Roda sem root e sem tocar na máquina.
+        run: |
+          bash infra/node/tests/vm-install-test.sh
+          bash infra/node/tests/vm-node-test.sh
       - name: Compose válida nos dois perfis (os arquivos de ambiente que o start.sh monta na VM, nem mais nem menos)
         # lean: só o compose.yaml (o nó da Verax). standard: mais o compose.wazuh.yaml. Com o cofre de credenciais,
         # nos dois, mais o compose.vault.yaml (o start.sh o soma em toda chamada). Os arquivos de /run/verax são os

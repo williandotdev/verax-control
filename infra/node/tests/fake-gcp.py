@@ -21,6 +21,12 @@ Escuta em 127.0.0.1, numa porta livre, e grava o número em <pasta>/port. Tudo f
   redireciona (302) para /objects/<tag>/<arquivo>, que entrega o arquivo (sem ele, 404);
 - checkip: o IP de saída que o "checkip" responde (GET /checkip; sem o arquivo, 404);
 - requests.log: uma linha por pedido (método, caminho e os cabeçalhos que contam); nunca o corpo nem o token.
+- enrollment/: o registro do nó da VM própria no plano de controle (tests/vm-install-test.sh).
+  POST /v1/node-enrollment/claim: com o `code` do corpo igual a enrollment/code e sem enrollment/claimed, responde 200
+  com enrollment/claim.json (e cria enrollment/claimed: uso único); senão, 404. O corpo, sem o código, vai para
+  enrollment/claim-request.json. POST /v1/node-enrollment/report: exige `Authorization: Bearer <nodeKey do
+  claim.json>` (sem ele, 401), anexa o corpo a enrollment/reports.log (uma linha por pedido) e responde 204.
+  enrollment/fail-claim e enrollment/fail-report: códigos HTTP a responder antes de aceitar, um por pedido.
 
 O servidor de metadados exige `Metadata-Flavor: Google` (sem ele, 403, como o de verdade), e o Secret Manager, o token
 que o servidor de metadados entregou (sem ele, 401). O corpo do addVersion precisa ser exatamente
@@ -142,11 +148,64 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self.guest_attribute("DELETE")
 
+    # Um código HTTP simulado do arquivo de falhas (um por pedido), ou None.
+    def simulated_failure(self, path):
+        if path.exists():
+            codes = path.read_text(encoding="utf-8").split()
+            if codes:
+                path.write_text(" ".join(codes[1:]), encoding="utf-8")
+                return int(codes[0])
+        return None
+
+    def enrollment(self, raw):
+        state = STATE / "enrollment"
+        state.mkdir(parents=True, exist_ok=True)
+        if self.headers.get("Content-Type") != "application/json":
+            self.reply(415, json.dumps({"error": "unsupported"}))
+            return
+        if self.path == "/v1/node-enrollment/claim":
+            failure = self.simulated_failure(state / "fail-claim")
+            if failure:
+                self.reply(failure, json.dumps({"error": "unavailable"}))
+                return
+            try:
+                body = json.loads(raw)
+                code = body.pop("code")
+            except (ValueError, KeyError, TypeError, AttributeError):
+                self.reply(400, json.dumps({"error": "invalid"}))
+                return
+            (state / "claim-request.json").write_bytes(json.dumps(body, sort_keys=True).encode("utf-8"))
+            expected = (state / "code").read_text(encoding="utf-8") if (state / "code").is_file() else None
+            if code != expected or (state / "claimed").exists():
+                self.reply(404, json.dumps({"error": "not_found"}))
+                return
+            (state / "claimed").write_bytes(b"")
+            self.reply_bytes(200, (state / "claim.json").read_bytes(), "application/json")
+            return
+        if self.path == "/v1/node-enrollment/report":
+            node_key = json.loads((state / "claim.json").read_bytes()).get("nodeKey")
+            if self.headers.get("Authorization") != f"Bearer {node_key}":
+                self.reply(401, json.dumps({"error": "unauthorized"}))
+                return
+            failure = self.simulated_failure(state / "fail-report")
+            if failure:
+                self.reply(failure, json.dumps({"error": "unavailable"}))
+                return
+            with (state / "reports.log").open("ab") as file:
+                file.write(raw + b"\n")
+            self.send_response(204)
+            self.end_headers()
+            return
+        self.reply(404, json.dumps({"error": "not_found"}))
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
         authorized = self.headers.get("Authorization") == f"Bearer {TOKEN}"
         log(f"POST {self.path} authorized={authorized} content-type={self.headers.get('Content-Type')}")
+        if self.path.startswith("/v1/node-enrollment/"):
+            self.enrollment(raw)
+            return
         if not (self.path.startswith("/v1/projects/") and self.path.endswith(":addVersion")):
             self.reply(404, "Not Found", "text/html")
             return

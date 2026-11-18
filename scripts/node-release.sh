@@ -15,13 +15,20 @@
 #     de controle lê (`apps/control-plane/src/provisioning/panel-bundle.ts`: só arquivos e pastas, o `index.html` na raiz
 #     de `dist/`).
 #
+#   node-release.sh installer <commit> <release node-vX.Y.Z> <saída verax-install.sh>
+#     O instalador da VM própria do cliente (infra/node/bin/verax-install.sh) daquele commit, com a versão, o
+#     verificador do manifesto (bin/verify-release.sh) e as chaves públicas de release (infra/node/keys) do mesmo commit
+#     embutidos: na VM, ele confere o manifesto sem baixar nada em que confiar. Igual byte a byte em qualquer máquina.
+#
 #   node-release.sh manifest --commit <c> --release node-vX.Y.Z --api-digest sha256:… --migrate-digest sha256:…
 #                            --package <verax-node.tar.gz> --repository <dono/repo> [--panel <panel-<commit>.tar.gz>]
+#                            [--installer <verax-install.sh>]
 #     O manifest.json na saída padrão: o commit, a versão, o SHA-256 do pacote, as imagens do Verax no GHCR pelo digest
 #     e as imagens de terceiros exatamente como os compose do próprio pacote as fixam (pelo digest). As de terceiros
 #     (Wazuh, PostgreSQL, cloudflared) não são copiadas pela Verax: o nó as baixa da origem. Uma imagem de terceiro sem
 #     digest no compose, ou uma imagem por variável que não seja a da API ou das migrations, para tudo. Com --panel, o
-#     campo `panel` (o endereço do bundle no release e o SHA-256 dele), sem o qual a versão não vai para a frota.
+#     campo `panel` (o endereço do bundle no release e o SHA-256 dele), sem o qual a versão não vai para a frota. Com
+#     --installer, o campo `installer` (o nome do asset e o SHA-256 dele), que o console mostra no comando de instalação.
 #
 #   node-release.sh sign --key-version <projects/…/cryptoKeyVersions/N> --manifest <arquivo> --out <arquivo.sig>
 #                        --node-package-dir <pasta verax-node extraída do pacote>
@@ -100,8 +107,46 @@ panel() { # <commit> <pasta dist> <dist-hosting.json> <saída.tar.gz>
   mv "$work/panel.tar.gz" "$out"
 }
 
+installer() { # <commit> <release> <saída verax-install.sh>
+  (($# == 3)) || usage
+  local commit=$1 release=$2 out=$3 src=$work/installer keys key count
+  [[ $commit =~ $commit_re ]] || die "commit inválido: $commit"
+  [[ $release =~ $release_re ]] || die "versão inválida: $release (use node-vX.Y.Z)"
+  [[ ${out##*/} == verax-install.sh ]] || die "o instalador se chama verax-install.sh (veio ${out##*/})."
+  git cat-file -e "$commit^{commit}" 2>/dev/null || die "o commit $commit não está neste clone."
+  mkdir -p "$src"
+  git archive --format=tar "$commit" -- infra/node/bin/verax-install.sh infra/node/bin/verify-release.sh infra/node/keys |
+    tar -x -C "$src" || die "o commit $commit não tem o instalador (infra/node/bin/verax-install.sh)."
+  shopt -s nullglob
+  keys=("$src"/infra/node/keys/release-*.pem)
+  shopt -u nullglob
+  ((${#keys[@]} > 0)) || die "o commit $commit não tem chave de release (infra/node/keys/release-*.pem)."
+  # As três marcas do instalador, cada uma uma vez só: uma marca renomeada faria a troca não acontecer em silêncio.
+  local release_line="installer_release=''" verifier_line="  base64 -d <<'VERAX_VERIFIER'"
+  local keys_line="  cat <<'VERAX_RELEASE_KEYS'"
+  for key in "$release_line" "$verifier_line" "$keys_line"; do
+    count=$(grep -cxF -- "$key" "$src/infra/node/bin/verax-install.sh" || true)
+    [[ $count == 1 ]] || die "a marca \"$key\" não aparece uma vez só no instalador."
+  done
+  # O verificador em base64 (linhas de 76) e uma linha `<nome> <chave em base64>` por chave, como no script de boot
+  # do módulo do nó.
+  base64 -w76 <"$src/infra/node/bin/verify-release.sh" >"$work/installer-verifier"
+  for key in "${keys[@]}"; do printf '%s %s\n' "${key##*/}" "$(base64 -w0 <"$key")"; done >"$work/installer-keys"
+  awk -v release="$release" -v verifier="$work/installer-verifier" -v keys="$work/installer-keys" \
+    -v release_line="$release_line" -v verifier_line="$verifier_line" -v keys_line="$keys_line" '
+    $0 == release_line { print "installer_release=\047" release "\047"; next }
+    { print }
+    $0 == verifier_line { while ((getline line < verifier) > 0) print line }
+    $0 == keys_line { while ((getline line < keys) > 0) print line }
+  ' "$src/infra/node/bin/verax-install.sh" >"$work/verax-install.sh"
+  bash -n "$work/verax-install.sh" || die 'o instalador montado não passa no bash -n.'
+  chmod 0755 "$work/verax-install.sh"
+  mv "$work/verax-install.sh" "$out"
+}
+
 manifest() {
   local commit='' release='' api_digest='' migrate_digest='' package_file='' repository='' panel_file=''
+  local installer_file=''
   while (($#)); do
     (($# >= 2)) || usage
     case $1 in
@@ -112,6 +157,7 @@ manifest() {
       --package) package_file=$2 ;;
       --repository) repository=$2 ;;
       --panel) panel_file=$2 ;;
+      --installer) installer_file=$2 ;;
       *) usage ;;
     esac
     shift 2
@@ -124,6 +170,11 @@ manifest() {
   if [[ -n $panel_file ]]; then
     [[ -f $panel_file ]] || die "bundle do painel não encontrado: $panel_file"
     [[ ${panel_file##*/} == "panel-$commit.tar.gz" ]] || die "o bundle do painel deste commit é panel-$commit.tar.gz."
+  fi
+  if [[ -n $installer_file ]]; then
+    [[ -f $installer_file ]] || die "instalador não encontrado: $installer_file"
+    [[ ${installer_file##*/} == verax-install.sh ]] || die 'o instalador se chama verax-install.sh.'
+    grep -qxF "installer_release='$release'" "$installer_file" || die "o instalador não é o de $release."
   fi
 
   local sha composes compose images third=() ref
@@ -149,11 +200,12 @@ manifest() {
   done
   ((${#third[@]} > 0)) || die 'nenhuma imagem de terceiro nos compose do pacote.'
 
-  local repo_lower=${repository,,} panel_url='' panel_sha=''
+  local repo_lower=${repository,,} panel_url='' panel_sha='' installer_sha=''
   if [[ -n $panel_file ]]; then
     panel_url="https://github.com/$repository/releases/download/$release/panel-$commit.tar.gz"
     panel_sha=$(sha256sum "$panel_file" | cut -d' ' -f1)
   fi
+  if [[ -n $installer_file ]]; then installer_sha=$(sha256sum "$installer_file" | cut -d' ' -f1); fi
   printf '%s\n' "${third[@]}" | sort -u | jq -R . | jq -s \
     --arg commit "$commit" \
     --arg release "$release" \
@@ -165,6 +217,7 @@ manifest() {
     --arg notes "https://github.com/$repository/releases/tag/$release" \
     --arg panel_url "$panel_url" \
     --arg panel_sha "$panel_sha" \
+    --arg installer_sha "$installer_sha" \
     '{
       schema: 1,
       kind: "verax-node-release",
@@ -175,7 +228,8 @@ manifest() {
       images: {api: $api, migrate: $migrate},
       thirdPartyImages: .,
       notes: $notes
-    } + (if $panel_url == "" then {} else {panel: {url: $panel_url, sha256: $panel_sha}} end)'
+    } + (if $panel_url == "" then {} else {panel: {url: $panel_url, sha256: $panel_sha}} end)
+      + (if $installer_sha == "" then {} else {installer: {name: "verax-install.sh", sha256: $installer_sha}} end)'
 }
 
 sign() {
@@ -223,6 +277,7 @@ command=$1
 shift
 case $command in
   package) package "$@" ;;
+  installer) installer "$@" ;;
   panel) panel "$@" ;;
   manifest) manifest "$@" ;;
   sign) sign "$@" ;;
