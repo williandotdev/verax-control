@@ -6,6 +6,8 @@ import type { DirectTenantCreated, TimelineStep, TimelineStepStatus } from '@/li
 import { cn } from '@/lib/cn';
 import { configurationSummary, formatDateTime, gbDayLabel } from '@/lib/format';
 import { formatCents, formatInteger } from '@/lib/numbers';
+import { AmendContract, AmendmentHistory } from './amend-contract';
+import { termText } from './contract-term';
 import { ContractValueLine } from './contract-values-view';
 import { InstallationPanel } from './installation-panel';
 import {
@@ -219,7 +221,19 @@ export function TenantDetailPage() {
               contracted={data.contractPricing.contracted.additionalGbDayAmount}
               reference={data.contractPricing.reference.additionalGbDayAmount}
             />
+            {data.contractPricing.setup !== undefined && (
+              <Meta label="Implantação contratada (uma vez)">
+                <span className="tabular-nums">
+                  {formatCents(data.contractPricing.setup.contracted)}
+                  {data.contractPricing.setup.contracted !== data.contractPricing.setup.reference &&
+                    ` (tabela: ${formatCents(data.contractPricing.setup.reference)})`}
+                </span>
+              </Meta>
+            )}
           </dl>
+        )}
+        {data.contractTerm !== undefined && (
+          <p className="text-sm">Vigência: {termText(data.contractTerm)} (recomeçou no último aditivo).</p>
         )}
         <p className="text-sm tabular-nums">
           {contract ? 'Preço de referência' : 'Preço cotado no checkout'} (tabela{' '}
@@ -238,6 +252,7 @@ export function TenantDetailPage() {
               ' O ambiente roda na infraestrutura do cliente: a referência é calculada como na infraestrutura da Verax (o mesmo preço por GB/dia), e a nuvem é paga por ele.'}
           </p>
         )}
+        <AmendContract tenant={data} />
       </Panel>
 
       {customer ? (
@@ -364,6 +379,12 @@ export function TenantDetailPage() {
           emptyText="Nenhuma operação do ciclo de vida neste estado."
         />
       </Panel>
+
+      {contract && (
+        <Panel title="Aditivos do contrato" id="aditivos">
+          <AmendmentHistory amendments={data.amendments} />
+        </Panel>
+      )}
 
       <Panel title="Histórico de estados" id="historico">
         <div className="overflow-x-auto">

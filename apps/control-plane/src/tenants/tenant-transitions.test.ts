@@ -31,6 +31,9 @@ describe('tabela de transições (plano §4b e §4d)', () => {
     // O contrato direto na VM do cliente sai da espera com o primeiro código de instalação, ou cancelado.
     ['waiting_customer_install', 'provisioning'],
     ['waiting_customer_install', 'canceled'],
+    // O aditivo que troca onde o ambiente roda, antes de qualquer instalação (`TenantStore.amend`).
+    ['pending', 'waiting_customer_install'],
+    ['waiting_customer_install', 'pending'],
     ['canceled', 'deleted'],
   ])('permite %s -> %s', (from, to) => {
     expect(canTransition(from, to)).toBe(true);
@@ -50,11 +53,13 @@ describe('tabela de transições (plano §4b e §4d)', () => {
     ['canceled', 'active'],
     ['deleted', 'canceled'],
     ['deleted', 'deleted'],
-    // A espera da instalação só sai pelo provisionamento reduzido (o código) ou cancelada, e nada volta a ela.
+    // A espera da instalação só sai pelo provisionamento reduzido (o código), pelo aditivo (antes de tudo) ou cancelada;
+    // depois de começar o provisionamento, nada volta a ela.
     ['waiting_customer_install', 'active'],
     ['waiting_customer_install', 'suspended'],
-    ['pending', 'waiting_customer_install'],
     ['provisioning', 'waiting_customer_install'],
+    ['provisioning', 'pending'],
+    ['provisioning_failed', 'waiting_customer_install'],
   ])('recusa %s -> %s', (from, to) => {
     expect(canTransition(from, to)).toBe(false);
   });

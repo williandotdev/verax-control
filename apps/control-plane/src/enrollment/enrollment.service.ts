@@ -259,11 +259,13 @@ export class EnrollmentService {
     const nodeKey = newEnrollmentSecret();
     registerLiveSecret(nodeKey);
     const nodeKeyHash = enrollmentHash(nodeKey);
-    let changed: boolean;
+    let claimed: TenantRecord | undefined;
     try {
       const result = await this.tenants.change(tenant.id, (current) => {
-        // Relido na transação: dois `claim` ao mesmo tempo, um só leva.
+        // Relido na transação: dois `claim` ao mesmo tempo, um só leva. A versão também, de novo: a resposta sai do
+        // cliente relido aqui, não da primeira leitura.
         if (!codeClaimable(current, codeHash, now) || current.enrollment === undefined) return undefined;
+        if ((current.provisioning?.nodeVersion ?? settings.nodeRelease) !== expected) return undefined;
         const enrollment = current.enrollment;
         return {
           reason: 'enrollment_claimed',
@@ -271,13 +273,13 @@ export class EnrollmentService {
           mutate: (t) => ({ ...t, enrollment: { ...enrollment, claimedAt: now, nodeKeyHash } }),
         };
       });
-      changed = result.changed;
+      claimed = result.changed ? result.tenant : undefined;
     } catch (error) {
       forget();
       forgetLiveSecret(nodeKey);
       throw error;
     }
-    if (!changed) {
+    if (claimed === undefined) {
       forget();
       forgetLiveSecret(nodeKey);
       return { ok: false, reason: 'not_found' };
@@ -305,20 +307,23 @@ export class EnrollmentService {
       },
       'VM do cliente registrada',
     );
-    const { apiOrigin, webOrigin } = tenantHosts(tenant.slug, settings);
+    // O contrato que vai à VM sai do cliente gravado junto com o `claimedAt` (a mesma transação): um aditivo gravado
+    // entre a primeira leitura e o registro já vale aqui, e um aditivo depois dele vê o `claimedAt` e marca os limites
+    // como pendentes no nó (`nodeLimitsPending`).
+    const { apiOrigin, webOrigin } = tenantHosts(claimed.slug, settings);
     return {
       ok: true,
       transient: [external.tunnelToken, nodeKey],
       response: {
-        tenantId: tenant.id,
-        slug: tenant.slug,
+        tenantId: claimed.id,
+        slug: claimed.slug,
         apiOrigin,
         webOrigin,
         release: expected,
-        size: tenant.configuration.size,
-        nodeConf: Object.entries(nodeLimitsEnv(tenant.limits)).map(([name, value]) => ({ name, value })),
-        tenantName: tenant.company.legalName,
-        adminEmail,
+        size: claimed.configuration.size,
+        nodeConf: Object.entries(nodeLimitsEnv(claimed.limits)).map(([name, value]) => ({ name, value })),
+        tenantName: claimed.company.legalName,
+        adminEmail: claimed.adminEmail ?? adminEmail,
         supportEmail: settings.supportEmail,
         mail: external.mail,
         tunnelToken: external.tunnelToken,

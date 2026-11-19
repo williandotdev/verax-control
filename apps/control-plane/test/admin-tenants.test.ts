@@ -3,6 +3,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type {
+  ContractAmendmentResult,
   DirectTenantCreated,
   TenantActionResult,
   TenantDetail,
@@ -234,7 +235,16 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       const body = directRequest();
       await send('/v1/admin/tenants', body, null).expect(401);
       await send('/v1/admin/tenants', body, ownerToken(STRANGER)).expect(403);
-      for (const action of ['start', 'resume', 'cancel', 'suspend', 'reactivate', 'delete-now', 'export']) {
+      for (const action of [
+        'start',
+        'resume',
+        'cancel',
+        'suspend',
+        'reactivate',
+        'delete-now',
+        'export',
+        'amend',
+      ]) {
         await send(
           `/v1/admin/tenants/${newUlid()}/${action}`,
           { confirmSlug: 'x' },
@@ -621,6 +631,59 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       expect((await tenants.require(result.id)).lifecycle?.exportUntil).toBeUndefined();
       expect(queue.tasks).toHaveLength(0);
       expect(cloud.requests).toEqual([]);
+    });
+
+    it('o aditivo pelo console: antes da instalação, vai para a Verax sem chamar o worker; o "Iniciar provisionamento" começa dali', async () => {
+      const body = customerRequest();
+      const result = (await send('/v1/admin/tenants', body).expect(201)).body as DirectTenantCreated;
+      const slug = String(body['slug']);
+      const mismatch = await send(`/v1/admin/tenants/${result.id}/amend`, {
+        hosting: 'verax',
+        configuration: { plan: 'dedicado', gbDay: 4 },
+        confirmSlug: 'outro',
+      }).expect(400);
+      expect(mismatch.body).toMatchObject({ code: 'confirmation_mismatch' });
+      const amended = await send(`/v1/admin/tenants/${result.id}/amend`, {
+        hosting: 'verax',
+        configuration: { plan: 'dedicado', gbDay: 4 },
+        contracted: { monthlyTotal: 190_000, additionalGbDayAmount: 50_000 },
+        note: 'Cliente Demo A preferiu a infraestrutura da Verax',
+        confirmSlug: slug,
+      }).expect(200);
+      expect(amended.body).toMatchObject({
+        state: 'pending',
+        hosting: 'verax',
+        hostingChanged: true,
+        nodeLimitsPending: false,
+        contractTerm: { months: 12, startsAt: clock.now().toISOString() },
+      });
+      expect((amended.body as ContractAmendmentResult).contractTerm.months).toBe(12);
+      expect(workerCalls).toHaveLength(0);
+      const detail = (await read(`/v1/admin/tenants/${result.id}`).expect(200)).body as TenantDetail;
+      expect(detail).toMatchObject({
+        hosting: 'verax',
+        state: 'pending',
+        configuration: { plan: 'dedicado', mode: 'managed', gbDay: 4 },
+        contractPricing: { contracted: { monthlyTotal: 190_000 } },
+        actions: { start: true, amend: true, amendHosting: true },
+      });
+      expect(detail.amendments).toEqual([
+        expect.objectContaining({
+          at: clock.now().toISOString(),
+          by: OWNER,
+          stateBefore: 'waiting_customer_install',
+          stateAfter: 'pending',
+        }),
+      ]);
+      // A partir daqui, o "Iniciar provisionamento" de sempre (o worker põe em provisioning).
+      const started = await send(`/v1/admin/tenants/${result.id}/start`, { confirmSlug: slug }).expect(200);
+      expect(started.body).toMatchObject({ action: 'start', step: 'preflight' });
+      const locked = await send(`/v1/admin/tenants/${result.id}/amend`, {
+        hosting: 'customer',
+        configuration: { plan: 'dedicado', gbDay: 4 },
+        confirmSlug: slug,
+      }).expect(409);
+      expect(locked.body).toMatchObject({ code: 'hosting_locked' });
     });
 
     it('a instalação: o worker lê e confere o manifesto do bucket de releases, e o console devolve o guia e o node.conf', async () => {

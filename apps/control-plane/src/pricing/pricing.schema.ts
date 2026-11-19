@@ -327,6 +327,12 @@ export type ContractValues = z.infer<typeof contractValuesSchema>;
 export const contractPricingSchema = z.strictObject({
   reference: contractValuesSchema,
   contracted: contractValuesSchema,
+  /**
+   * Só num aditivo para o SIEM + vCISO (`contract-amendment`): a implantação da tabela (a da cotação, `setupTotal`) e a
+   * contratada, que o responsável pode ter negociado (0 quando a implantação já foi paga). O cadastro não a grava: ali
+   * a implantação é a da cotação.
+   */
+  setup: z.strictObject({ reference: cents, contracted: cents }).optional(),
 });
 export type ContractPricing = z.infer<typeof contractPricingSchema>;
 

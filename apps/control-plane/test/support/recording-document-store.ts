@@ -15,6 +15,12 @@ import { MemoryDocumentStore } from '../../src/firestore/memory-document-store.j
 export class RecordingDocumentStore implements DocumentStore {
   readonly writes: string[] = [];
   readonly queries: string[] = [];
+  /**
+   * Uma vez: roda depois da próxima consulta fora de transação que o filtro aceitar, antes de ela voltar a quem
+   * perguntou. É como o teste encaixa uma escrita concorrente entre a leitura de um serviço e a transação dele.
+   */
+  afterQuery:
+    { matches: (collection: string, query?: DocumentQuery) => boolean; run: () => Promise<void> } | undefined;
 
   constructor(readonly inner: MemoryDocumentStore = new MemoryDocumentStore()) {}
 
@@ -22,9 +28,15 @@ export class RecordingDocumentStore implements DocumentStore {
     return this.inner.get(collection, id);
   }
 
-  query(collection: string, query?: DocumentQuery): Promise<StoredDocument[]> {
+  async query(collection: string, query?: DocumentQuery): Promise<StoredDocument[]> {
     this.queries.push(`${collection}?${JSON.stringify(query ?? {})}`);
-    return this.inner.query(collection, query);
+    const result = await this.inner.query(collection, query);
+    const hook = this.afterQuery;
+    if (hook !== undefined && hook.matches(collection, query)) {
+      this.afterQuery = undefined;
+      await hook.run();
+    }
+    return result;
   }
 
   newId(): string {

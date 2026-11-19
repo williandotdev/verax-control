@@ -492,10 +492,69 @@ export interface ContractValues {
   additionalGbDayAmount: number;
 }
 
-/** A referência da tabela e o contratado (negociado ou não) de um contrato direto. */
+/**
+ * A referência da tabela e o contratado (negociado ou não) de um contrato direto. `setup`: só depois de um aditivo para
+ * o SIEM + vCISO, a implantação da tabela e a contratada (0 quando já foi paga).
+ */
 export interface ContractPricing {
   reference: ContractValues;
   contracted: ContractValues;
+  setup?: { reference: number; contracted: number };
+}
+
+/** A vigência do contrato direto: a duração do plano e as datas, contadas do último aditivo. */
+export interface ContractTerm {
+  months: number;
+  startsAt: string;
+  endsAt: string;
+}
+
+/** O contrato como um aditivo o encontrou ou deixou. */
+export interface ContractTermsView {
+  hosting: Hosting;
+  configuration: Configuration;
+  limits: NodeLimits;
+  pricing: OrderPricing;
+  contractPricing?: ContractPricing;
+  contractTerm?: ContractTerm;
+}
+
+/** Um aditivo do contrato: quem, quando, a observação, o antes e o depois. */
+export interface ContractAmendmentView {
+  id: string;
+  at: string;
+  by: string;
+  note?: string;
+  before: ContractTermsView;
+  after: ContractTermsView;
+  stateBefore: TenantState;
+  stateAfter: TenantState;
+  /** Os limites do nó mudaram com o ambiente já instalado: o nó em execução ainda não os tem. */
+  nodeLimitsPending: boolean;
+}
+
+/** Os planos de um aditivo: os dois que rodam num servidor próprio. */
+export type AmendablePlan = 'dedicado' | 'vciso';
+
+/** O que o console manda em `POST /v1/admin/tenants/:id/amend`. */
+export interface AmendmentRequest {
+  hosting: Hosting;
+  configuration: { plan: AmendablePlan; gbDay: number };
+  contracted?: ContractValues;
+  /** No SIEM + vCISO: a implantação contratada, em centavos (ausente: a da tabela). */
+  contractedSetup?: number;
+  note?: string;
+  confirmSlug: string;
+}
+
+/** `POST /v1/admin/tenants/:id/amend`: o aditivo gravado. */
+export interface ContractAmendmentResult {
+  amendmentId: string;
+  state: TenantState;
+  hosting: Hosting;
+  hostingChanged: boolean;
+  nodeLimitsPending: boolean;
+  contractTerm: ContractTerm;
 }
 
 /** `GET /v1/admin/tenants/:id`. */
@@ -514,6 +573,10 @@ export interface TenantDetail {
   pricing: OrderPricing;
   /** Só no contrato direto cadastrado com os valores do contrato: a referência da tabela e o contratado. */
   contractPricing?: ContractPricing;
+  /** A vigência do contrato direto, gravada pelo último aditivo. */
+  contractTerm?: ContractTerm;
+  /** Os aditivos do contrato, do mais antigo ao mais novo. */
+  amendments: ContractAmendmentView[];
   /** Os endereços na infraestrutura da Verax; ausentes no ambiente do cliente. */
   urls?: { panelUrl: string; apiUrl: string };
   provisioning?: {
@@ -556,10 +619,20 @@ export interface TenantLifecycleView {
 
 /**
  * O que o console oferece agora para o cliente (a API e o cp-worker conferem de novo). `enrollmentCode`: gerar o código
- * de instalação da VM do cliente.
+ * de instalação da VM do cliente. `amend`: o aditivo do contrato; `amendHosting`: o aditivo ainda pode mudar onde o
+ * ambiente roda (nada instalado nem provisionado).
  */
 export type TenantActions = Record<
-  'start' | 'resume' | 'cancel' | 'suspend' | 'reactivate' | 'deleteNow' | 'export' | 'enrollmentCode',
+  | 'start'
+  | 'resume'
+  | 'cancel'
+  | 'suspend'
+  | 'reactivate'
+  | 'deleteNow'
+  | 'export'
+  | 'enrollmentCode'
+  | 'amend'
+  | 'amendHosting',
   boolean
 >;
 

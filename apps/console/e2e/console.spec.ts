@@ -129,6 +129,39 @@ for (const theme of THEMES) {
       expect(violations).toEqual([]);
     });
 
+    test('aditivo do contrato: no cliente antes da instalação, para a Verax e o vCISO, com o que muda e o histórico', async ({
+      page,
+    }, testInfo) => {
+      const violations = await prepare(page, theme);
+      await page.goto('/clientes/01JC0000000000000000000E01');
+      const contracted = page.getByRole('region', { name: 'Contratado' });
+      await contracted.getByRole('button', { name: 'Alterar contrato…' }).click();
+      const form = page.getByRole('region', { name: 'Alterar contrato (aditivo)' });
+      await form.getByRole('radio', { name: 'Infraestrutura da Verax' }).check();
+      await form.getByLabel('Plano').selectOption('vciso');
+      await form.getByLabel('Volume de logs (GB/dia)').fill('4');
+      await form.getByRole('button', { name: 'Calcular a cotação' }).click();
+      await expect(form.getByRole('region', { name: 'Cotação de referência' })).toContainText('R$ 4.000,00');
+      await expect(form.getByLabel('Implantação do SIEM + vCISO (uma vez)')).toHaveValue('5.000,00');
+      await form.getByLabel('Implantação do SIEM + vCISO (uma vez)').fill('0');
+      await form.getByRole('button', { name: 'Revisar e confirmar…' }).click();
+      const diff = form.getByRole('table', { name: 'O que muda no contrato' });
+      await expect(diff.getByRole('row', { name: /Onde o ambiente roda/ })).toContainText('muda');
+      await form.getByLabel(/Digite o subdomínio/).fill('cliente-demo-e');
+      await expect(form.getByRole('button', { name: 'Gravar o aditivo' })).toBeEnabled();
+      await audit(page, testInfo, `cliente-aditivo-${theme}`);
+      await form.getByRole('button', { name: 'Gravar o aditivo' }).click();
+      await expect(contracted.getByRole('status')).toContainText('Iniciar provisionamento');
+      await expect(page.getByRole('list', { name: /Aditivos do contrato/ })).toContainText('SIEM + vCISO');
+      await expect(
+        page
+          .getByRole('region', { name: 'Provisionamento' })
+          .getByRole('button', { name: 'Iniciar provisionamento…' }),
+      ).toBeVisible();
+      await audit(page, testInfo, `cliente-aditivo-gravado-${theme}`);
+      expect(violations).toEqual([]);
+    });
+
     test('clientes no cliente: o cadastro do Dedicado, sem provisionar, e o detalhe com o perfil, a rede e o comando', async ({
       page,
     }, testInfo) => {

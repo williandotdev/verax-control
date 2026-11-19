@@ -1,11 +1,14 @@
 import { z } from 'zod';
 import { adminEmailSchema, cnpjInputSchema, slugInputSchema } from '../checkout/checkout.schema.js';
 import { ULID_PATTERN } from '../common/ulid.js';
+import { AMENDABLE_PLANS } from '../pricing/contract-term.js';
 import {
+  type Configuration,
   type ContractedConfiguration,
   type ContractPricing,
   type ContractValues,
   contractValuesSchema,
+  MAX_AMOUNT_CENTS,
   type NodeLimits,
   type OrderPricing,
   type PlanId,
@@ -17,8 +20,10 @@ import type { RunKind } from '../provisioning/executor-env.js';
 import type { NodeFitProblem } from '../provisioning/node-fit.js';
 import type { ProvisioningStepName } from '../provisioning/provisioning-engine.js';
 import {
+  AMENDMENT_NOTE_MAX_LENGTH,
   type BillingMode,
   companyNameSchema,
+  type ContractTerm,
   type Hosting,
   HOSTINGS,
   type LifecycleRunKind,
@@ -113,6 +118,81 @@ export const tenantActionSchemas = {
   export: z.strictObject({ confirmSlug, object: z.string().min(1).max(200) }),
 } as const satisfies Record<TenantAction, z.ZodType>;
 
+/** Sem caractere de controle (quebra de linha, tabulação, NUL): a observação vai à auditoria e ao console. */
+function hasNoControlCharacters(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+/**
+ * `POST /v1/admin/tenants/:id/amend`: o aditivo de um contrato direto (decisão do responsável de 19/11/2026). O plano
+ * (só o SIEM Dedicado ou o SIEM + vCISO), o volume em GB/dia e onde o ambiente roda, cotados de novo pela tabela
+ * vigente com as mesmas regras do cadastro; o contratado negociado (`contracted`, ausente: a referência da tabela) e,
+ * no vCISO, a implantação contratada (`contractedSetup`, em centavos; ausente: a da tabela); uma observação opcional
+ * (`note`); e o subdomínio digitado como confirmação. Mudar `hosting` só vale antes de qualquer instalação
+ * (`hostingChangeAllowed`).
+ */
+export const amendmentRequestSchema = z.strictObject({
+  hosting: hostingSchema,
+  configuration: z.strictObject({
+    plan: z.enum(AMENDABLE_PLANS, {
+      error: 'No aditivo, o plano é o SIEM Dedicado ou o SIEM + vCISO.',
+    }),
+    gbDay: directConfigurationSchema.shape.gbDay,
+  }),
+  contracted: contractValuesSchema.optional(),
+  contractedSetup: z.number().int().min(0).max(MAX_AMOUNT_CENTS).optional(),
+  note: z
+    .string()
+    .trim()
+    .min(1, { error: 'Observação vazia: deixe o campo em branco ou escreva o motivo.' })
+    .max(AMENDMENT_NOTE_MAX_LENGTH, {
+      error: `Observação longa demais: no máximo ${AMENDMENT_NOTE_MAX_LENGTH} caracteres.`,
+    })
+    .refine(hasNoControlCharacters, { error: 'Observação com caracteres inválidos.' })
+    .optional(),
+  confirmSlug,
+});
+export type AmendmentRequest = z.infer<typeof amendmentRequestSchema>;
+
+/** O contrato como um aditivo o encontrou ou deixou. */
+export interface ContractTermsView {
+  hosting: Hosting;
+  configuration: Configuration;
+  limits: NodeLimits;
+  pricing: OrderPricing;
+  contractPricing?: ContractPricing;
+  contractTerm?: ContractTerm;
+}
+
+/** Um aditivo no detalhe do cliente: quem, quando, a observação, o antes e o depois. */
+export interface ContractAmendmentView {
+  id: string;
+  at: Date;
+  by: string;
+  note?: string;
+  before: ContractTermsView;
+  after: ContractTermsView;
+  stateBefore: TenantState;
+  stateAfter: TenantState;
+  /** Os limites do nó mudaram com o ambiente já instalado: o nó em execução ainda não os tem. */
+  nodeLimitsPending: boolean;
+}
+
+/** `POST /v1/admin/tenants/:id/amend`: o aditivo gravado. */
+export interface ContractAmendmentResult {
+  amendmentId: string;
+  state: TenantState;
+  hosting: Hosting;
+  /** Onde o ambiente roda mudou: na Verax, o próximo passo é "Iniciar provisionamento"; no cliente, o código. */
+  hostingChanged: boolean;
+  nodeLimitsPending: boolean;
+  contractTerm: ContractTerm;
+}
+
 /** Uma linha da lista de clientes. */
 export interface TenantListItem {
   id: string;
@@ -179,10 +259,21 @@ export interface TenantLifecycleView {
 
 /**
  * O que o console oferece agora (a API confere de novo em cada operação, e o cp-worker de novo). `enrollmentCode`: gerar
- * o código de instalação da VM do cliente (`POST /v1/admin/tenants/:id/enrollment-code`).
+ * o código de instalação da VM do cliente (`POST /v1/admin/tenants/:id/enrollment-code`). `amend`: o aditivo do
+ * contrato (`POST /v1/admin/tenants/:id/amend`); `amendHosting`: o aditivo ainda pode mudar onde o ambiente roda (nada
+ * instalado nem provisionado).
  */
 export type TenantActions = Record<
-  'start' | 'resume' | 'cancel' | 'suspend' | 'reactivate' | 'deleteNow' | 'export' | 'enrollmentCode',
+  | 'start'
+  | 'resume'
+  | 'cancel'
+  | 'suspend'
+  | 'reactivate'
+  | 'deleteNow'
+  | 'export'
+  | 'enrollmentCode'
+  | 'amend'
+  | 'amendHosting',
   boolean
 >;
 
@@ -205,6 +296,10 @@ export interface TenantDetail {
   pricing: OrderPricing;
   /** Só no contrato direto cadastrado com os valores do contrato: a referência da tabela e o contratado. */
   contractPricing?: ContractPricing;
+  /** A vigência do contrato direto, gravada pelo último aditivo. */
+  contractTerm?: ContractTerm;
+  /** Os aditivos do contrato, do mais antigo ao mais novo. */
+  amendments: ContractAmendmentView[];
   /**
    * Os endereços do painel (o site do Firebase) e da API (pelo túnel da Verax): no gerenciado e na VM do cliente, que
    * usa os mesmos. Ausentes só num cliente da VM própria que ainda não começou o provisionamento reduzido.

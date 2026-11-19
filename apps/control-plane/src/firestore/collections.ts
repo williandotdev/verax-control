@@ -28,6 +28,8 @@ export const COLLECTIONS = {
   transitions: (tenantId: string): string => tenantSubcollection(tenantId, 'transitions'),
   /** Faturas (5 anos, obrigação fiscal). */
   invoices: (tenantId: string): string => tenantSubcollection(tenantId, 'invoices'),
+  /** Aditivos do contrato direto (antes e depois de cada um); mesma vida do tenant. */
+  amendments: (tenantId: string): string => tenantSubcollection(tenantId, 'amendments'),
   slugs: 'slugs',
   stripeEvents: 'stripeEvents',
   statusTokens: 'statusTokens',

@@ -3,6 +3,8 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { z } from 'zod';
 import type * as Console from '../../console/src/lib/api-types.js';
 import type {
+  amendmentRequestSchema,
+  ContractAmendmentResult,
   DirectTenantCreated,
   DirectTenantPreview,
   directTenantRequestSchema,
@@ -78,6 +80,7 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<EnrollmentCodeIssued>().toEqualTypeOf<Console.EnrollmentCodeIssued>();
     expectTypeOf<TenantActionResult>().toEqualTypeOf<Console.TenantActionResult>();
     expectTypeOf<TenantAction>().toEqualTypeOf<Console.TenantAction>();
+    expectTypeOf<Json<ContractAmendmentResult>>().toEqualTypeOf<Console.ContractAmendmentResult>();
     // O login próprio: a troca do aplicativo e os códigos de recuperação.
     expectTypeOf<TotpEnrollmentView>().toEqualTypeOf<Console.TotpEnrollment>();
     expectTypeOf<
@@ -105,6 +108,7 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<Pick<Console.TenantActionRequest, 'confirmSlug'>>().toExtend<
       z.input<typeof enrollmentCodeRequestSchema>
     >();
+    expectTypeOf<Console.AmendmentRequest>().toExtend<z.input<typeof amendmentRequestSchema>>();
     expectTypeOf<Console.LoginRequest>().toExtend<z.input<typeof loginRequestSchema>>();
     expectTypeOf<Console.TotpConfirmRequest>().toExtend<z.input<typeof enrollmentConfirmRequestSchema>>();
     expectTypeOf<Console.PasswordChangeRequest>().toExtend<z.input<typeof passwordChangeRequestSchema>>();

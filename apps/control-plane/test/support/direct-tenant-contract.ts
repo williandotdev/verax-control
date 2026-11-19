@@ -662,6 +662,9 @@ export function describeDirectTenantContract(
         deleteNow: false,
         export: false,
         enrollmentCode: false,
+        // O aditivo é só do contrato direto.
+        amend: false,
+        amendHosting: false,
       });
     });
 
@@ -906,6 +909,9 @@ export function describeDirectTenantContract(
         export: false,
         // O código de instalação da VM do cliente começa o provisionamento reduzido.
         enrollmentCode: true,
+        // Nada instalado ainda: o aditivo pode mudar até onde o ambiente roda.
+        amend: true,
+        amendHosting: true,
       });
       expect((await service.list()).tenants[0]).toMatchObject({ id: created.id, hosting: 'customer' });
 
@@ -1191,6 +1197,376 @@ export function describeDirectTenantContract(
       worker.down = true;
       await expectApiError(service.installation(created.id, OWNER), 503, 'worker_unavailable');
       await expectApiError(build(null).installation(created.id, OWNER), 503, 'worker_unconfigured');
+    });
+
+    // --- O aditivo do contrato direto (decisão do responsável de 19/11/2026; valores FICTÍCIOS) ---------------------
+
+    it('aditivo no cliente antes da instalação: vai para a Verax, volta a pending sem o registro da VM, e o "Iniciar provisionamento" começa dali', async () => {
+      const created = await service.create(
+        directRequest({ hosting: 'customer', slug: 'cliente-adt-a' }),
+        OWNER,
+      );
+      const confirmSlug = 'cliente-adt-a';
+      const contracted = { monthlyTotal: 380_000, additionalGbDayAmount: 45_000 };
+      const result = await service.amend(
+        created.id,
+        {
+          hosting: 'verax',
+          configuration: { plan: 'vciso', gbDay: 4 },
+          contracted,
+          contractedSetup: 0,
+          note: 'Cliente Demo A passou para o vCISO na Verax',
+          confirmSlug,
+        },
+        OWNER,
+      );
+      const startsAt = h.clock.now();
+      expect(result.amendmentId).toMatch(/^[0-9A-Z]{26}$/);
+      expect(result).toMatchObject({
+        state: 'pending',
+        hosting: 'verax',
+        hostingChanged: true,
+        nodeLimitsPending: false,
+        // A vigência recomeça no aditivo, com a duração do plano novo (60 meses no vCISO).
+        contractTerm: { months: 60, startsAt, endsAt: new Date('2031-11-04T12:00:00.000Z') },
+      });
+      const tenant = await tenants.require(created.id);
+      expect(tenant.hosting).toBeUndefined();
+      expect(tenant.enrollment).toBeUndefined();
+      expect(tenant.provisioning).toBeUndefined();
+      expect(tenant).toMatchObject({
+        state: 'pending',
+        configuration: { plan: 'vciso', mode: 'managed', gbDay: 4, size: 'P' },
+        pricing: { priceTableVersion: 'teste-v1', monthlyTotal: 400_000, setupTotal: 500_000 },
+        contractPricing: {
+          reference: { monthlyTotal: 400_000, additionalGbDayAmount: 50_000 },
+          contracted,
+          setup: { reference: 500_000, contracted: 0 },
+        },
+      });
+      expect((await tenants.listTransitions(created.id)).at(-1)).toMatchObject({
+        from: 'waiting_customer_install',
+        to: 'pending',
+        reason: 'contract_amended_to_verax',
+      });
+      // Nada pedido ao cp-worker, nada na fila: só o Firestore mudou.
+      expect(worker.calls).toEqual([]);
+      expect(queue.tasks).toEqual([]);
+      const amendAudit = (await audit.listForTenant(created.id)).find(
+        (entry) => entry.action === 'tenant.contract_amended',
+      );
+      expect(amendAudit).toMatchObject({
+        actor: `owner:${OWNER.email}`,
+        requestId: OWNER.requestId,
+        details: {
+          from: 'waiting_customer_install',
+          to: 'pending',
+          before: {
+            hosting: 'customer',
+            configuration: { plan: 'dedicado', mode: 'self_hosted', gbDay: 3 },
+          },
+          after: { hosting: 'verax', configuration: { plan: 'vciso', mode: 'managed', gbDay: 4 } },
+          note: 'Cliente Demo A passou para o vCISO na Verax',
+        },
+      });
+      const detail = await service.detail(created.id);
+      expect(detail.contractTerm).toEqual(result.contractTerm);
+      expect(detail.actions).toMatchObject({
+        start: true,
+        enrollmentCode: false,
+        amend: true,
+        amendHosting: true,
+      });
+      expect(detail.amendments).toEqual([
+        expect.objectContaining({
+          id: result.amendmentId,
+          at: startsAt,
+          by: OWNER.email,
+          note: 'Cliente Demo A passou para o vCISO na Verax',
+          stateBefore: 'waiting_customer_install',
+          stateAfter: 'pending',
+          nodeLimitsPending: false,
+        }),
+      ]);
+      expect(detail.amendments[0]?.before.hosting).toBe('customer');
+      expect(detail.amendments[0]?.after).toMatchObject({
+        hosting: 'verax',
+        contractTerm: result.contractTerm,
+      });
+
+      // O "Iniciar provisionamento" de sempre: depois dele, onde roda trava; o plano e o volume ainda mudam.
+      const started = await service.act('start', created.id, { confirmSlug }, OWNER);
+      expect(started).toMatchObject({ action: 'start', step: 'preflight' });
+      expect((await service.detail(created.id)).actions).toMatchObject({ amend: true, amendHosting: false });
+      const locked = await expectApiError(
+        service.amend(
+          created.id,
+          { hosting: 'customer', configuration: { plan: 'vciso', gbDay: 4 }, confirmSlug },
+          OWNER,
+        ),
+        409,
+        'hosting_locked',
+      );
+      expect(JSON.stringify(locked.details)).toContain('hosting');
+      h.clock.advance(DAY_MS);
+      const inPlace = await service.amend(
+        created.id,
+        { hosting: 'verax', configuration: { plan: 'dedicado', gbDay: 5 }, confirmSlug },
+        OWNER,
+      );
+      expect(inPlace).toMatchObject({
+        state: 'provisioning',
+        hosting: 'verax',
+        hostingChanged: false,
+        // A execução ainda não chegou ao Terraform: o nó vai nascer com os limites novos.
+        nodeLimitsPending: false,
+        contractTerm: { months: 12, endsAt: new Date('2027-11-05T12:00:00.000Z') },
+      });
+      const after = await tenants.require(created.id);
+      expect(after).toMatchObject({
+        state: 'provisioning',
+        configuration: { plan: 'dedicado', gbDay: 5, size: 'P' },
+        // Sem negociação no pedido: o contratado é a referência; o Dedicado não tem implantação.
+        contractPricing: {
+          reference: { monthlyTotal: 250_000, additionalGbDayAmount: 50_000 },
+          contracted: { monthlyTotal: 250_000, additionalGbDayAmount: 50_000 },
+        },
+      });
+      expect(after.contractPricing?.setup).toBeUndefined();
+      expect((await tenants.listAmendments(created.id)).map((entry) => entry.stateAfter)).toEqual([
+        'pending',
+        'provisioning',
+      ]);
+    });
+
+    it('aditivo na Verax antes do provisionamento: vai para o cliente e espera a instalação; depois do código, onde roda trava', async () => {
+      worker.down = true;
+      const created = await service.create(directRequest({ slug: 'cliente-adt-b' }), OWNER);
+      worker.down = false;
+      expect((await tenants.require(created.id)).state).toBe('pending');
+      const confirmSlug = 'cliente-adt-b';
+      // No cliente, o porte não impede (a VM é dele): 8 GB/dia pede o porte M.
+      const result = await service.amend(
+        created.id,
+        { hosting: 'customer', configuration: { plan: 'dedicado', gbDay: 8 }, confirmSlug },
+        OWNER,
+      );
+      expect(result).toMatchObject({
+        state: 'waiting_customer_install',
+        hosting: 'customer',
+        hostingChanged: true,
+        contractTerm: { months: 12, endsAt: new Date('2027-11-04T12:00:00.000Z') },
+      });
+      expect(await tenants.require(created.id)).toMatchObject({
+        hosting: 'customer',
+        state: 'waiting_customer_install',
+        configuration: { plan: 'dedicado', mode: 'self_hosted', gbDay: 8, size: 'M' },
+      });
+      expect((await tenants.listTransitions(created.id)).at(-1)).toMatchObject({
+        from: 'pending',
+        to: 'waiting_customer_install',
+        reason: 'contract_amended_to_customer',
+      });
+      expect((await service.detail(created.id)).actions).toMatchObject({
+        start: false,
+        enrollmentCode: true,
+      });
+
+      // O primeiro código começa o provisionamento reduzido (túnel e site na Verax): onde roda não muda mais.
+      await service.enrollmentCode(created.id, { confirmSlug }, OWNER);
+      expect((await service.detail(created.id)).actions.amendHosting).toBe(false);
+      await expectApiError(
+        service.amend(
+          created.id,
+          { hosting: 'verax', configuration: { plan: 'dedicado', gbDay: 5 }, confirmSlug },
+          OWNER,
+        ),
+        409,
+        'hosting_locked',
+      );
+      expect((await tenants.require(created.id)).hosting).toBe('customer');
+      expect(
+        (await audit.listForTenant(created.id)).filter((entry) => entry.action === 'tenant.amend_refused'),
+      ).toEqual([expect.objectContaining({ details: { code: 'hosting_locked', state: 'provisioning' } })]);
+
+      // Antes do registro da VM, o nó vai nascer com os limites novos; depois do `claim`, eles ficam pendentes no nó.
+      const before = await service.amend(
+        created.id,
+        { hosting: 'customer', configuration: { plan: 'dedicado', gbDay: 10 }, confirmSlug },
+        OWNER,
+      );
+      expect(before).toMatchObject({
+        hostingChanged: false,
+        nodeLimitsPending: false,
+        state: 'provisioning',
+      });
+      await tenants.change(created.id, () => ({
+        reason: 'teste',
+        audit: { actor: 'system' },
+        mutate: (tenant) =>
+          tenant.enrollment === undefined
+            ? tenant
+            : { ...tenant, enrollment: { ...tenant.enrollment, claimedAt: h.clock.now() } },
+      }));
+      const after = await service.amend(
+        created.id,
+        { hosting: 'customer', configuration: { plan: 'vciso', gbDay: 12 }, confirmSlug },
+        OWNER,
+      );
+      expect(after).toMatchObject({ nodeLimitsPending: true, contractTerm: { months: 60 } });
+      expect((await service.detail(created.id)).amendments.map((entry) => entry.nodeLimitsPending)).toEqual([
+        false,
+        false,
+        true,
+      ]);
+      // O que a instalação manda ao cliente já sai do contrato novo.
+      expect((await service.installation(created.id, OWNER)).size).toBe('G');
+    });
+
+    it('aditivo com o ambiente rodando: só o contrato muda, os limites ficam pendentes no nó, e as regras do cadastro valem', async () => {
+      const created = await service.create(directRequest({ slug: 'cliente-adt-c' }), OWNER);
+      await tenants.change(created.id, () => ({
+        to: 'waiting_customer_connection',
+        reason: 'teste',
+        audit: { actor: 'system' },
+        mutate: (tenant) => ({
+          ...tenant,
+          provisioning: { ...(tenant.provisioning ?? { attempts: 0 }), nodeVersionPinnedAt: h.clock.now() },
+        }),
+      }));
+      await tenants.change(created.id, () => ({ to: 'active', reason: 'teste', audit: { actor: 'system' } }));
+      const confirmSlug = 'cliente-adt-c';
+      const amend = (body: Record<string, unknown>): Promise<unknown> =>
+        service.amend(created.id, { hosting: 'verax', confirmSlug, ...body }, OWNER);
+
+      // As recusas: nada gravado.
+      await expectApiError(
+        amend({ configuration: { plan: 'plataforma', gbDay: 2 } }),
+        400,
+        'invalid_request',
+      );
+      const tooBig = await expectApiError(
+        amend({ configuration: { plan: 'dedicado', gbDay: 8 } }),
+        422,
+        'configuration_unsupported',
+      );
+      expect(JSON.stringify(tooBig.details)).toContain('configuration.gbDay');
+      await expectApiError(
+        amend({ configuration: { plan: 'dedicado', gbDay: 16 } }),
+        422,
+        'configuration_contact_us',
+      );
+      const setup = await expectApiError(
+        amend({ configuration: { plan: 'dedicado', gbDay: 5 }, contractedSetup: 0 }),
+        400,
+        'invalid_request',
+      );
+      expect(JSON.stringify(setup.details)).toContain('contractedSetup');
+      await expectApiError(
+        amend({ configuration: { plan: 'dedicado', gbDay: 5 }, confirmSlug: 'outro' }),
+        400,
+        'confirmation_mismatch',
+      );
+      await expectApiError(
+        amend({ hosting: 'customer', configuration: { plan: 'dedicado', gbDay: 5 } }),
+        409,
+        'hosting_locked',
+      );
+      await expectApiError(
+        amend({ configuration: { plan: 'dedicado', gbDay: 5 }, note: 'linha 1\nlinha 2' }),
+        400,
+        'invalid_request',
+      );
+      await expectApiError(
+        service.amend(
+          newUlid(),
+          { hosting: 'verax', confirmSlug, configuration: { plan: 'dedicado', gbDay: 5 } },
+          OWNER,
+        ),
+        404,
+        'tenant_not_found',
+      );
+      expect(await tenants.listAmendments(created.id)).toEqual([]);
+      expect((await tenants.require(created.id)).configuration).toMatchObject({
+        plan: 'plataforma',
+        gbDay: 2,
+      });
+
+      // O aditivo com o nó instalado: o estado fica, o contrato muda, os limites novos ficam pendentes no nó.
+      const result = await amend({ configuration: { plan: 'dedicado', gbDay: 5 } });
+      expect(result).toMatchObject({ state: 'active', hostingChanged: false, nodeLimitsPending: true });
+      expect((await tenants.require(created.id)).limits).toMatchObject({
+        maxCloudAccounts: 100,
+        monthlyGib: 145,
+      });
+      expect((await tenants.listTransitions(created.id)).map((entry) => entry.to)).toEqual([
+        'pending',
+        'provisioning',
+        'waiting_customer_connection',
+        'active',
+      ]);
+      // O mesmo aditivo de novo não muda nada (o clique duplo): 409, sem outro registro.
+      await expectApiError(amend({ configuration: { plan: 'dedicado', gbDay: 5 } }), 409, 'no_change');
+      // Só os valores mudam (uma renegociação): vale, e os limites não mudam (nada pendente).
+      expect(
+        await amend({
+          configuration: { plan: 'dedicado', gbDay: 5 },
+          contracted: { monthlyTotal: 240_000, additionalGbDayAmount: 50_000 },
+        }),
+      ).toMatchObject({ nodeLimitsPending: false });
+      expect(await tenants.listAmendments(created.id)).toHaveLength(2);
+    });
+
+    it('dois aditivos iguais ao mesmo tempo (clique duplo): um grava, o outro é no_change na transação', async () => {
+      const created = await service.create(directRequest({ slug: 'cliente-adt-e' }), OWNER);
+      const body = {
+        hosting: 'verax',
+        configuration: { plan: 'dedicado', gbDay: 4 },
+        confirmSlug: 'cliente-adt-e',
+      };
+      const outcomes = await Promise.allSettled([
+        service.amend(created.id, body, OWNER),
+        service.amend(created.id, body, OWNER),
+      ]);
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+      const rejected = outcomes.find((outcome) => outcome.status === 'rejected');
+      expect(rejected?.status === 'rejected' ? rejected.reason : undefined).toBeInstanceOf(ApiError);
+      expect((rejected?.status === 'rejected' ? (rejected.reason as ApiError) : undefined)?.code).toBe(
+        'no_change',
+      );
+      // Um aditivo só, e a vigência recomeçou uma vez.
+      expect(await tenants.listAmendments(created.id)).toHaveLength(1);
+      expect(
+        (await audit.listForTenant(created.id)).filter((entry) => entry.action === 'tenant.amend_refused'),
+      ).toEqual([
+        expect.objectContaining({ details: expect.objectContaining({ code: 'no_change' }) as unknown }),
+      ]);
+    });
+
+    it('aditivo: só do contrato direto, e nunca depois do fim do contrato', async () => {
+      const paid = await tenantIn(tenants, 'cliente-pago-f', 'active');
+      await expectApiError(
+        service.amend(
+          paid.id,
+          { hosting: 'verax', configuration: { plan: 'dedicado', gbDay: 3 }, confirmSlug: 'cliente-pago-f' },
+          OWNER,
+        ),
+        409,
+        'stripe_managed',
+      );
+      const created = await service.create(directRequest({ slug: 'cliente-adt-d' }), OWNER);
+      await service.act('cancel', created.id, { confirmSlug: 'cliente-adt-d' }, OWNER);
+      expect((await service.detail(created.id)).actions).toMatchObject({ amend: false, amendHosting: false });
+      await expectApiError(
+        service.amend(
+          created.id,
+          { hosting: 'verax', configuration: { plan: 'dedicado', gbDay: 3 }, confirmSlug: 'cliente-adt-d' },
+          OWNER,
+        ),
+        409,
+        'not_allowed',
+      );
+      expect(await tenants.listAmendments(created.id)).toEqual([]);
     });
   });
 }

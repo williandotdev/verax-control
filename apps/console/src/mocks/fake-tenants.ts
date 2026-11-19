@@ -1,6 +1,9 @@
 import type {
   ConfigurationInput,
+  ContractAmendmentView,
   ContractedConfiguration,
+  ContractPricing,
+  ContractTermsView,
   ContractValues,
   Hosting,
   NodeFitProblem,
@@ -14,6 +17,7 @@ import type {
   TimelineStep,
   ValidationIssue,
 } from '@/lib/api-types';
+import { addMonths, VCISO_CONTRACT_MONTHS } from '@/features/tenants/contract-term';
 import { additionalGbDayAmount, quote } from './fake-engine';
 
 /**
@@ -126,7 +130,27 @@ function actionsOf(tenant: Omit<TenantDetail, 'actions'>, now: Date): TenantActi
         'waiting_customer_connection',
         'active',
       ].includes(tenant.state),
+    amend: amendable(tenant),
+    amendHosting: amendable(tenant) && hostingChangeAllowed(tenant),
   };
+}
+
+/** O aditivo cabe: contrato direto, antes do fim do contrato e no modelo por GB/dia (`amendRefusalOf` do cp-admin). */
+function amendable(tenant: Omit<TenantDetail, 'actions'>): boolean {
+  return (
+    tenant.billingMode === 'contract' &&
+    tenant.state !== 'canceled' &&
+    tenant.state !== 'deleted' &&
+    'plan' in tenant.configuration
+  );
+}
+
+/** Onde o ambiente roda ainda muda: nada instalado nem provisionado (`hostingChangeAllowed` do cp-admin). */
+function hostingChangeAllowed(tenant: Omit<TenantDetail, 'actions'>): boolean {
+  if (tenant.provisioning?.runId !== undefined) return false;
+  return tenant.hosting === 'customer'
+    ? tenant.state === 'waiting_customer_install'
+    : tenant.state === 'pending';
 }
 
 /** A versão FICTÍCIA que o cliente instala na infraestrutura dele (o manifesto conferido pelo cp-worker, simulado). */
@@ -236,6 +260,7 @@ function base(
     },
     access: {},
     lifecycle: {},
+    amendments: [],
   };
 }
 
@@ -852,6 +877,9 @@ export function handleTenantsRequest(
   if (third === 'enrollment-code' && method === 'POST') {
     return enrollmentCode(state, tenant, isRecord(body) ? body : {}, now);
   }
+  if (third === 'amend' && method === 'POST') {
+    return amend(state, table, tableVersion, tenant, isRecord(body) ? body : {}, now);
+  }
   if (third !== undefined && method === 'POST')
     return act(state, tenant, third, isRecord(body) ? body : {}, now);
   return error(404, 'Recurso não encontrado', 'not_found');
@@ -1068,6 +1096,226 @@ function create(
       replayed: false,
       hosting: 'verax',
       provisioning: { started: true, runId, step: 'preflight' },
+    },
+  };
+}
+
+const AMENDABLE_PLANS: readonly unknown[] = ['dedicado', 'vciso'];
+
+function termsOf(tenant: Omit<TenantDetail, 'actions'>): ContractTermsView {
+  return {
+    hosting: tenant.hosting,
+    configuration: tenant.configuration as ContractTermsView['configuration'],
+    limits: tenant.limits,
+    pricing: tenant.pricing,
+    ...(tenant.contractPricing === undefined ? {} : { contractPricing: tenant.contractPricing }),
+    ...(tenant.contractTerm === undefined ? {} : { contractTerm: tenant.contractTerm }),
+  };
+}
+
+let amendmentSequence = 0;
+
+/**
+ * `POST .../amend`: o aditivo do contrato direto, com as regras do cp-admin (uma amostra da validação): o plano (Dedicado
+ * ou vCISO), o volume, onde roda (só antes de qualquer instalação) e os valores; a vigência recomeça no aditivo.
+ */
+function amend(
+  state: FakeTenantsState,
+  table: PriceTable | undefined,
+  tableVersion: string | undefined,
+  tenant: TenantDetail,
+  body: Record<string, unknown>,
+  now: Date,
+): FakeResponse {
+  const hosting = hostingOf(body);
+  const configuration = body['configuration'];
+  const issues = [...(hosting === undefined ? [HOSTING_ISSUE] : []), ...configurationIssues(configuration)];
+  const plan = isRecord(configuration) ? configuration['plan'] : undefined;
+  if (PLANS.includes(plan) && !AMENDABLE_PLANS.includes(plan)) {
+    issues.push({
+      path: 'configuration.plan',
+      message: 'No aditivo, o plano é o SIEM Dedicado ou o SIEM + vCISO.',
+    });
+  }
+  const contracted = contractedOf(body['contracted']);
+  if (contracted === 'invalid') {
+    issues.push({ path: 'contracted.monthlyTotal', message: 'Valor fora do permitido.' });
+  }
+  const setup = body['contractedSetup'];
+  if (setup !== undefined && (typeof setup !== 'number' || !Number.isInteger(setup) || setup < 0)) {
+    issues.push({ path: 'contractedSetup', message: 'Valor fora do permitido.' });
+  }
+  const note = body['note'];
+  if (note !== undefined && (typeof note !== 'string' || note.trim() === '' || note.length > 500)) {
+    issues.push({ path: 'note', message: 'Observação longa demais: no máximo 500 caracteres.' });
+  }
+  if (issues.length > 0 || hosting === undefined || contracted === 'invalid') return invalid(issues);
+  if (body['confirmSlug'] !== tenant.slug) {
+    return error(400, 'O subdomínio não confere com o do cliente: nada mudou.', 'confirmation_mismatch', {
+      issues: [{ path: 'confirmSlug', message: 'Digite o subdomínio do cliente, igual, para confirmar.' }],
+    });
+  }
+  if (tenant.billingMode !== 'contract') {
+    return error(
+      409,
+      'Cliente da Stripe: o contrato segue a assinatura, e o aditivo é só do contrato direto.',
+      'stripe_managed',
+    );
+  }
+  if (!tenant.actions.amend) {
+    return error(409, 'O contrato já terminou (cancelado ou excluído): não há o que alterar.', 'not_allowed');
+  }
+  if (hosting !== tenant.hosting && !tenant.actions.amendHosting) {
+    return error(
+      409,
+      'Onde o ambiente roda só muda antes de qualquer instalação: este ambiente já foi provisionado ou já teve o código de instalação gerado.',
+      'hosting_locked',
+      {
+        issues: [
+          {
+            path: 'hosting',
+            message:
+              'O ambiente já começou a ser criado (provisionamento ou código de instalação): onde ele roda não muda mais num aditivo.',
+          },
+        ],
+      },
+    );
+  }
+  if (table === undefined || tableVersion === undefined) {
+    return error(409, 'Nenhuma tabela de preços vigente.', 'pricing_table_missing');
+  }
+  const outcome = quote(configurationFor(hosting, configuration), table);
+  if (outcome.kind === 'contact_us') {
+    return error(
+      422,
+      'Esta configuração está acima do que a tabela de preços vende.',
+      'configuration_contact_us',
+      {
+        reason: outcome.reason,
+        issues: [{ path: 'configuration.gbDay', message: 'Acima do que a tabela vende.' }],
+      },
+    );
+  }
+  const problems = problemsOf(outcome.quote.configuration, hosting);
+  if (problems.length > 0) {
+    return error(
+      422,
+      'O provisionamento ainda não sabe criar esta configuração.',
+      'configuration_unsupported',
+      {
+        problems,
+        issues: [
+          { path: 'configuration.gbDay', message: 'O provisionamento ainda não cria esta configuração.' },
+        ],
+      },
+    );
+  }
+  const quoted = outcome.quote;
+  if (typeof setup === 'number' && quoted.setupTotal === 0) {
+    return invalid([{ path: 'contractedSetup', message: 'A implantação só existe no SIEM + vCISO.' }]);
+  }
+  const reference: ContractValues = {
+    monthlyTotal: quoted.monthlyTotal,
+    additionalGbDayAmount: additionalGbDayAmount(table, quoted.configuration.plan),
+  };
+  const contractPricing: ContractPricing = {
+    reference,
+    contracted: contracted ?? reference,
+    ...(quoted.setupTotal > 0
+      ? {
+          setup: {
+            reference: quoted.setupTotal,
+            contracted: typeof setup === 'number' ? setup : quoted.setupTotal,
+          },
+        }
+      : {}),
+  };
+  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+  if (
+    hosting === tenant.hosting &&
+    same(quoted.configuration, tenant.configuration) &&
+    same(contractPricing, tenant.contractPricing)
+  ) {
+    return error(
+      409,
+      'Nada muda neste aditivo: o plano, o volume, onde roda e os valores são os mesmos de hoje.',
+      'no_change',
+    );
+  }
+  const months =
+    quoted.configuration.plan === 'vciso' ? VCISO_CONTRACT_MONTHS : table.plans.dedicado.contractMonths;
+  const contractTerm = {
+    months,
+    startsAt: now.toISOString(),
+    endsAt: addMonths(now, months).toISOString(),
+  };
+  const moving = hosting !== tenant.hosting;
+  // Na amostra, o nó gerenciado já tem os limites dele depois do provisionamento (a regra de verdade é a do cp-admin).
+  const installed =
+    tenant.hosting === 'verax' && tenant.state !== 'pending' && tenant.state !== 'provisioning';
+  const nodeLimitsPending = installed && !same(quoted.limits, tenant.limits);
+  const { actions: _actions, provisioning, urls, ...rest } = tenant;
+  const updated: Omit<TenantDetail, 'actions'> = {
+    ...rest,
+    ...(moving || provisioning === undefined ? {} : { provisioning }),
+    ...(hosting === 'verax'
+      ? {
+          urls: urls ?? {
+            panelUrl: `https://${tenant.slug}.control.veraxsistemas.com.br`,
+            apiUrl: `https://api-${tenant.slug}.veraxsistemas.com.br`,
+          },
+        }
+      : {}),
+    hosting,
+    configuration: quoted.configuration,
+    limits: quoted.limits,
+    pricing: {
+      priceTableVersion: tableVersion,
+      quoteId: '01JC00000000000000000000Q8',
+      monthlyTotal: quoted.monthlyTotal,
+      setupTotal: quoted.setupTotal,
+    },
+    contractPricing,
+    contractTerm,
+  };
+  const stateAfter: TenantState = moving
+    ? hosting === 'customer'
+      ? 'waiting_customer_install'
+      : 'pending'
+    : tenant.state;
+  const at = (minutes: number): string => new Date(now.getTime() - minutes * MINUTE).toISOString();
+  amendmentSequence += 1;
+  const amendment: ContractAmendmentView = {
+    id: `01JC0000000000000000AM${String(amendmentSequence).padStart(4, '0')}`,
+    at: now.toISOString(),
+    by: 'responsavel@verax.example',
+    ...(typeof note === 'string' ? { note: note.trim() } : {}),
+    before: termsOf(tenant),
+    after: termsOf(updated),
+    stateBefore: tenant.state,
+    stateAfter,
+    nodeLimitsPending,
+  };
+  const withHistory = { ...updated, amendments: [...tenant.amendments, amendment] };
+  const next = moving
+    ? transition(
+        { ...withHistory, actions: tenant.actions },
+        stateAfter,
+        `contract_amended_to_${hosting}`,
+        now,
+        { timeline: hosting === 'verax' ? timeline(at, 0) : [] },
+      )
+    : withActions(withHistory, now);
+  state.tenants.set(tenant.id, next);
+  return {
+    status: 200,
+    body: {
+      amendmentId: amendment.id,
+      state: stateAfter,
+      hosting,
+      hostingChanged: moving,
+      nodeLimitsPending,
+      contractTerm,
     },
   };
 }

@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, Param, Post, Req, Res } from '@nestjs/
 import type { Response } from 'express';
 import { forgetLiveSecret } from '../common/logger/sanitize.js';
 import type {
+  ContractAmendmentResult,
   DirectTenantCreated,
   DirectTenantPreview,
   EnrollmentCodeIssued,
@@ -19,7 +20,8 @@ import { type OwnerRequest, ownerOf } from './owner.guard.js';
  * cotação de referência, o cadastro de um cliente de contrato direto e as operações do responsável, cada uma com o
  * subdomínio digitado como confirmação: `start`, `resume`, `cancel`, `suspend`, `reactivate`, `delete-now` e
  * `export`. Para o contrato direto com o ambiente na VM do cliente, a leitura do que mandar a ele (`installation`) e o
- * código de instalação de uso único (`enrollment-code`).
+ * código de instalação de uso único (`enrollment-code`). O aditivo de um contrato direto (`amend`): o plano, o volume,
+ * onde o ambiente roda (só antes de qualquer instalação) e os valores, com o subdomínio digitado.
  */
 @Controller('admin/tenants')
 export class AdminTenantsController {
@@ -64,6 +66,17 @@ export class AdminTenantsController {
     const issued = await this.service.enrollmentCode(id, body, ownerOf(req));
     res.on('close', () => forgetLiveSecret(issued.code));
     return issued;
+  }
+
+  /** O aditivo do contrato direto (`AdminTenantsService.amend`): grava no Firestore, nada na nuvem. */
+  @Post(':tenantId/amend')
+  @HttpCode(200)
+  amend(
+    @Param('tenantId') id: string,
+    @Body() body: unknown,
+    @Req() req: OwnerRequest,
+  ): Promise<ContractAmendmentResult> {
+    return this.service.amend(id, body, ownerOf(req));
   }
 
   @Post(':tenantId/start')
