@@ -533,8 +533,8 @@ export interface ContractAmendmentView {
   nodeLimitsPending: boolean;
 }
 
-/** Os planos de um aditivo: os dois que rodam num servidor próprio. */
-export type AmendablePlan = 'dedicado' | 'vciso';
+/** Os planos de um aditivo: os três do cadastro (o SIEM Cloud só na infraestrutura da Verax). */
+export type AmendablePlan = PlanId;
 
 /** O que o console manda em `POST /v1/admin/tenants/:id/amend`. */
 export interface AmendmentRequest {

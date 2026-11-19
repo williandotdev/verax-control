@@ -1,5 +1,5 @@
-import type { ContractValues } from '@/lib/api-types';
-import { formatRatio } from '@/lib/numbers';
+import type { ContractValues, PriceTable } from '@/lib/api-types';
+import { formatInteger, formatRatio } from '@/lib/numbers';
 
 /**
  * Os valores de um contrato direto no console: o mensal e o GB/dia adicional, a referência da tabela, o preenchimento
@@ -63,4 +63,13 @@ export function negotiationText(contracted: number, reference: number): string {
   if (reference === 0) return 'negociado';
   const ratio = Math.abs(contracted - reference) / reference;
   return `negociado, ${formatRatio(ratio)} ${contracted < reference ? 'abaixo' : 'acima'} da tabela`;
+}
+
+/** O que cada plano cota na tabela vigente, para a dica do volume (o cadastro e o aditivo). */
+export function gbDayHint(table: PriceTable, plan: unknown): string {
+  const { plataforma, dedicado } = table.plans;
+  if (plan === 'plataforma') {
+    return `${formatInteger(plataforma.includedGbDay)} GB/dia incluídos, até ${formatInteger(plataforma.maxOnlineGbDay)}.`;
+  }
+  return `De ${formatInteger(dedicado.minGbDay)} a ${formatInteger(dedicado.maxGbDay)} GB/dia (abaixo do mínimo, sobe até ele).`;
 }

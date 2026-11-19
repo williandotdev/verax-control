@@ -6166,3 +6166,22 @@ note?, confirmSlug}` → `{amendmentId, state, hosting, hostingChanged, nodeLimi
   aditivo); aplicar limites novos num nó em execução (o passo `node.apply_limits`, PC-12) não existe.
 - **Manual:** um contrato de teste no cliente sem código: mudar para a Verax e o vCISO, conferir o detalhe e o
   "Iniciar provisionamento"; um contrato ativo: mudar o volume e ver o aviso dos limites.
+
+## Aditivo do contrato direto: o SIEM Cloud também
+
+- **O que mudou:** o aditivo aceita os três planos do cadastro do contrato direto. O SIEM Cloud (`plataforma`) só na
+  infraestrutura da Verax: no cliente, a API recusa como no cadastro (`configuration_contact_us`, `mode_unavailable`,
+  no campo do plano), e o console desliga a opção (no cliente, "SIEM Cloud (só na infraestrutura da Verax)"; com o
+  SIEM Cloud escolhido, o rádio "Infraestrutura do cliente" fica desligado com o motivo). Por contrato, até a célula
+  compartilhada (CE-15), o SIEM Cloud ganha um nó P próprio, como no cadastro. A referência dos valores é a do cadastro
+  (a base com a franquia e o GB/dia adicional da franquia), sem implantação. A vigência do SIEM Cloud é de 12 meses
+  (constante `PLATAFORMA_CONTRACT_MONTHS`: a tabela não tem o campo); o Dedicado segue a tabela e o vCISO, 60.
+- **Arquivos:** plano de controle: `pricing/contract-term.ts`, `admin/admin-tenants.{schema,service}.ts`,
+  `test/support/direct-tenant-contract.ts`. Console: `features/tenants/amend-contract.tsx`, `contract-term.ts`,
+  `contract-values.ts` (a dica do volume por plano, agora do cadastro e do aditivo), `new-tenant-page.tsx`,
+  `form/fields.tsx` (opção desligada no seletor e no rádio), `lib/api-types.ts`, `mocks/fake-tenants.ts` e
+  `amend-contract.test.tsx`. Docs: `runbooks/console-do-responsavel.md` (7.1).
+- **Testes:** plano de controle (os do console do responsável, o contrato direto em memória, o contrato de tipos),
+  console (vitest dos clientes), `eslint` e `typecheck`.
+- **Manual:** num contrato direto de teste ainda não instalado, mudar para o SIEM Cloud na Verax e conferir o "Iniciar
+  provisionamento".

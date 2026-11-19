@@ -7,10 +7,13 @@ import { formatInteger } from '@/lib/numbers';
  * meses no SIEM Dedicado (a da tabela de preços) e 60 no SIEM + vCISO, contados do último aditivo.
  */
 export const VCISO_CONTRACT_MONTHS = 60;
+/** O SIEM Cloud: 12 meses, como o site vende (a tabela não tem o campo). */
+export const PLATAFORMA_CONTRACT_MONTHS = 12;
 
 /** A duração do contrato do plano, em meses; sem a tabela carregada, a do Dedicado fica desconhecida. */
 export function contractMonthsOf(plan: AmendablePlan, table: PriceTable | undefined): number | undefined {
   if (plan === 'vciso') return VCISO_CONTRACT_MONTHS;
+  if (plan === 'plataforma') return PLATAFORMA_CONTRACT_MONTHS;
   return table?.plans.dedicado.contractMonths;
 }
 

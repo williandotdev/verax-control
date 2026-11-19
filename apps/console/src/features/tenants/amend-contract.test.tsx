@@ -27,8 +27,10 @@ describe('aditivo do contrato', () => {
     expect(within(form).getByRole('radio', { name: 'Infraestrutura do cliente' })).toBeChecked();
     expect(within(form).getByLabelText('Plano')).toHaveValue('dedicado');
     expect(within(form).getByLabelText('Volume de logs (GB/dia)')).toHaveValue('3');
-    // O SIEM Cloud não entra num aditivo.
-    expect(within(form).queryByRole('option', { name: 'SIEM Cloud' })).not.toBeInTheDocument();
+    // No cliente, o SIEM Cloud aparece, mas desligado: ele roda só na infraestrutura da Verax.
+    expect(
+      within(form).getByRole('option', { name: 'SIEM Cloud (só na infraestrutura da Verax)' }),
+    ).toBeDisabled();
     expect(within(form).getByRole('button', { name: 'Revisar e confirmar…' })).toBeDisabled();
 
     await user.click(within(form).getByRole('radio', { name: 'Infraestrutura da Verax' }));
@@ -115,8 +117,9 @@ describe('aditivo do contrato', () => {
     expect(within(form).getByRole('note')).toHaveTextContent(
       'Onde o ambiente roda: Infraestrutura da VeraxNão muda neste aditivo: o ambiente já começou a ser criado (o provisionamento já começou)',
     );
-    // O SIEM Cloud de hoje vira o Dedicado (o plano mais comum no contrato direto).
-    expect(within(form).getByLabelText('Plano')).toHaveValue('dedicado');
+    // Começa com o SIEM Cloud de hoje; o aditivo passa para o Dedicado.
+    expect(within(form).getByLabelText('Plano')).toHaveValue('plataforma');
+    await user.selectOptions(within(form).getByLabelText('Plano'), 'dedicado');
     await user.clear(within(form).getByLabelText('Volume de logs (GB/dia)'));
     await user.type(within(form).getByLabelText('Volume de logs (GB/dia)'), '5');
     await user.click(within(form).getByRole('button', { name: 'Calcular a cotação' }));
@@ -142,11 +145,70 @@ describe('aditivo do contrato', () => {
     );
   });
 
+  it('SIEM Cloud: só na infraestrutura da Verax (o cliente fica desligado), com a referência da franquia e 12 meses', async () => {
+    const state = createFakeState();
+    const { user } = renderConsole(`/clientes/${CUSTOMER_ID}`, state);
+    const contracted = await screen.findByRole('region', { name: 'Contratado' });
+    await user.click(within(contracted).getByRole('button', { name: 'Alterar contrato…' }));
+    const form = screen.getByRole('region', { name: 'Alterar contrato (aditivo)' });
+    expect(form).toHaveTextContent('até a célula compartilhada abrir, ganha um servidor próprio');
+    expect(form).not.toHaveTextContent('não entra num aditivo');
+
+    // Na Verax, o SIEM Cloud se escolhe; com ele, a infraestrutura do cliente fica desligada, com o motivo.
+    await user.click(within(form).getByRole('radio', { name: 'Infraestrutura da Verax' }));
+    await user.selectOptions(within(form).getByLabelText('Plano'), 'plataforma');
+    const customer = within(form).getByRole('radio', { name: 'Infraestrutura do cliente' });
+    expect(customer).toBeDisabled();
+    expect(form).toHaveTextContent('Indisponível com o SIEM Cloud');
+    await user.click(customer);
+    expect(within(form).getByRole('radio', { name: 'Infraestrutura da Verax' })).toBeChecked();
+    // A dica do volume é a do SIEM Cloud (a franquia incluída e o máximo do site).
+    expect(within(form).getByLabelText('Volume de logs (GB/dia)')).toHaveAccessibleDescription(
+      /2 GB\/dia incluídos, até 5\./,
+    );
+
+    await user.click(within(form).getByRole('button', { name: 'Calcular a cotação' }));
+    const quote = await within(form).findByRole('region', { name: 'Cotação de referência' });
+    expect(quote).toHaveTextContent('SIEM Cloud, 3 GB/dia');
+    expect(within(form).getByLabelText('Valor mensal do contrato')).toHaveValue('1.300,00');
+    expect(within(form).getByLabelText('Valor por GB/dia adicional')).toHaveValue('300,00');
+    expect(within(form).queryByLabelText('Implantação do SIEM + vCISO (uma vez)')).not.toBeInTheDocument();
+
+    await user.click(within(form).getByRole('button', { name: 'Revisar e confirmar…' }));
+    const confirm = within(form).getByRole('region', { name: 'Confirmar o aditivo' });
+    const diff = within(confirm).getByRole('table', { name: 'O que muda no contrato' });
+    expect(within(diff).getByRole('row', { name: /Plano/ })).toHaveTextContent('SIEM DedicadoSIEM Cloudmuda');
+    expect(within(diff).getByRole('row', { name: /Vigência/ })).toHaveTextContent('Sem registro12 meses');
+    await user.type(within(confirm).getByLabelText(/Digite o subdomínio/), 'cliente-demo-e');
+    await user.click(within(confirm).getByRole('button', { name: 'Gravar o aditivo' }));
+
+    expect(await within(contracted).findByRole('status')).toHaveTextContent('12 meses');
+    expect(state.tenants.tenants.get(CUSTOMER_ID)).toMatchObject({
+      hosting: 'verax',
+      state: 'pending',
+      configuration: { plan: 'plataforma', mode: 'managed', gbDay: 3 },
+      contractPricing: { reference: { monthlyTotal: 130_000, additionalGbDayAmount: 30_000 } },
+      contractTerm: { months: 12 },
+    });
+  });
+
+  it('no cliente, o SIEM Cloud não se escolhe: a opção fica desligada', async () => {
+    const { user } = renderConsole(`/clientes/${CUSTOMER_ID}`);
+    const contracted = await screen.findByRole('region', { name: 'Contratado' });
+    await user.click(within(contracted).getByRole('button', { name: 'Alterar contrato…' }));
+    const form = screen.getByRole('region', { name: 'Alterar contrato (aditivo)' });
+    const plan = within(form).getByLabelText('Plano');
+    await user.selectOptions(plan, 'plataforma').catch(() => undefined);
+    expect(plan).toHaveValue('dedicado');
+    expect(within(form).getByRole('radio', { name: 'Infraestrutura do cliente' })).toBeChecked();
+  });
+
   it('o que o provisionamento não cria: o motivo na cotação, e a confirmação não abre', async () => {
     const { user } = renderConsole(`/clientes/${FAILED_ID}`);
     const contracted = await screen.findByRole('region', { name: 'Contratado' });
     await user.click(within(contracted).getByRole('button', { name: 'Alterar contrato…' }));
     const form = screen.getByRole('region', { name: 'Alterar contrato (aditivo)' });
+    await user.selectOptions(within(form).getByLabelText('Plano'), 'dedicado');
     await user.clear(within(form).getByLabelText('Volume de logs (GB/dia)'));
     await user.type(within(form).getByLabelText('Volume de logs (GB/dia)'), '8');
     await user.click(within(form).getByRole('button', { name: 'Calcular a cotação' }));

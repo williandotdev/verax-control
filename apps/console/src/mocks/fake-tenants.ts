@@ -17,7 +17,11 @@ import type {
   TimelineStep,
   ValidationIssue,
 } from '@/lib/api-types';
-import { addMonths, VCISO_CONTRACT_MONTHS } from '@/features/tenants/contract-term';
+import {
+  addMonths,
+  PLATAFORMA_CONTRACT_MONTHS,
+  VCISO_CONTRACT_MONTHS,
+} from '@/features/tenants/contract-term';
 import { additionalGbDayAmount, quote } from './fake-engine';
 
 /**
@@ -1100,7 +1104,7 @@ function create(
   };
 }
 
-const AMENDABLE_PLANS: readonly unknown[] = ['dedicado', 'vciso'];
+const AMENDABLE_PLANS: readonly unknown[] = ['plataforma', 'dedicado', 'vciso'];
 
 function termsOf(tenant: Omit<TenantDetail, 'actions'>): ContractTermsView {
   return {
@@ -1192,7 +1196,15 @@ function amend(
       'configuration_contact_us',
       {
         reason: outcome.reason,
-        issues: [{ path: 'configuration.gbDay', message: 'Acima do que a tabela vende.' }],
+        issues: [
+          outcome.reason === 'mode_unavailable'
+            ? {
+                path: 'configuration.plan',
+                message:
+                  'O SIEM Cloud roda só na célula da Verax: no ambiente do cliente, escolha o SIEM Dedicado ou o SIEM + vCISO.',
+              }
+            : { path: 'configuration.gbDay', message: 'Acima do que a tabela vende.' },
+        ],
       },
     );
   }
@@ -1243,7 +1255,11 @@ function amend(
     );
   }
   const months =
-    quoted.configuration.plan === 'vciso' ? VCISO_CONTRACT_MONTHS : table.plans.dedicado.contractMonths;
+    quoted.configuration.plan === 'vciso'
+      ? VCISO_CONTRACT_MONTHS
+      : quoted.configuration.plan === 'plataforma'
+        ? PLATAFORMA_CONTRACT_MONTHS
+        : table.plans.dedicado.contractMonths;
   const contractTerm = {
     months,
     startsAt: now.toISOString(),

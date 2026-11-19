@@ -515,19 +515,22 @@ Para um contrato direto vivo (não cancelado), o cartão **Contratado** do detal
 do contrato (decisão de 19/11/2026). Num cliente da Stripe, num contrato cancelado ou num contrato do modelo de preço
 anterior, o botão não aparece (a API também recusa).
 
-1. **O que muda:** o **plano** (só o SIEM Dedicado ou o SIEM + vCISO; o SIEM Cloud não entra num aditivo), o **volume
+1. **O que muda:** o **plano** (SIEM Cloud, SIEM Dedicado ou SIEM + vCISO, como no cadastro; o SIEM Cloud só na
+   infraestrutura da Verax: com ele, "Infraestrutura do cliente" fica desligada, e no cliente ele aparece desligado.
+   Por contrato, até a célula compartilhada abrir, o SIEM Cloud ganha um servidor próprio, porte P), o **volume
    em GB/dia**, os **valores do contrato** e, enquanto nada foi instalado, **onde o ambiente roda**. O formulário abre
    com o contrato de hoje.
 2. **Calcular a cotação:** a referência da tabela vigente, com as mesmas regras do cadastro (o mínimo e o máximo do
-   plano, "sob consulta" recusado, na Verax só o porte P, no cliente sem agentes). Os valores do contrato vêm
+   plano, "sob consulta" recusado, na Verax só o porte P, no cliente sem agentes). No SIEM Cloud, a referência é a do
+   cadastro: a base com a franquia incluída e o GB/dia adicional da franquia, sem implantação. Os valores do contrato vêm
    preenchidos com a referência, como no cadastro, e podem ser negociados. No SIEM + vCISO aparece também a
    **Implantação** (vem com a da tabela; use 0 se ela já foi paga). A **Observação** (opcional, até 500 caracteres) vai
    ao histórico e à auditoria: o motivo ou o número do aditivo assinado.
 3. **Revisar e confirmar…** mostra a tabela "Hoje × Depois do aditivo" (onde roda, plano, volume, porte, valores,
    implantação, vigência e, se mudar, o estado). Digite o subdomínio e **Gravar o aditivo**.
 
-**A vigência recomeça na data do aditivo** com a duração do plano novo: 12 meses no SIEM Dedicado (a da tabela de
-preços, `contractMonths`) e 60 no SIEM + vCISO. Ela aparece no cartão **Contratado** e em cada aditivo.
+**A vigência recomeça na data do aditivo** com a duração do plano novo: 12 meses no SIEM Cloud (como o site vende; a
+tabela não tem o campo), 12 no SIEM Dedicado (a da tabela de preços, `contractMonths`) e 60 no SIEM + vCISO. Ela aparece no cartão **Contratado** e em cada aditivo.
 
 **Onde o ambiente roda só muda antes de qualquer instalação:**
 

@@ -1,22 +1,29 @@
-import type { PlanId, PriceTable } from './pricing.schema.js';
+import { PLAN_IDS, type PlanId, type PriceTable } from './pricing.schema.js';
 
 /**
- * A vigência de um contrato direto (decisão do responsável de 19/11/2026): 12 meses no SIEM Dedicado e 60 no SIEM +
- * vCISO, contados do cadastro ou do último aditivo (o aditivo recomeça a contagem com a duração do plano novo).
+ * A vigência de um contrato direto (decisões do responsável de 19/11/2026): 12 meses no SIEM Cloud, 12 no SIEM
+ * Dedicado e 60 no SIEM + vCISO, contados do último aditivo (o aditivo recomeça a contagem com a duração do plano novo).
  *
  * A do Dedicado é a da tabela de preços (`plans.dedicado.contractMonths`, que o responsável edita). A tabela não tem
- * campo para o vCISO (o vCISO repete o preço por GB/dia, o mínimo e o máximo do Dedicado), e o site vende o vCISO em 60
- * meses: fica aqui até a tabela ganhar o campo próprio.
+ * campo para o SIEM Cloud nem para o vCISO (o vCISO repete o preço por GB/dia, o mínimo e o máximo do Dedicado); o site
+ * vende o SIEM Cloud em 12 meses e o vCISO em 60: ficam aqui até a tabela ganhar os campos próprios.
  */
+export const PLATAFORMA_CONTRACT_MONTHS = 12;
 export const VCISO_CONTRACT_MONTHS = 60;
 
-/** Os planos que um aditivo aceita: os dois que rodam num servidor próprio (a Plataforma é a célula da Verax). */
-export const AMENDABLE_PLANS = ['dedicado', 'vciso'] as const satisfies readonly PlanId[];
-export type AmendablePlan = (typeof AMENDABLE_PLANS)[number];
+/**
+ * Os planos que um aditivo aceita: os três, como o cadastro do contrato direto. O SIEM Cloud só na infraestrutura da
+ * Verax (`PLAN_MODES`: no cliente, a cotação responde "sob consulta", `mode_unavailable`, como no cadastro); por
+ * contrato, ele ganha um nó P próprio até a célula compartilhada existir (`node-fit.ts`).
+ */
+export const AMENDABLE_PLANS = PLAN_IDS;
+export type AmendablePlan = PlanId;
 
 /** A duração do contrato do plano, em meses. */
 export function contractMonthsFor(plan: AmendablePlan, table: PriceTable): number {
-  return plan === 'vciso' ? VCISO_CONTRACT_MONTHS : table.plans.dedicado.contractMonths;
+  if (plan === 'vciso') return VCISO_CONTRACT_MONTHS;
+  if (plan === 'plataforma') return PLATAFORMA_CONTRACT_MONTHS;
+  return table.plans.dedicado.contractMonths;
 }
 
 /**
