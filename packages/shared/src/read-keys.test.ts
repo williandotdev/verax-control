@@ -138,7 +138,10 @@ describe('chaves de leitura da VM própria do cliente', () => {
     const key = pem();
     expect(isGcpPrivateKeyShape(key)).toBe(true);
     expect(isGcpPrivateKeyShape(key.trimEnd())).toBe(true);
-    expect(isGcpPrivateKeyShape(key.replace('\n', '\n\n'))).toBe(false);
+    // Uma linha em branco só, logo depois do cabeçalho, já recusa; todas as linhas separadas por uma em branco também.
+    const lines = key.split('\n');
+    expect(isGcpPrivateKeyShape([lines[0], '', ...lines.slice(1)].join('\n'))).toBe(false);
+    expect(isGcpPrivateKeyShape(key.replaceAll('\n', '\n\n'))).toBe(false);
     expect(isGcpPrivateKeyShape(key.replace('-----END', 'x-----END'))).toBe(false);
     expect(isGcpPrivateKeyShape(`${key}${'A'.repeat(4096)}`)).toBe(false);
   });

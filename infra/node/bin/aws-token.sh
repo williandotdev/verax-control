@@ -60,9 +60,13 @@ signal_renewed() {
 }
 
 if [[ ${NODE_PLATFORM:-gcp} == vm ]]; then
-  # O mesmo projeto do Compose do start.sh e do wazuh-apply.sh (o cofre, quando ligado, só muda o worker).
-  files=(-f /opt/verax/compose.yaml -f /opt/verax/compose.wazuh.yaml)
-  if [[ ${CREDENTIALS_VAULT:-false} == true ]]; then files+=(-f /opt/verax/compose.vault.yaml); fi
+  # O job aws-sessions é do compose.vault.yaml: a chave de leitura está no cofre de credenciais. O mesmo projeto do
+  # Compose do start.sh e do wazuh-apply.sh.
+  if [[ ${CREDENTIALS_VAULT:-false} != true ]]; then
+    echo 'NODE_PLATFORM=vm: as sessões da AWS saem da chave do cofre e exigem CREDENTIALS_VAULT=true (/etc/verax/node.conf).' >&2
+    exit 2
+  fi
+  files=(-f /opt/verax/compose.yaml -f /opt/verax/compose.wazuh.yaml -f /opt/verax/compose.vault.yaml)
   env_files=(--env-file /etc/verax/images.env)
   if [[ -f $run/memory.env ]]; then env_files+=(--env-file "$run/memory.env"); fi
   # Numa variável, antes de tocar no arquivo: um erro do job (o banco ou o STS fora) mantém as sessões anteriores.

@@ -497,7 +497,7 @@ token do Cloudflare. Os nós da GCP continuam sem chave.
   que troca a chave de cada conta do manager por uma sessão de 1 hora (`GetSessionToken`) e imprime o arquivo
   `credentials`; o host o confere linha a linha (só o nome do profile, `ASIA...`, o segredo e o token da sessão) e o grava
   por troca atômica, 0600, na pasta do manager. Uma falha mantém as sessões anteriores, e o sinal `aws-token` do worker
-  (`aws_token_stale`) vale igual. O job é o único, além do worker, que monta a pasta do cofre (o CI confere: só leitura,
+  (`aws_token_stale`) vale igual. O job é o único, além do worker, que monta a pasta do cofre (definido no `compose.vault.yaml`; o CI confere a definição inteira: só leitura,
   endurecido, perfil `setup`).
 - **GCP no worker** (`gcp/vault-pubsub-reader.ts`): o cliente cria o tópico, a assinatura e o sink no **próprio projeto**
   (não há projeto do nó na VM própria), e a conta de serviço tem `roles/pubsub.subscriber` só na assinatura. O sync da

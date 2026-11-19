@@ -28,13 +28,36 @@ const fields = () => ({
   privateKey: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
 });
 
+/** Uma chamada que um dos servidores falsos recebeu, na ordem de chegada (os dois dividem a lista). */
 interface Seen {
   path: string;
   body: string;
   authorization: string | undefined;
 }
 
-/** O Google falso: o endpoint de token (confere o JWT com a chave pública) e o Pub/Sub, em 127.0.0.1. */
+type Reply = { status: number; body: unknown };
+
+/** Um servidor HTTP em 127.0.0.1 que responde todo pedido com o mesmo tratador. */
+async function listen(handler: (request: IncomingMessage, body: string) => Reply): Promise<Server> {
+  const server = createServer((request, response) => {
+    void (async () => {
+      let body = '';
+      for await (const chunk of request) body += String(chunk);
+      const { status, body: reply } = handler(request, body);
+      response.writeHead(status, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(reply));
+    })();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return server;
+}
+
+const baseOf = (server: Server | null) => `http://127.0.0.1:${(server?.address() as AddressInfo).port}`;
+
+/**
+ * O Google falso, em dois servidores: o endpoint de token (todo pedido a ele confere o JWT com a chave pública, sem
+ * rota nenhuma que o pule) e o Pub/Sub (as três chamadas da assinatura, por ação).
+ */
 class FakeGoogle {
   readonly seen: Seen[] = [];
   tokenStatus = 200;
@@ -42,58 +65,72 @@ class FakeGoogle {
   permissions: string[] | 'missing' = [PUBSUB_CONSUME_PERMISSION];
   messages = 0;
   readonly issued: string[] = [];
-  #server: Server | null = null;
+  #token: Server | null = null;
+  #pubsub: Server | null = null;
 
   async start(): Promise<void> {
-    this.#server = createServer((request, response) => {
-      void this.#handle(request).then(({ status, body }) => {
-        response.writeHead(status, { 'content-type': 'application/json' });
-        response.end(JSON.stringify(body));
-      });
-    });
-    await new Promise<void>((resolve) => this.#server?.listen(0, '127.0.0.1', resolve));
+    this.#token = await listen((request, body) => this.#tokenReply(request, body));
+    this.#pubsub = await listen((request, body) => this.#pubsubReply(request, body));
   }
 
-  get base(): string {
-    return `http://127.0.0.1:${(this.#server?.address() as AddressInfo).port}`;
+  /** O endereço do endpoint de token (`ServiceAccountTokenProvider`). */
+  get tokenUrl(): string {
+    return `${baseOf(this.#token)}/token`;
   }
 
-  stop(): Promise<void> {
-    return new Promise((resolve) => this.#server?.close(() => resolve()));
+  /** A base do Pub/Sub (`PubsubRestReader`, `GcpServiceAccountKeyCheck`). */
+  get pubsubBase(): string {
+    return baseOf(this.#pubsub);
   }
 
-  async #handle(request: IncomingMessage): Promise<{ status: number; body: unknown }> {
-    let body = '';
-    for await (const chunk of request) body += String(chunk);
-    const path = request.url ?? '';
-    this.seen.push({ path, body, authorization: request.headers.authorization });
-    if (path === '/token') {
-      if (this.tokenStatus !== 200)
-        return { status: this.tokenStatus, body: { error: this.tokenError, error_description: 'detalhe' } };
-      const assertion = new URLSearchParams(body).get('assertion') ?? '';
-      const [header = '', claims = '', signature = ''] = assertion.split('.');
-      const verifier = createVerify('RSA-SHA256');
-      verifier.update(`${header}.${claims}`);
-      if (!verifier.verify(pair.publicKey, Buffer.from(signature, 'base64url'))) {
-        return { status: 400, body: { error: 'invalid_grant' } };
+  async stop(): Promise<void> {
+    for (const server of [this.#token, this.#pubsub]) {
+      await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+    }
+  }
+
+  #record(request: IncomingMessage, body: string): void {
+    this.seen.push({ path: request.url ?? '', body, authorization: request.headers.authorization });
+  }
+
+  /** O endpoint de token: a falha configurada no cenário, ou o JWT conferido com a chave pública da conta de serviço. */
+  #tokenReply(request: IncomingMessage, body: string): Reply {
+    this.#record(request, body);
+    if (this.tokenStatus !== 200) {
+      return { status: this.tokenStatus, body: { error: this.tokenError, error_description: 'detalhe' } };
+    }
+    const assertion = new URLSearchParams(body).get('assertion') ?? '';
+    const [header = '', claims = '', signature = ''] = assertion.split('.');
+    const verifier = createVerify('RSA-SHA256');
+    verifier.update(`${header}.${claims}`);
+    const valid = verifier.verify(pair.publicKey, Buffer.from(signature, 'base64url'));
+    const token = `ya29.${randomBytes(32).toString('base64url')}`;
+    if (valid) this.issued.push(token);
+    return valid
+      ? { status: 200, body: { access_token: token, expires_in: 3599, token_type: 'Bearer' } }
+      : { status: 400, body: { error: 'invalid_grant' } };
+  }
+
+  /** O Pub/Sub: a ação depois do `:` no fim do caminho da assinatura. */
+  #pubsubReply(request: IncomingMessage, body: string): Reply {
+    this.#record(request, body);
+    const action = (request.url ?? '').split(':').pop();
+    switch (action) {
+      case 'testIamPermissions':
+        if (this.permissions === 'missing') return { status: 404, body: { error: { code: 404 } } };
+        return { status: 200, body: this.permissions.length > 0 ? { permissions: this.permissions } : {} };
+      case 'pull': {
+        const receivedMessages = Array.from({ length: this.messages }, (_unused, index) => ({
+          ackId: `ack-${index}`,
+          message: { data: Buffer.from('{}').toString('base64'), messageId: `m-${index}` },
+        }));
+        return { status: 200, body: receivedMessages.length > 0 ? { receivedMessages } : {} };
       }
-      const token = `ya29.${randomBytes(32).toString('base64url')}`;
-      this.issued.push(token);
-      return { status: 200, body: { access_token: token, expires_in: 3599, token_type: 'Bearer' } };
+      case 'acknowledge':
+        return { status: 200, body: {} };
+      default:
+        return { status: 404, body: {} };
     }
-    if (path.endsWith(':testIamPermissions')) {
-      if (this.permissions === 'missing') return { status: 404, body: { error: { code: 404 } } };
-      return { status: 200, body: this.permissions.length > 0 ? { permissions: this.permissions } : {} };
-    }
-    if (path.endsWith(':pull')) {
-      const receivedMessages = Array.from({ length: this.messages }, (_unused, index) => ({
-        ackId: `ack-${index}`,
-        message: { data: Buffer.from('{}').toString('base64'), messageId: `m-${index}` },
-      }));
-      return { status: 200, body: receivedMessages.length > 0 ? { receivedMessages } : {} };
-    }
-    if (path.endsWith(':acknowledge')) return { status: 200, body: {} };
-    return { status: 404, body: {} };
   }
 }
 
@@ -110,7 +147,7 @@ describe('a chave da conta de serviço da GCP (VM própria do cliente)', () => {
 
   it('o token: um JWT assinado com a chave, com o ID dela, só o escopo do Pub/Sub e o endereço fixo como público', async () => {
     const key = new GcpServiceAccountKey(fields());
-    const tokens = new ServiceAccountTokenProvider(key, { url: `${google.base}/token` });
+    const tokens = new ServiceAccountTokenProvider(key, { url: google.tokenUrl });
     const token = await tokens.token();
     expect(await tokens.token()).toBe(token);
     expect(google.seen).toHaveLength(1);
@@ -143,13 +180,13 @@ describe('a chave da conta de serviço da GCP (VM própria do cliente)', () => {
   it('a chave recusada pelo Google (apagada, desativada) e o Google fora dão erros diferentes, só com o código', async () => {
     const key = new GcpServiceAccountKey(fields());
     google.tokenStatus = 400;
-    const rejected = await new ServiceAccountTokenProvider(key, { url: `${google.base}/token` })
+    const rejected = await new ServiceAccountTokenProvider(key, { url: google.tokenUrl })
       .token()
       .catch((error: unknown) => error);
     expect(rejected).toMatchObject({ code: 'invalid_grant', rejected: true });
     expect((rejected as Error).message).not.toContain('detalhe');
     google.tokenStatus = 503;
-    const down = await new ServiceAccountTokenProvider(key, { url: `${google.base}/token` })
+    const down = await new ServiceAccountTokenProvider(key, { url: google.tokenUrl })
       .token()
       .catch((error: unknown) => error);
     expect(down).toBeInstanceOf(GoogleTokenError);
@@ -159,8 +196,8 @@ describe('a chave da conta de serviço da GCP (VM própria do cliente)', () => {
   it('a conferência na API: o token e o testIamPermissions na assinatura, com o sufixo do ID da chave', async () => {
     const key = new GcpServiceAccountKey(fields());
     const check = new GcpServiceAccountKeyCheck({
-      tokenUrl: `${google.base}/token`,
-      pubsubBaseUrl: google.base,
+      tokenUrl: google.tokenUrl,
+      pubsubBaseUrl: google.pubsubBase,
     });
     expect(await check.check(key, SUBSCRIPTION)).toEqual({
       keyIdSuffix: key.privateKeyId.slice(-4),
@@ -179,8 +216,8 @@ describe('a chave da conta de serviço da GCP (VM própria do cliente)', () => {
 
   it('sem a permissão na assinatura (ou sem a assinatura): no_account_access; chave recusada: invalid; fora: 503', async () => {
     const check = new GcpServiceAccountKeyCheck({
-      tokenUrl: `${google.base}/token`,
-      pubsubBaseUrl: google.base,
+      tokenUrl: google.tokenUrl,
+      pubsubBaseUrl: google.pubsubBase,
     });
     for (const permissions of [[], 'missing'] as const) {
       google.permissions = permissions === 'missing' ? 'missing' : [];
@@ -227,7 +264,7 @@ describe('a chave da conta de serviço da GCP (VM própria do cliente)', () => {
       const reader = new VaultPubsubReader(
         prismaWith(() => ({ ...account, credential: { kind: 'gcp_service_account_key', ciphertext } })),
         keyring,
-        { token: { url: `${google.base}/token` }, pubsubBaseUrl: google.base },
+        { token: { url: google.tokenUrl }, pubsubBaseUrl: google.pubsubBase },
       );
       google.messages = 2;
       const messages = await reader.pull(SUBSCRIPTION, 10);
@@ -259,8 +296,8 @@ describe('a chave da conta de serviço da GCP (VM própria do cliente)', () => {
           prismaWith(() => row),
           keyring,
           {
-            token: { url: `${google.base}/token` },
-            pubsubBaseUrl: google.base,
+            token: { url: google.tokenUrl },
+            pubsubBaseUrl: google.pubsubBase,
           },
         );
         const failure = await reader.pull(SUBSCRIPTION, 10).catch((error: unknown) => error);

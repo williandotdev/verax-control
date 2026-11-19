@@ -250,6 +250,12 @@ expect "o job com erro: as sessões anteriores ficam" '1 igual' \
 : >"$state/sessions"
 expect "nenhuma conta: o arquivo fica vazio" '0 0' "$(code_of aws-token) $(wc -c <"$run/wazuh-aws/credentials")"
 
+new_root NODE_PROFILE=standard NODE_PLATFORM=vm CREDENTIALS_VAULT=false
+mkdir -p "$run/wazuh-aws"
+printf '%s\n' "$SESSIONS" >"$state/sessions"
+expect "sem o cofre de credenciais: recusa sem chamar o job" '2 ausente' \
+  "$(code_of aws-token) $([[ -f $state/docker.log ]] && echo chamado || echo ausente)"
+
 echo "== wazuh-apply.sh"
 SOURCES='[{"accountId":"111122223333","region":"sa-east-1","onlyLogsAfter":"2026-NOV-01","cloudtrailBucket":"trilha-111122223333"}]'
 GENERATION=$(printf '%s' "$SOURCES" | sha256sum | cut -c1-64)

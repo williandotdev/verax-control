@@ -21,7 +21,7 @@ import type { Prisma } from '../generated/prisma/client.js';
  * As sessões da AWS do Wazuh na VM própria do cliente (`NODE_PLATFORM=vm`; `docs/ARQUITETURA.md`, "Cofre de
  * credenciais"), na saída padrão: o arquivo `credentials` dos profiles do manager, que o `infra/node/bin/aws-token.sh`
  * confere linha a linha e grava na pasta que o manager monta em `/root/.aws`. Roda no job `aws-sessions` do
- * `infra/node/compose.wazuh.yaml` (imagem da API, ambiente do worker, a rede do banco e o cofre de credenciais).
+ * `infra/node/compose.vault.yaml` (imagem da API, ambiente do worker, a rede do banco e o cofre de credenciais).
  *
  * Para cada conta AWS que o manager lê (a mesma lista do `wazuh-sources`), a chave do usuário IAM de leitura sai do
  * cofre só aqui e é trocada por uma sessão de 1 hora (`GetSessionToken`, no STS de us-east-1). Só a sessão é impressa: a

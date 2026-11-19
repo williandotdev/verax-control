@@ -6099,7 +6099,7 @@ fmt`/`validate`/`test` do `envs/nodes-platform`.
   inventário pelo mesmo contrato, `AwsReaderCredentials`); a conferência aceita o usuário IAM, grava `key_invalid` e
   simula a permissão demais no próprio usuário; `gcp/vault-pubsub-reader.ts` e `gcp/service-account-token.ts` (o token
   de 1 hora da chave de cada conta, só o escopo do Pub/Sub; `gcp_key_missing` sem chave).
-- **Wazuh na VM própria:** o CLI `aws-sessions` (job do `compose.wazuh.yaml`, com o cofre só leitura) troca a chave de
+- **Wazuh na VM própria:** o CLI `aws-sessions` (job do `compose.vault.yaml`, com o cofre só leitura) troca a chave de
   cada conta do manager por uma sessão de 1 hora (`GetSessionToken`); o `aws-token.sh` (mesmo timer) confere o arquivo
   `credentials` linha a linha e o grava na pasta do manager; o gerador (`VERAX_AWS_STATIC_KEYS=1`) escreve os profiles
   sem o papel e não apaga o `credentials`; o `wazuh-apply.sh` passa o modo e renova as sessões depois de aplicar. O
