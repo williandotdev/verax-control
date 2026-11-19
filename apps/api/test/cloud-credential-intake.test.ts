@@ -174,7 +174,11 @@ describe('credencial colada no painel: token do Cloudflare no cofre (fase 2, PR-
     // A API esqueceu o token no fim da requisição: o logger não o guarda mais. Conferido antes do `open` abaixo, que
     // faz o papel do worker e registra o valor de novo neste processo.
     expect(scrubString(token)).toBe(token);
-    const opened = open(keyring, credentialBinding(account, 'cloudflare_api_token'), row.ciphertext);
+    const opened = open(
+      keyring,
+      credentialBinding(account, 'cloudflare_api_token'),
+      row.ciphertext,
+    ) as CloudflareToken;
     expect(opened).toBeInstanceOf(CloudflareToken);
     expect(opened.value()).toBe(token);
 

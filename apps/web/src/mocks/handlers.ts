@@ -28,6 +28,8 @@ export interface MockState {
    * nada: a demonstração não tem console).
    */
   adminMasterUrl?: string | null;
+  /** Onde o nó roda, como a configuração pública devolve (`vm`: a VM própria do cliente). Sem informar, `gcp`. */
+  nodePlatform?: 'gcp' | 'vm';
   /**
    * Histórico do plano do nó, como o ajuste `PLAN_HISTORY_DAYS` (`null` é sem limite). Sem informar, o do plano da
    * demonstração (Profissional, 365 dias).

@@ -107,15 +107,16 @@ if [[ ${NODE_MODE:-dedicated} == cell ]]; then
 fi
 # VM própria do cliente (NODE_PLATFORM=vm; sem a linha, gcp): o nó fora da GCP, instalado pelo bin/verax-install.sh.
 # Sem projeto, cofres do Secret Manager nem bucket (o cofre e os backups ficam na VM), as imagens só do GHCR (públicas,
-# sem credencial) e nada da célula, dos agentes (pedem porta de entrada; a VM só tem saída) nem da fonte gcp (o token
-# do Google). O start.sh confere de novo. Os nós da GCP não mudam.
+# sem credencial) e nada da célula nem dos agentes (pedem porta de entrada; a VM só tem saída). A fonte gcp lê o Pub/Sub
+# com a chave da conta de serviço de leitura, do cofre de credenciais. O start.sh confere de novo. Os nós da GCP não
+# mudam.
 [[ ${NODE_PLATFORM:-gcp} =~ ^(gcp|vm)$ ]] ||
   { echo 'NODE_PLATFORM inválido em /etc/verax/node.conf: use gcp ou vm.' >&2; exit 2; }
 vm=false
 if [[ ${NODE_PLATFORM:-gcp} == vm ]]; then
   vm=true
-  if $cell || [[ ${WAZUH_AGENTS:-false} == true || ,${SYNC_SOURCES:-}, == *,gcp,* ]]; then
-    echo 'NODE_PLATFORM=vm não aceita NODE_MODE=cell, WAZUH_AGENTS=true nem a fonte gcp em SYNC_SOURCES.' >&2
+  if $cell || [[ ${WAZUH_AGENTS:-false} == true ]]; then
+    echo 'NODE_PLATFORM=vm não aceita NODE_MODE=cell nem WAZUH_AGENTS=true.' >&2
     exit 2
   fi
   [[ ${IMAGES_REPOSITORY:-} == ghcr.io/* ]] ||
@@ -264,14 +265,10 @@ if $standard; then
   find /opt/verax/wazuh -type d -exec chmod 0755 {} +
   find /opt/verax/wazuh -type f -exec chmod 0644 {} +
   install -m 0750 "$here/bin/wazuh-apply.sh" "$here/bin/wazuh-alerts-cleanup.sh" "$here/bin/aws-token.sh" /opt/verax/bin/
-  if $vm; then
-    # Modo vm: as unidades do Wazuh menos as do token do Google para a AWS (verax-aws-token.*).
-    install -m 0644 "$here"/systemd/wazuh/verax-wazuh*.service "$here"/systemd/wazuh/verax-wazuh*.timer \
-      "$here"/systemd/wazuh/*.path /etc/systemd/system/
-  else
-    install -m 0644 "$here"/systemd/wazuh/*.service "$here"/systemd/wazuh/*.timer "$here"/systemd/wazuh/*.path \
-      /etc/systemd/system/
-  fi
+  # Todas as unidades do Wazuh. No modo vm, o verax-aws-token renova as sessões da chave de leitura de cada conta AWS
+  # (no lugar do token do Google; o aws-token.sh escolhe pelo NODE_PLATFORM).
+  install -m 0644 "$here"/systemd/wazuh/*.service "$here"/systemd/wazuh/*.timer "$here"/systemd/wazuh/*.path \
+    /etc/systemd/system/
   # O verax-node passa a querer (Wants) o verax-wazuh: o restart do nó o sobe de novo mesmo quando ele tinha falhado.
   install -d -m 0755 /etc/systemd/system/verax-node.service.d
   install -m 0644 "$here/systemd/wazuh/verax-node.service.d/wazuh.conf" /etc/systemd/system/verax-node.service.d/wazuh.conf
@@ -444,17 +441,13 @@ systemctl start verax-backup.timer
 if ! $vm; then systemctl enable --now verax-update.timer >/dev/null; fi
 # Standard: o restart do verax-node sobe o verax-wazuh junto (o Wants do drop-in, mesmo se ele tinha falhado); o
 # `start` espera o Wazuh ficar saudável (nada acontece a mais se já estiver subindo).
-# O token do Google renovado a cada 10 min e a configuração do manager refeita quando o worker grava uma geração nova
-# das contas AWS (e a cada 15 min): os dois não fazem nada enquanto o Wazuh não estiver no ar.
+# O token do Google (no modo vm, as sessões da chave de leitura da AWS) renovado a cada 10 min e a configuração do
+# manager refeita quando o worker grava uma geração nova das contas AWS (e a cada 15 min): os dois não fazem nada
+# enquanto o Wazuh não estiver no ar.
 if $standard; then
   systemctl start verax-wazuh.service
-  if $vm; then
-    # Modo vm: sem o token do Google.
-    systemctl enable --now verax-wazuh-alerts.timer verax-wazuh-apply.timer verax-wazuh-apply.path >/dev/null
-  else
-    systemctl enable --now verax-wazuh-alerts.timer verax-aws-token.timer verax-wazuh-apply.timer \
-      verax-wazuh-apply.path >/dev/null
-  fi
+  systemctl enable --now verax-wazuh-alerts.timer verax-aws-token.timer verax-wazuh-apply.timer \
+    verax-wazuh-apply.path >/dev/null
 fi
 # A lista dos agentes, depois do Wazuh no ar. Desligado o interruptor num nó que já o teve, o timer para (o script, se
 # rodar, só apaga a lista da memória).

@@ -81,6 +81,8 @@ const REJECTION_ERRORS: Record<CredentialRejectionReason, string> = {
   inactive: 'credential_disabled',
   expired: 'credential_expired',
   no_account_access: 'credential_forbidden',
+  // Não vem do Cloudflare (é a chave do root da AWS); se vier, o token é tratado como recusado.
+  wrong_identity: 'credential_rejected',
 };
 
 /** Erro do próprio coletor, guardado só pelo código (o nome do erro, como os da API). */

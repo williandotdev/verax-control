@@ -157,6 +157,37 @@ class ValidSourcesTest(unittest.TestCase):
             # Sem arquivo `credentials`: só o config e o que o host põe na pasta.
             self.assertEqual(sorted(path.name for path in run.aws_dir.iterdir()), ["config"])
 
+    def test_static_keys_profiles_only_have_region_and_retries_and_keep_the_host_credentials(self):
+        """VM própria do cliente: sem papel nem token; as credenciais vêm do arquivo do host, que fica."""
+        with tempfile.TemporaryDirectory() as root:
+            aws_dir = pathlib.Path(root) / "aws"
+            aws_dir.mkdir()
+            # As sessões que o aws-token.sh do host escreve (valores fictícios no formato da AWS).
+            host_credentials = "[verax-111122223333]\naws_access_key_id = ASIAEXEMPLO000000000\n"
+            (aws_dir / "credentials").write_text(host_credentials, encoding="utf-8")
+            with Run([account_a(), account_b()], root=root, env={"VERAX_AWS_STATIC_KEYS": "1"}) as run:
+                self.assertEqual(run.code, 0)
+                parser = configparser.ConfigParser(interpolation=None)
+                parser.read_string(run.aws_config)
+                self.assertEqual(
+                    dict(parser["profile verax-111122223333"]),
+                    {"region": "sa-east-1", "retry_mode": "standard", "max_attempts": "10"},
+                )
+                for forbidden in ("role_arn", "web_identity_token_file", "aws_secret_access_key", "credential_process"):
+                    self.assertNotIn(forbidden, run.aws_config)
+                self.assertEqual((aws_dir / "credentials").read_text(encoding="utf-8"), host_credentials)
+                # O mesmo bucket e o mesmo profile no wodle: só a origem das credenciais muda.
+                self.assertIn("<aws_profile>verax-111122223333</aws_profile>", run.ossec_conf)
+            # Sem o modo, o arquivo que sobrou de outra configuração sai, como antes.
+            with Run([account_a()], root=root) as run:
+                self.assertEqual(run.code, 0)
+                self.assertFalse((aws_dir / "credentials").exists())
+
+    def test_static_keys_variable_only_accepts_0_or_1(self):
+        with Run([account_a()], env={"VERAX_AWS_STATIC_KEYS": "sim"}) as run:
+            self.assertEqual(run.code, 1)
+            self.assertIn("VERAX_AWS_STATIC_KEYS", run.stderr)
+
     @unittest.skipIf(os.name == "nt", "permissões POSIX")
     def test_files_are_not_world_readable(self):
         with Run([account_a()]) as run:

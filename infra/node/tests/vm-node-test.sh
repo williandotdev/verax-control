@@ -10,11 +10,12 @@
 # (docker, systemctl, iptables, ip6tables, chown, id, gcloud e curl) são simulados e anotam cada chamada; o gcloud e o
 # curl falham sempre: no modo vm, nada pode chamá-los. O openssl, o base64 e o resto são os de verdade.
 #
-# Cenários: o install.sh (sem a guarda do metadata, sem o atualizador, sem o token do Google para a AWS, o verax-node de
-# systemd/vm, a chave do cofre gerada no cofre local uma vez só, nenhum gcloud) e as recusas (célula, agentes, fonte
-# gcp, imagens fora do GHCR, NODE_PLATFORM desconhecido); o start.sh up com os segredos do cofre local (o token do
-# túnel, a senha do e-mail e a chave do cofre de credenciais, que chega ao worker só pelo arquivo do tmpfs), sem o estado
-# nos guest attributes, sem o tópico do sink e sem o ID da conta de serviço; o cofre sem o token (sobe sem o túnel; o
+# Cenários: o install.sh (sem a guarda do metadata, sem o atualizador, com o timer das sessões da chave de leitura da
+# AWS no lugar do token do Google, o verax-node de systemd/vm, a chave do cofre gerada no cofre local uma vez só, nenhum
+# gcloud) e as recusas (célula, agentes, imagens fora do GHCR, NODE_PLATFORM desconhecido); o start.sh up com os
+# segredos do cofre local (o token do túnel, a senha do e-mail e a chave do cofre de credenciais, que chega ao worker só
+# pelo arquivo do tmpfs), com NODE_PLATFORM=vm na API e no worker (as chaves de leitura da AWS e da GCP), sem o estado
+# nos guest attributes, sem o tópico do sink e sem o ID da conta de serviço; a fonte gcp só com o cofre; o cofre sem o token (sobe sem o túnel; o
 # `tunnel` liga depois), com um arquivo aberto para outros, com quebra de linha ou com uma chave que não é RSA; o
 # primeiro acesso com as entradas dos arquivos do instalador (a senha do administrador num arquivo só de root, a da
 # conta de suporte descartada); a guarda do metadata da VM própria (todos os contêineres, IPv4 e IPv6, antes do Docker
@@ -227,16 +228,20 @@ for line in RequiredBy=docker.service Before=docker.service; do
   grep -qx "$line" "$units/verax-vm-metadata-guard.service" || fail "a guarda não vem antes do Docker ($line)"
 done
 [[ -x $root/opt/verax/bin/vm-metadata-guard.sh ]] || fail "não instalou o vm-metadata-guard.sh"
-for unit in verax-metadata-guard.service verax-update.service verax-update.timer verax-aws-token.service \
-  verax-aws-token.timer verax-tenant-bootstrap.path verax-wazuh-agents.timer; do
+for unit in verax-metadata-guard.service verax-update.service verax-update.timer verax-tenant-bootstrap.path \
+  verax-wazuh-agents.timer; do
   [[ ! -e $units/$unit ]] || fail "instalou $unit"
 done
+# O verax-aws-token renova, no modo vm, as sessões da chave de leitura da AWS (o aws-token.sh escolhe pelo NODE_PLATFORM).
 for unit in verax-backup.service verax-backup.timer verax-wazuh.service verax-wazuh-alerts.timer \
-  verax-wazuh-apply.path verax-wazuh-apply.timer verax-customer-bootstrap.service; do
+  verax-wazuh-apply.path verax-wazuh-apply.timer verax-customer-bootstrap.service verax-aws-token.service \
+  verax-aws-token.timer; do
   [[ -f $units/$unit ]] || fail "não instalou $unit"
 done
-grep -q -e ' verax-metadata-guard' -e 'verax-update' -e 'verax-aws-token' "$state/systemctl.log" &&
-  fail "ligou a guarda, o atualizador ou o token do Google: $(cat "$state/systemctl.log")"
+grep -q -e ' verax-metadata-guard' -e 'verax-update' "$state/systemctl.log" &&
+  fail "ligou a guarda ou o atualizador: $(cat "$state/systemctl.log")"
+grep -q 'enable --now .*verax-aws-token.timer' "$state/systemctl.log" ||
+  fail "não ligou o timer das sessões da AWS: $(cat "$state/systemctl.log")"
 grep -qx 'systemctl enable verax-vm-metadata-guard.service verax-node.service verax-backup.timer' "$state/systemctl.log" ||
   fail "não ligou a guarda, o nó e o backup: $(cat "$state/systemctl.log")"
 key=$root/etc/verax/vault/credentials-key
@@ -248,8 +253,7 @@ run install || fail "a segunda instalação falhou: $(cat "$state/out")"
 [[ $(sha256sum "$key") == "$before" ]] || fail "a segunda instalação trocou a chave"
 grep -q 'O cofre local já tem chave' "$state/out" || fail "a segunda instalação não disse que a chave existe"
 
-for line in NODE_MODE=cell WAZUH_AGENTS=true SYNC_SOURCES=gcp,wazuh IMAGES_REPOSITORY=us-docker.pkg.dev/projeto/repo \
-  NODE_PLATFORM=aws; do
+for line in NODE_MODE=cell WAZUH_AGENTS=true IMAGES_REPOSITORY=us-docker.pkg.dev/projeto/repo NODE_PLATFORM=aws; do
   scenario="install.sh recusa ($line)"
   new_node "$line"
   if run install; then fail "instalou"; fi
@@ -279,6 +283,8 @@ for key_name in NODE_STATUS VERAX_NODE_COMMIT GCP_SINK_TOPIC_PREFIX NODE_SA_UNIQ
   ! grep -q "^$key_name=" "$root/run/verax/api.env" "$root/run/verax/worker.env" || fail "$key_name no ambiente"
 done
 [[ $(value_of worker.env SYNC_SOURCES) == wazuh,cloudflare ]] || fail "fontes do worker"
+# A API aceita as chaves de leitura da AWS e da GCP e o worker lê com elas.
+[[ $(value_of api.env NODE_PLATFORM) == vm && $(value_of worker.env NODE_PLATFORM) == vm ]] || fail "NODE_PLATFORM"
 grep -q 'up --detach cloudflared' "$state/docker.log" || fail "o túnel não subiu"
 # A guarda da VM própria reafirmada na partida, para todos os contêineres (sem a exceção do worker dos nós da GCP), no
 # IPv4 e no IPv6; a dos nós da GCP (VERAX-METADATA) nunca.
@@ -340,8 +346,17 @@ cofre_recusado 'chave do cofre que não é RSA' \
 grep -q 'não é uma chave privada RSA' "$state/out" || fail "sem o motivo: $(cat "$state/out")"
 [[ ! -e $root/run/verax/vault/worker-keys ]] || fail "deixou as chaves do worker na memória"
 # shellcheck disable=SC2016 # o preparo roda no eval do cenário
-cofre_recusado 'fonte gcp' 'sed -i "s/^SYNC_SOURCES=.*/SYNC_SOURCES=gcp,wazuh/" "$root/etc/verax/node.conf"'
-grep -q 'NODE_PLATFORM=vm não aceita' "$state/out" || fail "sem o motivo: $(cat "$state/out")"
+cofre_recusado 'fonte gcp sem o cofre' \
+  'sed -i -e "s/^SYNC_SOURCES=.*/SYNC_SOURCES=gcp,wazuh/" -e "s/^CREDENTIALS_VAULT=.*/CREDENTIALS_VAULT=false/" "$root/etc/verax/node.conf"'
+grep -q 'a fonte gcp em SYNC_SOURCES lê a chave do cofre' "$state/out" || fail "sem o motivo: $(cat "$state/out")"
+
+scenario='fonte gcp com a chave da conta de serviço do cofre'
+new_node SYNC_SOURCES=wazuh,cloudflare,gcp
+run install || fail "install.sh falhou: $(cat "$state/out")"
+run start up || fail "start.sh up falhou: $(cat "$state/out")"
+nothing_forbidden
+[[ $(value_of worker.env SYNC_SOURCES) == wazuh,cloudflare,gcp ]] || fail "fontes do worker"
+! grep -q GCP_SINK_TOPIC_PREFIX "$root/run/verax/api.env" || fail "tópico do sink no modo vm"
 
 scenario='sem a chave do cofre: sobe sem o cofre, com o aviso'
 new_node CREDENTIALS_VAULT=false
@@ -381,14 +396,15 @@ grep -q 'verax-support-email: o instalador' "$state/out" || fail "sem o motivo: 
 nothing_forbidden
 
 # --- Wazuh ---------------------------------------------------------------------------------------------------------------
-scenario='wazuh-up sem o token do Google, com a conferência do metadata'
+scenario='wazuh-up com as sessões da chave de leitura, com a conferência do metadata'
 new_node
 run install || fail "install.sh falhou"
 run start up || fail "start.sh up falhou"
 : >"$state/docker.log"
 run start wazuh-up || fail "wazuh-up falhou: $(cat "$state/out")"
 nothing_forbidden
-! grep -q aws-token "$state/wazuh.log" || fail "o token do Google foi pedido"
+# O aws-token.sh roda antes do manager (no modo vm, ele renova as sessões; o metadata nunca é chamado: o curl falha).
+grep -q aws-token.sh "$state/wazuh.log" || fail "as sessões da AWS não foram renovadas antes do manager"
 grep -q wazuh-apply.sh "$state/wazuh.log" || fail "a configuração do manager não foi aplicada"
 grep -q 'exec -T wazuh.manager curl .*169.254.169.254' "$state/docker.log" || fail "não conferiu o metadata do manager"
 

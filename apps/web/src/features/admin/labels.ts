@@ -138,7 +138,27 @@ export const AWS_CONNECTION_ERROR_HINTS: Readonly<Record<AwsConnectionErrorCode,
   aws_unavailable: 'A AWS não respondeu a tempo. Tente de novo em alguns minutos.',
   check_unavailable:
     'O nó não concluiu a conferência (ou ainda não confere a conexão sozinho). Tente de novo em alguns minutos; se continuar, fale com a Verax.',
+  key_missing:
+    'Esta conta não tem a chave de acesso do usuário de leitura guardada (ou o nó não conseguiu abri-la). Cole a chave nesta tela e clique em Verificar.',
+  key_invalid:
+    'A AWS recusou a chave guardada: ela foi apagada, desativada ou trocada no IAM. Crie outra chave no usuário de leitura, cole aqui e clique em Verificar.',
 };
+
+/**
+ * O que fazer diante do erro da leitura de um projeto da GCP com a chave da conta de serviço (VM própria do cliente):
+ * o tipo que o worker grava na conta. Os demais aparecem só como tipo do erro.
+ */
+const GCP_CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
+  gcp_key_missing:
+    'Esta conta não tem a chave da conta de serviço guardada (ou o nó não conseguiu abri-la). Cole a chave nesta tela.',
+  GoogleTokenError:
+    'O Google não entregou o token da conta de serviço: a chave foi apagada ou desativada, ou o Google não respondeu. Se continuar, crie outra chave e cole aqui.',
+};
+
+/** O que fazer diante do erro da leitura de um projeto da GCP; null para um código sem explicação. */
+export function gcpConnectionErrorHint(code: string): string | null {
+  return Object.hasOwn(GCP_CONNECTION_ERROR_HINTS, code) ? (GCP_CONNECTION_ERROR_HINTS[code] ?? null) : null;
+}
 
 /**
  * Os avisos da coleta pelo Wazuh do nó (a tarefa `wazuh-config` do worker, à parte da conexão): são do nó, não da conta

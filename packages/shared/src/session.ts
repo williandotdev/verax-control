@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { NODE_PLATFORMS } from './cloud-credentials.js';
 import { PERMISSIONS, type Permission, ROLES } from './permissions.js';
 
 const permissionNames = Object.keys(PERMISSIONS) as [Permission, ...Permission[]];
@@ -34,5 +35,11 @@ export const authClientConfigSchema = z.strictObject({
    * leva ao console.
    */
   adminMasterUrl: z.url({ protocol: /^https$/ }).nullable(),
+  /**
+   * Onde o nó roda (`NODE_PLATFORM`): na GCP, a AWS e a GCP são lidas sem chave (o papel de leitura e a identidade da
+   * VM); na VM própria do cliente (`vm`), com a chave de leitura colada em Contas cloud. O painel escolhe as instruções
+   * por ele; quem recusa o tipo de credencial que não vale no nó é a API.
+   */
+  nodePlatform: z.enum(NODE_PLATFORMS),
 });
 export type AuthClientConfig = z.infer<typeof authClientConfigSchema>;

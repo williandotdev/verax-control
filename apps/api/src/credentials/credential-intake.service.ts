@@ -5,8 +5,12 @@ import {
   type CloudAccount,
   type CloudCredentialInput,
   CREDENTIAL_KIND_PROVIDERS,
+  type CloudProvider,
+  credentialKindAllowed,
+  type NodePlatform,
 } from '@verax/shared';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { AwsAccessKeyCheck } from '../aws/aws-key-check.js';
 import { CloudAccountsService, RESET_CONNECTION } from '../cloud-accounts/cloud-accounts.service.js';
 import { CloudflareTokenCheck } from '../cloudflare/cloudflare-token-check.js';
 import { AuditContext } from '../common/audit/audit-context.service.js';
@@ -14,6 +18,7 @@ import type { RequestAuth } from '../common/auth/request-auth.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError, CommittedApiError } from '../common/http/api-error.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
+import { GcpServiceAccountKeyCheck } from '../gcp/gcp-key-check.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import type { VaultPublicKey } from './credential-keys.js';
 import {
@@ -24,8 +29,10 @@ import {
 } from './credential-check.js';
 import { lockCredential } from './credential-rekey.js';
 import {
+  AwsAccessKey,
   CloudflareToken,
   CredentialVaultError,
+  GcpServiceAccountKey,
   credentialBinding,
   releaseSecret,
   seal,
@@ -93,8 +100,8 @@ function summary(row: CredentialSummaryRow) {
   return { kind: row.kind, keyIdSuffix: row.keyIdSuffix, expiresAt: row.expiresAt?.toISOString() ?? null };
 }
 
-/** Mensagens da recusa: dizem o que conferir, sem repetir nada da resposta da origem. */
-const REJECTION_MESSAGES: Readonly<Record<CredentialRejectionReason, string>> = {
+/** Mensagens da recusa, por provedor: dizem o que conferir, sem repetir nada da resposta da origem. */
+const CLOUDFLARE_REJECTIONS: Readonly<Record<CredentialRejectionReason, string>> = {
   invalid:
     'O Cloudflare não aceitou o token. Confira se ele foi copiado inteiro e se foi criado para esta conta.',
   inactive: 'O token está desativado no Cloudflare.',
@@ -102,23 +109,66 @@ const REJECTION_MESSAGES: Readonly<Record<CredentialRejectionReason, string>> = 
   not_yet_valid: 'O token ainda não começou a valer: confira a data de início definida no Cloudflare.',
   no_account_access:
     'O token não lê a auditoria desta conta do Cloudflare. Confira a conta escolhida ao criar o token, a permissão Account Settings: Read e o filtro de IP.',
+  wrong_identity: 'O Cloudflare não aceitou o token.',
+};
+const AWS_REJECTIONS: Readonly<Record<CredentialRejectionReason, string>> = {
+  invalid:
+    'A AWS não aceitou a chave. Confira se o ID e a chave secreta foram copiados inteiros e se a chave está ativa no IAM.',
+  inactive: 'A chave está desativada no IAM.',
+  expired: 'A chave não vale mais na AWS. Crie outra para o usuário de leitura.',
+  not_yet_valid: 'A AWS não aceitou a chave.',
+  no_account_access: 'A chave é de outra conta AWS. Crie a chave num usuário IAM desta conta.',
+  wrong_identity:
+    'A chave não é de um usuário IAM (a do root, por exemplo, dá acesso total e nunca é guardada). Crie a chave no usuário de leitura.',
+};
+const GCP_REJECTIONS: Readonly<Record<CredentialRejectionReason, string>> = {
+  invalid:
+    'O Google não aceitou a chave. Confira se a chave e a conta de serviço existem e estão ativas no projeto.',
+  inactive: 'A chave ou a conta de serviço está desativada no Google.',
+  expired: 'A chave não vale mais no Google. Crie outra para a conta de serviço de leitura.',
+  not_yet_valid: 'O Google não aceitou a chave.',
+  no_account_access:
+    'A conta de serviço não lê a assinatura cadastrada nesta conta. Confira a assinatura e o papel roles/pubsub.subscriber nela.',
+  wrong_identity: 'O Google não aceitou a chave.',
+};
+const REJECTION_MESSAGES: Readonly<
+  Record<CloudProvider, Readonly<Record<CredentialRejectionReason, string>>>
+> = {
+  cloudflare: CLOUDFLARE_REJECTIONS,
+  aws: AWS_REJECTIONS,
+  gcp: GCP_REJECTIONS,
+};
+
+/** Quem não respondeu, no 503. */
+const SOURCE_NAMES: Readonly<Record<CloudProvider, string>> = {
+  cloudflare: 'O Cloudflare',
+  aws: 'A AWS',
+  gcp: 'O Google',
 };
 
 const NOT_FOUND = 'Conta não encontrada';
 
+/** O que a conferência na origem usa da conta cadastrada (nunca um valor do request). */
+interface CheckedAccount {
+  accountId: string;
+  pubsubSubscription: string | null;
+}
+
 /** Uma credencial aceita: como montar o invólucro do valor colado e como conferi-lo na origem. */
 interface KindHandler {
   wrap(input: CloudCredentialInput): VaultSecret;
-  check(secret: VaultSecret, accountId: string): Promise<CheckedCredential>;
+  check(secret: VaultSecret, account: CheckedAccount): Promise<CheckedCredential>;
 }
 
 /**
- * Recebimento da credencial colada no painel (fase 2; a rota genérica, hoje só com o token do Cloudflare, PR-11'; a
- * AWS não passa por ela, porque o papel de leitura não tem chave): `PUT` e `DELETE /v1/cloud-accounts/:id/credential`,
- * na transação do `AuditInterceptor`.
+ * Recebimento da credencial colada no painel (fase 2; a rota genérica: o token do Cloudflare, PR-11', e, só na VM
+ * própria do cliente, `NODE_PLATFORM=vm`, a chave do usuário IAM de leitura da AWS e a da conta de serviço de leitura
+ * da GCP; nos nós da GCP, a AWS e a GCP são lidas sem chave e os dois tipos são recusados): `PUT` e
+ * `DELETE /v1/cloud-accounts/:id/credential`, na transação do `AuditInterceptor`.
  *
  * No `PUT`, nesta ordem:
- * 1. o cofre precisa estar ligado no nó (a API tem a chave pública);
+ * 1. o tipo precisa valer na plataforma do nó (400, sem tocar em nada) e o cofre precisa estar ligado no nó (a API tem
+ *    a chave pública);
  * 2. lock das tentativas do cliente da sessão (uma conferência por vez; esperando demais, 429), lock da conta (o
  *    mesmo da recifragem do worker) e a conta pelo escopo do cliente: de outro cliente, 404 sem chamar a origem; de
  *    outro provedor ou inativa, 400;
@@ -133,6 +183,7 @@ interface KindHandler {
 @Injectable()
 export class CredentialIntakeService {
   private readonly publicKey: VaultPublicKey | null;
+  private readonly platform: NodePlatform;
   private readonly handlers: Readonly<Record<AcceptedCredentialKind, KindHandler>>;
 
   constructor(
@@ -140,16 +191,44 @@ export class CredentialIntakeService {
     private readonly audit: AuditContext,
     private readonly accounts: CloudAccountsService,
     cloudflare: CloudflareTokenCheck,
-    @Inject(APP_CONFIG) config: Pick<AppConfig, 'credentialsPublicKey'>,
+    awsKeys: AwsAccessKeyCheck,
+    gcpKeys: GcpServiceAccountKeyCheck,
+    @Inject(APP_CONFIG) config: Pick<AppConfig, 'credentialsPublicKey' | 'NODE_PLATFORM'>,
     @InjectPinoLogger(CredentialIntakeService.name) private readonly logger: PinoLogger,
   ) {
     this.publicKey = config.credentialsPublicKey;
+    this.platform = config.NODE_PLATFORM;
     this.handlers = {
       cloudflare_api_token: {
-        wrap: (input) => new CloudflareToken(input.token),
-        check: (secret, accountId) => {
+        wrap: (input) => {
+          if (input.kind !== 'cloudflare_api_token') throw new CredentialVaultError('binding_invalid');
+          return new CloudflareToken(input.token);
+        },
+        check: (secret, account) => {
           if (!(secret instanceof CloudflareToken)) throw new CredentialVaultError('binding_invalid');
-          return cloudflare.check(secret, accountId);
+          return cloudflare.check(secret, account.accountId);
+        },
+      },
+      aws_access_key: {
+        wrap: (input) => {
+          if (input.kind !== 'aws_access_key') throw new CredentialVaultError('binding_invalid');
+          return new AwsAccessKey(input.accessKeyId, input.secretAccessKey);
+        },
+        check: (secret, account) => {
+          if (!(secret instanceof AwsAccessKey)) throw new CredentialVaultError('binding_invalid');
+          return awsKeys.check(secret, account.accountId);
+        },
+      },
+      gcp_service_account_key: {
+        wrap: (input) => {
+          if (input.kind !== 'gcp_service_account_key') throw new CredentialVaultError('binding_invalid');
+          const { kind: _kind, ...fields } = input;
+          return new GcpServiceAccountKey(fields);
+        },
+        check: (secret, account) => {
+          if (!(secret instanceof GcpServiceAccountKey)) throw new CredentialVaultError('binding_invalid');
+          // Sem assinatura cadastrada, não há o que provar: a recusa vem antes (`put`).
+          return gcpKeys.check(secret, account.pubsubSubscription ?? '');
         },
       },
     };
@@ -158,6 +237,14 @@ export class CredentialIntakeService {
   async put(auth: RequestAuth, id: string, input: CloudCredentialInput): Promise<CloudAccount> {
     // Descrita antes de tudo: a tentativa recusada entra na trilha com esta ação (é o que o limite conta).
     this.audit.describe({ action: CREDENTIAL_ACTIONS.set, resourceType: RESOURCE_TYPE, resourceId: id });
+    // Nos nós da GCP, a AWS e a GCP são lidas sem chave: a chave colada nunca é conferida nem guardada lá.
+    if (!credentialKindAllowed(input.kind, this.platform)) {
+      throw new ApiError(
+        HttpStatus.BAD_REQUEST,
+        'Este nó lê esta nuvem sem chave: siga as instruções de conexão da conta.',
+        'CREDENTIAL_KIND_NOT_ALLOWED',
+      );
+    }
     const publicKey = this.publicKey;
     if (publicKey === null) {
       throw new ApiError(
@@ -179,7 +266,14 @@ export class CredentialIntakeService {
     await lockCredential(this.prisma.db(), id);
     const account = await db.cloudAccount.findUnique({
       where: { id },
-      select: { id: true, tenantId: true, provider: true, accountId: true, status: true },
+      select: {
+        id: true,
+        tenantId: true,
+        provider: true,
+        accountId: true,
+        status: true,
+        pubsubSubscription: true,
+      },
     });
     if (!account) throw new ApiError(HttpStatus.NOT_FOUND, NOT_FOUND);
     const current = await db.cloudCredential.findUnique({
@@ -194,13 +288,20 @@ export class CredentialIntakeService {
     if (account.status !== 'active') {
       throw new ApiError(HttpStatus.BAD_REQUEST, 'Reative a conta antes de guardar a credencial.');
     }
-    await this.assertAttemptsLeft(db, id);
+    // A chave da GCP prova a leitura da assinatura cadastrada: sem ela, não há o que conferir.
+    if (input.kind === 'gcp_service_account_key' && account.pubsubSubscription === null) {
+      throw new ApiError(
+        HttpStatus.BAD_REQUEST,
+        'Cadastre a assinatura do Pub/Sub da conta antes de colar a chave.',
+      );
+    }
+    await this.assertAttemptsLeft(db, id, account.provider);
 
     const handler = this.handlers[input.kind];
     const secret = handler.wrap(input);
     try {
-      const checked = await this.checkAtSource(input.kind, account.id, () =>
-        handler.check(secret, account.accountId),
+      const checked = await this.checkAtSource(input.kind, account.provider, account.id, () =>
+        handler.check(secret, account),
       );
       const sealed = seal(publicKey, credentialBinding(account, input.kind), secret);
       const data = {
@@ -248,7 +349,11 @@ export class CredentialIntakeService {
    * Recusas da origem na última hora, na trilha do cliente do escopo: por conta e no cliente inteiro. Roda sob o lock
    * das tentativas do cliente.
    */
-  private async assertAttemptsLeft(db: Prisma.TransactionClient, id: string): Promise<void> {
+  private async assertAttemptsLeft(
+    db: Prisma.TransactionClient,
+    id: string,
+    provider: CloudProvider,
+  ): Promise<void> {
     const refused = {
       action: CREDENTIAL_ACTIONS.refused,
       outcome: 'failure',
@@ -261,7 +366,9 @@ export class CredentialIntakeService {
     if (onAccount >= CREDENTIAL_ATTEMPTS_PER_ACCOUNT || onTenant >= CREDENTIAL_ATTEMPTS_PER_TENANT) {
       throw new ApiError(
         HttpStatus.TOO_MANY_REQUESTS,
-        'Muitas tentativas recusadas. Confira o token no Cloudflare e tente de novo em até uma hora.',
+        provider === 'cloudflare'
+          ? 'Muitas tentativas recusadas. Confira o token no Cloudflare e tente de novo em até uma hora.'
+          : 'Muitas tentativas recusadas. Confira a chave na origem e tente de novo em até uma hora.',
         'CREDENTIAL_ATTEMPTS_EXCEEDED',
       );
     }
@@ -273,6 +380,7 @@ export class CredentialIntakeService {
    */
   private async checkAtSource(
     kind: AcceptedCredentialKind,
+    provider: CloudProvider,
     cloudAccountId: string,
     check: () => Promise<CheckedCredential>,
   ): Promise<CheckedCredential> {
@@ -289,7 +397,7 @@ export class CredentialIntakeService {
         this.audit.describe({ action: CREDENTIAL_ACTIONS.refused, after: { kind, reason: error.reason } });
         throw new CommittedApiError(
           HttpStatus.BAD_REQUEST,
-          REJECTION_MESSAGES[error.reason],
+          REJECTION_MESSAGES[provider][error.reason],
           'CREDENTIAL_REJECTED',
         );
       }
@@ -300,7 +408,7 @@ export class CredentialIntakeService {
         );
         throw new ApiError(
           HttpStatus.SERVICE_UNAVAILABLE,
-          'A origem da credencial não respondeu.',
+          `${SOURCE_NAMES[provider]} não respondeu a tempo. Tente de novo em instantes.`,
           'SOURCE_UNAVAILABLE',
         );
       }

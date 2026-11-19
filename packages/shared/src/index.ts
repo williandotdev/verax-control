@@ -23,6 +23,7 @@ export * from './plans.js';
 export * from './posture.js';
 export * from './posture-catalog.js';
 export * from './protected-resources.js';
+export * from './read-keys.js';
 export * from './reports.js';
 export * from './session.js';
 export * from './sso.js';

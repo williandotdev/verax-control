@@ -513,8 +513,14 @@ jobs:
             config=$(docker compose "$@" --env-file images.env --profile setup config --format json)
             jq -e --arg mount "$mount" '.services.worker.volumes
               | any(.type == "bind" and .source == "/run/verax/vault" and .target == $mount and .read_only == true)' <<<"$config"
-            jq -e --arg mount "$mount" '[.services[] | (.volumes // [])[]
-              | select(.target == $mount or (.target | startswith($mount + "/")))] | length == 1' <<<"$config"
+            # Fora o worker, só o job aws-sessions do Wazuh (a VM própria do cliente: troca a chave de leitura da AWS do
+            # cofre por uma sessão de 1 hora para o manager), também só leitura, endurecido e só no perfil setup (roda e
+            # sai); nenhum serviço que fica no ar além do worker.
+            jq -e --arg mount "$mount" '[.services | to_entries[] | select(.key != "aws-sessions") | .value
+              | (.volumes // [])[] | select(.target == $mount or (.target | startswith($mount + "/")))] | length == 1' <<<"$config"
+            jq -e --arg mount "$mount" '.services."aws-sessions" // null
+              | . == null or (.read_only == true and (.cap_drop | index("ALL")) != null and .restart == "no"
+                and .profiles == ["setup"] and ([(.volumes // [])[] | select(.target == $mount)] | all(.read_only == true)))' <<<"$config"
             jq -e '.services.worker | .read_only == true and (.cap_drop | index("ALL")) != null' <<<"$config"
           }
           # Nos dois perfis: no standard, o compose.wazuh.yaml também soma um volume ao worker (a CA do indexer).

@@ -15,6 +15,11 @@
 # configuração anterior volta ao lugar (o gerador a guardou em .prev), o manager reinicia com ela, e a que falhou não é
 # tentada de novo enquanto for a mesma. Um manager parado nunca é ligado aqui: ele lê a configuração ao subir.
 #
+# Na VM própria do cliente (NODE_PLATFORM=vm), o gerador recebe VERAX_AWS_STATIC_KEYS=1: os profiles ficam sem o papel
+# e o token, e as credenciais vêm do arquivo `credentials` que o aws-token.sh escreve (as sessões da chave de leitura de
+# cada conta). Com uma lista aplicada, o aws-token.sh roda logo em seguida: uma conta que acabou de entrar no manager
+# ganha a sessão dela sem esperar o timer.
+#
 # No fim, o sinal sem segredo para o worker: /run/verax/wazuh-signal/applied, com a geração (o SHA-256 da lista, o mesmo
 # que o worker calcula; null se a lista nem chegou), ok ou error e a hora. Com error, o worker marca as contas AWS com
 # `wazuh_apply_failed`.
@@ -111,12 +116,22 @@ fi
 # A geração é o SHA-256 da lista como o CLI a imprime (sem a quebra de linha do fim): o worker calcula a mesma.
 generation=$(printf '%s' "$sources" | sha256sum | cut -c1-64)
 
+static_keys=0
+if [[ ${NODE_PLATFORM:-gcp} == vm ]]; then static_keys=1; fi
 hash=$(printf '%s\n' "$sources" |
-  compose --profile setup run --rm -T -e "VERAX_NODE_EGRESS_IPS=$egress" manager-config) || status=$?
+  compose --profile setup run --rm -T -e "VERAX_NODE_EGRESS_IPS=$egress" -e "VERAX_AWS_STATIC_KEYS=$static_keys" \
+    manager-config) || status=$?
 if ((status != 0)) || [[ ! $hash =~ ^[0-9a-f]{64}$ ]]; then
   echo 'ERRO: o gerador recusou a lista das contas AWS: a configuração do manager fica como está.' >&2
   signal_applied "$generation" error
   exit 1
+fi
+
+# VM própria: as sessões das contas da lista de agora (uma conta nova não espera o timer). Uma falha não para a
+# aplicação: o timer tenta de novo, e o worker avisa se as sessões envelhecerem.
+if ((static_keys == 1)); then
+  /opt/verax/bin/aws-token.sh >/dev/null ||
+    echo 'AVISO: as sessões da AWS não foram renovadas agora; o verax-aws-token.timer tenta de novo.' >&2
 fi
 
 running=$(cat "$state/running" 2>/dev/null || true)

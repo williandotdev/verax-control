@@ -85,7 +85,9 @@ export function createAuthHandlers(state: MockState & { pendingCode?: boolean; m
         )
       : undefined;
   return [
-    http.get(url('/client-config'), () => HttpResponse.json({ turnstileSiteKey, adminMasterUrl })),
+    http.get(url('/client-config'), () =>
+      HttpResponse.json({ turnstileSiteKey, adminMasterUrl, nodePlatform: state.nodePlatform ?? 'gcp' }),
+    ),
     http.post(url('/sign-in/email'), async ({ request }) => {
       const refused = turnstileRefusal(request);
       if (refused) return refused;

@@ -11,7 +11,9 @@
 #
 # aws-token.sh: o token do metadata vai para a pasta do manager por troca atômica, 0600, nunca para a saída; o sinal
 # sem segredo para o worker só com a hora; o audience do node.conf (ou o padrão da pilha); sem a pasta, nada; com o
-# metadata fora do ar ou um token fora do formato, o token anterior e o sinal ficam como estavam.
+# metadata fora do ar ou um token fora do formato, o token anterior e o sinal ficam como estavam. Na VM própria
+# (NODE_PLATFORM=vm), as sessões do job aws-sessions vão para o arquivo credentials da mesma pasta, conferidas linha a
+# linha (uma linha fora do formato ou o job com erro mantêm as anteriores), sem chamar o metadata.
 #
 # wazuh-apply.sh: a lista do CLI vai inteira para o gerador, com o IP de saída do node.conf; a geração é o SHA-256
 # dela; o manager só reinicia quando o hash muda e está no ar; sem o healthcheck, a configuração anterior volta e o
@@ -63,6 +65,10 @@ EOF
 stub docker <<'EOF'
 printf '%s\n' "$*" >>"$state/docker.log"
 case " $* " in
+  # As sessões da chave de leitura (VM própria): o arquivo do cenário, ou o erro do job.
+  *' run --rm -T aws-sessions '*)
+    [[ -f $state/sessions ]] || { echo 'Error: P1001 (simulado)' >&2; exit 1; }
+    cat "$state/sessions" ;;
   *' run --rm -T wazuh-sources '*)
     [[ ! -f $state/sources.fail ]] || { echo 'Error: P1001 (simulado)' >&2; exit 1; }
     cat "$state/sources" ;;
@@ -131,7 +137,10 @@ new_root() { # <CHAVE=valor...>
   done
   for script in aws-token wazuh-apply; do
     sed -e "s#/etc/verax/node.conf#$root/etc/verax/node.conf#g" -e "s#^run=/run/verax\$#run=$run#" \
-      -e 's#^HEALTH_TIMEOUT=180$#HEALTH_TIMEOUT=1#' "$here/bin/$script.sh" >"$root/$script.sh"
+      -e 's#^HEALTH_TIMEOUT=180$#HEALTH_TIMEOUT=1#' -e "s#/opt/verax/bin/aws-token.sh#$root/aws-token.sh#" \
+      "$here/bin/$script.sh" >"$root/$script.sh"
+    # O wazuh-apply.sh chama o aws-token.sh direto (na VM própria), como no nó.
+    chmod +x "$root/$script.sh"
   done
   : >"$state/events"
 }
@@ -210,6 +219,36 @@ for audience in 'http://aws.verax.example' 'https://AWS.verax.example' 'https://
   expect "audience fora do formato (${audience:0:30}): recusado sem chamar o metadata" '2 ausente' \
     "$(code_of aws-token) $([[ -f $state/curl.log ]] && echo chamado || echo ausente)"
 done
+
+echo "== aws-token.sh na VM própria: as sessões da chave de leitura no arquivo credentials"
+# Sessões no formato da AWS, montadas aqui (valores fictícios): nenhuma credencial fica no repositório.
+SESSION_SECRET=$(printf 'S%.0s' {1..40})
+SESSION_TOKEN=$(printf 'T%.0s' {1..300})
+SESSIONS=$(printf '[verax-111122223333]\naws_access_key_id = ASIAEXEMPLO000000000\naws_secret_access_key = %s\naws_session_token = %s' \
+  "$SESSION_SECRET" "$SESSION_TOKEN")
+new_root NODE_PROFILE=standard NODE_PLATFORM=vm CREDENTIALS_VAULT=true
+mkdir -m 0755 "$run/wazuh-aws"
+printf '%s\n' "$SESSIONS" >"$state/sessions"
+expect "renovadas, sem chamar o metadata" '0 ausente' \
+  "$(code_of aws-token) $([[ -f $state/curl.log ]] && echo chamado || echo ausente)"
+expect "o arquivo credentials é o que o job imprimiu" igual "$(same "$SESSIONS" "$(cat "$run/wazuh-aws/credentials")")"
+expect "credentials 0600, pasta 0700, sem temporário" '600 700 credentials' \
+  "$(mode "$run/wazuh-aws/credentials") $(mode "$run/wazuh-aws") $(listing "$run/wazuh-aws")"
+expect "o segredo nunca sai na saída" 0 "$(grep -c "$SESSION_SECRET" "$state/out" || true)"
+expect "o job com o projeto do start.sh e o cofre" 1 \
+  "$(grep -c -- '-f /opt/verax/compose.yaml -f /opt/verax/compose.wazuh.yaml -f /opt/verax/compose.vault.yaml .*run --rm -T aws-sessions' "$state/docker.log")"
+expect "o sinal para o worker, só com a hora" "\\{\"tokenAt\":\"$ISO\"\\}" "$(cat "$run/wazuh-signal/aws-token")"
+for bad in 'aws_access_key_id = AKIAEXEMPLO000000000' 'credential_process = /bin/sh' '[default]' \
+  "aws_secret_access_key = $SESSION_SECRET x"; do
+  printf '%s\n%s\n' "$SESSIONS" "$bad" >"$state/sessions"
+  expect "linha fora do formato (${bad:0:24}…): recusada, as sessões anteriores ficam" '1 igual' \
+    "$(code_of aws-token) $(same "$SESSIONS" "$(cat "$run/wazuh-aws/credentials")")"
+done
+rm -f "$state/sessions"
+expect "o job com erro: as sessões anteriores ficam" '1 igual' \
+  "$(code_of aws-token) $(same "$SESSIONS" "$(cat "$run/wazuh-aws/credentials")")"
+: >"$state/sessions"
+expect "nenhuma conta: o arquivo fica vazio" '0 0' "$(code_of aws-token) $(wc -c <"$run/wazuh-aws/credentials")"
 
 echo "== wazuh-apply.sh"
 SOURCES='[{"accountId":"111122223333","region":"sa-east-1","onlyLogsAfter":"2026-NOV-01","cloudtrailBucket":"trilha-111122223333"}]'
@@ -331,6 +370,17 @@ scenario
 touch "$state/running"
 printf 'saída que não é hash\n' >"$state/hash"
 expect "saída do gerador que não é um hash: erro, sem reiniciar" '1 ' "$(code_of wazuh-apply) $(events)"
+
+echo "== wazuh-apply.sh na VM própria: o gerador sem o papel e as sessões renovadas logo depois"
+scenario NODE_PLATFORM=vm CREDENTIALS_VAULT=true
+printf '%s\n' "$SESSIONS" >"$state/sessions"
+expect "aplicada" 0 "$(code_of wazuh-apply)"
+expect "o gerador no modo da chave de leitura" 1 "$(grep -c -- '-e VERAX_AWS_STATIC_KEYS=1 manager-config' "$state/docker.log")"
+expect "as sessões renovadas depois da lista" igual "$(same "$SESSIONS" "$(cat "$run/wazuh-aws/credentials")")"
+scenario
+code_of wazuh-apply >/dev/null
+expect "nos nós da GCP, o gerador com o papel e sem o job das sessões" '1 0' \
+  "$(grep -c -- '-e VERAX_AWS_STATIC_KEYS=0 manager-config' "$state/docker.log") $(grep -c aws-sessions "$state/docker.log" || true)"
 
 echo "== wazuh-apply.sh: o projeto do Compose e o IP de saída do node.conf"
 scenario NODE_EGRESS_IPS=203.0.113.10/24

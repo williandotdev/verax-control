@@ -4,7 +4,8 @@ import { inspect } from 'node:util';
 export interface AwsCredentialIdentity {
   accessKeyId: string;
   secretAccessKey: string;
-  sessionToken: string;
+  /** O token da sessão; ausente na chave de longo prazo do usuário IAM de leitura (a VM própria do cliente). */
+  sessionToken?: string;
   expiration?: Date;
 }
 
