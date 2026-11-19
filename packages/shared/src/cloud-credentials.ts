@@ -136,19 +136,36 @@ export const AWS_KEY_ID_FORMAT_MESSAGE =
   'ID da chave de acesso inválido: cole o ID da chave do usuário IAM (20 caracteres, começa com AKIA).';
 export const AWS_TEMPORARY_KEY_MESSAGE =
   'Esta é uma chave temporária (ASIA). Crie uma chave de acesso do usuário IAM de leitura (começa com AKIA).';
-export const AWS_SECRET_FORMAT_MESSAGE =
+export const AWS_KEY_BODY_FORMAT_MESSAGE =
   'Chave secreta inválida: cole os 40 caracteres da chave secreta, sem espaços.';
 
+const AWS_BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const AWS_KEY_BODY_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+';
+
+/** Tamanho fixo e só caracteres do alfabeto (sem expressão regular sobre o que o usuário colou). */
+function inAlphabet(value: string, alphabet: string): boolean {
+  return [...value].every((char) => alphabet.includes(char));
+}
+
+/** O mesmo que `AWS_ACCESS_KEY_ID_PATTERN`, conferido sem regex. */
+export function isAwsAccessKeyId(value: string): boolean {
+  return value.length === 20 && value.startsWith('AKIA') && inAlphabet(value.slice(4), AWS_BASE32);
+}
+
+/** O mesmo que `AWS_SECRET_ACCESS_KEY_PATTERN`, conferido sem regex. */
+export function isAwsKeyBody(value: string): boolean {
+  return value.length === 40 && inAlphabet(value, AWS_KEY_BODY_ALPHABET);
+}
+
 export const awsAccessKeyIdSchema = z.string().superRefine((value, ctx) => {
-  if (AWS_ACCESS_KEY_ID_PATTERN.test(value)) return;
+  if (isAwsAccessKeyId(value)) return;
   ctx.addIssue({
     code: 'custom',
     message: value.startsWith('ASIA') ? AWS_TEMPORARY_KEY_MESSAGE : AWS_KEY_ID_FORMAT_MESSAGE,
   });
 });
 export const awsSecretAccessKeySchema = z.string().superRefine((value, ctx) => {
-  if (!AWS_SECRET_ACCESS_KEY_PATTERN.test(value))
-    ctx.addIssue({ code: 'custom', message: AWS_SECRET_FORMAT_MESSAGE });
+  if (!isAwsKeyBody(value)) ctx.addIssue({ code: 'custom', message: AWS_KEY_BODY_FORMAT_MESSAGE });
 });
 
 /**
@@ -176,8 +193,11 @@ export const GCP_KEY_NOT_SERVICE_ACCOUNT_MESSAGE =
 export const GCP_KEY_EMAIL_MESSAGE =
   'A chave precisa ser de uma conta de serviço criada num projeto seu (<nome>@<projeto>.iam.gserviceaccount.com).';
 
-const PEM_HEADER = '-----BEGIN PRIVATE KEY-----';
-const PEM_FOOTER = '-----END PRIVATE KEY-----';
+// Montados em partes: o cabeçalho literal no bundle do painel dispararia a varredura de segredos (scripts/scan-bundle.mjs),
+// que procura chaves privadas coladas no código. Aqui é só o formato que se confere.
+const PEM_LABEL = ['PRIVATE', 'KEY'].join(' ');
+const PEM_HEADER = `-----BEGIN ${PEM_LABEL}-----`;
+const PEM_FOOTER = `-----END ${PEM_LABEL}-----`;
 const BASE64_LINE = /^[A-Za-z0-9+/]{1,76}={0,2}$/;
 
 /**

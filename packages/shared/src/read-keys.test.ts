@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   AWS_KEY_ID_FORMAT_MESSAGE,
-  AWS_SECRET_FORMAT_MESSAGE,
+  AWS_KEY_BODY_FORMAT_MESSAGE,
   AWS_TEMPORARY_KEY_MESSAGE,
   cloudCredentialInputSchema,
   credentialKindAllowed,
@@ -84,7 +84,7 @@ describe('chaves de leitura da VM própria do cliente', () => {
     }
     for (const secretAccessKey of [awsSecret().slice(1), `${awsSecret()}\n`, `${awsSecret().slice(1)}ç`]) {
       const messages = issuesOf({ kind: 'aws_access_key', accessKeyId: awsKeyId(), secretAccessKey });
-      expect(messages).toEqual([AWS_SECRET_FORMAT_MESSAGE]);
+      expect(messages).toEqual([AWS_KEY_BODY_FORMAT_MESSAGE]);
       expect(messages.join(' ')).not.toContain(secretAccessKey.trim());
     }
     expect(

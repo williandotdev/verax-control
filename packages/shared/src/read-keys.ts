@@ -19,7 +19,7 @@ import { GCP_SINK_LOG_FILTER } from './cloud-accounts.js';
 
 /** O usuário IAM de leitura: mesmo caminho e mesmo nome do papel, para as políticas e os alertas valerem igual. */
 export const AWS_READER_USER_PATH = AWS_READER_ROLE_PATH;
-export const AWS_READER_USER_NAME = 'verax-control-reader';
+export const AWS_READER_IAM_NAME = 'verax-control-reader';
 export const AWS_READER_POLICY_NAME = 'VeraxControlReader';
 export const AWS_GUARDRAILS_POLICY_NAME = 'VeraxControlGuardrails';
 /** Os arquivos que os comandos esperam (o painel mostra o conteúdo de cada um para copiar). */
@@ -27,7 +27,7 @@ export const AWS_READER_POLICY_FILE = 'verax-control-reader.json';
 export const AWS_GUARDRAILS_POLICY_FILE = 'verax-control-guardrails.json';
 
 export function awsReaderUserArn(accountId: string): string {
-  return `arn:aws:iam::${accountId}:user${AWS_READER_USER_PATH}${AWS_READER_USER_NAME}`;
+  return `arn:aws:iam::${accountId}:user${AWS_READER_USER_PATH}${AWS_READER_IAM_NAME}`;
 }
 
 /** As ações de leitura do papel (`ValidarFontes` e `PosturaEAtivos` do template), as mesmas no usuário. */
@@ -229,14 +229,14 @@ export function awsGuardrailsPolicy(values: Pick<AwsReaderUserValues, 'egressIps
  */
 export function awsReaderUserCommands(accountId: string): string {
   const policy = (name: string) => `arn:aws:iam::${accountId}:policy${AWS_READER_USER_PATH}${name}`;
-  const user = `--user-name ${AWS_READER_USER_NAME}`;
+  const principalArg = `--user-name ${AWS_READER_IAM_NAME}`;
   return [
     `aws iam create-policy --path ${AWS_READER_USER_PATH} --policy-name ${AWS_READER_POLICY_NAME} --policy-document file://${AWS_READER_POLICY_FILE}`,
     `aws iam create-policy --path ${AWS_READER_USER_PATH} --policy-name ${AWS_GUARDRAILS_POLICY_NAME} --policy-document file://${AWS_GUARDRAILS_POLICY_FILE}`,
-    `aws iam create-user --path ${AWS_READER_USER_PATH} ${user} --permissions-boundary ${policy(AWS_READER_POLICY_NAME)}`,
-    `aws iam attach-user-policy ${user} --policy-arn ${policy(AWS_READER_POLICY_NAME)}`,
-    `aws iam attach-user-policy ${user} --policy-arn ${policy(AWS_GUARDRAILS_POLICY_NAME)}`,
-    `aws iam create-access-key ${user}`,
+    `aws iam create-user --path ${AWS_READER_USER_PATH} ${principalArg} --permissions-boundary ${policy(AWS_READER_POLICY_NAME)}`,
+    `aws iam attach-user-policy ${principalArg} --policy-arn ${policy(AWS_READER_POLICY_NAME)}`,
+    `aws iam attach-user-policy ${principalArg} --policy-arn ${policy(AWS_GUARDRAILS_POLICY_NAME)}`,
+    `aws iam create-access-key ${principalArg}`,
   ].join('\n');
 }
 
