@@ -1,0 +1,13 @@
+# Exceções do Trivy só para a imagem do executor do Terraform (o passo "Executor Terraform: Trivy" do ci.yml usa este
+# arquivo com --ignorefile; nenhuma outra imagem nem a varredura do repositório o leem). Cada exceção vale para uma CVE,
+# num binário, com vencimento: vencida, a CI volta a barrar sozinha. Decisão do responsável de 19/11/2026.
+vulnerabilities:
+  # A biblioteca padrão do Go 1.26.10 embutida no Terraform (hashicorp/terraform 1.17.1 e 1.17.2, as últimas): a falha
+  # é no http.MaxBytesReader de servidores HTTP/1. O Terraform do executor não serve HTTP (só faz chamadas de cliente
+  # às APIs do Google e do Cloudflare, num Cloud Run Job sem porta de entrada). Sai daqui quando a HashiCorp publicar
+  # um Terraform compilado com o Go 1.26.11 ou 1.27.4.
+  - id: CVE-2026-97054
+    paths:
+      - 'bin/terraform'
+    statement: 'Go stdlib (MaxBytesReader em servidor HTTP/1); o Terraform do executor não serve HTTP. Trocar pela versão corrigida.'
+    expired_at: 2026-12-15
