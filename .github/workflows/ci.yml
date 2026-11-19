@@ -178,7 +178,11 @@ jobs:
       - name: 'Executor Terraform: build'
         run: docker build -f infra/control-plane/terraform/Dockerfile -t verax-terraform-executor:teste .
       - name: 'Executor Terraform: Trivy'
-        run: ./trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress verax-terraform-executor:teste
+        # Só aqui, as exceções com vencimento de infra/control-plane/terraform/trivy-excecoes.yaml (uma CVE por binário,
+        # com a justificativa); vencida, a exceção deixa de valer e o passo volta a barrar.
+        run: >-
+          ./trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress
+          --ignorefile infra/control-plane/terraform/trivy-excecoes.yaml verax-terraform-executor:teste
       - name: 'Executor Terraform: como no Cloud Run Job (sem rede, raiz só leitura, provider do espelho, testes do envs/tenant e do envs/cell-tenant)'
         run: bash scripts/test-terraform-executor-image.sh verax-terraform-executor:teste
 
