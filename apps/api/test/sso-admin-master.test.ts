@@ -465,9 +465,9 @@ describe('entrada única: o console como provedor de identidade do SIEM', () => 
 
     it('a configuração pública mostra o console só no endereço da equipe', async () => {
       const own = await staff()('get', '/v1/auth/client-config').expect(200);
-      expect(own.body).toEqual({ turnstileSiteKey: null, adminMasterUrl: `${ISSUER}/` });
+      expect(own.body).toEqual({ turnstileSiteKey: null, adminMasterUrl: `${ISSUER}/`, nodePlatform: 'gcp' });
       const customer = await onHost(api, CUSTOMER)('get', '/v1/auth/client-config').expect(200);
-      expect(customer.body).toEqual({ turnstileSiteKey: null, adminMasterUrl: null });
+      expect(customer.body).toEqual({ turnstileSiteKey: null, adminMasterUrl: null, nodePlatform: 'gcp' });
     });
 
     it('o login com senha do painel continua valendo para a equipe (o interruptor vem desligado)', async () => {

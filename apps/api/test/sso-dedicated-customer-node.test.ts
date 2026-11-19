@@ -61,7 +61,7 @@ describe('nó dedicado de cliente: sem a entrada única', () => {
 
   it('a configuração pública não mostra o console, e o login com senha da equipe segue', async () => {
     const response = await request(app.getHttpServer()).get('/v1/auth/client-config').expect(200);
-    expect(response.body).toEqual({ turnstileSiteKey: null, adminMasterUrl: null });
+    expect(response.body).toEqual({ turnstileSiteKey: null, adminMasterUrl: null, nodePlatform: 'gcp' });
     const staff = await createUser(app, { role: 'admin_verax', tenantId: null });
     expect((await signInRequest(app, staff.email, staff.password)).status).toBe(200);
   });

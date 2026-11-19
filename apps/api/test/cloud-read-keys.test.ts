@@ -207,7 +207,8 @@ describe('chaves de leitura da VM própria do cliente (NODE_PLATFORM=vm)', () =>
     for (const [outcome, status, message] of [
       ['invalid', 400, /A AWS não aceitou a chave/],
       ['root', 400, /não é de um usuário IAM/],
-      ['down', 503, /A AWS não respondeu/],
+      // 5xx sai sempre com a mensagem genérica do filtro global (o detalhe fica só no log).
+      ['down', 503, /Serviço temporariamente indisponível/],
     ] as const) {
       vm.checks.awsOutcome = outcome;
       const secretAccessKey = awsSecret();
