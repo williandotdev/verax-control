@@ -27,10 +27,12 @@ import {
   type AwsLogger,
   awsErrorName,
   isTransientAwsError,
+  type AwsReaderCredentials,
   READER_SESSION_ARN_SUFFIX,
+  type ReaderSession,
   STS_FALLBACK_REGION,
-  type WebIdentityCredentials,
 } from './web-identity.js';
+import { isIamUserArn } from './aws-key-check.js';
 
 /**
  * A conferência real da conexão da AWS (fase 2, PR-V5'; a interface e a tarefa são do PR-V3'). Cada chamada é uma
@@ -64,6 +66,12 @@ import {
  * - tempo esgotado, 5xx e limite: `aws_unavailable` (pode passar); qualquer outro: `check_unavailable` (pode passar).
  * Uma falha depois da entrada no papel descarta a sessão guardada da conta: a próxima conferência entra de novo (uma
  * sessão revogada pelo "Revoke active sessions" não fica em uso até vencer).
+ *
+ * Na VM própria do cliente (`NODE_PLATFORM=vm`), a sessão é a chave do usuário IAM de leitura, do cofre
+ * (`vault-key-credentials.ts`; `ReaderSession.principal` é `iam_user`), e só muda quem a AWS vê: o `GetCallerIdentity`
+ * precisa ser um usuário IAM da conta cadastrada (o root ou outra conta, `account_mismatch`), a chave recusada pela AWS
+ * é `key_invalid`, e a simulação da permissão demais é no próprio usuário, com o IP da VM quando o nó o informa. O resto
+ * (buckets, trilha, export) é igual.
  */
 
 /** O cliente da AWS que a conferência usa: o `send` e, nos reais, o `destroy` (os testes usam falsos). */
@@ -118,7 +126,14 @@ export const EXCESS_PERMISSION_SAMPLE = [
 export const EXCESS_PERMISSION_RESOURCE =
   'arn:aws:s3:::verax-control-amostra-fora-da-politica/amostra.json.gz';
 
-const callerSchema = z.object({ Account: z.string(), Arn: z.string() });
+const callerSchema = z.object({ Account: z.string(), Arn: z.string().max(2048) });
+/** A chave de acesso que a AWS não reconhece ou cuja assinatura não confere (o `GetCallerIdentity` não é negado). */
+const KEY_REJECTED_NAMES = new Set([
+  'InvalidClientTokenId',
+  'SignatureDoesNotMatch',
+  'IncompleteSignature',
+  'UnrecognizedClientException',
+]);
 const keySchema = z.string().min(1).max(1024);
 const trailsSchema = z.array(
   z.object({
@@ -313,8 +328,8 @@ class CheckClients {
 }
 
 export interface WebIdentityCheckerOptions {
-  /** As sessões no papel (uma por conta, guardadas até perto de vencer). */
-  credentials: WebIdentityCredentials;
+  /** As sessões no papel (uma por conta, guardadas até perto de vencer), ou as chaves do cofre na VM própria. */
+  credentials: AwsReaderCredentials;
   /** Os IPs de saída do nó (`NODE_EGRESS_IPS`): o primeiro vai em `aws:SourceIp` na simulação. */
   egressIps?: readonly string[];
   clients?: AwsCheckClients;
@@ -323,7 +338,7 @@ export interface WebIdentityCheckerOptions {
 
 /** A conferência real (PR-V5'), no lugar da `UnavailableAwsConnectionChecker` do PR-V3'. */
 export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
-  readonly #credentials: WebIdentityCredentials;
+  readonly #credentials: AwsReaderCredentials;
   readonly #sourceIp: string | null;
   readonly #clients: AwsCheckClients;
   readonly #logger: AwsLogger;
@@ -354,12 +369,17 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
       const session = await this.#credentials.session(target.accountId, region, signal);
       entered = true;
       clients = new CheckClients(this.#clients, session.credentials.identity());
-      await this.#callerIdentity(target.accountId, clients.sts(session.stsRegion), signal);
+      const principal = await this.#callerIdentity(
+        target.accountId,
+        session,
+        clients.sts(session.stsRegion),
+        signal,
+      );
       const s3 = clients.s3(region);
       for (const bucket of bucketsOf(target)) await this.#readBucket(s3, bucket, target.accountId, signal);
       const warnings: AwsConnectionWarningCode[] = session.regionFallback ? ['region_disabled'] : [];
       if (!target.daily) return { ok: true, warnings };
-      const daily = await this.#daily(target, clients, signal);
+      const daily = await this.#daily(target, clients, principal, signal);
       return daily === null ? { ok: true, warnings } : { ok: true, warnings, daily: { warnings: daily } };
     } catch (error) {
       if (signal.aborted) throw error;
@@ -377,22 +397,38 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
     }
   }
 
-  async #callerIdentity(accountId: string, sts: SdkClient<STSClient>, signal: AbortSignal): Promise<void> {
+  /**
+   * Quem a AWS vê é quem deveria: a sessão do papel da conta cadastrada ou, na VM própria, um usuário IAM dela. Devolve
+   * o principal da simulação da permissão demais (o papel, ou o próprio usuário).
+   */
+  async #callerIdentity(
+    accountId: string,
+    session: ReaderSession,
+    sts: SdkClient<STSClient>,
+    signal: AbortSignal,
+  ): Promise<{ simulatedArn: string; iamUser: boolean }> {
+    const iamUser = session.principal === 'iam_user';
     let response: unknown;
     try {
       response = await sts.send(new GetCallerIdentityCommand({}), { abortSignal: signal });
     } catch (error) {
       if (signal.aborted) throw error;
+      // A chave do cofre que a AWS não reconhece mais (apagada, desativada ou com o segredo trocado).
+      if (iamUser && KEY_REJECTED_NAMES.has(awsErrorName(error)))
+        throw new AwsConnectionError('key_invalid', false);
       throw unexpected(error);
     }
     const caller = callerSchema.safeParse(response);
-    if (
-      !caller.success ||
-      caller.data.Account !== accountId ||
-      caller.data.Arn !== `arn:aws:sts::${accountId}${READER_SESSION_ARN_SUFFIX}`
-    ) {
+    if (!caller.success || caller.data.Account !== accountId)
+      throw new AwsConnectionError('account_mismatch', false);
+    if (iamUser) {
+      if (!isIamUserArn(caller.data.Arn, accountId)) throw new AwsConnectionError('account_mismatch', false);
+      return { simulatedArn: caller.data.Arn, iamUser };
+    }
+    if (caller.data.Arn !== `arn:aws:sts::${accountId}${READER_SESSION_ARN_SUFFIX}`) {
       throw new AwsConnectionError('account_mismatch', false);
     }
+    return { simulatedArn: awsReaderRoleArn(accountId), iamUser };
   }
 
   /**
@@ -464,12 +500,13 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
   async #daily(
     target: AwsCheckTarget,
     clients: CheckClients,
+    principal: { simulatedArn: string; iamUser: boolean },
     signal: AbortSignal,
   ): Promise<AwsConnectionWarningCode[] | null> {
     const results: DailyResult[] = [
       await this.#trail(target, clients, signal),
       await this.#guardDutyExport(target, clients, signal),
-      await this.#excessPermissions(target, clients, signal),
+      await this.#excessPermissions(clients, principal, signal),
     ];
     if (results.includes('unknown')) return null;
     return AWS_CONNECTION_WARNING_CODES.filter((code) => results.includes(code));
@@ -589,22 +626,26 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
   }
 
   async #excessPermissions(
-    target: AwsCheckTarget,
     clients: CheckClients,
+    principal: { simulatedArn: string; iamUser: boolean },
     signal: AbortSignal,
   ): Promise<DailyResult> {
     const sourceIp = this.#sourceIp;
-    if (sourceIp === null) return 'ok';
+    // O papel nega tudo de fora do IP do nó: sem ele, a simulação esconderia a permissão a mais. O usuário da VM
+    // própria só tem essa negação quando o nó informa o IP (o mesmo que vai na simulação).
+    if (sourceIp === null && !principal.iamUser) return 'ok';
     const simulated = await this.#attempt(
       () =>
         clients.iam().send(
           new SimulatePrincipalPolicyCommand({
-            PolicySourceArn: awsReaderRoleArn(target.accountId),
+            PolicySourceArn: principal.simulatedArn,
             ActionNames: [...EXCESS_PERMISSION_SAMPLE],
             ResourceArns: [EXCESS_PERMISSION_RESOURCE],
-            ContextEntries: [
-              { ContextKeyName: 'aws:SourceIp', ContextKeyType: 'ip', ContextKeyValues: [sourceIp] },
-            ],
+            ...(sourceIp !== null && {
+              ContextEntries: [
+                { ContextKeyName: 'aws:SourceIp', ContextKeyType: 'ip', ContextKeyValues: [sourceIp] },
+              ],
+            }),
             MaxItems: 100,
           }),
           { abortSignal: signal },

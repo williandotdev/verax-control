@@ -1,9 +1,15 @@
 import {
+  AWS_GUARDRAILS_POLICY_FILE,
   AWS_READER_AUDIENCE,
+  AWS_READER_POLICY_FILE,
   AWS_READER_STACK_NAME,
   AWS_READER_TEMPLATE_FILE,
   awsLogBucketArns,
+  awsGuardrailsPolicy,
   awsReaderDeployCommand,
+  awsReaderUserArn,
+  awsReaderUserCommands,
+  awsReaderUserPolicy,
   CLOUD_PROVIDERS,
   type CloudAccount,
   cloudAccountCreateSchema,
@@ -15,6 +21,11 @@ import {
   cloudFormationConsoleUrl,
   type CloudProvider,
   daysUntilExpiry,
+  GCP_READER_ROLE,
+  gcpReaderCommands,
+  gcpReaderServiceAccountEmail,
+  gcpReaderSubscription,
+  gcpServiceAccountKeyFromJson,
   gcpSinkCommand,
   gcpSinkIdentityCommand,
   isAwsConnectionWarningCode,
@@ -24,11 +35,11 @@ import {
   qualifyPubsubSubscription,
 } from '@verax/shared';
 import { Copy, Download, ExternalLink, TriangleAlert } from 'lucide-react';
-import { type FormEvent, useEffect, useId, useRef, useState } from 'react';
+import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
 import { Button } from '@/components/ui/button';
-import { Field } from '@/components/ui/field';
+import { Field, Textarea } from '@/components/ui/field';
 import { Sheet } from '@/components/ui/sheet';
 import { SEVERITY_STYLES } from '@/design/severity';
 import {
@@ -58,8 +69,10 @@ import {
   CONNECTION_LABELS,
   connectionHint,
   CREDENTIAL_STATUS_LABELS,
+  gcpConnectionErrorHint,
   PROVIDER_LABELS,
 } from '@/features/admin/labels';
+import { useAuthClientConfig } from '@/features/auth/client-config';
 import { useMe } from '@/features/session/session';
 import { ApiRequestError } from '@/lib/api-client';
 import { cn } from '@/lib/cn';
@@ -224,7 +237,11 @@ const CONNECTION_SEVERITY = {
  */
 function ConnectionErrorDetail({ account, code }: { account: CloudAccount; code: string }) {
   const cloudflare = account.provider === 'cloudflare';
-  const hint = cloudflare ? cloudflareConnectionErrorHint(code) : null;
+  const hint = cloudflare
+    ? cloudflareConnectionErrorHint(code)
+    : account.provider === 'gcp'
+      ? gcpConnectionErrorHint(code)
+      : null;
   const stopped = cloudflare && isCloudflareBlockingError(code);
   return (
     <>
@@ -526,10 +543,27 @@ function EditSource({ account }: { account: CloudAccount }) {
   );
 }
 
+/**
+ * O que configurar em cada provedor. Na VM própria do cliente (`nodePlatform: vm` do `GET /v1/auth/client-config`), o
+ * nó não tem identidade do Google: a AWS e a GCP são lidas com a chave de uma identidade só de leitura, colada aqui. A
+ * API recusa as chaves nos outros nós; a escolha aqui é só a das instruções.
+ */
 function ProviderSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
-  if (account.provider === 'gcp') return <GcpSteps account={account} canWrite={canWrite} />;
+  const config = useAuthClientConfig();
+  const vm = config.data?.nodePlatform === 'vm';
+  if (account.provider === 'gcp') {
+    return vm ? (
+      <GcpKeySteps account={account} canWrite={canWrite} />
+    ) : (
+      <GcpSteps account={account} canWrite={canWrite} />
+    );
+  }
   if (account.provider === 'cloudflare') return <CloudflareSteps account={account} canWrite={canWrite} />;
-  return <AwsSteps account={account} canWrite={canWrite} />;
+  return vm ? (
+    <AwsKeySteps account={account} canWrite={canWrite} />
+  ) : (
+    <AwsSteps account={account} canWrite={canWrite} />
+  );
 }
 
 /** No nó que não informa o próprio tópico (ambiente local), o comando sai com este no lugar. */
@@ -670,17 +704,6 @@ function SinkIdentityForm({ account }: { account: CloudAccount }) {
  * mostra só o fim do ID do token (`…abcd`), a validade e a última conferência.
  */
 function CloudflareSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
-  // A última escrita feita aqui vale só até chegar um estado mais novo da conta: no detalhe, a lista relida depois dela
-  // ou depois de outra escrita (desativar o monitoramento apaga o token); no cadastro, a conta da resposta não é
-  // relida, e a escrita daqui continua valendo. Só os metadados; o token nunca fica guardado.
-  const [local, setLocal] = useState<LocalCredential | null>(null);
-  const current = local !== null && local.accountUpdatedAt === account.updatedAt ? local : null;
-  const keyStatus = current ? current.keyStatus : account.keyStatus;
-  // Os avisos seguem o que está na tela: "guardado" só com o mesmo token, "removido" só sem token.
-  const justSaved = local?.event === 'saved' && keyStatus?.keyIdSuffix === local.keyStatus?.keyIdSuffix;
-  const justRemoved = local?.event === 'removed' && keyStatus === null;
-  const remember = (next: Omit<LocalCredential, 'accountUpdatedAt'>) =>
-    setLocal({ ...next, accountUpdatedAt: account.updatedAt });
   return (
     <section aria-labelledby="conector-passos" className="space-y-3 rounded-md border p-3">
       <h3 id="conector-passos" className="text-sm font-semibold">
@@ -726,33 +749,12 @@ function CloudflareSteps({ account, canWrite }: { account: CloudAccount; canWrit
           </p>
         </li>
         <li className="space-y-2">
-          {keyStatus ? (
-            <CredentialCard
-              account={account}
-              status={keyStatus}
-              canWrite={canWrite}
-              justSaved={justSaved}
-              onChange={remember}
-            />
-          ) : canWrite && account.status !== 'active' ? (
-            <p>Reative o monitoramento para colar o token: a conta desativada não guarda credencial.</p>
-          ) : canWrite ? (
-            <>
-              {justRemoved && (
-                <p role="status" className="text-muted-foreground">
-                  Token removido do cofre do nó. Apague-o também no Cloudflare.
-                </p>
-              )}
-              <p>Cole o token aqui:</p>
-              <CloudflareTokenForm
-                account={account}
-                focusOnMount={justRemoved}
-                onSaved={(saved) => remember({ keyStatus: saved, event: 'saved' })}
-              />
-            </>
-          ) : (
-            <p>Quem administra as contas cola o token aqui. Nenhum token guardado ainda.</p>
-          )}
+          <CredentialStep
+            account={account}
+            canWrite={canWrite}
+            texts={CREDENTIAL_TEXTS.cloudflare}
+            renderForm={(props) => <CloudflareTokenForm account={account} {...props} />}
+          />
         </li>
         <li>
           Informe as zonas monitoradas. A conexão muda para "Conectada" na primeira leitura bem-sucedida,
@@ -760,6 +762,130 @@ function CloudflareSteps({ account, canWrite }: { account: CloudAccount; canWrit
         </li>
       </ol>
     </section>
+  );
+}
+
+/** Os textos da credencial de cada provedor: o token do Cloudflare e as chaves de leitura da VM própria. */
+interface CredentialTexts {
+  title: string;
+  idLabel: string;
+  replace: string;
+  remove: string;
+  removeWarning: string;
+  saved: (suffix: string) => string;
+  removed: string;
+  pastePrompt: string;
+  inactive: string;
+  readOnly: string;
+  unavailable: string;
+}
+
+const CREDENTIAL_TEXTS: Readonly<Record<CloudProvider, CredentialTexts>> = {
+  cloudflare: {
+    title: 'Token de API guardado',
+    idLabel: 'Token',
+    replace: 'Trocar token',
+    remove: 'Remover token',
+    removeWarning:
+      'A coleta do Cloudflare para até outro token ser colado. Apague o token no Cloudflare também.',
+    saved: (suffix) => `Token conferido no Cloudflare e guardado no cofre do nó (…${suffix}).`,
+    removed: 'Token removido do cofre do nó. Apague-o também no Cloudflare.',
+    pastePrompt: 'Cole o token aqui:',
+    inactive: 'Reative o monitoramento para colar o token: a conta desativada não guarda credencial.',
+    readOnly: 'Quem administra as contas cola o token aqui. Nenhum token guardado ainda.',
+    unavailable: 'O Cloudflare não respondeu a tempo. Tente de novo em instantes.',
+  },
+  aws: {
+    title: 'Chave de acesso guardada',
+    idLabel: 'ID da chave',
+    replace: 'Trocar chave',
+    remove: 'Remover chave',
+    removeWarning:
+      'A leitura da AWS para até outra chave ser colada. Desative e apague a chave no IAM também.',
+    saved: (suffix) => `Chave conferida na AWS e guardada no cofre do nó (…${suffix}).`,
+    removed: 'Chave removida do cofre do nó. Desative e apague a chave no IAM também.',
+    pastePrompt: 'Cole a chave de acesso do usuário de leitura aqui:',
+    inactive: 'Reative o monitoramento para colar a chave: a conta desativada não guarda credencial.',
+    readOnly: 'Quem administra as contas cola a chave aqui. Nenhuma chave guardada ainda.',
+    unavailable: 'A AWS não respondeu a tempo. Tente de novo em instantes.',
+  },
+  gcp: {
+    title: 'Chave da conta de serviço guardada',
+    idLabel: 'ID da chave',
+    replace: 'Trocar chave',
+    remove: 'Remover chave',
+    removeWarning:
+      'A leitura do projeto para até outra chave ser colada. Apague a chave na conta de serviço também.',
+    saved: (suffix) => `Chave conferida no Google e guardada no cofre do nó (…${suffix}).`,
+    removed: 'Chave removida do cofre do nó. Apague-a também na conta de serviço, no Google.',
+    pastePrompt: 'Cole o conteúdo do arquivo JSON da chave aqui:',
+    inactive: 'Reative o monitoramento para colar a chave: a conta desativada não guarda credencial.',
+    readOnly: 'Quem administra as contas cola a chave aqui. Nenhuma chave guardada ainda.',
+    unavailable: 'O Google não respondeu a tempo. Tente de novo em instantes.',
+  },
+};
+
+/** O que o formulário de colar recebe do passo da credencial. */
+interface CredentialFormProps {
+  replacing?: boolean;
+  focusOnMount?: boolean;
+  onCancel?: () => void;
+  onSaved: (keyStatus: CloudCredentialStatus) => void;
+}
+
+/**
+ * O passo de colar a credencial (o token do Cloudflare ou a chave de leitura da VM própria): o cartão com os metadados
+ * da guardada ou o formulário. A última escrita feita aqui vale só até chegar um estado mais novo da conta: no detalhe,
+ * a lista relida depois dela ou depois de outra escrita (desativar o monitoramento apaga a credencial); no cadastro, a
+ * conta da resposta não é relida, e a escrita daqui continua valendo. Só os metadados; o segredo nunca fica guardado.
+ */
+function CredentialStep({
+  account,
+  canWrite,
+  texts,
+  renderForm,
+}: {
+  account: CloudAccount;
+  canWrite: boolean;
+  texts: CredentialTexts;
+  renderForm: (props: CredentialFormProps) => ReactNode;
+}) {
+  const [local, setLocal] = useState<LocalCredential | null>(null);
+  const current = local !== null && local.accountUpdatedAt === account.updatedAt ? local : null;
+  const keyStatus = current ? current.keyStatus : account.keyStatus;
+  // Os avisos seguem o que está na tela: "guardado" só com a mesma credencial, "removido" só sem credencial.
+  const justSaved = local?.event === 'saved' && keyStatus?.keyIdSuffix === local.keyStatus?.keyIdSuffix;
+  const justRemoved = local?.event === 'removed' && keyStatus === null;
+  const remember = (next: Omit<LocalCredential, 'accountUpdatedAt'>) =>
+    setLocal({ ...next, accountUpdatedAt: account.updatedAt });
+  if (keyStatus) {
+    return (
+      <CredentialCard
+        account={account}
+        status={keyStatus}
+        canWrite={canWrite}
+        justSaved={justSaved}
+        onChange={remember}
+        texts={texts}
+        renderForm={renderForm}
+      />
+    );
+  }
+  if (canWrite && account.status !== 'active') return <p>{texts.inactive}</p>;
+  if (!canWrite) return <p>{texts.readOnly}</p>;
+  return (
+    <>
+      {justRemoved && (
+        <p role="status" className="text-muted-foreground">
+          {texts.removed}
+        </p>
+      )}
+      <p>{texts.pastePrompt}</p>
+      {renderForm({
+        focusOnMount: justRemoved,
+        onSaved: (saved) => remember({ keyStatus: saved, event: 'saved' }),
+      })}
+    </>
   );
 }
 
@@ -779,11 +905,9 @@ const CREDENTIAL_SEVERITY = {
   expired: 'critical',
 } as const satisfies Record<CloudCredentialStatus['status'], keyof typeof SEVERITY_STYLES>;
 
-/** O erro da API em texto, para ficar junto do campo ou do cartão (o 503 é o Cloudflare que não respondeu). */
-function credentialErrorText(error: unknown): string {
-  if (error instanceof ApiRequestError && error.status === 503) {
-    return 'O Cloudflare não respondeu a tempo. Tente de novo em instantes.';
-  }
+/** O erro da API em texto, para ficar junto do campo ou do cartão (o 503 é a origem que não respondeu). */
+function credentialErrorText(error: unknown, texts: CredentialTexts = CREDENTIAL_TEXTS.cloudflare): string {
+  if (error instanceof ApiRequestError && error.status === 503) return texts.unavailable;
   // 404 aqui é a conta ou o token que outra pessoa já tirou: a mensagem da API diz qual.
   if (error instanceof ApiRequestError && error.status === 404) return error.message;
   return errorMessage(error);
@@ -799,12 +923,16 @@ function CredentialCard({
   canWrite,
   justSaved,
   onChange,
+  texts,
+  renderForm,
 }: {
   account: CloudAccount;
   status: CloudCredentialStatus;
   canWrite: boolean;
   justSaved: boolean;
   onChange: (local: Omit<LocalCredential, 'accountUpdatedAt'>) => void;
+  texts: CredentialTexts;
+  renderForm: (props: CredentialFormProps) => ReactNode;
 }) {
   const titleId = useId();
   const title = useRef<HTMLParagraphElement>(null);
@@ -824,10 +952,10 @@ function CredentialCard({
   return (
     <div role="group" aria-labelledby={titleId} className="space-y-3 rounded-md border p-3">
       <p id={titleId} ref={title} tabIndex={-1} className="font-semibold">
-        Token de API guardado
+        {texts.title}
       </p>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
-        <dt className="text-muted-foreground">Token</dt>
+        <dt className="text-muted-foreground">{texts.idLabel}</dt>
         <dd>
           <code className="font-mono">…{status.keyIdSuffix}</code>
         </dd>
@@ -854,7 +982,7 @@ function CredentialCard({
       )}
       {justSaved && (
         <p role="status" className="text-muted-foreground">
-          Token conferido no Cloudflare e guardado no cofre do nó (…{status.keyIdSuffix}).
+          {texts.saved(status.keyIdSuffix)}
         </p>
       )}
       {canWrite && !replacing && (
@@ -868,34 +996,32 @@ function CredentialCard({
               setReplacing(true);
             }}
           >
-            Trocar token
+            {texts.replace}
           </Button>
           <ConfirmButton
-            label="Remover token"
+            label={texts.remove}
             confirmLabel="Confirmar remoção"
             busy={credential.pending}
-            warning="A coleta do Cloudflare para até outro token ser colado. Apague o token no Cloudflare também."
+            warning={texts.removeWarning}
             onConfirm={() => void remove()}
           />
         </div>
       )}
       {!replacing && credential.error ? (
         <p role="alert" className="text-critical-text">
-          {credentialErrorText(credential.error)}
+          {credentialErrorText(credential.error, texts)}
         </p>
       ) : null}
-      {replacing && (
-        <CloudflareTokenForm
-          account={account}
-          replacing
-          focusOnMount
-          onCancel={() => setReplacing(false)}
-          onSaved={(saved) => {
+      {replacing &&
+        renderForm({
+          replacing: true,
+          focusOnMount: true,
+          onCancel: () => setReplacing(false),
+          onSaved: (saved) => {
             setReplacing(false);
             onChange({ keyStatus: saved, event: 'saved' });
-          }}
-        />
-      )}
+          },
+        })}
     </div>
   );
 }
@@ -910,13 +1036,7 @@ function CloudflareTokenForm({
   focusOnMount = false,
   onCancel,
   onSaved,
-}: {
-  account: CloudAccount;
-  replacing?: boolean;
-  focusOnMount?: boolean;
-  onCancel?: () => void;
-  onSaved: (keyStatus: CloudCredentialStatus) => void;
-}) {
+}: CredentialFormProps & { account: CloudAccount }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string>();
   const input = useRef<HTMLInputElement>(null);
@@ -1165,7 +1285,16 @@ function AwsSteps({ account, canWrite }: { account: CloudAccount; canWrite: bool
  * não responde (`useCloudAccountList`) e mostra o resultado, com o que fazer em cada erro. Conectada, a conta pode ter
  * um aviso das conferências do worker (trilha, export, permissão demais, STS da região), que não para a coleta.
  */
-function AwsVerify({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+function AwsVerify({
+  account,
+  canWrite,
+  keyMode = false,
+}: {
+  account: CloudAccount;
+  canWrite: boolean;
+  /** VM própria: o Verax lê com a chave do usuário de leitura, e não pelo papel. */
+  keyMode?: boolean;
+}) {
   const verify = useVerifyAwsAccount(account.id);
   const pending = account.checkRequestedAt !== null;
   const active = account.status === 'active';
@@ -1179,11 +1308,20 @@ function AwsVerify({ account, canWrite }: { account: CloudAccount; canWrite: boo
       : null;
   return (
     <>
-      <p>
-        Criada a pilha, clique em Verificar: o Verax entra no papel e lê um byte de um objeto de cada bucket
-        cadastrado. Depois, ele confere sozinho a cada 15 minutos e, uma vez por dia, também a trilha do
-        CloudTrail, o export do GuardDuty e se o papel ganhou permissão além da leitura.
-      </p>
+      {keyMode ? (
+        <p>
+          Guardada a chave, clique em Verificar: o Verax confere que a chave é do usuário IAM desta conta e lê
+          um byte de um objeto de cada bucket cadastrado. Depois, ele confere sozinho a cada 15 minutos e, uma
+          vez por dia, também a trilha do CloudTrail, o export do GuardDuty e se o usuário ganhou permissão
+          além da leitura.
+        </p>
+      ) : (
+        <p>
+          Criada a pilha, clique em Verificar: o Verax entra no papel e lê um byte de um objeto de cada bucket
+          cadastrado. Depois, ele confere sozinho a cada 15 minutos e, uma vez por dia, também a trilha do
+          CloudTrail, o export do GuardDuty e se o papel ganhou permissão além da leitura.
+        </p>
+      )}
       {canWrite && active && (
         <Button type="button" onClick={() => verify.mutate()} disabled={pending || verify.isPending}>
           {pending ? 'Verificando…' : 'Verificar conexão'}
@@ -1195,13 +1333,17 @@ function AwsVerify({ account, canWrite }: { account: CloudAccount; canWrite: boo
       <div role="status" className="text-sm">
         {pending ? (
           <p>
-            Verificação pedida {formatRelative(account.checkRequestedAt ?? '')}. Logo depois de criar a pilha,
-            o papel pode levar alguns minutos para valer: o Verax tenta de novo por até 10 minutos.
+            Verificação pedida {formatRelative(account.checkRequestedAt ?? '')}.{' '}
+            {keyMode
+              ? 'Uma chave recém-criada pode levar alguns segundos para valer: o Verax tenta de novo por até 10 minutos.'
+              : 'Logo depois de criar a pilha, o papel pode levar alguns minutos para valer: o Verax tenta de novo por até 10 minutos.'}
           </p>
         ) : account.connection === 'connected' ? (
           <>
             <p>
-              Conectada: o Verax entrou no papel de leitura.
+              {keyMode
+                ? 'Conectada: o Verax leu a conta com a chave do usuário de leitura.'
+                : 'Conectada: o Verax entrou no papel de leitura.'}
               {account.ingestFrom && <> Os logs são lidos a partir de {formatDay(account.ingestFrom)}.</>}
             </p>
             {warningHint && (
@@ -1218,5 +1360,321 @@ function AwsVerify({ account, canWrite }: { account: CloudAccount; canWrite: boo
         ) : null}
       </div>
     </>
+  );
+}
+
+/** Uma política de IAM pronta para copiar, com o nome do arquivo que o comando da CLI espera. */
+function PolicyBlock({ file, policy }: { file: string; policy: object }) {
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-muted-foreground">
+        <code className="font-mono">{file}</code>
+      </p>
+      <CommandBlock command={JSON.stringify(policy, null, 2)} label={`Copiar a política ${file}`} />
+    </div>
+  );
+}
+
+/**
+ * Conectar AWS na VM própria do cliente: o nó não tem identidade do Google para entrar no papel sem chave. O cliente
+ * cria um usuário IAM só de leitura com as mesmas duas políticas do papel (leitura e negações; a de leitura também é o
+ * limite de permissões do usuário), cria uma chave de acesso dele e cola aqui. A chave vai cifrada para o cofre do nó e
+ * nunca volta para a tela; o Wazuh do nó lê os logs com sessões de 1 hora tiradas dela.
+ */
+function AwsKeySteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+  const values = {
+    accountId: account.accountId,
+    buckets: logBucketNames(account.buckets),
+    egressIps: account.egressIps,
+  };
+  return (
+    <section aria-labelledby="conector-passos" className="space-y-3 rounded-md border p-3">
+      <h3 id="conector-passos" className="text-sm font-semibold">
+        Conectar a conta {account.accountId}
+      </h3>
+      <p className="text-sm text-muted-foreground">
+        Este ambiente roda numa VM sua, sem identidade de nuvem: o Verax lê a conta com a chave de acesso de
+        um usuário IAM só de leitura. A chave fica cifrada no cofre do nó, na sua VM: não volta para esta
+        tela, nem para a auditoria ou o log.
+      </p>
+      <ol className="list-decimal space-y-3 pl-5 text-sm">
+        <li className="space-y-2">
+          <p>
+            Crie as duas políticas com o conteúdo abaixo: a de leitura (os buckets de log cadastrados, a
+            configuração para Ativos e Postura) e a de negações (nada de alterar logs nem ampliar o próprio
+            acesso{account.egressIps.length > 0 ? ', e nada de fora do IP da VM' : ''}).
+          </p>
+          <PolicyBlock file={AWS_READER_POLICY_FILE} policy={awsReaderUserPolicy(values)} />
+          <PolicyBlock file={AWS_GUARDRAILS_POLICY_FILE} policy={awsGuardrailsPolicy(values)} />
+          <p className="text-xs text-muted-foreground">
+            Mudou a lista de buckets aqui? Atualize a política de leitura com o conteúdo novo (uma versão nova
+            dela) e clique em Verificar.
+          </p>
+        </li>
+        <li className="space-y-2">
+          <p>
+            Crie o usuário <code className="font-mono text-xs">{awsReaderUserArn(account.accountId)}</code>{' '}
+            com as duas políticas e a de leitura como limite de permissões, e a chave de acesso dele. No
+            terminal ou no AWS CloudShell, na pasta dos dois arquivos:
+          </p>
+          <CommandBlock
+            command={awsReaderUserCommands(account.accountId)}
+            label="Copiar os comandos da CLI"
+          />
+          <p className="text-xs text-muted-foreground">
+            Nunca use a chave do root nem a de um usuário com outras permissões: o Verax recusa a do root, e
+            confere todo dia se o usuário ganhou permissão além da leitura.
+          </p>
+        </li>
+        <li className="space-y-2">
+          <CredentialStep
+            account={account}
+            canWrite={canWrite}
+            texts={CREDENTIAL_TEXTS.aws}
+            renderForm={(props) => <AwsKeyForm account={account} {...props} />}
+          />
+        </li>
+        <li className="space-y-2">
+          <AwsVerify account={account} canWrite={canWrite} keyMode />
+        </li>
+      </ol>
+      <p className="text-xs text-muted-foreground">
+        Para desconectar: desative o monitoramento aqui (a chave sai do cofre do nó) e desative e apague a
+        chave no IAM.
+      </p>
+    </section>
+  );
+}
+
+/**
+ * Os dois campos da chave de acesso: o ID (não é segredo) e a chave secreta (tipo senha). Os dois são zerados no envio,
+ * antes da resposta: o que foi colado vai do campo para a requisição e não fica em nenhum estado da tela.
+ */
+function AwsKeyForm({
+  account,
+  replacing = false,
+  focusOnMount = false,
+  onCancel,
+  onSaved,
+}: CredentialFormProps & { account: CloudAccount }) {
+  const [keyId, setKeyId] = useState('');
+  const [secret, setSecret] = useState('');
+  const [error, setError] = useState<string>();
+  const input = useRef<HTMLInputElement>(null);
+  const credential = useCloudCredential(account.id);
+  useEffect(() => {
+    if (focusOnMount) input.current?.focus();
+  }, [focusOnMount]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const parsed = cloudCredentialInputSchema.safeParse({
+      kind: 'aws_access_key',
+      accessKeyId: keyId.trim(),
+      secretAccessKey: secret.trim(),
+    });
+    setKeyId('');
+    setSecret('');
+    if (!parsed.success) {
+      credential.reset();
+      setError(parsed.error.issues[0]?.message ?? 'Chave inválida.');
+      return;
+    }
+    setError(undefined);
+    const saved = await credential.save(parsed.data);
+    if (saved?.keyStatus) onSaved(saved.keyStatus);
+  };
+
+  const apiError = credential.error ? credentialErrorText(credential.error, CREDENTIAL_TEXTS.aws) : undefined;
+  return (
+    <form onSubmit={(event) => void submit(event)} noValidate className="space-y-2">
+      <Field
+        ref={input}
+        label="ID da chave de acesso"
+        hint="Começa com AKIA (20 caracteres)."
+        autoComplete="off"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        value={keyId}
+        onChange={(event) => setKeyId(event.target.value)}
+      />
+      <Field
+        label="Chave secreta"
+        hint="A AWS mostra a chave secreta uma vez só, ao criá-la. Depois de guardada, ela não volta para esta tela."
+        type="password"
+        autoComplete="off"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        value={secret}
+        onChange={(event) => setSecret(event.target.value)}
+        error={error ?? apiError}
+      />
+      {credential.pending && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Conferindo a chave na AWS…
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" disabled={credential.pending}>
+          {replacing ? 'Trocar chave' : 'Guardar chave'}
+        </Button>
+        {onCancel && (
+          <Button type="button" variant="ghost" onClick={onCancel}>
+            Cancelar
+          </Button>
+        )}
+      </div>
+    </form>
+  );
+}
+
+/**
+ * A leitura de um projeto da GCP na VM própria do cliente: sem a conta de serviço da VM, o cliente cria no projeto dele
+ * o tópico, a assinatura e o sink (o filtro de segurança do gerenciado), e uma conta de serviço com
+ * `roles/pubsub.subscriber` só na assinatura. Cadastra a assinatura e cola a chave JSON da conta de serviço, que vai
+ * cifrada para o cofre do nó.
+ */
+function GcpKeySteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+  const subscription = gcpReaderSubscription(account.accountId);
+  return (
+    <section aria-labelledby="conector-passos" className="space-y-3 rounded-md border p-3">
+      <h3 id="conector-passos" className="text-sm font-semibold">
+        Leitura do projeto {account.accountId}
+      </h3>
+      <p className="text-sm text-muted-foreground">
+        Este ambiente roda numa VM sua, sem identidade de nuvem: o projeto envia uma cópia dos eventos de
+        segurança para uma assinatura do Pub/Sub no próprio projeto, e o Verax a lê com a chave de uma conta
+        de serviço que só pode ler essa assinatura. Os logs originais não mudam, e a chave fica cifrada no
+        cofre do nó, na sua VM.
+      </p>
+      <ol className="list-decimal space-y-3 pl-5 text-sm">
+        <li className="space-y-2">
+          <p>
+            No Cloud Shell do projeto, como dono do projeto (ou com permissão para criar tópicos, assinaturas,
+            coletores de logs e contas de serviço), rode:
+          </p>
+          <CommandBlock command={gcpReaderCommands(account.accountId)} label="Copiar os comandos" />
+          <p className="text-xs text-muted-foreground">
+            A conta de serviço{' '}
+            <code className="font-mono">{gcpReaderServiceAccountEmail(account.accountId)}</code> recebe só o
+            papel <code className="font-mono">{GCP_READER_ROLE}</code>, e só na assinatura: nenhum papel no
+            projeto. O último comando grava a chave num arquivo JSON; depois de colar, apague o arquivo.
+          </p>
+        </li>
+        <li className="space-y-2">
+          <p>
+            Cadastre a assinatura <code className="break-all font-mono text-xs">{subscription}</code> no campo
+            &ldquo;Assinatura do Pub/Sub&rdquo; desta conta
+            {account.pubsubSubscription ? ' (já cadastrada)' : ''}.
+          </p>
+        </li>
+        <li className="space-y-2">
+          {account.pubsubSubscription || account.keyStatus ? (
+            <CredentialStep
+              account={account}
+              canWrite={canWrite}
+              texts={CREDENTIAL_TEXTS.gcp}
+              renderForm={(props) => <GcpKeyForm account={account} {...props} />}
+            />
+          ) : (
+            <p>Cadastrada a assinatura, cole aqui a chave da conta de serviço.</p>
+          )}
+        </li>
+        <li>A conexão muda para &ldquo;Conectada&rdquo; quando o primeiro evento chegar.</li>
+      </ol>
+    </section>
+  );
+}
+
+/**
+ * O arquivo JSON da chave, colado inteiro: lido aqui, só os quatro campos que o nó usa vão para a API (o resto, como o
+ * `token_uri`, nunca sai do navegador). O campo é zerado no envio.
+ */
+function GcpKeyForm({
+  account,
+  replacing = false,
+  focusOnMount = false,
+  onCancel,
+  onSaved,
+}: CredentialFormProps & { account: CloudAccount }) {
+  const [value, setValue] = useState('');
+  const [error, setError] = useState<string>();
+  const input = useRef<HTMLTextAreaElement>(null);
+  const credential = useCloudCredential(account.id);
+  const fieldId = useId();
+  useEffect(() => {
+    if (focusOnMount) input.current?.focus();
+  }, [focusOnMount]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const read = gcpServiceAccountKeyFromJson(value.trim());
+    setValue('');
+    if (!read.ok) {
+      credential.reset();
+      setError(read.message);
+      return;
+    }
+    const parsed = cloudCredentialInputSchema.safeParse({ kind: 'gcp_service_account_key', ...read.fields });
+    if (!parsed.success) {
+      credential.reset();
+      setError(parsed.error.issues[0]?.message ?? 'Chave inválida.');
+      return;
+    }
+    setError(undefined);
+    const saved = await credential.save(parsed.data);
+    if (saved?.keyStatus) onSaved(saved.keyStatus);
+  };
+
+  const apiError = credential.error ? credentialErrorText(credential.error, CREDENTIAL_TEXTS.gcp) : undefined;
+  const shown = error ?? apiError;
+  return (
+    <form onSubmit={(event) => void submit(event)} noValidate className="space-y-2">
+      <div className="space-y-1">
+        <label htmlFor={fieldId} className="text-sm font-medium">
+          Chave da conta de serviço (JSON)
+        </label>
+        <Textarea
+          id={fieldId}
+          ref={input}
+          rows={4}
+          autoComplete="off"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          className="font-mono text-xs [-webkit-text-security:disc]"
+          aria-invalid={shown ? true : undefined}
+          aria-describedby={`${fieldId}-dica${shown ? ` ${fieldId}-erro` : ''}`}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+        <p id={`${fieldId}-dica`} className="text-xs text-muted-foreground">
+          O conteúdo inteiro do arquivo {'{'}…{'}'} que o Google baixou. Depois de guardada, a chave não volta
+          para esta tela.
+        </p>
+        {shown && (
+          <p id={`${fieldId}-erro`} className="text-xs text-critical-text">
+            {shown}
+          </p>
+        )}
+      </div>
+      {credential.pending && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Conferindo a chave no Google…
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" disabled={credential.pending}>
+          {replacing ? 'Trocar chave' : 'Guardar chave'}
+        </Button>
+        {onCancel && (
+          <Button type="button" variant="ghost" onClick={onCancel}>
+            Cancelar
+          </Button>
+        )}
+      </div>
+    </form>
   );
 }

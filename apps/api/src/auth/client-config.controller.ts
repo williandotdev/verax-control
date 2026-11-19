@@ -28,6 +28,7 @@ export class AuthClientConfigController {
     return {
       turnstileSiteKey: this.config.TURNSTILE_SITE_KEY ?? null,
       adminMasterUrl: site === undefined ? null : `${site.sso.issuer}/`,
+      nodePlatform: this.config.NODE_PLATFORM,
     };
   }
 }

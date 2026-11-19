@@ -70,6 +70,8 @@ export interface CreateAppOptions {
   };
   /** O `API_ORIGIN` do nó dedicado (o endereço do retorno da entrada única); sem informar, `http://localhost:3000`. */
   apiOrigin?: string;
+  /** Onde o nó roda (`NODE_PLATFORM`): `vm`, a VM própria do cliente; sem informar, `gcp` (como sem a linha). */
+  nodePlatform?: 'gcp' | 'vm';
 }
 
 /**
@@ -100,6 +102,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
       CREDENTIALS_KEY_VERSION: String(options.vault.version),
     }),
     ...(options.nodeEgressIps !== undefined && { NODE_EGRESS_IPS: options.nodeEgressIps }),
+    ...(options.nodePlatform !== undefined && { NODE_PLATFORM: options.nodePlatform }),
     ...(options.awsReader?.serviceAccountId !== undefined && {
       NODE_SA_UNIQUE_ID: options.awsReader.serviceAccountId,
     }),

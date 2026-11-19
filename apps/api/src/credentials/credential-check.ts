@@ -1,6 +1,7 @@
 /**
  * Conferência de uma credencial colada no painel, na origem, antes de cifrar (fase 2). Cada tipo aceito tem a sua
- * (hoje só o token do Cloudflare, em `cloudflare/cloudflare-token-check.ts`); o recebimento genérico
+ * (o token do Cloudflare em `cloudflare/cloudflare-token-check.ts`; na VM própria do cliente, a chave da AWS em
+ * `aws/aws-key-check.ts` e a da conta de serviço da GCP em `gcp/gcp-key-check.ts`); o recebimento genérico
  * (`credential-intake.service.ts`) trata as duas saídas abaixo do mesmo jeito para todos os tipos.
  *
  * Os erros levam só um código, nunca o segredo nem a mensagem da origem (que pode citar recursos da conta).
@@ -22,10 +23,11 @@ export interface CheckedCredential {
  * - `inactive`: desativada na origem;
  * - `expired`: vencida;
  * - `not_yet_valid`: com data de início no futuro;
- * - `no_account_access`: válida, mas sem acesso de leitura à conta cadastrada.
+ * - `no_account_access`: válida, mas sem acesso de leitura à conta cadastrada;
+ * - `wrong_identity`: válida, mas de uma identidade que nunca é guardada (a chave do root da conta AWS, por exemplo).
  */
 export type CredentialRejectionReason =
-  'invalid' | 'inactive' | 'expired' | 'not_yet_valid' | 'no_account_access';
+  'invalid' | 'inactive' | 'expired' | 'not_yet_valid' | 'no_account_access' | 'wrong_identity';
 
 export class CredentialRejected extends Error {
   constructor(

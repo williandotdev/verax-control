@@ -267,8 +267,8 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
     expect(rowA.updatedAt.getTime()).toBeGreaterThanOrEqual(before.updatedAt.getTime());
     expect(rowB).toMatchObject({ tenantId: tenantB, kind: 'cloudflare_api_token', keyVersion: 2 });
     // A v1 pode sair do Secret Manager: tudo abre só com a v2, e nada abre mais só com a v1.
-    expect(open(onlyV2, storedA.binding, rowA.ciphertext).value()).toBe(secret);
-    expect(open(onlyV2, storedB.binding, rowB.ciphertext).value()).toBe(token);
+    expect((open(onlyV2, storedA.binding, rowA.ciphertext) as CloudflareToken).value()).toBe(secret);
+    expect((open(onlyV2, storedB.binding, rowB.ciphertext) as CloudflareToken).value()).toBe(token);
     expect(vaultErrorOf(() => open(onlyV1, storedA.binding, rowA.ciphertext))).toBe('key_version_missing');
 
     const audit = await prisma.auditLog.findMany({
@@ -471,7 +471,9 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
     });
     const rowFirst = await rowOf(first.id);
     expect(rowFirst).toMatchObject({ tenantId: tenantA, keyVersion: 3 });
-    expect(open(allCurrent3, storedFirst.binding, rowFirst.ciphertext).value()).toBe(secrets[0]);
+    expect((open(allCurrent3, storedFirst.binding, rowFirst.ciphertext) as CloudflareToken).value()).toBe(
+      secrets[0],
+    );
     // Uma entrada de auditoria por linha recifrada (duas na primeira execução, uma na segunda), nenhuma pela falha.
     const audit = await prisma.auditLog.findMany({
       where: { action: 'cloud_credential.rekey', resourceId: { in: accounts.map((account) => account.id) } },

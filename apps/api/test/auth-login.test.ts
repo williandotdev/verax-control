@@ -289,7 +289,7 @@ describe('login com Better Auth (T2.1)', () => {
 
   it('sem o Turnstile configurado, a configuração pública diz null e o login não pede token', async () => {
     const config = await request(app.getHttpServer()).get('/v1/auth/client-config').expect(200);
-    expect(config.body).toEqual({ turnstileSiteKey: null, adminMasterUrl: null });
+    expect(config.body).toEqual({ turnstileSiteKey: null, adminMasterUrl: null, nodePlatform: 'gcp' });
     // Chegou ao controller próprio, e não ao 404 das rotas fechadas do Better Auth.
     await request(app.getHttpServer()).get('/v1/auth/client-config?x=1').expect(400);
     const user = await createUser(app);

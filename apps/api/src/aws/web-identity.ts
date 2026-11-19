@@ -291,6 +291,18 @@ export interface ReaderSession {
   readonly stsRegion: string;
   /** O STS da região da conta está desligado: a sessão veio de us-east-1. */
   readonly regionFallback: boolean;
+  /**
+   * Quem a AWS vê: ausente, a sessão do papel de leitura (`assumed-role/verax-control-reader/...`); `iam_user`, a chave
+   * do usuário IAM de leitura colada no painel (a VM própria do cliente, `vault-key-credentials.ts`).
+   */
+  readonly principal?: 'iam_user';
+}
+
+/** As sessões de leitura de cada conta, sem chave (o papel) ou com a chave do cofre (a VM própria do cliente). */
+export interface AwsReaderCredentials {
+  session(accountId: string, region: string, signal?: AbortSignal): Promise<ReaderSession>;
+  credentialsFor(accountId: string, region: string): AwsCredentialProvider;
+  forget(accountId: string): void;
 }
 
 /** Um STS para a troca: sem credencial (a operação não é assinada); os testes usam um falso. */
@@ -331,7 +343,7 @@ function defaultSts(region: string): Pick<STSClient, 'send'> {
  * da conexão e o inventário (PR-14', `inventory/inventory-job.ts`) dividem a mesma instância e, com ela, a sessão de
  * cada conta.
  */
-export class WebIdentityCredentials {
+export class WebIdentityCredentials implements AwsReaderCredentials {
   readonly #sessions = new Map<string, ReaderSession>();
   readonly #pending = new Map<string, Promise<ReaderSession>>();
   readonly #audience: string;
@@ -436,7 +448,7 @@ export class WebIdentityCredentials {
     const previous = this.#sessions.get(accountId);
     if (previous !== undefined) this.#release(previous);
     registerLiveSecret(identity.secretAccessKey);
-    registerLiveSecret(identity.sessionToken);
+    registerLiveSecret(parsed.data.SessionToken);
     this.#sessions.set(accountId, session);
     return session;
   }
@@ -445,7 +457,7 @@ export class WebIdentityCredentials {
   #release(session: ReaderSession): void {
     const identity = session.credentials.identity();
     forgetLiveSecret(identity.secretAccessKey);
-    forgetLiveSecret(identity.sessionToken);
+    if (identity.sessionToken !== undefined) forgetLiveSecret(identity.sessionToken);
   }
 }
 

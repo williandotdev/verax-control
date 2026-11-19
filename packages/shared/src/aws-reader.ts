@@ -109,7 +109,10 @@ export const MAX_NODE_EGRESS_IPS = 4;
  *   permissão além da política. Avisos: a conta continua conectada (`AWS_CONNECTION_WARNING_CODES`);
  * - `metadata_unavailable`: o nó não conseguiu pedir o próprio token ao servidor de metadados da GCP;
  * - `aws_unavailable`: a AWS não respondeu a tempo;
- * - `check_unavailable`: este nó ainda não confere a conexão sozinho.
+ * - `check_unavailable`: este nó ainda não confere a conexão sozinho;
+ * - `key_missing` e `key_invalid` (só no nó na VM própria do cliente, que lê com a chave do usuário IAM de leitura):
+ *   a conta não tem chave guardada no cofre, ou a AWS recusou a chave guardada (apagada, desativada ou trocada).
+ *   Nesses nós, `account_mismatch` diz também que a chave não é de um usuário IAM desta conta (a do root, por exemplo).
  *
  * Os avisos da coleta pelo Wazuh do nó (o token do Google do host sem renovar, a configuração do manager que não subiu)
  * ficam à parte, em `CloudAccount.collectionError` (`AWS_COLLECTION_ERROR_CODES`, PR-V4').
@@ -129,6 +132,8 @@ export const AWS_CONNECTION_ERROR_CODES = [
   'metadata_unavailable',
   'aws_unavailable',
   'check_unavailable',
+  'key_missing',
+  'key_invalid',
 ] as const;
 export type AwsConnectionErrorCode = (typeof AWS_CONNECTION_ERROR_CODES)[number];
 

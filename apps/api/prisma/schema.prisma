@@ -919,10 +919,13 @@ model IngestHealth {
   @@id([tenantId, source])
 }
 
-/// Tipo da credencial guardada no cofre do nó: o token só de leitura do Cloudflare. A chave de acesso da AWS
-/// (`aws_access_key`, do PR-V1) saiu no PR-V3': a AWS é lida pelo papel sem chave.
+/// Tipo da credencial guardada no cofre do nó: o token só de leitura do Cloudflare (todo nó) e, só na VM própria do
+/// cliente (NODE_PLATFORM=vm, sem identidade do Google), a chave de acesso do usuário IAM de leitura da AWS e a chave da
+/// conta de serviço de leitura da GCP. Nos nós da GCP, a AWS e a GCP são lidas sem chave.
 enum CloudCredentialKind {
   cloudflare_api_token
+  aws_access_key
+  gcp_service_account_key
 }
 
 /// Credencial de leitura de uma conta cloud, cifrada no cofre do nó (fase 2, PR-V1; `src/credentials/`). Uma por
@@ -937,8 +940,9 @@ model CloudCredential {
   tenantId         String              @db.Uuid
   tenant           Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   kind             CloudCredentialKind
-  /// `v<keyVersion>:<base64>`: o envelope do cofre, com a versão da chave do nó que cifrou.
-  ciphertext       String              @db.VarChar(1024)
+  /// `v<keyVersion>:<base64>`: o envelope do cofre, com a versão da chave do nó que cifrou (híbrido, com AES-256-GCM,
+  /// quando o segredo passa do que o RSA cifra de uma vez: a chave da conta de serviço da GCP).
+  ciphertext       String              @db.VarChar(8192)
   /// Versão da chave do nó (a versão do segredo `credentials-key` no Secret Manager). A tarefa `credential-rekey` do
   /// worker recifra as linhas de versões antigas com a corrente.
   keyVersion       Int

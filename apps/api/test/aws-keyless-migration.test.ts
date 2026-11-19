@@ -17,6 +17,8 @@ import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
  */
 
 const MIGRATION = '20261107100000_aws_keyless_connect';
+/** A das chaves de leitura da VM própria do cliente, a única depois desta que toca no cofre. */
+const VM_READ_KEYS = '20261118120000_vm_read_keys';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -56,9 +58,14 @@ describe(`migration ${MIGRATION}`, () => {
     expect(migrations).toContain(MIGRATION);
     // As migrations seguintes (a dos motivos da fila sem dono dos agentes, por exemplo) não podem mexer no que esta
     // deixou: o ExternalId fora do cadastro e o cofre só com o token do Cloudflare.
-    for (const name of migrations.filter((candidate) => candidate > MIGRATION)) {
+    // A única exceção é a das chaves de leitura da VM própria do cliente (20261118120000_vm_read_keys), que só acrescenta ao enum
+    // do cofre (a chave da AWS volta, só para a VM própria) e aumenta a coluna do texto cifrado.
+    for (const name of migrations.filter(
+      (candidate) => candidate > MIGRATION && candidate !== VM_READ_KEYS,
+    )) {
       expect(sqlOf(name)).not.toMatch(/externalId|CloudCredential/i);
     }
+    expect(sqlOf(VM_READ_KEYS)).not.toMatch(/externalId|DROP|DELETE|UPDATE/i);
   });
 
   describe('banco novo (o banco de teste, migrado do zero)', () => {
@@ -73,7 +80,7 @@ describe(`migration ${MIGRATION}`, () => {
       await client.end();
     });
 
-    it('sem o CHECK do ExternalId, com o das colunas da AWS, e o cofre só com o token do Cloudflare', async () => {
+    it('sem o CHECK do ExternalId, com o das colunas da AWS, e o cofre com o token do Cloudflare e as chaves da VM própria', async () => {
       expect(await checks(client)).toEqual([
         'CloudAccount_aws_check_fields_check',
         // O do aviso da coleta pelo Wazuh do nó (PR-V4', migration 20261109130000_aws_collection_error).
@@ -82,7 +89,12 @@ describe(`migration ${MIGRATION}`, () => {
         // O do início da medição da AWS na origem (CE-09, migration 20261111120000_ingest_usage_day).
         'CloudAccount_metered_from_check',
       ]);
-      expect(await enumValues(client, 'CloudCredentialKind')).toEqual(['cloudflare_api_token']);
+      // Com a migration das chaves de leitura da VM própria (20261118120000_vm_read_keys) depois desta.
+      expect(await enumValues(client, 'CloudCredentialKind')).toEqual([
+        'cloudflare_api_token',
+        'aws_access_key',
+        'gcp_service_account_key',
+      ]);
       const leftovers = await client.query(
         `SELECT 1 FROM pg_type WHERE typname LIKE 'CloudCredentialKind\\_%'`,
       );

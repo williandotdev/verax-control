@@ -70,11 +70,20 @@ describe('credencial colada no painel (fase 2, PR-11)', () => {
     expect(messages.join(' ')).not.toContain(token);
   });
 
-  it('o corpo é estrito: tipo fora da lista (a chave da AWS saiu: o papel não tem chave), campo a mais ou faltando', () => {
+  it('o corpo é estrito: tipo fora da lista, campo de outro tipo, campo a mais ou faltando', () => {
     const token = legacyToken();
     expect(issuesOf({ kind: 'aws_access_key', token })).not.toEqual([]);
-    expect(CLOUD_CREDENTIAL_KINDS).toEqual(['cloudflare_api_token']);
-    expect(CREDENTIAL_KIND_PROVIDERS).toEqual({ cloudflare_api_token: 'cloudflare' });
+    expect(issuesOf({ kind: 'azure_secret', token })).not.toEqual([]);
+    expect(CLOUD_CREDENTIAL_KINDS).toEqual([
+      'cloudflare_api_token',
+      'aws_access_key',
+      'gcp_service_account_key',
+    ]);
+    expect(CREDENTIAL_KIND_PROVIDERS).toEqual({
+      cloudflare_api_token: 'cloudflare',
+      aws_access_key: 'aws',
+      gcp_service_account_key: 'gcp',
+    });
     expect(issuesOf({ kind: 'cloudflare_api_token', token, accountId: 'outra' })).not.toEqual([]);
     expect(issuesOf({ kind: 'cloudflare_api_token' })).not.toEqual([]);
     expect(issuesOf({ token })).not.toEqual([]);
@@ -108,7 +117,8 @@ describe('credencial colada no painel (fase 2, PR-11)', () => {
       expect(cloudCredentialStatusSchema.safeParse({ ...status, ...extra }).success).toBe(false);
     }
     expect(cloudCredentialStatusSchema.safeParse({ ...status, keyIdSuffix: 'a1f' }).success).toBe(false);
-    expect(cloudCredentialStatusSchema.safeParse({ ...status, kind: 'aws_access_key' }).success).toBe(false);
+    expect(cloudCredentialStatusSchema.safeParse({ ...status, kind: 'aws_access_key' }).success).toBe(true);
+    expect(cloudCredentialStatusSchema.safeParse({ ...status, kind: 'outro' }).success).toBe(false);
     expect(
       cloudAccountSchema.safeParse({
         id: '018f2c1e-0000-7000-8000-0000000c0005',

@@ -567,7 +567,8 @@ apply_claim() { # <arquivo do node.conf>
   else
     lines+=(MAIL_TRANSPORT=none "MAIL_FROM=$mail_from")
   fi
-  lines+=("SYNC_SOURCES=wazuh,cloudflare" "PLAN=$plan")
+  # A AWS (pelo Wazuh), o Cloudflare e a GCP, os três com a chave de leitura colada no painel (no cofre de credenciais).
+  lines+=("SYNC_SOURCES=wazuh,cloudflare,gcp" "PLAN=$plan")
   for name in PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS; do
     if [[ -n ${conf[$name]:-} ]]; then lines+=("$name=${conf[$name]}"); fi
   done

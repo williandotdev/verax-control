@@ -219,7 +219,8 @@ lean_worker='NODE_ENV LOG_LEVEL SYNC_SOURCES SYNC_INTERVAL_SECONDS PLAN DATABASE
 vault_words='credentials-key|cofre de credenciais'
 # Onde o worker lê o arquivo das chaves: a pasta /run/verax/vault montada só leitura no worker pelo compose.vault.yaml
 # (a origem é a pasta, não o arquivo: ver o comentário dele), e o arquivo dentro dela, que o worker.env precisa apontar.
-vault_mount=$(sed -n 's#^ *- /run/verax/vault:\(/[^:]*\):ro$#\1#p' "$here/compose.vault.yaml")
+# Só o bloco do worker: o job aws-sessions (VM própria) monta a mesma pasta, também só leitura.
+vault_mount=$(awk '/^  worker:$/,/^$/' "$here/compose.vault.yaml" | sed -n 's#^ *- /run/verax/vault:\(/[^:]*\):ro$#\1#p')
 [[ -n $vault_mount ]] || fail "compose.vault.yaml sem o volume só leitura da pasta das chaves no worker"
 keys_mount=$vault_mount/worker-keys
 
