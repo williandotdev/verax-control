@@ -22,6 +22,18 @@ export function formatDateTime(value: string | undefined): string {
   return Number.isNaN(date.getTime()) ? '—' : dateTime.format(date);
 }
 
+const dateInBrasilia = new Intl.DateTimeFormat('pt-BR', {
+  dateStyle: 'short',
+  timeZone: 'America/Sao_Paulo',
+});
+
+/** "04/11/2026" no horário de São Paulo (a data de um instante: o começo e o fim da vigência de um contrato). */
+export function formatDate(value: string | undefined): string {
+  if (value === undefined) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : dateInBrasilia.format(date);
+}
+
 /** O fuso de Brasília: desde 2019 sem horário de verão, sempre 3 horas atrás do UTC (o `America/Sao_Paulo`). */
 const BRASILIA_OFFSET = '-03:00';
 const DAY_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;

@@ -6073,3 +6073,40 @@ fmt`/`validate`/`test` do `envs/nodes-platform`.
   (PR #151).
 - **Testes:** console (vitest inteiro), `eslint`, `typecheck` do console.
 - **Manual:** com o PR #151 publicado numa versão do nó, gerar um código no console e instalar uma VM de teste.
+
+## Aditivo do contrato direto: plano, volume, onde roda e valores, com a vigência recomeçando
+
+- **O que mudou:** no detalhe de um contrato direto vivo, **Alterar contrato…** grava um aditivo: o plano (SIEM
+  Dedicado ou SIEM + vCISO), o volume em GB/dia, os valores do contrato (preenchidos com a referência da tabela
+  vigente, como no cadastro, e editáveis; no vCISO, também a implantação) e, enquanto nada foi instalado, onde o
+  ambiente roda. A vigência recomeça na data do aditivo (12 meses no Dedicado, pela tabela; 60 no vCISO). O painel
+  **Aditivos do contrato** mostra o histórico (antes e depois, quem, quando, a observação).
+- **API:** `POST /v1/admin/tenants/:id/amend` `{hosting, configuration: {plan, gbDay}, contracted?, contractedSetup?,
+note?, confirmSlug}` → `{amendmentId, state, hosting, hostingChanged, nodeLimitsPending, contractTerm}`. O detalhe
+  ganhou `contractTerm`, `amendments` e as bandeiras `actions.amend` e `actions.amendHosting`; `contractPricing` ganhou
+  `setup` (só depois de um aditivo do vCISO). A cotação reusa `POST /v1/admin/tenants/preview`.
+- **Regras:** só contrato direto, fora de `canceled`/`deleted` e no modelo por GB/dia; a mesma validação do cadastro
+  (cotação, "sob consulta" recusado, `node-fit`: na Verax só o porte P, no cliente sem agentes). Onde roda só muda sem
+  execução do provisionamento nem recurso (`pending` na Verax, `waiting_customer_install` sem código no cliente): o
+  cliente vai ao estado de um cadastro novo do lugar de destino (`pending` ou `waiting_customer_install`, transições
+  novas só para o aditivo, já que só ele muda `hosting`), sem `provisioning` nem `enrollment`. Com um código gerado (o
+  provisionamento reduzido já criou túnel e site) o aditivo recusa (`hosting_locked`) em vez de limpar a nuvem. Um
+  aditivo que não muda nada é `no_change`.
+- **Limites do nó:** gravados na hora; não existe mecanismo para empurrá-los a um nó em execução (o `node.conf` é
+  escrito na instalação). Com o nó já instalado (na Verax, `nodeVersionPinnedAt`; no cliente, `claimedAt`), o aditivo
+  fica com `nodeLimitsPending` e o console avisa.
+- **Arquivos:** plano de controle: `admin/admin-tenants.{controller,schema,service}.ts`, `tenants/tenant-store.ts`
+  (`amend`, `listAmendments`), `tenants/tenant.schema.ts` (`contractTerm`, o documento do aditivo),
+  `tenants/tenant-transitions.ts`, `pricing/contract-term.ts` (novo), `pricing/pricing.schema.ts` (`setup`),
+  `firestore/collections.ts` (`tenants/{id}/amendments`); testes em `test/support/direct-tenant-contract.ts` (memória e
+  emulador), `test/admin-tenants.test.ts`, `test/console-contract.test.ts`, `collections.test.ts`,
+  `tenant-transitions.test.ts`. Console: `features/tenants/amend-contract.tsx` e `contract-term.ts` (novos),
+  `tenant-detail-page.tsx`, `lib/api-types.ts`, `lib/api.ts`, `lib/format.ts`, `mocks/fake-tenants.ts`,
+  `amend-contract.test.tsx`, `e2e/console.spec.ts`. Docs: `runbooks/console-do-responsavel.md` (7.1).
+- **Testes:** plano de controle (vitest inteiro, o emulador pulado sem `FIRESTORE_EMULATOR_HOST`), console (vitest
+  inteiro e o e2e dos clientes e do aditivo, nos dois temas, com o axe), `eslint`, `prettier` e `typecheck`.
+- **Pendências:** a duração do vCISO (60 meses) fica no código até a tabela de preços ganhar o campo (o `GET` público
+  de preços ainda repete a do Dedicado para o vCISO); o cadastro não grava a vigência (ela começa a existir no primeiro
+  aditivo); aplicar limites novos num nó em execução (o passo `node.apply_limits`, PC-12) não existe.
+- **Manual:** um contrato de teste no cliente sem código: mudar para a Verax e o vCISO, conferir o detalhe e o
+  "Iniciar provisionamento"; um contrato ativo: mudar o volume e ver o aviso dos limites.

@@ -173,6 +173,14 @@ export const lifecycleRunSchema = z.strictObject({
 });
 export type LifecycleRun = z.infer<typeof lifecycleRunSchema>;
 
+/** A vigência de um contrato direto: a duração do plano e as datas, contadas do último aditivo. */
+export const contractTermSchema = z.strictObject({
+  months: z.number().int().min(1).max(120),
+  startsAt: z.date(),
+  endsAt: z.date(),
+});
+export type ContractTerm = z.infer<typeof contractTermSchema>;
+
 /** Trava por cliente dos passos do provisionamento: dono (`runId`) e vencimento (plano §4c). */
 export const lockSchema = z.strictObject({
   owner: z.string().min(1).max(128),
@@ -204,6 +212,11 @@ const tenantObjectSchema = z.strictObject({
    * (`pricing.monthlyTotal`).
    */
   contractPricing: contractPricingSchema.optional(),
+  /**
+   * Só no contrato direto: a vigência gravada pelo último aditivo (`contract-term.ts`: 12 meses no Dedicado, 60 no
+   * vCISO, contados do aditivo). Ausente num contrato que nunca teve aditivo.
+   */
+  contractTerm: contractTermSchema.optional(),
   priceId: stripeId.optional(),
   /**
    * A razão social entra pelo checkout e pelo `customer.updated`, ambos com `companyNameSchema` (até 120). A leitura
@@ -422,6 +435,9 @@ export const tenantSchema = tenantObjectSchema.superRefine((tenant, ctx) => {
       });
     }
   }
+  if (tenant.contractTerm !== undefined && tenant.billing?.mode !== 'contract') {
+    ctx.addIssue({ code: 'custom', path: ['contractTerm'], message: 'vigência só no contrato direto' });
+  }
   if (!customer && tenant.state === 'waiting_customer_install') {
     ctx.addIssue({ code: 'custom', path: ['state'], message: 'estado só do ambiente no cliente' });
   }
@@ -446,6 +462,39 @@ export const transitionSchema = z.strictObject({
 });
 
 export type TenantTransition = z.infer<typeof transitionSchema>;
+
+/** O contrato como um aditivo o encontrou ou deixou: onde roda, o contratado, os limites do nó, os preços e a vigência. */
+export const contractTermsSnapshotSchema = z.strictObject({
+  hosting: z.enum(HOSTINGS),
+  configuration: configurationSchema,
+  limits: nodeLimitsSchema,
+  pricing: orderPricingSchema,
+  contractPricing: contractPricingSchema.optional(),
+  contractTerm: contractTermSchema.optional(),
+});
+export type ContractTermsSnapshot = z.infer<typeof contractTermsSnapshotSchema>;
+
+/** A observação do responsável num aditivo: até 500 caracteres, sem caractere de controle. */
+export const AMENDMENT_NOTE_MAX_LENGTH = 500;
+
+/**
+ * Documento `tenants/{id}/amendments/{ULID}`: um aditivo do contrato direto (`TenantStore.amend`), com quem fez
+ * (`by`, o e-mail do responsável), quando, a observação opcional, o contrato antes e depois e o estado antes e depois
+ * (muda só quando o aditivo troca onde o ambiente roda). `nodeLimitsPending`: os limites do nó mudaram com o ambiente
+ * já instalado (a VM gerenciada já recebeu os dela, ou a VM do cliente já se registrou): o nó em execução continua com os
+ * anteriores até eles serem aplicados nele. Nunca segredo: só valores do contrato. Mesma vida do cliente.
+ */
+export const contractAmendmentSchema = z.strictObject({
+  at: z.date(),
+  by: z.email().max(254),
+  note: z.string().min(1).max(AMENDMENT_NOTE_MAX_LENGTH).optional(),
+  before: contractTermsSnapshotSchema,
+  after: contractTermsSnapshotSchema,
+  stateBefore: tenantStateSchema,
+  stateAfter: tenantStateSchema,
+  nodeLimitsPending: z.boolean(),
+});
+export type ContractAmendment = z.infer<typeof contractAmendmentSchema>;
 
 /** Estado da nota fiscal de serviço de uma fatura (plano §4f): `manual` na v1, sem emissor automático. */
 export const NFSE_STATUSES = ['manual', 'pending', 'issued'] as const;

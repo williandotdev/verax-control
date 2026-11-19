@@ -13,6 +13,10 @@ import type { TenantState } from './tenant.schema.js';
  * - `waiting_customer_install`: o contrato direto com o ambiente na VM do cliente nasce nele (o cadastro no console,
  *   `TenantStore.create` com `initialState`); vai a `provisioning` quando o responsável gera o primeiro código de
  *   instalação (o provisionamento reduzido: túnel e site na Verax, a VM no cliente, `enrollment/`), ou é cancelado;
+ * - `pending` ↔ `waiting_customer_install`: só o aditivo do contrato direto (`TenantStore.amend`) que troca onde o
+ *   ambiente roda antes de qualquer instalação (na Verax, nenhuma execução do provisionamento; no cliente, nenhum código
+ *   de instalação gerado). Nenhum outro caminho chega a ela: o schema exige `hosting = customer` em
+ *   `waiting_customer_install`, e só o aditivo muda `hosting`;
  * - `waiting_customer_connection`: `active` quando o nó vê a 1.ª conta conectada; cobrança e disputa valem igual;
  * - `active` ↔ `past_due` ↔ `suspended`: inadimplência, carência e reativação por `invoice.paid`;
  * - `active` → `waiting_customer_connection`: só a reinstalação da VM do cliente (`enrollment/`), que entrega um banco
@@ -31,10 +35,10 @@ import type { TenantState } from './tenant.schema.js';
  * aviso ao responsável (webhook), não transição.
  */
 export const TENANT_TRANSITIONS: Readonly<Record<TenantState, readonly TenantState[]>> = {
-  pending: ['provisioning', 'canceled'],
+  pending: ['provisioning', 'waiting_customer_install', 'canceled'],
   provisioning: ['waiting_customer_connection', 'provisioning_failed', 'suspended', 'canceled'],
   provisioning_failed: ['provisioning', 'suspended', 'canceled'],
-  waiting_customer_install: ['provisioning', 'canceled'],
+  waiting_customer_install: ['provisioning', 'pending', 'canceled'],
   waiting_customer_connection: ['active', 'past_due', 'suspended', 'canceled'],
   active: ['past_due', 'suspended', 'waiting_customer_connection', 'canceled'],
   past_due: ['active', 'waiting_customer_connection', 'suspended', 'canceled'],

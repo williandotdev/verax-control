@@ -495,6 +495,7 @@ novo):
 | Exportar dados          | Cliente cancelado, dentro de 30 dias                               | O link de 24 h de um backup (o nome vem do `gcloud storage ls`, `docs/runbooks/ciclo-de-vida.md`); aparece uma vez |
 | Apagar agora            | Cliente cancelado (ou uma exclusão que parou)                      | A Exclusão 1 agora, sem volta (`docs/runbooks/ciclo-de-vida.md`)                                                   |
 | Gerar comando           | Ambiente no cliente, esperando, provisionando, parado ou pronto    | O código de uso único (7 dias) e o comando de instalação, uma vez; revoga o anterior                               |
+| Alterar contrato        | Contrato direto vivo (não cancelado)                               | O aditivo: plano, volume, valores e, antes de instalar, onde roda; a vigência recomeça (7.1)                       |
 
 Num cliente da Stripe, suspender, reativar e cancelar seguem a assinatura (Portal do cliente ou Dashboard da Stripe); o
 console não os oferece. **Com o ambiente no cliente**, só **Gerar comando**, **Cancelar contrato** e, depois, **Apagar
@@ -507,6 +508,51 @@ ele. Iniciar, retomar, suspender, reativar e exportar não existem para ele, e o
 Tudo o que se grava no console vai à auditoria (`auditLog`) como `owner:<e-mail>`: rascunho criado e editado (com a
 diferença), publicação (com o resumo da checagem), aposentadoria e publicação recusada; o cadastro de um cliente, cada
 pedido ao `cp-worker` com o desfecho (`tenant.console_request`) e cada recusa.
+
+### 7.1. Alterar um contrato vigente (aditivo)
+
+Para um contrato direto vivo (não cancelado), o cartão **Contratado** do detalhe tem **Alterar contrato…**: o aditivo
+do contrato (decisão de 19/11/2026). Num cliente da Stripe, num contrato cancelado ou num contrato do modelo de preço
+anterior, o botão não aparece (a API também recusa).
+
+1. **O que muda:** o **plano** (só o SIEM Dedicado ou o SIEM + vCISO; o SIEM Cloud não entra num aditivo), o **volume
+   em GB/dia**, os **valores do contrato** e, enquanto nada foi instalado, **onde o ambiente roda**. O formulário abre
+   com o contrato de hoje.
+2. **Calcular a cotação:** a referência da tabela vigente, com as mesmas regras do cadastro (o mínimo e o máximo do
+   plano, "sob consulta" recusado, na Verax só o porte P, no cliente sem agentes). Os valores do contrato vêm
+   preenchidos com a referência, como no cadastro, e podem ser negociados. No SIEM + vCISO aparece também a
+   **Implantação** (vem com a da tabela; use 0 se ela já foi paga). A **Observação** (opcional, até 500 caracteres) vai
+   ao histórico e à auditoria: o motivo ou o número do aditivo assinado.
+3. **Revisar e confirmar…** mostra a tabela "Hoje × Depois do aditivo" (onde roda, plano, volume, porte, valores,
+   implantação, vigência e, se mudar, o estado). Digite o subdomínio e **Gravar o aditivo**.
+
+**A vigência recomeça na data do aditivo** com a duração do plano novo: 12 meses no SIEM Dedicado (a da tabela de
+preços, `contractMonths`) e 60 no SIEM + vCISO. Ela aparece no cartão **Contratado** e em cada aditivo.
+
+**Onde o ambiente roda só muda antes de qualquer instalação:**
+
+| Hoje                      | Pode mudar quando                                                              | Depois do aditivo                                                                                                      |
+| ------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| Infraestrutura do cliente | "Aguardando instalação pelo cliente", sem nenhum comando de instalação gerado  | Infraestrutura da Verax, "Aguardando início" (como um cadastro novo): use **Iniciar provisionamento…** para criar o nó |
+| Infraestrutura da Verax   | "Aguardando início", sem o provisionamento ter começado (nada criado na nuvem) | Infraestrutura do cliente, "Aguardando instalação pelo cliente": gere o comando de instalação                          |
+
+Depois que o provisionamento começou (na Verax) ou que o primeiro comando de instalação foi gerado (no cliente: ele já
+cria o túnel e o painel na Verax), o campo fica travado, com o motivo, e o aditivo muda só o plano, o volume e os
+valores. Para mudar de lugar depois disso, cancele o contrato e cadastre outro. O aditivo não chama o `cp-worker` nem
+mexe na nuvem: só grava o contrato.
+
+**Os limites do nó** (franquia mensal, histórico, contas e usuários) saem do plano e do volume e ficam gravados no
+cliente na hora. Hoje não há como empurrá-los a um nó **já instalado** (o `node.conf` é escrito na instalação; a
+atualização de versão da frota não o reescreve). Quando o aditivo muda os limites com o nó já instalado (na Verax,
+depois do `terraform.apply`; no cliente, depois que a VM se registrou), o console avisa e o aditivo fica marcado no
+histórico: o nó em execução continua com os anteriores até ser instalado de novo (no cliente, um comando novo de
+instalação já leva os limites novos). Antes disso (provisionamento ainda no começo, VM ainda não registrada), o nó já
+nasce com os novos.
+
+**Histórico:** o painel **Aditivos do contrato** lista cada aditivo (o mais novo primeiro) com quando, quem, o contrato
+antes e depois, a vigência, a mudança de estado e a observação. Cada aditivo fica em `tenants/{id}/amendments` e na
+auditoria (`tenant.contract_amended`, com o antes e o depois; as recusas em `tenant.amend_refused`). O mesmo aditivo
+enviado de novo (nada muda) é recusado; conta no limite de 20 operações por hora.
 
 ## 8. Textos legais (Termos, Privacidade e DPA)
 

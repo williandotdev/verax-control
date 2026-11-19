@@ -1,5 +1,7 @@
 import type {
   AdminClientConfig,
+  AmendmentRequest,
+  ContractAmendmentResult,
   AdminSession,
   CheckResult,
   LoginRequest,
@@ -212,6 +214,9 @@ export const tenantsApi = {
   create: (body: DirectTenantRequest): Promise<DirectTenantCreated> => request('POST', TENANTS, body),
   act: (id: string, action: TenantAction, body: TenantActionRequest): Promise<TenantActionResult> =>
     request('POST', `${TENANTS}/${encodeURIComponent(id)}/${action}`, body),
+  /** O aditivo do contrato direto: o plano, o volume, onde roda (antes de instalar) e os valores. */
+  amend: (id: string, body: AmendmentRequest): Promise<ContractAmendmentResult> =>
+    request('POST', `${TENANTS}/${encodeURIComponent(id)}/amend`, body),
 };
 
 const ACCOUNT = `${BASE}/account`;

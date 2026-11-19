@@ -13,11 +13,13 @@ import type { RateLimitRule, TokenBucketLimiter } from '../common/http/rate-limi
 import { isUlid, ULID_PATTERN } from '../common/ulid.js';
 import { NODE_RELEASE_PATTERN } from '../common/config/env.schema.js';
 import { CONTRACT_CANCELABLE } from '../lifecycle/lifecycle-rules.js';
+import { addMonths, contractMonthsFor } from '../pricing/contract-term.js';
 import { nodeLimitsEnv } from '../pricing/node-limits.js';
 import { LegacyVersionError, type OwnerContext, PricingTableStore } from '../pricing/pricing-store.js';
 import {
   type Configuration,
   type ConfigurationInput,
+  type ContractPricing,
   type ContractValues,
   isLegacyConfiguration,
   type PriceTable,
@@ -29,19 +31,29 @@ import { type NodeFitProblem, nodeFitProblems } from '../provisioning/node-fit.j
 import { PROVISIONING_STEPS, stepsFor } from '../provisioning/provisioning-engine.js';
 import { ProvisioningStore, type StepDocument } from '../provisioning/provisioning-store.js';
 import { FIRST_PROVISIONING_STEP, isStepName } from '../queue/step-queue.js';
-import { SlugTakenError, TenantAlreadyExistsError, TenantStore } from '../tenants/tenant-store.js';
+import {
+  SlugTakenError,
+  TenantAlreadyExistsError,
+  TenantNotFoundError,
+  TenantStore,
+} from '../tenants/tenant-store.js';
 import {
   billingModeOf,
+  type ContractAmendment,
   type Hosting,
   hostingOf,
   isReservableSlug,
   isSlugFree,
   LIFECYCLE_RUN_KINDS,
   MODE_OF_HOSTING,
+  type Tenant,
   type TenantRecord,
   tenantStateSchema,
 } from '../tenants/tenant.schema.js';
 import {
+  amendmentRequestSchema,
+  type ContractAmendmentResult,
+  type ContractAmendmentView,
   type DirectConfiguration,
   type DirectTenantCreated,
   type DirectTenantPreview,
@@ -345,6 +357,8 @@ export function availableActions(tenant: TenantRecord, now: Date): TenantActions
     reactivate:
       verax && contract && tenant.state === 'suspended' && tenant.billing?.suspendedReason === 'owner',
     enrollmentCode: !verax && ENROLLMENT_CODE_STATES.includes(tenant.state),
+    amend: amendRefusalOf(tenant) === undefined,
+    amendHosting: amendRefusalOf(tenant) === undefined && hostingChangeAllowed(tenant),
     deleteNow:
       tenant.state === 'canceled' ||
       (tenant.state === 'deleted' &&
@@ -355,6 +369,109 @@ export function availableActions(tenant: TenantRecord, now: Date): TenantActions
       tenant.state === 'canceled' &&
       lifecycle?.exportUntil !== undefined &&
       lifecycle.exportUntil.getTime() > now.getTime(),
+  };
+}
+
+/** Por que um aditivo é recusado, num motivo que vale para o cliente inteiro (`undefined`: o aditivo cabe). */
+export type AmendRefusal =
+  'stripe_managed' | 'not_allowed' | 'legacy_configuration' | 'hosting_locked' | 'no_change';
+
+/**
+ * O contrato aceita um aditivo: contrato direto (o da Stripe segue a assinatura), fora do fim do contrato (cancelado ou
+ * excluído) e no modelo por GB/dia (um contrato do modelo anterior não é cotado de novo).
+ */
+export function amendRefusalOf(tenant: Tenant): AmendRefusal | undefined {
+  if (billingModeOf(tenant) !== 'contract') return 'stripe_managed';
+  if (tenant.state === 'canceled' || tenant.state === 'deleted') return 'not_allowed';
+  if (isLegacyConfiguration(tenant.configuration)) return 'legacy_configuration';
+  return undefined;
+}
+
+/**
+ * O aditivo ainda pode mudar onde o ambiente roda: nada instalado nem provisionado. Na Verax, o cliente em `pending`
+ * sem execução do provisionamento (o "Iniciar provisionamento" ainda não foi usado, ou não chegou ao cp-worker); no
+ * cliente, em `waiting_customer_install`, antes do primeiro código de instalação (que começa o provisionamento reduzido:
+ * o túnel e o site na Verax). Nos dois, sem recurso nenhum criado. Depois disso, só o plano, o volume e os valores.
+ */
+export function hostingChangeAllowed(tenant: Tenant): boolean {
+  if (tenant.provisioning?.runId !== undefined || tenant.resources !== undefined) return false;
+  return hostingOf(tenant) === 'customer'
+    ? tenant.state === 'waiting_customer_install' && tenant.enrollment?.claimedAt === undefined
+    : tenant.state === 'pending';
+}
+
+/**
+ * O nó do cliente já recebeu os limites do contrato: na Verax, o `terraform.apply` já prendeu a versão (daí em diante
+ * pode existir uma VM com os limites gravados no `node.conf` dela); no cliente, a VM já fez o `claim` (que entrega as
+ * linhas do `node.conf`). Os limites só chegam ao nó na instalação: não há hoje como empurrá-los a um nó em execução.
+ */
+export function nodeInstalled(tenant: Tenant): boolean {
+  return hostingOf(tenant) === 'customer'
+    ? tenant.enrollment?.claimedAt !== undefined
+    : tenant.provisioning?.nodeVersionPinnedAt !== undefined || tenant.resources?.instanceName !== undefined;
+}
+
+/** A recusa de um aditivo dentro da transação (o cliente mudou entre a leitura e a gravação). */
+class AmendmentRefusedError extends Error {
+  constructor(readonly code: AmendRefusal) {
+    super(`aditivo recusado: ${code}`);
+    this.name = 'AmendmentRefusedError';
+  }
+}
+
+const AMEND_ERRORS: Readonly<
+  Record<AmendRefusal, { status: HttpStatus; message: string; issue?: FieldIssue }>
+> = {
+  stripe_managed: {
+    status: HttpStatus.CONFLICT,
+    message: 'Cliente da Stripe: o contrato segue a assinatura, e o aditivo é só do contrato direto.',
+  },
+  not_allowed: {
+    status: HttpStatus.CONFLICT,
+    message: 'O contrato já terminou (cancelado ou excluído): não há o que alterar.',
+  },
+  legacy_configuration: {
+    status: HttpStatus.CONFLICT,
+    message:
+      'Contrato do modelo de preço anterior (antes do preço por GB/dia): o aditivo não o cota de novo. Fale com o desenvolvimento.',
+  },
+  hosting_locked: {
+    status: HttpStatus.CONFLICT,
+    message:
+      'Onde o ambiente roda só muda antes de qualquer instalação: este ambiente já foi provisionado ou já teve o código de instalação gerado.',
+    issue: {
+      path: 'hosting',
+      message:
+        'O ambiente já começou a ser criado (provisionamento ou código de instalação): onde ele roda não muda mais num aditivo.',
+    },
+  },
+  no_change: {
+    status: HttpStatus.CONFLICT,
+    message: 'Nada muda neste aditivo: o plano, o volume, onde roda e os valores são os mesmos de hoje.',
+  },
+};
+
+function amendError(code: AmendRefusal): ApiError {
+  const entry = AMEND_ERRORS[code];
+  return new ApiError(
+    entry.status,
+    entry.message,
+    code,
+    entry.issue === undefined ? undefined : { issues: [entry.issue] },
+  );
+}
+
+function amendmentViewOf(amendment: ContractAmendment & { id: string }): ContractAmendmentView {
+  return {
+    id: amendment.id,
+    at: amendment.at,
+    by: amendment.by,
+    ...(amendment.note === undefined ? {} : { note: amendment.note }),
+    before: amendment.before,
+    after: amendment.after,
+    stateBefore: amendment.stateBefore,
+    stateAfter: amendment.stateAfter,
+    nodeLimitsPending: amendment.nodeLimitsPending,
   };
 }
 
@@ -438,10 +555,11 @@ export class AdminTenantsService {
     if (tenant === undefined) throw notFound();
     const hosting = hostingOf(tenant);
     const runId = tenant.provisioning?.runId;
-    const [run, steps, transitions] = await Promise.all([
+    const [run, steps, transitions, amendments] = await Promise.all([
       runId === undefined ? undefined : this.runs.getRun(runId),
       runId === undefined ? new Map<string, StepDocument>() : this.runs.listSteps(runId),
       this.tenants.listTransitions(tenantId),
+      this.tenants.listAmendments(tenantId),
     ]);
     // Na VM do cliente, a sequência reduzida, e só depois do primeiro código (antes, nenhum passo vai rodar).
     const names = hosting === 'customer' ? (runId === undefined ? [] : stepsFor(tenant)) : PROVISIONING_STEPS;
@@ -473,6 +591,8 @@ export class AdminTenantsService {
       limits: tenant.limits,
       pricing: tenant.pricing,
       ...(tenant.contractPricing === undefined ? {} : { contractPricing: tenant.contractPricing }),
+      ...(tenant.contractTerm === undefined ? {} : { contractTerm: tenant.contractTerm }),
+      amendments: amendments.map(amendmentViewOf),
       // O painel e a API ficam na Verax também para a VM do cliente (o site e o túnel do provisionamento reduzido).
       ...(hosting === 'verax' || runId !== undefined ? { urls: tenantUrls(tenant.slug, this.config) } : {}),
       ...(provisioning === undefined
@@ -846,6 +966,184 @@ export class AdminTenantsService {
   }
 
   /**
+   * O aditivo de um contrato direto (decisão do responsável de 19/11/2026): o plano (Dedicado ou vCISO), o volume, onde o
+   * ambiente roda e os valores do contrato, cotados de novo pela tabela vigente com as mesmas regras do cadastro (a
+   * cotação, "fale conosco" recusado, o que o provisionamento ou a instalação no cliente sabem criar). A vigência
+   * recomeça na data do aditivo com a duração do plano novo (`contract-term.ts`).
+   *
+   * Onde o ambiente roda muda só antes de qualquer instalação (`hostingChangeAllowed`); a troca põe o cliente no estado
+   * de um cadastro novo daquele lugar: na Verax, `pending` (o "Iniciar provisionamento" começa dali), sem o registro da
+   * VM do cliente (o código de instalação, se houvesse, deixa de valer); no cliente, `waiting_customer_install` (o
+   * código de instalação começa dali). Com o ambiente já instalado, o aditivo muda só o contrato gravado: os limites do
+   * nó novos ficam no cliente e chegam ao nó na próxima instalação (`nodeLimitsPending`).
+   *
+   * Tudo no cp-admin, como o cadastro: só o Firestore muda, nada na nuvem. A transação relê o cliente e confere as regras
+   * de novo; o aditivo fica em `tenants/{id}/amendments` e na auditoria com o antes e o depois.
+   */
+  async amend(tenantId: string, body: unknown, owner: OwnerContext): Promise<ContractAmendmentResult> {
+    if (!isUlid(tenantId)) throw notFound();
+    const tenant = await this.tenants.get(tenantId);
+    if (tenant === undefined) throw notFound();
+    const parsed = amendmentRequestSchema.safeParse(body ?? {});
+    if (!parsed.success) {
+      await this.refuseAmend(owner, tenant, 'invalid_request');
+      throw invalidRequest(parsed.error);
+    }
+    const request = parsed.data;
+    if (request.confirmSlug !== tenant.slug) {
+      await this.refuseOperation(owner, tenant, 'amend', 'confirmation_mismatch');
+      throw workerError('confirmation_mismatch');
+    }
+    const refusal =
+      amendRefusalOf(tenant) ??
+      (request.hosting !== hostingOf(tenant) && !hostingChangeAllowed(tenant) ? 'hosting_locked' : undefined);
+    if (refusal !== undefined) {
+      await this.refuseAmend(owner, tenant, refusal);
+      throw amendError(refusal);
+    }
+    const table = await this.currentTable();
+    const outcome = quote(configurationFor(request.hosting, request.configuration), table.content);
+    if (outcome.kind === 'contact_us') {
+      await this.refuseAmend(owner, tenant, 'configuration_contact_us');
+      throw new ApiError(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        'Esta configuração está acima do que a tabela de preços vende.',
+        'configuration_contact_us',
+        { reason: outcome.reason, issues: [CONTACT_ISSUES[outcome.reason]] },
+      );
+    }
+    const quoted = outcome.quote;
+    const problems = nodeFitProblems(quoted.configuration, quoted.limits, request.hosting);
+    if (problems.length > 0) {
+      await this.refuseAmend(owner, tenant, 'configuration_unsupported');
+      throw new ApiError(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        request.hosting === 'customer'
+          ? 'Esta configuração ainda não pode ser instalada na infraestrutura do cliente.'
+          : 'O provisionamento ainda não sabe criar esta configuração.',
+        'configuration_unsupported',
+        { problems, issues: problems.map((problem) => PROBLEM_ISSUES[problem](quoted.configuration)) },
+      );
+    }
+    if (request.contractedSetup !== undefined && quoted.setupTotal === 0) {
+      await this.refuseAmend(owner, tenant, 'invalid_request');
+      throw invalidFields([{ path: 'contractedSetup', message: 'A implantação só existe no SIEM + vCISO.' }]);
+    }
+    const reference = contractReference(quoted, table.content);
+    const contractPricing: ContractPricing = {
+      reference,
+      contracted: request.contracted ?? reference,
+      ...(quoted.setupTotal > 0
+        ? {
+            setup: { reference: quoted.setupTotal, contracted: request.contractedSetup ?? quoted.setupTotal },
+          }
+        : {}),
+    };
+    const unchanged =
+      request.hosting === hostingOf(tenant) &&
+      equalValues(quoted.configuration, tenant.configuration) &&
+      equalValues(quoted.limits, tenant.limits) &&
+      equalValues(contractPricing, tenant.contractPricing);
+    if (unchanged) {
+      await this.refuseAmend(owner, tenant, 'no_change');
+      throw amendError('no_change');
+    }
+    if (!this.limits.operations.take(owner.email).allowed) {
+      await this.refuseOperation(owner, tenant, 'amend', 'rate_limited');
+      throw rateLimited();
+    }
+    let stored;
+    try {
+      stored = await this.quotes.create(table.version, quoted);
+    } catch (error) {
+      if (error instanceof QuoteDailyLimitReachedError) {
+        throw new ApiError(HttpStatus.SERVICE_UNAVAILABLE, 'Cotação indisponível.', 'quote_unavailable');
+      }
+      throw error;
+    }
+    const now = this.clock.now();
+    const months = contractMonthsFor(request.configuration.plan, table.content);
+    const contractTerm = { months, startsAt: now, endsAt: addMonths(now, months) };
+    const target = request.hosting;
+    let result;
+    try {
+      result = await this.tenants.amend(
+        tenant.id,
+        (current) => {
+          // As regras de novo, sobre o cliente relido na transação.
+          const again =
+            amendRefusalOf(current) ??
+            (target !== hostingOf(current) && !hostingChangeAllowed(current) ? 'hosting_locked' : undefined);
+          if (again !== undefined) throw new AmendmentRefusedError(again);
+          const { id: _id, ...base } = current;
+          let next: Tenant = {
+            ...base,
+            configuration: quoted.configuration,
+            limits: quoted.limits,
+            pricing: {
+              priceTableVersion: table.version,
+              quoteId: stored.quoteId,
+              monthlyTotal: quoted.monthlyTotal,
+              setupTotal: quoted.setupTotal,
+            },
+            contractPricing,
+            contractTerm,
+          };
+          const moving = target !== hostingOf(current);
+          if (moving) {
+            // O estado de um cadastro novo do lugar de destino: nada da execução nem do registro da VM fica para trás.
+            const { provisioning: _run, enrollment: _enrollment, hosting: _hosting, ...rest } = next;
+            next =
+              target === 'customer'
+                ? { ...rest, hosting: 'customer', state: 'waiting_customer_install' }
+                : { ...rest, state: 'pending' };
+          }
+          return {
+            next,
+            reason: moving ? `contract_amended_to_${target}` : 'contract_amended',
+            ...(request.note === undefined ? {} : { note: request.note }),
+            nodeLimitsPending: nodeInstalled(current) && !equalValues(current.limits, quoted.limits),
+          };
+        },
+        { actor: `owner:${owner.email}`, by: owner.email, requestId: owner.requestId },
+      );
+    } catch (error) {
+      if (error instanceof AmendmentRefusedError) {
+        await this.refuseAmend(owner, tenant, error.code);
+        throw amendError(error.code);
+      }
+      if (error instanceof TenantNotFoundError) throw notFound();
+      throw error;
+    }
+    const after = result.tenant;
+    const hostingChanged = hostingOf(after) !== hostingOf(result.before);
+    this.logger.info(
+      {
+        event: 'contract_amended',
+        tenantId: after.id,
+        amendmentId: result.amendment.id,
+        plan: request.configuration.plan,
+        size: after.configuration.size,
+        hosting: hostingOf(after),
+        hostingChanged,
+        priceTableVersion: table.version,
+        // Só o sim ou não: os valores ficam no cliente, no aditivo e na auditoria, nunca no log.
+        negotiated: !equalValues(contractPricing.contracted, reference),
+        nodeLimitsPending: result.amendment.nodeLimitsPending,
+      },
+      'aditivo de contrato direto gravado',
+    );
+    return {
+      amendmentId: result.amendment.id,
+      state: after.state,
+      hosting: hostingOf(after),
+      hostingChanged,
+      nodeLimitsPending: result.amendment.nodeLimitsPending,
+      contractTerm,
+    };
+  }
+
+  /**
    * O pedido que a chave já criou, conferido inteiro contra o cliente gravado (que é o pedido normalizado): o modo de
    * cobrança, onde o ambiente roda, o subdomínio, a razão social, o CNPJ, o e-mail, a configuração levada à tabela da
    * cotação original (a mesma versão publicada, que não muda) e o contratado (sem ele no pedido, a referência daquela
@@ -1031,10 +1329,21 @@ export class AdminTenantsService {
     this.logger.info({ event: 'contract_tenant_refused', code }, 'cadastro de contrato direto recusado');
   }
 
+  private async refuseAmend(owner: OwnerContext, tenant: TenantRecord, code: string): Promise<void> {
+    await this.audit.write({
+      actor: `owner:${owner.email}`,
+      action: 'tenant.amend_refused',
+      tenantId: tenant.id,
+      details: { code, state: tenant.state },
+      requestId: owner.requestId,
+    });
+    this.logger.info({ event: 'contract_amend_refused', tenantId: tenant.id, code }, 'aditivo recusado');
+  }
+
   private async refuseOperation(
     owner: OwnerContext,
     tenant: TenantRecord,
-    action: TenantAction | 'enrollment-code',
+    action: TenantAction | 'enrollment-code' | 'amend',
     code: 'confirmation_mismatch' | 'rate_limited',
   ): Promise<void> {
     await this.audit.write({

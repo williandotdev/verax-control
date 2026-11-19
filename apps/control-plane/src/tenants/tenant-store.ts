@@ -14,6 +14,10 @@ import {
 import { canTransition } from './tenant-transitions.js';
 import {
   billingModeOf,
+  type ContractAmendment,
+  contractAmendmentSchema,
+  type ContractTermsSnapshot,
+  contractTermsSnapshotSchema,
   hostingOf,
   isSlugFree,
   type SlugDocument,
@@ -87,6 +91,17 @@ export interface TenantChange {
    * aceite continuam imutáveis.
    */
   allowLegalNameChange?: boolean;
+}
+
+/** O que o serviço do console decide num aditivo (`TenantStore.amend`). */
+export interface AmendmentDecision {
+  /** O documento inteiro depois do aditivo (o estado muda só quando muda onde o ambiente roda). */
+  next: Tenant;
+  /** O motivo da transição, quando há (`contract_amended_hosting`). */
+  reason: string;
+  note?: string;
+  /** Os limites do nó mudaram com o ambiente já instalado: o nó em execução ainda não os tem. */
+  nodeLimitsPending: boolean;
 }
 
 export interface TenantChangeResult {
@@ -509,6 +524,95 @@ export class TenantStore {
   }
 
   /**
+   * Um aditivo do contrato direto, numa transação: `decide` recebe uma cópia do documento relido e devolve o documento
+   * depois do aditivo (ou lança a recusa, que nada grava). Como `change`, `decide` pode rodar de novo (contenção) e
+   * precisa ser pura. É o único caminho que muda `hosting` (antes de qualquer instalação: quem decide é o serviço do
+   * console, e o schema do cliente amarra `hosting`, o modo da tabela e `waiting_customer_install`); a identidade, o
+   * aceite, a data de criação e a trava continuam imutáveis. Grava na mesma transação o cliente, o aditivo em
+   * `tenants/{id}/amendments` (o contrato antes e depois, sem segredo), a transição de estado quando há (pela tabela) e a
+   * auditoria `tenant.contract_amended` com o antes e o depois.
+   */
+  async amend(
+    tenantId: string,
+    decide: (current: TenantRecord) => AmendmentDecision,
+    audit: AuditContext & { by: string },
+  ): Promise<{ tenant: TenantRecord; before: TenantRecord; amendment: ContractAmendment & { id: string } }> {
+    return this.store.runTransaction(async (tx) => {
+      const current = await this.read(tx, tenantId);
+      const before: TenantRecord = { id: tenantId, ...current };
+      const decision = decide(structuredClone(before));
+      const { id: _id, ...mutated } = decision.next as TenantRecord;
+      for (const key of IMMUTABLE_IN_TRANSITION) {
+        if (key === 'hosting') continue;
+        if (!equalValues(mutated[key], current[key])) {
+          throw new TypeError(`um aditivo não pode mexer em ${key}`);
+        }
+      }
+      if (mutated.state !== current.state && !canTransition(current.state, mutated.state)) {
+        throw new InvalidTransitionError(tenantId, current.state, mutated.state);
+      }
+      const now = this.clock.now();
+      const transitioned = mutated.state !== current.state;
+      const written = tenantSchema.parse({
+        ...mutated,
+        ...(transitioned ? { stateUpdatedAt: now } : {}),
+        updatedAt: now,
+      });
+      const amendmentId = newUlid(now.getTime());
+      const amendment = contractAmendmentSchema.parse({
+        at: now,
+        by: audit.by,
+        ...(decision.note === undefined ? {} : { note: decision.note }),
+        before: termsOf(current),
+        after: termsOf(written),
+        stateBefore: current.state,
+        stateAfter: written.state,
+        nodeLimitsPending: decision.nodeLimitsPending,
+      });
+      tx.set(COLLECTIONS.tenants, tenantId, written);
+      tx.create(COLLECTIONS.amendments(tenantId), amendmentId, amendment);
+      if (transitioned) {
+        tx.create(
+          COLLECTIONS.transitions(tenantId),
+          newUlid(now.getTime()),
+          transitionSchema.parse({
+            from: current.state,
+            to: written.state,
+            reason: decision.reason,
+            at: now,
+          }),
+        );
+      }
+      this.audit.record(tx, {
+        actor: audit.actor,
+        action: 'tenant.contract_amended',
+        tenantId,
+        details: {
+          amendmentId,
+          reason: decision.reason,
+          before: amendment.before,
+          after: amendment.after,
+          ...(transitioned ? { from: current.state, to: written.state } : {}),
+          nodeLimitsPending: amendment.nodeLimitsPending,
+          ...(amendment.note === undefined ? {} : { note: amendment.note }),
+        },
+        requestId: audit.requestId,
+      });
+      return { tenant: { id: tenantId, ...written }, before, amendment: { id: amendmentId, ...amendment } };
+    });
+  }
+
+  /** Os aditivos do contrato, do mais antigo ao mais novo (empate em `at` sai pelo id). */
+  async listAmendments(tenantId: string): Promise<(ContractAmendment & { id: string })[]> {
+    const collection = COLLECTIONS.amendments(tenantId);
+    const docs = await this.store.query(collection, { orderBy: { field: 'at' } });
+    return docs.map(({ id, data }) => ({
+      id,
+      ...parseDocument(contractAmendmentSchema, collection, id, data),
+    }));
+  }
+
+  /**
    * Devolve o subdomínio tomado por este cliente (`taken` → `released`): o cliente foi cancelado sem nunca ter
    * provisionado nada (boleto do 1.º ciclo vencido, plano §4b), e outro pode reservar o nome. Idempotente: se o slug
    * não está tomado por este cliente, não mexe e devolve `false`.
@@ -613,6 +717,18 @@ export class TenantStore {
     if (data === undefined) return undefined;
     return parseDocument(slugDocumentSchema, COLLECTIONS.slugs, slug, data);
   }
+}
+
+/** O contrato de um cliente como o aditivo o registra (só contratos do modelo por GB/dia chegam a um aditivo). */
+function termsOf(tenant: Tenant): ContractTermsSnapshot {
+  return contractTermsSnapshotSchema.parse({
+    hosting: hostingOf(tenant),
+    configuration: tenant.configuration,
+    limits: tenant.limits,
+    pricing: tenant.pricing,
+    ...(tenant.contractPricing === undefined ? {} : { contractPricing: tenant.contractPricing }),
+    ...(tenant.contractTerm === undefined ? {} : { contractTerm: tenant.contractTerm }),
+  });
 }
 
 /**

@@ -86,6 +86,7 @@ describe('índices e TTL do Firestore (CP-02)', () => {
       COLLECTIONS.tenants,
       'transitions',
       'invoices',
+      'amendments',
       COLLECTIONS.counters,
       COLLECTIONS.pricingTables,
       COLLECTIONS.costModels,
@@ -103,6 +104,9 @@ describe('índices e TTL do Firestore (CP-02)', () => {
     expect(COLLECTIONS.invoices('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBe(
       'tenants/01ARZ3NDEKTSV4RRFFQ69G5FAV/invoices',
     );
+    expect(COLLECTIONS.amendments('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBe(
+      'tenants/01ARZ3NDEKTSV4RRFFQ69G5FAV/amendments',
+    );
     expect(COLLECTIONS.steps('run-1')).toBe('provisioningRuns/run-1/steps');
   });
 
@@ -110,6 +114,7 @@ describe('índices e TTL do Firestore (CP-02)', () => {
     for (const bad of ['01AAA/transitions/x', '', '..', 'nao-e-ulid', '01ARZ3NDEKTSV4RRFFQ69G5FAV/']) {
       expect(() => COLLECTIONS.transitions(bad)).toThrow(TypeError);
       expect(() => COLLECTIONS.invoices(bad)).toThrow(TypeError);
+      expect(() => COLLECTIONS.amendments(bad)).toThrow(TypeError);
     }
     for (const bad of ['run-1/steps/x', '', '.', '..', 'a/b']) {
       expect(() => COLLECTIONS.steps(bad)).toThrow(TypeError);
