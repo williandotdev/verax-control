@@ -5,7 +5,7 @@ import { AgentAlertSync } from './alerts/agent-alert-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
 import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
 import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
-import type { WebIdentityCredentials } from './aws/web-identity.js';
+import type { AwsReaderCredentials } from './aws/web-identity.js';
 import { WAZUH_CONFIG_INTERVAL_MS, WazuhConfig } from './aws/wazuh-config.js';
 import { CELL_COMMANDS_INTERVAL_MS, CELL_COMMANDS_TASK, CellCommands } from './cell/cell-commands.js';
 import { CellReportOutbox } from './cell/cell-report-outbox.js';
@@ -33,7 +33,13 @@ import { buildPinoOptions } from './common/logger/logger.options.js';
 import { PrismaService } from './common/prisma/prisma.service.js';
 import { CREDENTIAL_REKEY_INTERVAL_MS, CredentialRekey } from './credentials/credential-rekey.js';
 import { GcpAuditSync } from './gcp/gcp-audit-sync.js';
-import { MetadataTokenProvider, PubsubRestPublisher, PubsubRestReader } from './gcp/pubsub.client.js';
+import {
+  MetadataTokenProvider,
+  type PubsubReader,
+  PubsubRestPublisher,
+  PubsubRestReader,
+} from './gcp/pubsub.client.js';
+import { VaultPubsubReader } from './gcp/vault-pubsub-reader.js';
 import { IndexerClient } from './indexer/indexer.client.js';
 import { loadIndexerConfig } from './indexer/indexer.config.js';
 import { indexerSecretsFor } from './indexer/indexer-secrets.js';
@@ -77,8 +83,11 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
 /** A conferência da conexão da AWS e o que roda na partida (a conferência da identidade do nó). */
 interface AwsConnectionSetup {
   checker: AwsConnectionChecker;
-  /** As sessões no papel de leitura (null sem a identidade do nó): a conferência e o inventário dividem as mesmas. */
-  credentials: WebIdentityCredentials | null;
+  /**
+   * As sessões no papel de leitura, ou as chaves do cofre na VM própria (null sem a identidade do nó nem o cofre): a
+   * conferência e o inventário dividem as mesmas.
+   */
+  credentials: AwsReaderCredentials | null;
   start(): Promise<void>;
 }
 
@@ -89,7 +98,34 @@ interface AwsConnectionSetup {
  * do nó é conferido com o ID (sem o token no log); sem `NODE_EGRESS_IPS`, a simulação da permissão demais fica de
  * fora, e o log diz isso.
  */
-async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): Promise<AwsConnectionSetup> {
+async function awsConnectionSetup(
+  config: Readonly<WorkerEnv>,
+  prisma: PrismaService,
+  logger: Logger,
+): Promise<AwsConnectionSetup> {
+  // VM própria do cliente: sem identidade do Google, a conta é lida com a chave do usuário IAM de leitura que o admin
+  // colou no painel, aberta do cofre só aqui. Sem o cofre, nada a conferir.
+  if (config.NODE_PLATFORM === 'vm') {
+    const keyring = config.credentialsKeyring;
+    if (keyring === null) {
+      return {
+        checker: new UnavailableAwsConnectionChecker(),
+        credentials: null,
+        start: () => Promise.resolve(),
+      };
+    }
+    const [{ VaultKeyCredentials }, { WebIdentityAwsConnectionChecker }] = await Promise.all([
+      import('./aws/vault-key-credentials.js'),
+      import('./aws/web-identity-checker.js'),
+    ]);
+    const credentials = new VaultKeyCredentials(prisma, keyring, logger);
+    const checker = new WebIdentityAwsConnectionChecker({
+      credentials,
+      egressIps: config.NODE_EGRESS_IPS ?? [],
+      logger,
+    });
+    return { checker, credentials, start: () => Promise.resolve() };
+  }
   const serviceAccountId = config.NODE_SA_UNIQUE_ID;
   if (serviceAccountId === undefined) {
     return {
@@ -234,8 +270,18 @@ async function main(): Promise<void> {
           },
         ];
       }
-      // Auditoria da GCP: o token vem da identidade da VM do nó, sem chave.
-      const sync = new GcpAuditSync(prisma, new PubsubRestReader(new MetadataTokenProvider()));
+      // Auditoria da GCP: o token vem da identidade da VM do nó, sem chave. Na VM própria do cliente, da chave da conta
+      // de serviço de leitura de cada conta, aberta do cofre só aqui (a configuração exige as chaves privadas).
+      let reader: PubsubReader;
+      if (loaded.NODE_PLATFORM === 'vm') {
+        const keyring = loaded.credentialsKeyring;
+        if (keyring === null)
+          throw new Error('SYNC_SOURCES: a fonte gcp na VM própria exige o cofre de credenciais');
+        reader = new VaultPubsubReader(prisma, keyring);
+      } else {
+        reader = new PubsubRestReader(new MetadataTokenProvider());
+      }
+      const sync = new GcpAuditSync(prisma, reader);
       return [{ name: 'gcp', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => sync.runOnce() }];
     });
     // Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf): a lista que o host exporta do
@@ -246,7 +292,7 @@ async function main(): Promise<void> {
     }
     // Conexão da AWS: a API só grava o pedido do "Verificar"; o worker, o único contêiner com o metadata, responde e,
     // sem pedido, confere de novo as contas já verificadas.
-    aws = await awsConnectionSetup(loaded, logger);
+    aws = await awsConnectionSetup(loaded, prisma, logger);
     const awsCheck = new AwsCheck(prisma, aws.checker);
     tasks.push({
       name: 'aws-check',

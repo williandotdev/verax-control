@@ -14,6 +14,13 @@
 #
 # Depois, o sinal sem segredo para o worker: /run/verax/wazuh-signal/aws-token, só com a hora ({"tokenAt": ...}). Com o
 # token parado há mais de 40 min, o worker marca as contas AWS conectadas com `aws_token_stale` (tarefa wazuh-config).
+#
+# Na VM própria do cliente (NODE_PLATFORM=vm), não há identidade do Google: no lugar do token, o job `aws-sessions`
+# (imagem da API, ambiente do worker, o banco, o cofre de credenciais e o STS; compose.wazuh.yaml) troca a chave de
+# leitura de cada conta AWS que o manager lê (a que o admin colou no painel) por uma sessão de 1 hora (GetSessionToken)
+# e imprime o arquivo `credentials` dos profiles, com os mesmos nomes dos do `config`. A chave de longo prazo nunca sai
+# do job: só a sessão chega à pasta do manager, conferida linha a linha e trocada de uma vez (0600). O mesmo timer, a
+# mesma folga e o mesmo sinal para o worker.
 set -euo pipefail
 umask 077
 
@@ -37,6 +44,57 @@ MAX_TOKEN_BYTES=8192
 
 if [[ ! -d $dir ]]; then
   echo "Sem $dir (o Wazuh não está no ar): nada a renovar."
+  exit 0
+fi
+
+# O sinal para o worker, sem segredo. A pasta é root:<grupo do worker> 1770: o worker grava nela o dele (`generation`),
+# e o bit t impede que ele troque ou apague os do host.
+signal_renewed() {
+  local file
+  install -d -m 1770 -o 0 -g "$WORKER_UID" "$signal"
+  file=$(mktemp "$signal/.aws-token.XXXXXX")
+  printf '{"tokenAt":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$file"
+  chmod 0440 "$file"
+  chown "0:$WORKER_UID" "$file"
+  mv -fT "$file" "$signal/aws-token"
+}
+
+if [[ ${NODE_PLATFORM:-gcp} == vm ]]; then
+  # O job aws-sessions é do compose.vault.yaml: a chave de leitura está no cofre de credenciais. O mesmo projeto do
+  # Compose do start.sh e do wazuh-apply.sh.
+  if [[ ${CREDENTIALS_VAULT:-false} != true ]]; then
+    echo 'NODE_PLATFORM=vm: as sessões da AWS saem da chave do cofre e exigem CREDENTIALS_VAULT=true (/etc/verax/node.conf).' >&2
+    exit 2
+  fi
+  files=(-f /opt/verax/compose.yaml -f /opt/verax/compose.wazuh.yaml -f /opt/verax/compose.vault.yaml)
+  env_files=(--env-file /etc/verax/images.env)
+  if [[ -f $run/memory.env ]]; then env_files+=(--env-file "$run/memory.env"); fi
+  # Numa variável, antes de tocar no arquivo: um erro do job (o banco ou o STS fora) mantém as sessões anteriores.
+  sessions=$(docker compose --project-directory /opt/verax "${files[@]}" "${env_files[@]}" \
+    --profile setup run --rm -T aws-sessions </dev/null) || {
+    echo 'As sessões da AWS não vieram do job aws-sessions: as anteriores ficam até vencer (1 hora).' >&2
+    exit 1
+  }
+  # Cada linha no formato do arquivo credentials, e nada mais: o nome do profile (o do config), a chave temporária
+  # (ASIA), o segredo e o token da sessão. Um teto para 100 contas.
+  if ((${#sessions} > 1048576)); then
+    echo 'O job aws-sessions devolveu um arquivo grande demais: as sessões anteriores ficam até vencer.' >&2
+    exit 1
+  fi
+  while IFS= read -r line; do
+    [[ -z $line || $line =~ ^\[verax-[0-9]{12}\]$ || $line =~ ^aws_access_key_id\ =\ ASIA[A-Z0-9]{16}$ ||
+      $line =~ ^aws_secret_access_key\ =\ [A-Za-z0-9/+]{40}$ ||
+      $line =~ ^aws_session_token\ =\ [A-Za-z0-9/+=]{16,4096}$ ]] || {
+      echo 'O job aws-sessions devolveu uma linha fora do formato: as sessões anteriores ficam até vencer.' >&2
+      exit 1
+    }
+  done <<<"$sessions"
+  chmod 0700 "$dir"
+  file=$(mktemp "$dir/.credentials.XXXXXX")
+  if [[ -n $sessions ]]; then printf '%s\n' "$sessions" >"$file"; fi
+  # 0600 pelo umask; o rename troca o arquivo de uma vez (o manager monta a pasta, e não o arquivo).
+  mv -fT "$file" "$dir/credentials"
+  signal_renewed
   exit 0
 fi
 
@@ -65,11 +123,4 @@ printf '%s' "$token" >"$file"
 # 0600 pelo umask; o rename troca o arquivo de uma vez (o manager monta a pasta, e não o arquivo).
 mv -fT "$file" "$dir/google-id-token"
 
-# O sinal para o worker, sem segredo. A pasta é root:<grupo do worker> 1770: o worker grava nela o dele (`generation`),
-# e o bit t impede que ele troque ou apague os do host.
-install -d -m 1770 -o 0 -g "$WORKER_UID" "$signal"
-file=$(mktemp "$signal/.aws-token.XXXXXX")
-printf '{"tokenAt":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$file"
-chmod 0440 "$file"
-chown "0:$WORKER_UID" "$file"
-mv -fT "$file" "$signal/aws-token"
+signal_renewed

@@ -513,13 +513,41 @@ jobs:
             config=$(docker compose "$@" --env-file images.env --profile setup config --format json)
             jq -e --arg mount "$mount" '.services.worker.volumes
               | any(.type == "bind" and .source == "/run/verax/vault" and .target == $mount and .read_only == true)' <<<"$config"
-            jq -e --arg mount "$mount" '[.services[] | (.volumes // [])[]
-              | select(.target == $mount or (.target | startswith($mount + "/")))] | length == 1' <<<"$config"
+            # Fora o worker, só o job aws-sessions do compose.vault.yaml (a VM própria do cliente: troca a chave de
+            # leitura da AWS do cofre por uma sessão de 1 hora para o manager), exatamente como definido lá: a imagem da
+            # API com o CLI, o usuário do worker, só a rede do banco, só a CA do banco e a pasta do cofre, as duas só
+            # leitura, raiz só leitura, sem capabilities nem ganho de privilégio, sem porta, sem core dump e só no perfil
+            # setup (roda e sai). Nenhum serviço que fica no ar além do worker.
+            jq -e --arg mount "$mount" '[.services | to_entries[] | select(.key != "aws-sessions") | .value
+              | (.volumes // [])[] | select(.target == $mount or (.target | startswith($mount + "/")))] | length == 1' <<<"$config"
+            jq -e --arg mount "$mount" '.services."aws-sessions"
+              | .command == ["node", "dist/cli/aws-sessions.js"] and .user == "1000:1000"
+                and (.image | startswith("exemplo/api@sha256:"))
+                and (.networks | keys) == ["verax"] and (.ports // []) == []
+                and ([.volumes[] | [.type, .source, .target, .read_only]] | sort)
+                  == ([["bind", "/var/lib/verax/tls/ca.crt", "/etc/verax/tls/ca.crt", true],
+                       ["bind", "/run/verax/vault", $mount, true]] | sort)
+                and .read_only == true and .cap_drop == ["ALL"] and .security_opt == ["no-new-privileges:true"]
+                and (.tmpfs | length) == 1 and (.tmpfs[0] | startswith("/tmp:"))
+                and .ulimits.core == {} and .restart == "no" and .profiles == ["setup"]
+                and (.cap_add // []) == [] and (.privileged // false) == false' <<<"$config"
             jq -e '.services.worker | .read_only == true and (.cap_drop | index("ALL")) != null' <<<"$config"
           }
           # Nos dois perfis: no standard, o compose.wazuh.yaml também soma um volume ao worker (a CA do indexer).
           vault -f infra/node/compose.yaml -f infra/node/compose.vault.yaml
           vault -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml
+          # O aws-token.sh (VM própria) roda o job com estes três arquivos: o serviço existe nesse projeto, e não existe
+          # sem o cofre.
+          grep -qF 'files=(-f /opt/verax/compose.yaml -f /opt/verax/compose.wazuh.yaml -f /opt/verax/compose.vault.yaml)' \
+            infra/node/bin/aws-token.sh
+          grep -qF -- '--profile setup run --rm -T aws-sessions' infra/node/bin/aws-token.sh
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml \
+            --env-file images.env --profile setup config --services | grep -qx aws-sessions
+          if docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml --env-file images.env \
+            --profile setup config --services | grep -qx aws-sessions; then
+            echo 'O job aws-sessions existe sem o compose.vault.yaml: ele lê as chaves do cofre.' >&2
+            exit 1
+          fi
           # Nada do cofre entra pelo ambiente do worker: só o caminho do arquivo e a versão corrente. A única variável
           # com PRIVATE_KEY no nome que o start.sh escreve é a do caminho (o worker recusa qualquer outra).
           if grep -Eio '[A-Z0-9_]*PRIVATE_?KEY[A-Z0-9_]*=' infra/node/bin/start.sh | grep -v '^CREDENTIALS_PRIVATE_KEYS_FILE=$'; then

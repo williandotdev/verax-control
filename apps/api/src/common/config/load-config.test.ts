@@ -159,6 +159,17 @@ describe('loadConfig', () => {
     }
   });
 
+  it('onde o nó roda (NODE_PLATFORM): gcp sem a linha; vm só num nó dedicado e sem a conta de serviço do Google', () => {
+    expect(loadConfig(validEnv).NODE_PLATFORM).toBe('gcp');
+    expect(loadConfig({ ...validEnv, NODE_PLATFORM: 'vm' }).NODE_PLATFORM).toBe('vm');
+    expect(problemsOf({ ...validEnv, NODE_PLATFORM: 'aws' })).toEqual(['NODE_PLATFORM: use gcp ou vm']);
+    expect(
+      problemsOf({ ...validEnv, NODE_PLATFORM: 'vm', NODE_SA_UNIQUE_ID: '123456789012345678901' }),
+    ).toEqual([
+      'NODE_SA_UNIQUE_ID: não existe com NODE_PLATFORM=vm (a VM própria não tem conta de serviço do Google)',
+    ]);
+  });
+
   it('papel de leitura sem chave da AWS: o ID da conta de serviço do nó e o audience, opcionais e conferidos', () => {
     const plain = loadConfig(validEnv);
     expect(plain.NODE_SA_UNIQUE_ID).toBeUndefined();
@@ -711,6 +722,19 @@ describe('configuração do worker do sync (T5.3)', () => {
     expect(() => loadWorkerConfig({ ...workerEnv, SYNC_INTERVAL_SECONDS: value })).toThrow(
       ConfigValidationError,
     );
+  });
+
+  it('VM própria: NODE_PLATFORM=vm, sem a conta de serviço do Google, e a fonte gcp só com o cofre', () => {
+    expect(loadWorkerConfig(workerEnv).NODE_PLATFORM).toBe('gcp');
+    expect(loadWorkerConfig({ ...workerEnv, NODE_PLATFORM: 'vm' }).NODE_PLATFORM).toBe('vm');
+    expect(() =>
+      loadWorkerConfig({ ...workerEnv, NODE_PLATFORM: 'vm', NODE_SA_UNIQUE_ID: '123456789012345678901' }),
+    ).toThrow('não existe com NODE_PLATFORM=vm');
+    expect(() => loadWorkerConfig({ ...workerEnv, NODE_PLATFORM: 'vm', SYNC_SOURCES: 'gcp' })).toThrow(
+      'na VM própria, a fonte gcp lê a chave da conta de serviço do cofre',
+    );
+    // Na GCP, a fonte gcp lê com a identidade da VM, sem o cofre.
+    expect(loadWorkerConfig({ ...workerEnv, SYNC_SOURCES: 'gcp' }).SYNC_SOURCES).toEqual(['gcp']);
   });
 
   it("PR-V5': o ID da conta de serviço, o audience e o IP de saída do nó, opcionais e com as regras da API", () => {

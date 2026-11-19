@@ -17,6 +17,11 @@ inteiro para /var/ossec pelo init da imagem):
   token de /root/.aws/google-id-token, que o host renova na mesma pasta (infra/node/bin/aws-token.sh). Só as chaves de
   uma lista fixa: nunca `credential_process`, nunca chave de acesso. Não existe arquivo `credentials`.
 
+Na VM própria do cliente (NODE_PLATFORM=vm, com VERAX_AWS_STATIC_KEYS=1, que o wazuh-apply.sh passa), não há token do
+Google: o profile de cada conta fica só com a região e as tentativas, e as credenciais vêm do arquivo `credentials` da
+mesma pasta, que o host escreve (infra/node/bin/aws-token.sh: uma sessão de 1 hora da chave de leitura de cada conta,
+com o mesmo nome de profile). O gerador nunca escreve nem lê esse arquivo, e nesse modo também não o apaga.
+
 O papel é sempre arn:aws:iam::<conta>:role/verax/verax-control-reader, derivado do ID: a entrada não escolhe papel.
 Qualquer valor fora do formato para tudo, e nada é escrito pela metade. A saída padrão traz só o hash da configuração
 que o manager lê ao subir (o ossec.conf e as regras), que o wazuh-apply.sh compara para decidir se reinicia o manager;
@@ -85,6 +90,9 @@ PROFILE_KEYS = (
     "max_attempts",
 )
 PROFILE_VALUE = re.compile(r"^[A-Za-z0-9:/._-]+$")
+# VM própria do cliente: as credenciais de cada profile vêm do arquivo `credentials` que o host renova (sessões da chave
+# de leitura colada no painel), e o profile não entra em papel nenhum.
+STATIC_KEYS_VARIABLE = "VERAX_AWS_STATIC_KEYS"
 PROFILE_NAME = re.compile(r"^verax-[0-9]{12}$")
 
 # IP de saída do nó (o NODE_EGRESS_IPS do node.conf): IPv4 com /32, até 4 (o limite do `NodeEgressIps` da pilha).
@@ -268,8 +276,15 @@ def format_profile(name, pairs):
     return "\n".join(lines)
 
 
-def profile_pairs(source):
+def profile_pairs(source, static_keys=False):
     account = source["accountId"]
+    retry = (
+        ("region", source["region"]),
+        ("retry_mode", "standard"),
+        ("max_attempts", "10"),
+    )
+    if static_keys:
+        return retry
     return (
         ("role_arn", f"arn:aws:iam::{account}:{READER_ROLE}"),
         ("web_identity_token_file", TOKEN_FILE),
@@ -281,9 +296,19 @@ def profile_pairs(source):
     )
 
 
-def render_aws_config(sources):
-    blocks = [format_profile(profile_name(source["accountId"]), profile_pairs(source)) for source in sources]
+def render_aws_config(sources, static_keys=False):
+    blocks = [
+        format_profile(profile_name(source["accountId"]), profile_pairs(source, static_keys)) for source in sources
+    ]
     return "\n\n".join(blocks) + "\n" if blocks else ""
+
+
+def static_keys_mode():
+    """VERAX_AWS_STATIC_KEYS=1 (VM própria do cliente) liga o modo da chave de leitura; qualquer outro valor é recusado."""
+    value = os.environ.get(STATIC_KEYS_VARIABLE, "")
+    if value not in ("", "0", "1"):
+        raise InvalidSources(f"{STATIC_KEYS_VARIABLE} deve ser 0 ou 1")
+    return value == "1"
 
 
 def render_reader_rules(template, ips):
@@ -512,7 +537,8 @@ def main(base_config, config_dir, aws_dir, rules_dir=None):
     try:
         sources = validate(sys.stdin.read().strip() or "[]")
         ips = node_egress_ips()
-        aws_config = render_aws_config(sources)
+        static_keys = static_keys_mode()
+        aws_config = render_aws_config(sources, static_keys)
         rules = bundle_rules(rules_dir) if rules_dir else None
         reader_rules = render_reader_rules(rules[1], ips) if rules else None
     except InvalidSources as error:
@@ -552,7 +578,9 @@ def main(base_config, config_dir, aws_dir, rules_dir=None):
             keep_previous(config_dir, current, read_optional(os.path.join(config_dir, PROFILES_RECORD)))
         install_tree(config_dir, files, current)
     install_profiles(config_dir, aws_dir, aws_config.encode("utf-8"))
-    remove_credentials_file(aws_dir)
+    # Na VM própria, o arquivo credentials é o do host (as sessões da chave de leitura): fica.
+    if not static_keys:
+        remove_credentials_file(aws_dir)
     # A raiz do volume nasce 0755; fechada, para só o root listar o diretório. Num diretório, o bit x é o de
     # entrar nele: 0700 (só o dono) é o mais restrito que funciona, ao contrário do que a regra supõe para arquivos.
     os.chmod(aws_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions

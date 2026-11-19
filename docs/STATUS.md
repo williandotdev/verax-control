@@ -6073,3 +6073,59 @@ fmt`/`validate`/`test` do `envs/nodes-platform`.
   (PR #151).
 - **Testes:** console (vitest inteiro), `eslint`, `typecheck` do console.
 - **Manual:** com o PR #151 publicado numa versão do nó, gerar um código no console e instalar uma VM de teste.
+
+## VM própria do cliente: chaves de leitura da AWS e da GCP no painel ⚠️ altera `infra/` e `.github/`
+
+- **Pedido (18/11/2026, decisão do responsável):** na VM própria (`NODE_PLATFORM=vm`), sem identidade do Google, o admin
+  cola em Contas cloud a chave de uma identidade só de leitura: a chave de acesso de um usuário IAM da AWS e a chave
+  JSON de uma conta de serviço da GCP, cifradas no cofre do nó (o mesmo do token do Cloudflare). Os nós da GCP seguem
+  sem chave, e a API recusa os dois tipos neles. Empilhado sobre a entrega do modo `vm` (PR #151).
+- **Contrato (`packages/shared`):** `NODE_PLATFORMS`; os tipos `aws_access_key` e `gcp_service_account_key` no cofre e
+  na rota (`credentialKindAllowed`, `credentialKindFor`, `VM_ONLY_CREDENTIAL_KINDS`), com zod estrito (o ID `AKIA`, a
+  temporária `ASIA` recusada com mensagem própria, o segredo de 40; da GCP, o arquivo lido no navegador por
+  `gcpServiceAccountKeyFromJson` e só quatro campos na rota: projeto, e-mail de conta de serviço do usuário, ID da chave
+  e PEM PKCS#8 de até 4 KB); `nodePlatform` no `GET /v1/auth/client-config`; os códigos `key_missing` e `key_invalid` da
+  conexão da AWS; `read-keys.ts` com as políticas do usuário IAM (as ações do papel, conferidas por teste contra o
+  `verax-control-reader.policy.json`), os comandos da CLI e os comandos do Cloud Shell da GCP.
+- **API:** `NODE_PLATFORM` no ambiente da API e do worker (vm só em nó dedicado e sem `NODE_SA_UNIQUE_ID`; a fonte
+  `gcp` na VM própria exige o cofre); migration `20261118120000_vm_read_keys` (o enum ganha os dois tipos e a coluna do
+  texto cifrado vai a 8 KB; nada é reescrito); o cofre ganha os invólucros `AwsAccessKey` e `GcpServiceAccountKey` e o
+  envelope híbrido (AES-256-GCM com a chave cifrada pela RSA do nó, o rótulo do OAEP como dado autenticado) para o que
+  passa dos 318 bytes, no mesmo formato `v<versão>:<base64>`; o recebimento recusa o tipo fora da VM própria antes de
+  tudo (400 `CREDENTIAL_KIND_NOT_ALLOWED`, na trilha) e confere na origem: `aws/aws-key-check.ts` (`GetCallerIdentity`,
+  usuário IAM da conta; root e outra conta recusados) e `gcp/gcp-key-check.ts` (token do Google pelo JWT da chave,
+  endereço fixo, e `testIamPermissions` na assinatura cadastrada); mensagens por provedor.
+- **Worker:** `aws/vault-key-credentials.ts` no lugar do `WebIdentityCredentials` na VM própria (a conferência e o
+  inventário pelo mesmo contrato, `AwsReaderCredentials`); a conferência aceita o usuário IAM, grava `key_invalid` e
+  simula a permissão demais no próprio usuário; `gcp/vault-pubsub-reader.ts` e `gcp/service-account-token.ts` (o token
+  de 1 hora da chave de cada conta, só o escopo do Pub/Sub; `gcp_key_missing` sem chave).
+- **Wazuh na VM própria:** o CLI `aws-sessions` (job do `compose.vault.yaml`, com o cofre só leitura) troca a chave de
+  cada conta do manager por uma sessão de 1 hora (`GetSessionToken`); o `aws-token.sh` (mesmo timer) confere o arquivo
+  `credentials` linha a linha e o grava na pasta do manager; o gerador (`VERAX_AWS_STATIC_KEYS=1`) escreve os profiles
+  sem o papel e não apaga o `credentials`; o `wazuh-apply.sh` passa o modo e renova as sessões depois de aplicar. O
+  `start.sh` passa `NODE_PLATFORM=vm` à API e ao worker, aceita a fonte `gcp` com o cofre e roda o `aws-token.sh` nos
+  dois modos; o `install.sh` instala e liga o `verax-aws-token` também na VM própria; o `verax-install.sh` liga a fonte
+  `gcp`. No `iac.yml`, a conferência do cofre aceita o job `aws-sessions` (só leitura, endurecido, perfil `setup`).
+- **GCP, a escolha:** o cliente cria tópico, assinatura e sink no próprio projeto, e a conta de serviço tem só
+  `roles/pubsub.subscriber` na assinatura; o sync, o filtro, a deduplicação e o medidor são os do gerenciado. Ler o Cloud
+  Logging direto pediria `roles/logging.viewer` (e `privateLogViewer`) no projeto inteiro, com cota baixa e cursor novo.
+- **Painel:** em Contas cloud, com `nodePlatform: vm`, a AWS mostra as duas políticas preenchidas, os comandos da CLI e
+  o formulário da chave (ID e segredo, tipo senha, zerados no envio), e o "Verificar" no texto da chave; a GCP mostra os
+  comandos do Cloud Shell, a assinatura a cadastrar e o campo do JSON (só os quatro campos vão à API). O cartão da
+  credencial ficou genérico (token do Cloudflare, chave da AWS, chave da GCP). Dicas de `key_missing`, `key_invalid` e
+  `gcp_key_missing`.
+- **Testes:** shared 2 arquivos novos/alterados (as chaves, as políticas contra o JSON do papel, os comandos); API
+  unitários (cofre híbrido e adulterado, invólucros fora de texto, as duas conferências na origem com STS falso e
+  Google falso em 127.0.0.1, o leitor do Pub/Sub, as credenciais do cofre no worker, a conferência no modo usuário IAM,
+  o CLI das sessões, a configuração): 416 passando; integração nova `test/cloud-read-keys.test.ts` (VM própria aceita e
+  só os metadados saem; nó da GCP recusa sem conferir nem gravar; A/B 404; o tipo de outro provedor; sem assinatura) e
+  `aws-keyless-migration.test.ts`/`wazuh-contract.test.ts` atualizados, **não rodados aqui** (o banco de teste exige o
+  `.env`, fora do alcance deste agente); web `cloud-accounts-vm.test.tsx` (msw) e a suíte inteira; Python do gerador
+  (42); `wazuh-apply-test`, `vm-node-test`, `vm-install-test`, `start-test` e `vault-test` verdes num contêiner Ubuntu
+  24.04; shellcheck `-x -S style` limpo; o Compose conferido com as regras do `iac.yml`.
+- **Manual:** numa VM própria de teste, colar a chave do usuário IAM e a da conta de serviço; o "Verificar" da AWS, o
+  arquivo `credentials` do manager e os eventos do CloudTrail e da GCP chegando.
+- **Riscos:** a chave de longo prazo não vence sozinha (troca recomendada a cada 90 dias, sem aviso automático ainda);
+  144 `GetSessionToken` por dia por conta no CloudTrail; o job `aws-sessions` é o segundo contêiner com as chaves
+  privadas do cofre (efêmero e só leitura); o `kms:Decrypt` do usuário vale para as chaves da conta, só pelo S3 (o
+  cadastro não tem as chaves KMS).

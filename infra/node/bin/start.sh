@@ -119,8 +119,10 @@ is_tenant_slug() { [[ $1 =~ $re_tenant_slug && ${1:2:2} != '--' ]]; }
 # pelo install.sh), as entradas do primeiro acesso vêm de arquivos que o instalador grava (customer_inputs) e a senha
 # temporária do administrador fica num arquivo só de root (customer_output) até o instalador entregá-la ao plano de
 # controle. A guarda do metadata é a da VM própria (vm-metadata-guard.sh: nenhum contêiner alcança o metadata da nuvem,
-# nem o worker); sem token do Google para a AWS e sem guest attributes. Os nós da GCP não mudam: sem a linha, tudo é
-# como antes.
+# nem o worker); sem token do Google e sem guest attributes. A AWS e a GCP são lidas com a chave de leitura que o admin
+# cola no painel (no cofre de credenciais): a API e o worker recebem NODE_PLATFORM=vm, e o aws-token.sh, no lugar do
+# token do Google, troca a chave da AWS de cada conta por uma sessão de 1 hora para o Wazuh. Os nós da GCP não mudam:
+# sem a linha, tudo é como antes.
 vm() { [[ ${NODE_PLATFORM:-gcp} == vm ]]; }
 vault_dir=/etc/verax/vault
 customer_inputs=/etc/verax/customer
@@ -624,15 +626,23 @@ render() {
       return 1
       ;;
   esac
-  # Modo vm: só o que não depende da GCP. A célula (canal pelo Pub/Sub, cofres no Secret Manager), os agentes (portas de
-  # entrada; a VM só tem saída) e a fonte `gcp` (o token do Google pelo metadata) ficam de fora.
+  # Modo vm: só o que não depende da GCP. A célula (canal pelo Pub/Sub, cofres no Secret Manager) e os agentes (portas
+  # de entrada; a VM só tem saída) ficam de fora. A fonte `gcp` vale: o worker lê o Pub/Sub com a chave da conta de
+  # serviço de leitura de cada conta, do cofre de credenciais (que ela exige).
+  local platform=()
   case ${NODE_PLATFORM:-gcp} in
     gcp) ;;
     vm)
-      if cell || agents || [[ ,${SYNC_SOURCES:-}, == *,gcp,* ]]; then
-        echo 'NODE_PLATFORM=vm não aceita NODE_MODE=cell, WAZUH_AGENTS=true nem a fonte gcp em SYNC_SOURCES (/etc/verax/node.conf).' >&2
+      if cell || agents; then
+        echo 'NODE_PLATFORM=vm não aceita NODE_MODE=cell nem WAZUH_AGENTS=true (/etc/verax/node.conf).' >&2
         return 1
       fi
+      if [[ ,${SYNC_SOURCES:-}, == *,gcp,* && ${CREDENTIALS_VAULT:-false} != true ]]; then
+        echo 'NODE_PLATFORM=vm: a fonte gcp em SYNC_SOURCES lê a chave do cofre e exige CREDENTIALS_VAULT=true (/etc/verax/node.conf).' >&2
+        return 1
+      fi
+      # A API só aceita as chaves de leitura da AWS e da GCP com ela; o worker lê as duas nuvens com elas.
+      platform=(NODE_PLATFORM=vm)
       ;;
     *)
       echo 'NODE_PLATFORM inválido em /etc/verax/node.conf: use gcp ou vm.' >&2
@@ -747,7 +757,7 @@ render() {
   # Contas cloud mostrando o comando com o tópico a preencher.
   # Na célula, o tópico é de cada conta (`vxc-<célula>-gcp-<UUID da conta>`, envs/cell-tenant), nunca o do nome do
   # projeto (que voltaria depois da exclusão de um cliente): a API sobe sem o prefixo. No modo vm não há projeto do nó
-  # (a coleta da GCP fica para outra entrega): também sem o prefixo, e sem aviso.
+  # (o cliente cria o tópico e a assinatura no projeto dele e cola a chave de leitura): também sem o prefixo, e sem aviso.
   local sink_topic=()
   if cell || vm; then
     :
@@ -852,6 +862,7 @@ render() {
     "${turnstile[@]}" \
     "${agents_api[@]}" \
     "${vault_api[@]}" \
+    "${platform[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   # O worker recebe os mesmos valores do papel de leitura da AWS, já conferidos acima (PR-V5'): com o ID da conta de
   # serviço, a conferência real da conexão (o token do Google com o audience, o STS e os buckets) e a do `sub` do token
@@ -869,6 +880,7 @@ render() {
     "${agents_worker[@]}" \
     "${vault_worker[@]}" \
     "${node_status[@]}" \
+    "${platform[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   # Túnel: com o cofre ainda sem valor, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa; gravado o
   # token, `sudo systemctl restart verax-node` liga o túnel. Qualquer outro erro na leitura (permissão, rede, valor
@@ -932,12 +944,10 @@ wazuh_up() {
   bash "$wazuh/scripts/security-admin.sh"
   bash "$wazuh/scripts/configure-indexer.sh"
   # O token do Google antes do manager (o módulo da AWS roda ao subir). Uma falha não para o Wazuh: o timer tenta de
-  # novo em 10 min, o token anterior vale até 1 hora, e o worker avisa se ele envelhecer.
-  # No modo vm não há identidade do Google: sem token (a coleta da AWS por chave de leitura é outra entrega).
-  if ! vm; then
-    /opt/verax/bin/aws-token.sh ||
-      echo 'AVISO: o token do Google para a AWS não foi renovado agora; o verax-aws-token.timer tenta de novo.' >&2
-  fi
+  # novo em 10 min, o token anterior vale até 1 hora, e o worker avisa se ele envelhecer. No modo vm, no lugar do token,
+  # as sessões de 1 hora da chave de leitura de cada conta AWS (o mesmo script e o mesmo timer).
+  /opt/verax/bin/aws-token.sh ||
+    echo 'AVISO: a credencial do Wazuh para a AWS não foi renovada agora; o verax-aws-token.timer tenta de novo.' >&2
   /opt/verax/bin/wazuh-apply.sh
   compose up --detach --wait --wait-timeout 900 wazuh.manager
   # O usuário verax_stats da API do manager (só manager:read), que o worker usa no medidor (PR-V6): criado ou acertado

@@ -11,7 +11,36 @@
 # uma pasta montada pode ser trocado de uma vez (rename), sem o contêiner ficar preso à versão antiga. O destino é o
 # WORKER_VAULT_MOUNT do start.sh, e o arquivo dentro dele, o CREDENTIALS_PRIVATE_KEYS_FILE que ele escreve no
 # worker.env (WORKER_KEYS_MOUNT; o CI confere que batem).
+#
+# O job `aws-sessions` (só na VM própria do cliente, NODE_PLATFORM=vm; perfil setup: nunca sobe com o nó, só o
+# infra/node/bin/aws-token.sh o roda) é o único outro contêiner com a mesma pasta, só leitura: troca a chave de leitura
+# de cada conta AWS que o Wazuh lê (no cofre) por uma sessão de 1 hora (GetSessionToken) e imprime o arquivo
+# `credentials` do manager. Imagem e ambiente do worker (o banco por TLS e o caminho das chaves, nunca as chaves), a
+# rede `verax` (o banco e a saída para o STS), o usuário do worker e o mesmo endurecimento dos jobs do compose.yaml. Sai
+# ao terminar. Nos nós da GCP, nada o roda (o CI confere a definição).
 services:
   worker:
     volumes:
       - /run/verax/vault:/run/vault:ro
+
+  aws-sessions:
+    image: ${API_IMAGE:?}
+    command: ['node', 'dist/cli/aws-sessions.js']
+    user: '1000:1000'
+    env_file: /run/verax/worker.env
+    networks: [verax]
+    volumes:
+      - /var/lib/verax/tls/ca.crt:/etc/verax/tls/ca.crt:ro
+      - /run/verax/vault:/run/vault:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    tmpfs: ['/tmp:rw,noexec,nosuid,size=16m']
+    mem_limit: 192m
+    ulimits:
+      core: 0
+    restart: 'no'
+    profiles: [setup]
+    logging:
+      driver: local
+      options: { max-size: 10m, max-file: '3' }

@@ -22,10 +22,10 @@ Na VM roda o mesmo pacote do nó da Verax, no modo `NODE_PLATFORM=vm`: os segred
 (`/etc/verax/vault`, só root), a chave do cofre de credenciais nasce na própria VM, os backups do banco ficam na VM
 (`/var/lib/verax/backups`, 7 dias) e não há atualizador automático. Nenhum contêiner do nó alcança o servidor de
 metadados da nuvem da VM (`169.254.169.254` e, na AWS, `fd00:ec2::254`): o serviço `verax-vm-metadata-guard`
-bloqueia esse tráfego antes de o Docker subir, a cada boot (o próprio host continua com acesso). Nesta entrega, o nó coleta o Cloudflare (o token de
-leitura colado no painel) e o que não depende de identidade de nuvem. **A coleta da AWS e do Google com chave de leitura
-cadastrada no painel vem numa entrega seguinte.** Os agentes do Wazuh nas instâncias do cliente pedem portas de entrada
-e não existem na VM própria.
+bloqueia esse tráfego antes de o Docker subir, a cada boot (o próprio host continua com acesso). Sem identidade de
+nuvem, o nó lê a AWS, a GCP e o Cloudflare com **chaves só de leitura** que o admin cola no painel, cifradas no cofre de
+credenciais da VM (seção 5). Os agentes do Wazuh nas instâncias do cliente pedem portas de entrada e não existem na VM
+própria.
 
 ## 1. A VM
 
@@ -62,7 +62,7 @@ Libere a saída para:
 | Docker Hub (`registry-1.docker.io`, `auth.docker.io`, `*.docker.com`) | 443                 | As imagens de terceiros (Wazuh, PostgreSQL, cloudflared) e o apt do Docker |
 | `conta.veraxsistemas.com.br`                                          | 443                 | O registro do nó no plano de controle da Verax                             |
 | O servidor de e-mail do nó (a Verax informa)                          | a dele (465 ou 587) | Os e-mails do painel (senha, avisos)                                       |
-| `api.cloudflare.com` e as APIs das nuvens monitoradas                 | 443                 | A coleta                                                                   |
+| `api.cloudflare.com` e as APIs das nuvens monitoradas                 | 443                 | A coleta (seção 5)                                                         |
 | Os espelhos do sistema (apt) e o NTP                                  | 80/443 e 123        | Os pacotes do sistema e o relógio                                          |
 
 ## 3. Instalar: um comando
@@ -123,14 +123,64 @@ sudo docker compose -f compose.yaml --env-file /etc/verax/images.env exec -T pos
 sudo systemctl start verax-node
 ```
 
-## 5. Diagnóstico
+## 5. Coleta: as chaves de leitura no painel
+
+Na VM própria não há identidade do Google: o papel sem chave da AWS e a conta de serviço da VM no Pub/Sub, que os
+ambientes na Verax usam, não existem aqui. Em **Contas cloud**, o detalhe de cada conta AWS e de cada projeto da GCP
+mostra as instruções da VM própria e o campo para colar a chave. A chave vai direto para o cofre de credenciais da VM,
+cifrada com a chave que nasceu nela (a API do nó só cifra; só o worker decifra), e nunca volta para a tela, a auditoria
+ou o log. Os ambientes na Verax recusam essas chaves.
+
+**AWS (CloudTrail, GuardDuty, WAF, Ativos e Postura):** um usuário IAM só de leitura,
+`arn:aws:iam::<conta>:user/verax/verax-control-reader`, com as mesmas duas políticas do papel de leitura dos ambientes
+na Verax (`infra/cloudformation/verax-control-reader.policy.json`), que o painel mostra preenchidas com a conta e os
+buckets cadastrados:
+
+- `VeraxControlReader` (também o limite de permissões do usuário): `s3:ListBucket`, `s3:GetBucketLocation` e
+  `s3:GetObject` só nos buckets de log cadastrados; `kms:Decrypt` nas chaves da conta só pelo S3
+  (`kms:ViaService = s3.*.amazonaws.com`); `iam:SimulatePrincipalPolicy` só no próprio usuário; as leituras das fontes
+  (`cloudtrail:DescribeTrails`, `GetTrailStatus`, `guardduty:ListDetectors`, `GetDetector`,
+  `ListPublishingDestinations`, `DescribePublishingDestination`) e de Ativos e Postura (`iam:GetAccountSummary`,
+  `GetAccountPasswordPolicy`, `ListUsers`, `ListAccessKeys`, `GetAccessKeyLastUsed`, `ListMFADevices`,
+  `GetLoginProfile`, `ec2:DescribeRegions`, `DescribeInstances`, `DescribeSecurityGroups`,
+  `GetEbsEncryptionByDefault`, `s3:ListAllMyBuckets`, `GetBucketAcl`, `GetBucketPolicyStatus`,
+  `GetBucketPublicAccessBlock`, `GetAccountPublicAccessBlock`);
+- `VeraxControlGuardrails` (negações): nenhuma alteração de logs (CloudTrail, GuardDuty, KMS, CloudWatch Logs, S3, WAF,
+  Security Hub...) e nenhuma ampliação do próprio acesso (`iam:*` de escrita, `sts:AssumeRole*`,
+  `sts:GetFederationToken`); com o IP de saída da VM informado no nó, também nada de fora dele.
+
+Os comandos da CLI que o painel mostra criam as duas políticas, o usuário (com o limite de permissões) e a chave de
+acesso. A chave (o ID `AKIA...` e a chave secreta) é colada no painel: a API confere com um `GetCallerIdentity` que ela é
+de um usuário IAM da conta cadastrada (a do root e a de outra conta são recusadas) e a guarda. Depois, o "Verificar"
+confere a leitura dos buckets como nos ambientes na Verax. O Wazuh do nó nunca recebe a chave: a cada 10 minutos, o
+`verax-aws-token.timer` (o job `aws-sessions`) a troca por uma sessão de 1 hora (`GetSessionToken`) para cada conta, no
+arquivo `credentials` que só o manager lê. Cada sessão é uma linha `GetSessionToken` no CloudTrail da conta.
+
+**GCP (auditoria do Cloud Logging):** tudo no projeto do cliente, com os comandos que o painel mostra para o Cloud
+Shell: o tópico e a assinatura `verax-control-security` (7 dias de retenção), o sink com o filtro de segurança e a
+publicação dele só nesse tópico, e a conta de serviço `verax-control-reader@<projeto>.iam.gserviceaccount.com` com o
+papel `roles/pubsub.subscriber` **só na assinatura** (nenhum papel no projeto). Cadastre a assinatura
+`projects/<projeto>/subscriptions/verax-control-security` na conta e cole o arquivo JSON da chave da conta de serviço
+(depois, apague o arquivo). O painel manda só o projeto, o e-mail, o ID e a chave privada; a API confere com o token do
+Google e um `testIamPermissions` na assinatura (`pubsub.subscriptions.consume`), sem ler mensagem nenhuma. O worker lê a
+assinatura com um token de 1 hora tirado da chave, só com o escopo do Pub/Sub.
+
+**Trocar ou remover:** colar outra chave troca a guardada (a coleta passa a usar a nova na próxima leitura); remover, ou
+desativar a conta, apaga a chave do cofre. Apague também a chave antiga no IAM ou na conta de serviço. Recomenda-se
+trocar as duas a cada 90 dias.
+
+## 6. Diagnóstico
 
 - `sudo systemctl status verax-node verax-wazuh verax-customer-bootstrap` e `sudo journalctl -u verax-node`;
 - os backups em `/var/lib/verax/backups` (`verax-backup.timer`, todo dia; a retenção muda com `BACKUP_RETENTION_DAYS`
   no `node.conf`, de 1 a 365 dias);
-- o cofre local e o `node.conf` são só do root; nada deles vai para o log.
+- o cofre local e o `node.conf` são só do root; nada deles vai para o log;
+- a coleta da AWS: `sudo systemctl status verax-aws-token` e `sudo journalctl -u verax-aws-token` (só as contagens das
+  contas com sessão e os tipos dos erros, nunca a chave); a conta mostra `key_missing` (sem chave guardada) ou
+  `key_invalid` (a AWS recusou a chave) na conexão;
+- a coleta da GCP: a conta mostra `gcp_key_missing` (sem chave guardada) ou o tipo do erro do token do Google.
 
-## 6. Desinstalar (fim do contrato)
+## 7. Desinstalar (fim do contrato)
 
 No fim do contrato, a Verax apaga o que é dela (o túnel, o endereço, o painel e o cadastro). **A VM é do cliente, e
 quem a apaga é ele.** Antes, guarde o que quiser do banco (um backup novo, `sudo /opt/verax/bin/backup.sh`, e uma cópia

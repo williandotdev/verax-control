@@ -18,12 +18,15 @@ import {
   type VaultPublicKey,
 } from './credential-keys.js';
 import {
+  AwsAccessKey,
   type CredentialBinding,
   CloudflareToken,
+  GcpServiceAccountKey,
   CREDENTIAL_KIND_PROVIDER,
   CredentialVaultError,
   credentialBinding,
   envelopeVersion,
+  MAX_CIPHERTEXT_LENGTH,
   MAX_PLAINTEXT_BYTES,
   oaepLabel,
   open,
@@ -42,6 +45,17 @@ const privatePem64 = (key: TestKey) =>
 const publicPem64 = (key: TestKey) =>
   Buffer.from(key.publicKey.export({ type: 'spki', format: 'pem' })).toString('base64');
 const cloudflareToken = () => randomBytes(30).toString('base64url');
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const awsKeyId = () => `AKIA${Array.from(randomBytes(16), (byte) => BASE32.charAt(byte % 32)).join('')}`;
+const awsSecret = () => randomBytes(30).toString('base64');
+const gcpFields = () => ({
+  projectId: 'cliente-demo-a',
+  clientEmail: 'verax-control-reader@cliente-demo-a.iam.gserviceaccount.com',
+  privateKeyId: randomBytes(20).toString('hex'),
+  privateKey: generateKeyPairSync('rsa', { modulusLength: 2048 })
+    .privateKey.export({ type: 'pkcs8', format: 'pem' })
+    .toString(),
+});
 
 function vaultError(action: () => unknown): string {
   try {
@@ -83,7 +97,7 @@ describe('cofre de credenciais', () => {
     expect(sealed.keyVersion).toBe(1);
     expect(sealed.ciphertext).toMatch(/^v1:[A-Za-z0-9+/]{512}$/);
     expect(sealed.ciphertext).not.toContain(token);
-    const opened = open(onlyV1, cloudflare, sealed.ciphertext);
+    const opened = open(onlyV1, cloudflare, sealed.ciphertext) as CloudflareToken;
     expect(opened).toBeInstanceOf(CloudflareToken);
     expect(opened.value()).toBe(token);
   });
@@ -141,7 +155,7 @@ describe('cofre de credenciais', () => {
       `v0:${ciphertext.slice(3)}`,
       `V1:${ciphertext.slice(3)}`,
       `v1:${ciphertext.slice(3)}\n`,
-      `v1:${'A'.repeat(1100)}`,
+      `v1:${'A'.repeat(8200)}`,
       '',
     ]) {
       expect(vaultError(() => open(onlyV1, cloudflare, envelope))).toBe('envelope_invalid');
@@ -165,7 +179,7 @@ describe('cofre de credenciais', () => {
     const rekeyed = reseal(bothCurrentV2, cloudflare, old.ciphertext);
     expect(rekeyed?.keyVersion).toBe(2);
     expect(envelopeVersion(rekeyed?.ciphertext ?? '')).toBe(2);
-    expect(open(onlyV2, cloudflare, rekeyed?.ciphertext ?? '').value()).toBe(token);
+    expect((open(onlyV2, cloudflare, rekeyed?.ciphertext ?? '') as CloudflareToken).value()).toBe(token);
     // Já na corrente: nada a fazer. A pública da corrente é a da v2.
     expect(reseal(bothCurrentV2, cloudflare, rekeyed?.ciphertext ?? '')).toBeNull();
     expect(bothCurrentV2.publicKey().version).toBe(2);
@@ -196,10 +210,10 @@ describe('cofre de credenciais', () => {
     const longest = `${'x'.repeat(255)}==`;
     expect(Buffer.byteLength(JSON.stringify({ t: longest }))).toBeLessThanOrEqual(MAX_PLAINTEXT_BYTES);
     const sealed = seal(publicV1, cloudflare, new CloudflareToken(longest));
-    expect(open(onlyV1, cloudflare, sealed.ciphertext).value()).toBe(longest);
+    expect((open(onlyV1, cloudflare, sealed.ciphertext) as CloudflareToken).value()).toBe(longest);
   });
 
-  it('zod ao abrir: texto claro fora do formato não abre, nem o da chave da AWS que saiu do cofre', () => {
+  it('zod ao abrir: texto claro fora do formato não abre, nem o de outro tipo', () => {
     const encrypt = (plaintext: string) =>
       `v1:${publicEncrypt(
         {
@@ -214,8 +228,8 @@ describe('cofre de credenciais', () => {
       JSON.stringify({ t: cloudflareToken(), extra: 1 }),
       JSON.stringify({ t: 'curto demais' }),
       JSON.stringify({ t: `${cloudflareToken()}\nx` }),
-      // O formato do texto claro da chave da AWS (PR-V1), que não existe mais: um ID e um segredo.
-      JSON.stringify({ i: 'x'.repeat(20), s: randomBytes(30).toString('base64') }),
+      // O formato do texto claro da chave da AWS, amarrado como token do Cloudflare: não abre.
+      JSON.stringify({ i: awsKeyId(), s: awsSecret() }),
       JSON.stringify([cloudflareToken()]),
       'não é JSON',
     ]) {
@@ -246,23 +260,27 @@ describe('cofre de credenciais', () => {
     }
   });
 
-  it('o tipo da credencial é o do provedor da conta; a chave da AWS não entra mais no cofre', () => {
-    expect(CREDENTIAL_KIND_PROVIDER).toEqual({ cloudflare_api_token: 'cloudflare' });
+  it('o tipo da credencial é o do provedor da conta', () => {
+    expect(CREDENTIAL_KIND_PROVIDER).toEqual({
+      cloudflare_api_token: 'cloudflare',
+      aws_access_key: 'aws',
+      gcp_service_account_key: 'gcp',
+    });
     const account = { id: randomUUID(), tenantId: randomUUID(), accountId: '111122223333' };
     for (const provider of ['aws', 'gcp'] as const) {
       expect(vaultError(() => credentialBinding({ ...account, provider }, 'cloudflare_api_token'))).toBe(
         'binding_invalid',
       );
     }
-    // O tipo antigo, se aparecer (uma linha velha, um erro), não amarra nada: nem rótulo, nem conta.
-    const legacyKind = 'aws_access_key' as CredentialBinding['kind'];
-    expect(vaultError(() => credentialBinding({ ...account, provider: 'aws' }, legacyKind))).toBe(
+    expect(vaultError(() => credentialBinding({ ...account, provider: 'gcp' }, 'aws_access_key'))).toBe(
       'binding_invalid',
     );
+    expect(
+      vaultError(() => credentialBinding({ ...account, provider: 'aws' }, 'gcp_service_account_key')),
+    ).toBe('binding_invalid');
     for (const binding of [
       { ...cloudflare, accountId: 'aaaa:bbbb' },
       { ...cloudflare, tenantId: 'não-é-uuid' },
-      { ...cloudflare, kind: legacyKind },
       { ...cloudflare, kind: 'outro' as CredentialBinding['kind'] },
     ]) {
       expect(vaultError(() => oaepLabel(binding))).toBe('binding_invalid');
@@ -285,6 +303,132 @@ describe('cofre de credenciais', () => {
     expect(String(cloudflareSecret)).toBe('[token do Cloudflare]');
     // Decifrado no processo, o segredo passa a ser ocultado pelo logger mesmo sem nome de campo.
     expect(scrubString(`o Cloudflare recusou ${token}`)).toBe(`o Cloudflare recusou ${REDACTED}`);
+  });
+
+  describe('as chaves de leitura da VM própria do cliente', () => {
+    let aws: CredentialBinding;
+    let gcp: CredentialBinding;
+
+    beforeAll(() => {
+      const tenantId = randomUUID();
+      aws = credentialBinding(
+        { id: randomUUID(), tenantId, provider: 'aws', accountId: '111111111111' },
+        'aws_access_key',
+      );
+      gcp = credentialBinding(
+        { id: randomUUID(), tenantId, provider: 'gcp', accountId: 'cliente-demo-a' },
+        'gcp_service_account_key',
+      );
+    });
+
+    it('a chave da AWS cabe no bloco do RSA e abre com o ID e o segredo', () => {
+      const keyId = awsKeyId();
+      const secret = awsSecret();
+      const sealed = seal(publicV1, aws, new AwsAccessKey(keyId, secret));
+      // Só o bloco do RSA-3072 (384 bytes), sem o envelope híbrido.
+      expect(Buffer.from(sealed.ciphertext.slice(3), 'base64')).toHaveLength(384);
+      const opened = open(onlyV1, aws, sealed.ciphertext);
+      expect(opened).toBeInstanceOf(AwsAccessKey);
+      expect((opened as AwsAccessKey).accessKeyId).toBe(keyId);
+      expect((opened as AwsAccessKey).secret()).toBe(secret);
+      // Amarrada a outra conta ou como token do Cloudflare, não abre.
+      expect(vaultError(() => open(onlyV1, { ...aws, accountId: '222222222222' }, sealed.ciphertext))).toBe(
+        'decrypt_failed',
+      );
+      expect(
+        vaultError(() => open(onlyV1, { ...aws, kind: 'cloudflare_api_token' }, sealed.ciphertext)),
+      ).toBe('decrypt_failed');
+    });
+
+    it('a chave da conta de serviço vai no envelope híbrido, que cabe na coluna, abre e é recifrado', () => {
+      const fields = gcpFields();
+      const sealed = seal(publicV1, gcp, new GcpServiceAccountKey(fields));
+      expect(sealed.ciphertext).toMatch(/^v1:[A-Za-z0-9+/]+={0,2}$/);
+      expect(sealed.ciphertext.length).toBeGreaterThan(384 * 2);
+      expect(sealed.ciphertext.length).toBeLessThanOrEqual(MAX_CIPHERTEXT_LENGTH);
+      const opened = open(onlyV1, gcp, sealed.ciphertext) as GcpServiceAccountKey;
+      expect(opened).toBeInstanceOf(GcpServiceAccountKey);
+      expect({
+        projectId: opened.projectId,
+        clientEmail: opened.clientEmail,
+        privateKeyId: opened.privateKeyId,
+        privateKey: opened.privateKey(),
+      }).toEqual(fields);
+      // Recifrada na v2, abre sem a v1; com a RSA-4096, o envelope continua na coluna.
+      const resealed = reseal(bothCurrentV2, gcp, sealed.ciphertext);
+      expect(resealed?.keyVersion).toBe(2);
+      expect((open(onlyV2, gcp, resealed?.ciphertext ?? '') as GcpServiceAccountKey).privateKey()).toBe(
+        fields.privateKey,
+      );
+      const big = rsa(4096);
+      const sealed4096 = seal(
+        parsePublicKey(publicPem64(big), 3),
+        gcp,
+        new GcpServiceAccountKey(gcpFields()),
+      );
+      expect(sealed4096.ciphertext.length).toBeLessThanOrEqual(MAX_CIPHERTEXT_LENGTH);
+      expect(open(parsePrivateKeys(`3:${privatePem64(big)}`, 3), gcp, sealed4096.ciphertext)).toBeInstanceOf(
+        GcpServiceAccountKey,
+      );
+    });
+
+    it('o envelope híbrido adulterado, cortado ou amarrado a outra conta não abre', () => {
+      const { ciphertext } = seal(publicV1, gcp, new GcpServiceAccountKey(gcpFields()));
+      const body = Buffer.from(ciphertext.slice(3), 'base64');
+      const flipped = (index: number) => {
+        const copy = Buffer.from(body);
+        copy[index] = (copy[index] ?? 0) ^ 0x01;
+        return `v1:${copy.toString('base64')}`;
+      };
+      // A chave AES, o IV, a etiqueta e o texto: qualquer bit trocado falha fechado.
+      for (const index of [10, 384 + 2, 384 + 12 + 3, body.length - 1]) {
+        expect(vaultError(() => open(onlyV1, gcp, flipped(index)))).toBe('decrypt_failed');
+      }
+      expect(vaultError(() => open(onlyV1, gcp, `v1:${body.subarray(0, 384 + 20).toString('base64')}`))).toBe(
+        'decrypt_failed',
+      );
+      expect(vaultError(() => open(onlyV1, { ...gcp, accountId: 'cliente-demo-b' }, ciphertext))).toBe(
+        'decrypt_failed',
+      );
+      expect(vaultError(() => open(onlyV1, { ...gcp, cloudAccountId: randomUUID() }, ciphertext))).toBe(
+        'decrypt_failed',
+      );
+    });
+
+    it('segredos fora do formato são recusados antes de cifrar, e os invólucros não viram texto', () => {
+      expect(vaultError(() => new AwsAccessKey(`ASIA${awsKeyId().slice(4)}`, awsSecret()))).toBe(
+        'secret_invalid',
+      );
+      expect(vaultError(() => new AwsAccessKey(awsKeyId(), awsSecret().slice(1)))).toBe('secret_invalid');
+      expect(vaultError(() => new GcpServiceAccountKey({ ...gcpFields(), privateKey: 'x' }))).toBe(
+        'secret_invalid',
+      );
+      expect(
+        vaultError(
+          () =>
+            new GcpServiceAccountKey({
+              ...gcpFields(),
+              clientEmail: 'service-1@gcp-sa-logging.iam.gserviceaccount.com',
+            }),
+        ),
+      ).toBe('secret_invalid');
+      const secret = awsSecret();
+      const key = new AwsAccessKey(awsKeyId(), secret);
+      const fields = gcpFields();
+      const serviceAccount = new GcpServiceAccountKey(fields);
+      const body = fields.privateKey.split('\n')[3] ?? '';
+      expect(body.length).toBeGreaterThan(40);
+      for (const view of [
+        JSON.stringify({ key, serviceAccount }),
+        String(key),
+        String(serviceAccount),
+        inspect({ key, serviceAccount }, { depth: 5, showHidden: true }),
+      ]) {
+        expect(view).not.toContain(secret);
+        expect(view).not.toContain(body);
+      }
+      expect(scrubString(`a AWS recusou ${secret}`)).toBe(`a AWS recusou ${REDACTED}`);
+    });
   });
 
   it('os erros do cofre levam só o código', () => {

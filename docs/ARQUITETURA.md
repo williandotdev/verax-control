@@ -376,7 +376,9 @@ _(fase 2: o token do Cloudflare entra pelo painel (PR-11'); o template do papel 
 O cadastro de contas (Contas cloud) aceita três provedores. **A GCP e a AWS não guardam credencial:** na GCP, o sink
 do cliente publica no tópico do nó; na AWS, o nó entra no papel de leitura do cliente com a própria identidade no
 Google (seção "Por que papel sem chave"). **Cloudflare: token de leitura cifrado no cofre do nó** (seção "Cofre de
-credenciais"). Um admin cola o token no painel; ele nunca volta pela API e nunca fica no cadastro da conta.
+credenciais"). Um admin cola o token no painel; ele nunca volta pela API e nunca fica no cadastro da conta. **Na VM
+própria do cliente** (`NODE_PLATFORM=vm`), sem identidade do Google, a AWS e a GCP também são lidas com uma chave de
+leitura colada no painel e cifrada no mesmo cofre (seção "Cofre de credenciais", "Chaves de leitura da VM própria").
 
 | Provedor   | Identificador                            | Origem dos logs                                                                                                                   | Como o nó lê                                                                                                      |
 | ---------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -418,9 +420,10 @@ _(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em
 a AWS não passa por ela)_
 
 - **O que guarda:** o token do Cloudflare, uma linha por conta cloud (`CloudCredential`), com o mesmo isolamento por
-  cliente de todo dado de cliente. A AWS não passa pelo cofre: o papel de leitura não tem chave. O tipo
-  `aws_access_key`, feito no PR-V1 para a chave do usuário IAM, e o código que só ele usava saíram no PR-V3', antes
-  de existir alguma linha dele (a migration para, sem mudar nada, se encontrar uma).
+  cliente de todo dado de cliente. Nos nós da GCP, a AWS e a GCP não passam pelo cofre: o papel de leitura não tem
+  chave, e o Pub/Sub é lido com a conta de serviço da VM. O tipo `aws_access_key`, feito no PR-V1 para a chave do
+  usuário IAM, saiu no PR-V3' e voltou, só para a VM própria do cliente, com o `gcp_service_account_key` (migration
+  `20261118120000_vm_read_keys`, que só acrescenta ao enum e aumenta a coluna do texto cifrado para 8 KB).
 - **Cifra assimétrica:** RSA-3072 com OAEP-SHA256. A API, exposta pelo túnel, tem só a chave pública: cifra o que o
   admin cola e não consegue decifrar o que já está guardado. Só o worker tem a chave privada.
 - **Vínculo:** o rótulo do OAEP amarra o texto cifrado ao cliente, à conta e ao tipo. Uma linha copiada para outra
@@ -457,6 +460,61 @@ a AWS não passa por ela)_
   (`keyStatus`: tipo, sufixo, validade, última conferência). Erros da origem vão para o log só pelo código. Na API, o
   logger esquece o valor colado no fim da requisição, para a memória do processo exposto não acumular credenciais.
 - **Desativar a conta** apaga a credencial na mesma transação.
+
+### Chaves de leitura da VM própria do cliente (decisão de 18/11/2026)
+
+Na VM própria (`NODE_PLATFORM=vm`; seção "Ambiente na VM do cliente") não há identidade de nuvem: o nó não pede token
+ao Google, e nenhum contêiner alcança o metadata. **Decisão do responsável:** só nesse modo, o admin cola em Contas
+cloud a chave de uma identidade **só de leitura** de cada conta AWS e de cada projeto da GCP, cifrada no mesmo cofre do
+token do Cloudflare. Os nós da GCP continuam sem chave.
+
+- **Só na VM própria, pela API:** o `start.sh` passa `NODE_PLATFORM=vm` à API e ao worker (só no modo vm; nos nós da
+  GCP, o ambiente não muda). A API recusa `aws_access_key` e `gcp_service_account_key` em qualquer outro nó (400
+  `CREDENTIAL_KIND_NOT_ALLOWED`, antes do cofre, da conta e da origem; a tentativa entra na trilha). O painel lê a
+  plataforma no `GET /v1/auth/client-config` (`nodePlatform`) só para escolher as instruções.
+- **Formato (zod, no contrato):** AWS, o ID `AKIA` + 16 do base32 (a chave temporária `ASIA` é recusada com mensagem
+  própria) e o segredo de 40 caracteres de base64. GCP, o painel lê o arquivo JSON da chave (até 8 KB; `type` precisa ser
+  `service_account`) e manda só quatro campos: o projeto, o e-mail (conta de serviço criada pelo usuário,
+  `<nome>@<projeto>.iam.gserviceaccount.com`; agentes do Google recusados), o ID da chave (40 hexadecimais) e o PEM
+  PKCS#8 (linhas de base64, até 4 KB). O `token_uri` e o resto do arquivo nunca saem do navegador.
+- **Conferência na API, antes de cifrar** (5 s, o mesmo limite de recusas, a mesma trilha): AWS, um `GetCallerIdentity`
+  com a chave no STS de us-east-1 (o SDK só é carregado nessa hora): a conta precisa ser a cadastrada e o ARN, de um
+  usuário IAM (`:user/`); a chave do root (`:root`) é recusada (`wrong_identity`). GCP, o token do Google com a chave
+  (JWT RS256 trocado no `oauth2.googleapis.com`, endereço fixo, só o escopo do Pub/Sub) e um `testIamPermissions` na
+  assinatura cadastrada na conta (`pubsub.subscriptions.consume`), que não lê mensagem nenhuma; sem assinatura cadastrada,
+  400 antes. O sufixo guardado é o fim do ID da chave (nunca do segredo).
+- **Cifra:** a chave da AWS cabe no bloco do RSA-OAEP (`{i,s}`). A da GCP (`{p,e,d,k}`, cerca de 1,9 KB) vai num envelope
+  híbrido: uma chave AES-256-GCM aleatória cifrada com a RSA do nó (o mesmo rótulo do OAEP), o IV, a etiqueta e o texto,
+  com o rótulo como dado autenticado. O envelope continua `v<versão>:<base64>` (o CHECK não muda; o tamanho do bloco do RSA
+  separa os dois formatos), e a recifragem vale para os dois.
+- **AWS no worker** (`aws/vault-key-credentials.ts`): a conferência da conexão e o inventário pedem a sessão pelo mesmo
+  contrato do papel (`AwsReaderCredentials`); na VM própria, ela é a chave aberta do cofre (guardada enquanto o texto
+  cifrado for o mesmo). O `GetCallerIdentity` precisa ser um usuário IAM da conta (senão `account_mismatch`); a chave
+  recusada é `key_invalid` e a ausente, `key_missing`; a simulação diária da permissão demais é no próprio usuário.
+- **AWS no Wazuh:** o manager nunca recebe a chave. O gerador (`VERAX_AWS_STATIC_KEYS=1`, que o `wazuh-apply.sh` passa no
+  modo vm) escreve os profiles só com a região e as tentativas, e o `aws-token.sh` (o mesmo timer de 10 min), no lugar
+  do token do Google, roda o job `aws-sessions` (imagem da API, ambiente do worker, o banco, o cofre só leitura e o STS),
+  que troca a chave de cada conta do manager por uma sessão de 1 hora (`GetSessionToken`) e imprime o arquivo
+  `credentials`; o host o confere linha a linha (só o nome do profile, `ASIA...`, o segredo e o token da sessão) e o grava
+  por troca atômica, 0600, na pasta do manager. Uma falha mantém as sessões anteriores, e o sinal `aws-token` do worker
+  (`aws_token_stale`) vale igual. O job é o único, além do worker, que monta a pasta do cofre (definido no `compose.vault.yaml`; o CI confere a definição inteira: só leitura,
+  endurecido, perfil `setup`).
+- **GCP no worker** (`gcp/vault-pubsub-reader.ts`): o cliente cria o tópico, a assinatura e o sink no **próprio projeto**
+  (não há projeto do nó na VM própria), e a conta de serviço tem `roles/pubsub.subscriber` só na assinatura. O sync da
+  GCP não muda: o leitor escolhe, para cada assinatura, a chave da conta ativa mais antiga que a cadastrou e lê com o
+  token de 1 hora dela (`gcp/service-account-token.ts`). Sem chave legível, `gcp_key_missing` na conexão. A fonte `gcp`
+  passa a valer no modo vm (o instalador a liga), só com o cofre.
+- **Por que assinatura no projeto do cliente, e não ler o Cloud Logging direto:** é o mesmo filtro, o mesmo sync, a
+  mesma deduplicação e o mesmo medidor do gerenciado; o `entries.list` pediria `roles/logging.viewer` (e o
+  `privateLogViewer` para o acesso a dados) no projeto inteiro, com cota baixa e um cursor próprio. A assinatura guarda 7
+  dias se a VM ficar fora do ar.
+
+| Risco                                                                | Mitigação                                                                                                                                                                          |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A chave de longo prazo vaza (não vence sozinha, como o token)        | Só leitura, com as negações do papel e, com o IP da VM informado, nada de fora dele; nunca sai do worker e do job; recomendação de troca a cada 90 dias; o cliente a revoga no IAM |
+| Root na VM lê a chave do cofre local e as sessões do manager         | A VM é do cliente, e a identidade é dele, só de leitura; as sessões do manager valem 1 hora                                                                                        |
+| A chave da AWS colada é do root ou de um usuário com mais permissões | O root é recusado na API e na conferência; a simulação diária no próprio usuário avisa a permissão demais                                                                          |
+| O `GetSessionToken` a cada 10 min por conta aparece no CloudTrail    | 144 entradas por dia por conta, de leitura; documentado                                                                                                                            |
 
 ## Por que papel sem chave
 

@@ -111,6 +111,15 @@ describe("AWS sem chave no Wazuh do nó: o template, o gerador, o host e o worke
     }
     expect(composeWazuh).toContain("command: ['node', 'dist/cli/wazuh-sources.js']");
     expect(existsSync(repoPath('apps/api/src/cli/wazuh-sources.ts'))).toBe(true);
+    // VM própria do cliente: o modo da chave de leitura no gerador e o job das sessões que o aws-token.sh roda.
+    expect(renderer).toContain('"VERAX_AWS_STATIC_KEYS"');
+    expect(apply).toContain('VERAX_AWS_STATIC_KEYS=');
+    expect(repoFile('infra/node/compose.vault.yaml')).toContain(
+      "command: ['node', 'dist/cli/aws-sessions.js']",
+    );
+    expect(composeWazuh).not.toContain('aws-sessions');
+    expect(repoFile('infra/node/bin/aws-token.sh')).toContain('run --rm -T aws-sessions');
+    expect(existsSync(repoPath('apps/api/src/cli/aws-sessions.ts'))).toBe(true);
   });
 
   it('os avisos da coleta: os mesmos no painel, na API e no CHECK do banco, e fora da lista da conexão', () => {

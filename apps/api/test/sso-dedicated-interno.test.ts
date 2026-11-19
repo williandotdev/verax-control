@@ -351,7 +351,11 @@ describe('nó dedicado da Verax (PLAN=interno): entrada única pelo console', ()
 
   it('a configuração pública mostra o console (o botão e o item do menu do painel)', async () => {
     const response = await request(api.getHttpServer()).get('/v1/auth/client-config').expect(200);
-    expect(response.body).toEqual({ turnstileSiteKey: null, adminMasterUrl: `${ISSUER}/` });
+    expect(response.body).toEqual({
+      turnstileSiteKey: null,
+      adminMasterUrl: `${ISSUER}/`,
+      nodePlatform: 'gcp',
+    });
   });
 
   it('o login com senha do painel continua valendo para a equipe (o interruptor vem desligado)', async () => {

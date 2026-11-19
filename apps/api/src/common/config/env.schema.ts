@@ -6,6 +6,7 @@ import {
   isNodeServiceAccountId,
   isWebIdentityAudience,
   MAX_AUDIENCE_LENGTH,
+  NODE_PLATFORMS,
   PLAN_LIMIT_BOUNDS,
   PLAN_LIMIT_KEYS,
   type PlanId,
@@ -288,6 +289,38 @@ const awsReaderEnvShape = {
 };
 
 /**
+ * Onde o nó roda (`NODE_PLATFORM` do node.conf, que o start.sh passa à API e ao worker; sem a linha, `gcp`): na GCP,
+ * a AWS e a GCP são lidas sem chave (o papel de leitura com o token do Google da VM, e a conta de serviço da VM no
+ * Pub/Sub); na VM própria do cliente (`vm`), sem identidade de nuvem, com a chave de leitura que o admin cola em
+ * Contas cloud (`aws_access_key` e `gcp_service_account_key`, no cofre). Só a VM própria aceita esses dois tipos.
+ */
+const nodePlatformEnvShape = {
+  NODE_PLATFORM: z.enum(NODE_PLATFORMS, { error: 'use gcp ou vm' }).default('gcp'),
+};
+
+/** A VM própria é sempre um nó dedicado, sem a identidade do Google (que levaria o worker ao metadata). */
+function checkNodePlatformEnv(
+  env: {
+    NODE_PLATFORM: (typeof NODE_PLATFORMS)[number];
+    NODE_MODE: NodeMode;
+    NODE_SA_UNIQUE_ID?: string | undefined;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (env.NODE_PLATFORM !== 'vm') return;
+  if (env.NODE_MODE === 'cell') {
+    ctx.addIssue({ code: 'custom', path: ['NODE_PLATFORM'], message: 'vm não aceita NODE_MODE=cell' });
+  }
+  if (env.NODE_SA_UNIQUE_ID !== undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['NODE_SA_UNIQUE_ID'],
+      message: 'não existe com NODE_PLATFORM=vm (a VM própria não tem conta de serviço do Google)',
+    });
+  }
+}
+
+/**
  * Modo do nó (CE-02): `dedicated`, o nó de um cliente só (Dedicado, vCISO e o nó da Verax), e `cell`, a célula
  * compartilhada da Plataforma. Sem a linha no `node.conf`, `dedicated`: nada muda nos nós de hoje. Na célula, o plano
  * é de cada cliente (`TenantPlan`, gravado pelo plano de controle), e o `PLAN` do ambiente não vale.
@@ -547,6 +580,7 @@ const apiEnvSchema = z
       .optional(),
     ...planEnvShape,
     ...awsReaderEnvShape,
+    ...nodePlatformEnvShape,
     // Cofre de credenciais (fase 2): só a chave pública corrente, para cifrar o que o admin cola.
     CREDENTIALS_PUBLIC_KEY: z.string().optional(),
     CREDENTIALS_KEY_VERSION: keyVersionFromEnv.optional(),
@@ -563,6 +597,7 @@ const apiEnvSchema = z
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
     checkNodeModeEnv(env, ctx);
+    checkNodePlatformEnv(env, ctx);
     checkSsoEnv(env, ctx);
     // Na célula, o WEB_ORIGIN e o API_ORIGIN são os endereços da equipe da Verax (o Better Auth usa o API_ORIGIN como
     // base). Iguais aos derivados do domínio, para nenhum valor solto apontar para outro lugar; os de cada cliente saem
@@ -740,6 +775,7 @@ const workerEnvObjectSchema = z
     // Conexão da AWS pelo papel de leitura sem chave (PR-V5'): com o ID da conta de serviço do nó, a tarefa aws-check
     // confere de verdade (token do Google, STS e S3); sem ele, responde `check_unavailable`.
     ...awsReaderEnvShape,
+    ...nodePlatformEnvShape,
     // Cofre de credenciais (fase 2): o arquivo com as chaves privadas de todas as versões ativas (uma por linha,
     // `<versão>:<PEM em base64>`), montado só leitura no worker, e a versão corrente. Só o worker decifra.
     CREDENTIALS_PRIVATE_KEYS_FILE: z.string().min(1, { error: 'deve ser o caminho do arquivo' }).optional(),
@@ -782,6 +818,7 @@ const workerEnvObjectSchema = z
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
     checkMailEnv(env, ctx);
+    checkNodePlatformEnv(env, ctx);
     // Os avisos ainda montam os links com um WEB_ORIGIN só: na célula, levariam o cliente ao painel de outro. Até os
     // links serem por cliente, a célula não manda aviso (ficam na fila como `skipped`, como no nó sem e-mail).
     if (env.NODE_MODE === 'cell' && env.MAIL_TRANSPORT !== 'none') {
@@ -834,6 +871,18 @@ const workerEnvObjectSchema = z
         path: ['SYNC_SOURCES'],
         message:
           'a fonte cloudflare lê o token do cofre de credenciais: exige CREDENTIALS_PRIVATE_KEYS_FILE e CREDENTIALS_KEY_CURRENT',
+      });
+    }
+    if (
+      env.NODE_PLATFORM === 'vm' &&
+      env.SYNC_SOURCES.includes('gcp') &&
+      env.CREDENTIALS_PRIVATE_KEYS_FILE === undefined
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SYNC_SOURCES'],
+        message:
+          'na VM própria, a fonte gcp lê a chave da conta de serviço do cofre de credenciais: exige CREDENTIALS_PRIVATE_KEYS_FILE e CREDENTIALS_KEY_CURRENT',
       });
     }
     if (env.NODE_ENV === 'production' && !requiresVerifiedTls(env.DATABASE_URL)) {
