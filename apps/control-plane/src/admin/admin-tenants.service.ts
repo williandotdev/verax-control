@@ -1039,12 +1039,14 @@ export class AdminTenantsService {
           }
         : {}),
     };
-    const unchanged =
-      request.hosting === hostingOf(tenant) &&
-      equalValues(quoted.configuration, tenant.configuration) &&
-      equalValues(quoted.limits, tenant.limits) &&
-      equalValues(contractPricing, tenant.contractPricing);
-    if (unchanged) {
+    // O aditivo que não muda nada: o mesmo lugar, a mesma configuração, os mesmos limites e os mesmos valores (com a
+    // implantação). Conferido aqui e de novo na transação: dois envios iguais ao mesmo tempo gravam um só.
+    const unchangedFor = (subject: Tenant): boolean =>
+      request.hosting === hostingOf(subject) &&
+      equalValues(quoted.configuration, subject.configuration) &&
+      equalValues(quoted.limits, subject.limits) &&
+      equalValues(contractPricing, subject.contractPricing);
+    if (unchangedFor(tenant)) {
       await this.refuseAmend(owner, tenant, 'no_change');
       throw amendError('no_change');
     }
@@ -1075,6 +1077,7 @@ export class AdminTenantsService {
             amendRefusalOf(current) ??
             (target !== hostingOf(current) && !hostingChangeAllowed(current) ? 'hosting_locked' : undefined);
           if (again !== undefined) throw new AmendmentRefusedError(again);
+          if (unchangedFor(current)) throw new AmendmentRefusedError('no_change');
           const { id: _id, ...base } = current;
           let next: Tenant = {
             ...base,

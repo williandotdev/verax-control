@@ -371,6 +371,33 @@ describe('cp-worker: registro da VM do cliente e provisionamento reduzido', () =
     );
   });
 
+  it('um aditivo gravado entre a leitura do código e o registro: a VM recebe os limites novos, não os da leitura', async () => {
+    const tenant = await customerTenant();
+    const issued = await issueCode(tenant);
+    await drain(4);
+    const monthlyGib = tenant.limits.monthlyGib + 100;
+    // O aditivo (só o Firestore) entra depois de o claim achar o cliente pelo hash e antes da transação do registro.
+    documents.afterQuery = {
+      matches: (collection, query) =>
+        collection === 'tenants' && JSON.stringify(query ?? {}).includes('enrollment.codeHash'),
+      run: async () => {
+        await tenants.change(tenant.id, () => ({
+          reason: 'contract_amended',
+          audit: { actor: 'system' },
+          mutate: (current) => ({ ...current, limits: { ...current.limits, monthlyGib } }),
+        }));
+      },
+    };
+    const claimed = await claim(issued.code);
+    expect(claimed.status).toBe(200);
+    expect(documents.afterQuery).toBeUndefined();
+    expect((claimed.body as { nodeConf: { name: string; value: string }[] }).nodeConf).toContainEqual({
+      name: 'PLAN_MONTHLY_GIB',
+      value: String(monthlyGib),
+    });
+    expect((await tenants.require(tenant.id)).enrollment?.claimedAt).toEqual(clock.now());
+  });
+
   it('com o e-mail dos nós: a senha da caixa vai no claim (a mesma do secrets.smtp_password)', async () => {
     cloud.secretVersions.set(`${CONTROL_PLANE}/cp-nodes-smtp-password`, [
       { payload: `${NODE_MAILBOX_VALUE}\n`, state: 'ENABLED' },

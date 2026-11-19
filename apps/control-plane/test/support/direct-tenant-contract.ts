@@ -1517,6 +1517,32 @@ export function describeDirectTenantContract(
       expect(await tenants.listAmendments(created.id)).toHaveLength(2);
     });
 
+    it('dois aditivos iguais ao mesmo tempo (clique duplo): um grava, o outro é no_change na transação', async () => {
+      const created = await service.create(directRequest({ slug: 'cliente-adt-e' }), OWNER);
+      const body = {
+        hosting: 'verax',
+        configuration: { plan: 'dedicado', gbDay: 4 },
+        confirmSlug: 'cliente-adt-e',
+      };
+      const outcomes = await Promise.allSettled([
+        service.amend(created.id, body, OWNER),
+        service.amend(created.id, body, OWNER),
+      ]);
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+      const rejected = outcomes.find((outcome) => outcome.status === 'rejected');
+      expect(rejected?.status === 'rejected' ? rejected.reason : undefined).toBeInstanceOf(ApiError);
+      expect((rejected?.status === 'rejected' ? (rejected.reason as ApiError) : undefined)?.code).toBe(
+        'no_change',
+      );
+      // Um aditivo só, e a vigência recomeçou uma vez.
+      expect(await tenants.listAmendments(created.id)).toHaveLength(1);
+      expect(
+        (await audit.listForTenant(created.id)).filter((entry) => entry.action === 'tenant.amend_refused'),
+      ).toEqual([
+        expect.objectContaining({ details: expect.objectContaining({ code: 'no_change' }) as unknown }),
+      ]);
+    });
+
     it('aditivo: só do contrato direto, e nunca depois do fim do contrato', async () => {
       const paid = await tenantIn(tenants, 'cliente-pago-f', 'active');
       await expectApiError(
