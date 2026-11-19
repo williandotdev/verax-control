@@ -31,21 +31,26 @@ import type {
 } from '@/lib/api-types';
 import { cn } from '@/lib/cn';
 import { CONTACT_REASON_LABELS, formatDateTime, gbDayLabel, PLAN_LABELS } from '@/lib/format';
-import { formatCents, formatInteger } from '@/lib/numbers';
+import { formatCents } from '@/lib/numbers';
 import { ConfirmBySlug } from './confirm-by-slug';
-import { completeContractValues, type ContractField, prefillContracted } from './contract-values';
+import { completeContractValues, type ContractField, gbDayHint, prefillContracted } from './contract-values';
 import { ContractValuesSection } from './contract-values-view';
 import { addMonths, contractMonthsOf, termText } from './contract-term';
 import { CUSTOMER_PROBLEM_LABELS, HOSTING_LABELS, PROBLEM_LABELS, STATE_LABELS } from './labels';
 import { useInvalidateTenants } from './queries';
 import { QuoteSummary } from './quote-summary';
 
-/** Os planos de um aditivo: os dois que rodam num servidor próprio (o SIEM Cloud é a célula da Verax). */
-const AMENDABLE_PLANS: readonly AmendablePlan[] = ['dedicado', 'vciso'];
-const PLAN_OPTIONS: readonly Option[] = AMENDABLE_PLANS.map((plan) => ({
-  value: plan,
-  label: PLAN_LABELS[plan],
-}));
+/** Os planos de um aditivo: os três do cadastro. O SIEM Cloud roda só na infraestrutura da Verax. */
+const AMENDABLE_PLANS: readonly AmendablePlan[] = ['plataforma', 'dedicado', 'vciso'];
+
+/** No cliente, o SIEM Cloud aparece desligado (ele é a célula da Verax), como a API recusa. */
+function planOptions(hosting: Hosting | undefined): Option[] {
+  return AMENDABLE_PLANS.map((plan) =>
+    plan === 'plataforma' && hosting === 'customer'
+      ? { value: plan, label: `${PLAN_LABELS[plan]} (só na infraestrutura da Verax)`, disabled: true }
+      : { value: plan, label: PLAN_LABELS[plan] },
+  );
+}
 
 const HOSTING_OPTIONS: readonly RadioOption[] = [
   {
@@ -76,7 +81,22 @@ function isHosting(value: unknown): value is Hosting {
 }
 
 function isAmendablePlan(value: unknown): value is AmendablePlan {
-  return value === 'dedicado' || value === 'vciso';
+  return value === 'plataforma' || value === 'dedicado' || value === 'vciso';
+}
+
+/** Com o SIEM Cloud escolhido, a infraestrutura do cliente aparece desligada, com o motivo. */
+function hostingOptions(plan: AmendablePlan | undefined): RadioOption[] {
+  if (plan !== 'plataforma') return [...HOSTING_OPTIONS];
+  return HOSTING_OPTIONS.map((option) =>
+    option.value === 'customer'
+      ? {
+          ...option,
+          disabled: true,
+          description:
+            'Indisponível com o SIEM Cloud: ele roda só na infraestrutura da Verax. Escolha outro plano para instalar no cliente.',
+        }
+      : option,
+  );
 }
 
 function splitError(caught: unknown): { issues: readonly ValidationIssue[]; error?: unknown } {
@@ -230,7 +250,7 @@ export function AmendContract({ tenant }: { tenant: TenantDetail }) {
     setDraft({
       hosting: tenant.hosting,
       configuration: {
-        plan: isAmendablePlan(current.plan) ? current.plan : 'dedicado',
+        plan: current.plan,
         gbDay: current.gbDay,
       },
     });
@@ -397,10 +417,11 @@ export function AmendContract({ tenant }: { tenant: TenantDetail }) {
           Alterar contrato (aditivo)
         </h3>
         <p className="text-sm text-muted-foreground">
-          Muda o plano (SIEM Dedicado ou SIEM + vCISO), o volume e os valores do contrato e, enquanto nada foi
-          instalado, onde o ambiente roda. A cotação é a da tabela vigente, calculada como no cadastro; os
-          valores vêm preenchidos com ela e podem ser negociados. A vigência recomeça na data do aditivo, com
-          a duração do plano novo (12 meses no SIEM Dedicado, 60 no SIEM + vCISO).
+          Muda o plano (SIEM Cloud, SIEM Dedicado ou SIEM + vCISO), o volume e os valores do contrato e,
+          enquanto nada foi instalado, onde o ambiente roda. A cotação é a da tabela vigente, calculada como
+          no cadastro; os valores vêm preenchidos com ela e podem ser negociados. A vigência recomeça na data
+          do aditivo, com a duração do plano novo (12 meses no SIEM Cloud e no SIEM Dedicado, 60 no SIEM +
+          vCISO).
         </p>
       </div>
 
@@ -412,7 +433,7 @@ export function AmendContract({ tenant }: { tenant: TenantDetail }) {
             path={['hosting']}
             label="Onde o ambiente roda"
             hint="Nada foi instalado nem provisionado ainda: dá para mudar."
-            options={HOSTING_OPTIONS}
+            options={hostingOptions(plan)}
           />
         ) : (
           <div className="space-y-1 rounded-xl border bg-surface p-4" role="note">
@@ -429,11 +450,11 @@ export function AmendContract({ tenant }: { tenant: TenantDetail }) {
         )}
         <Section
           title="Plano e volume"
-          description="O SIEM Cloud é a célula da Verax e não entra num aditivo."
+          description="Por contrato, o SIEM Cloud roda só na infraestrutura da Verax e, até a célula compartilhada abrir, ganha um servidor próprio (porte P)."
           path={['configuration']}
         >
           <Grid>
-            <SelectField path={['configuration', 'plan']} label="Plano" options={PLAN_OPTIONS} />
+            <SelectField path={['configuration', 'plan']} label="Plano" options={planOptions(hosting)} />
             <NumberField
               path={['configuration', 'gbDay']}
               label="Volume de logs (GB/dia)"
@@ -441,7 +462,7 @@ export function AmendContract({ tenant }: { tenant: TenantDetail }) {
               {...(tableContent === undefined
                 ? {}
                 : {
-                    hint: `De ${formatInteger(tableContent.plans.dedicado.minGbDay)} a ${formatInteger(tableContent.plans.dedicado.maxGbDay)} GB/dia (abaixo do mínimo, sobe até ele). Hoje: ${gbDayLabel(current.gbDay)}.`,
+                    hint: `${gbDayHint(tableContent, plan)} Hoje: ${gbDayLabel(current.gbDay)}.`,
                   })}
             />
           </Grid>

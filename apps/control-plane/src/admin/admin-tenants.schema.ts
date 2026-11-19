@@ -129,7 +129,7 @@ function hasNoControlCharacters(value: string): boolean {
 
 /**
  * `POST /v1/admin/tenants/:id/amend`: o aditivo de um contrato direto (decisão do responsável de 19/11/2026). O plano
- * (só o SIEM Dedicado ou o SIEM + vCISO), o volume em GB/dia e onde o ambiente roda, cotados de novo pela tabela
+ * (os três do cadastro; o SIEM Cloud só na infraestrutura da Verax), o volume em GB/dia e onde o ambiente roda, cotados de novo pela tabela
  * vigente com as mesmas regras do cadastro; o contratado negociado (`contracted`, ausente: a referência da tabela) e,
  * no vCISO, a implantação contratada (`contractedSetup`, em centavos; ausente: a da tabela); uma observação opcional
  * (`note`); e o subdomínio digitado como confirmação. Mudar `hosting` só vale antes de qualquer instalação
@@ -139,7 +139,7 @@ export const amendmentRequestSchema = z.strictObject({
   hosting: hostingSchema,
   configuration: z.strictObject({
     plan: z.enum(AMENDABLE_PLANS, {
-      error: 'No aditivo, o plano é o SIEM Dedicado ou o SIEM + vCISO.',
+      error: 'Escolha o plano: SIEM Cloud, SIEM Dedicado ou SIEM + vCISO.',
     }),
     gbDay: directConfigurationSchema.shape.gbDay,
   }),

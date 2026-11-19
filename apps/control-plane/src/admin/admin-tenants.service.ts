@@ -966,8 +966,8 @@ export class AdminTenantsService {
   }
 
   /**
-   * O aditivo de um contrato direto (decisão do responsável de 19/11/2026): o plano (Dedicado ou vCISO), o volume, onde o
-   * ambiente roda e os valores do contrato, cotados de novo pela tabela vigente com as mesmas regras do cadastro (a
+   * O aditivo de um contrato direto (decisão do responsável de 19/11/2026): o plano (os três; o SIEM Cloud só na
+   * Verax), o volume, onde o ambiente roda e os valores do contrato, cotados de novo pela tabela vigente com as mesmas regras do cadastro (a
    * cotação, "fale conosco" recusado, o que o provisionamento ou a instalação no cliente sabem criar). A vigência
    * recomeça na data do aditivo com a duração do plano novo (`contract-term.ts`).
    *

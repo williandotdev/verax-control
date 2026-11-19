@@ -1440,11 +1440,7 @@ export function describeDirectTenantContract(
         service.amend(created.id, { hosting: 'verax', confirmSlug, ...body }, OWNER);
 
       // As recusas: nada gravado.
-      await expectApiError(
-        amend({ configuration: { plan: 'plataforma', gbDay: 2 } }),
-        400,
-        'invalid_request',
-      );
+      await expectApiError(amend({ configuration: { plan: 'gratuito', gbDay: 2 } }), 400, 'invalid_request');
       const tooBig = await expectApiError(
         amend({ configuration: { plan: 'dedicado', gbDay: 8 } }),
         422,
@@ -1541,6 +1537,77 @@ export function describeDirectTenantContract(
       ).toEqual([
         expect.objectContaining({ details: expect.objectContaining({ code: 'no_change' }) as unknown }),
       ]);
+    });
+
+    it('aditivo para o SIEM Cloud: só na infraestrutura da Verax, com a referência da franquia e 12 meses de vigência', async () => {
+      const created = await service.create(
+        directRequest({ hosting: 'customer', slug: 'cliente-adt-f' }),
+        OWNER,
+      );
+      const confirmSlug = 'cliente-adt-f';
+      // No cliente, o SIEM Cloud é recusado como no cadastro: ele é a célula da Verax.
+      const inCustomer = await expectApiError(
+        service.amend(
+          created.id,
+          { hosting: 'customer', configuration: { plan: 'plataforma', gbDay: 3 }, confirmSlug },
+          OWNER,
+        ),
+        422,
+        'configuration_contact_us',
+      );
+      expect(inCustomer.details).toMatchObject({
+        reason: 'mode_unavailable',
+        issues: [{ path: 'configuration.plan' }],
+      });
+      // Acima do máximo do site: sob consulta, como no cadastro.
+      await expectApiError(
+        service.amend(
+          created.id,
+          { hosting: 'verax', configuration: { plan: 'plataforma', gbDay: 6 }, confirmSlug },
+          OWNER,
+        ),
+        422,
+        'configuration_contact_us',
+      );
+      await expectApiError(
+        service.amend(
+          created.id,
+          {
+            hosting: 'verax',
+            configuration: { plan: 'plataforma', gbDay: 3 },
+            contractedSetup: 0,
+            confirmSlug,
+          },
+          OWNER,
+        ),
+        400,
+        'invalid_request',
+      );
+      expect(await tenants.listAmendments(created.id)).toEqual([]);
+
+      const contracted = { monthlyTotal: 120_000, additionalGbDayAmount: 25_000 };
+      const result = await service.amend(
+        created.id,
+        { hosting: 'verax', configuration: { plan: 'plataforma', gbDay: 3 }, contracted, confirmSlug },
+        OWNER,
+      );
+      expect(result).toMatchObject({
+        state: 'pending',
+        hosting: 'verax',
+        hostingChanged: true,
+        contractTerm: { months: 12, endsAt: new Date('2027-11-04T12:00:00.000Z') },
+      });
+      const tenant = await tenants.require(created.id);
+      expect(tenant).toMatchObject({
+        state: 'pending',
+        // Por contrato, o SIEM Cloud ganha um nó P próprio até a célula compartilhada existir.
+        configuration: { plan: 'plataforma', mode: 'managed', gbDay: 3, size: 'P' },
+        pricing: { monthlyTotal: 130_000, setupTotal: 0 },
+        // A referência é a do cadastro: a base com a franquia e o GB/dia adicional da franquia.
+        contractPricing: { reference: { monthlyTotal: 130_000, additionalGbDayAmount: 30_000 }, contracted },
+      });
+      expect(tenant.contractPricing?.setup).toBeUndefined();
+      expect((await service.detail(created.id)).actions).toMatchObject({ start: true, amend: true });
     });
 
     it('aditivo: só do contrato direto, e nunca depois do fim do contrato', async () => {

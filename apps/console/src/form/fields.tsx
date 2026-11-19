@@ -200,6 +200,8 @@ export function TextField({
 export interface Option {
   value: string;
   label: string;
+  /** Fora de alcance agora (ex.: um plano que não existe no lugar escolhido): aparece, mas não se escolhe. */
+  disabled?: boolean;
 }
 
 export interface RadioOption extends Option {
@@ -259,7 +261,7 @@ export function RadioField({
                 value={option.value}
                 className="mt-1 size-4 accent-primary"
                 checked={value === option.value}
-                disabled={binding.readOnly}
+                disabled={binding.readOnly || option.disabled === true}
                 required
                 aria-invalid={errors.length > 0 || undefined}
                 aria-describedby={option.description === undefined ? undefined : descriptionId}
@@ -322,7 +324,7 @@ export function SelectField({
             <option value="">{placeholder ?? 'Escolha'}</option>
           )}
           {options.map((option) => (
-            <option key={option.value} value={option.value}>
+            <option key={option.value} value={option.value} disabled={option.disabled === true}>
               {option.label}
             </option>
           ))}

@@ -23,14 +23,13 @@ import type {
   DirectTenantPreview,
   DirectTenantRequest,
   Hosting,
-  PriceTable,
   ValidationIssue,
 } from '@/lib/api-types';
 import { CONTACT_REASON_LABELS, configurationSummary, PLAN_LABELS, PLANS } from '@/lib/format';
-import { formatCents, formatInteger } from '@/lib/numbers';
+import { formatCents } from '@/lib/numbers';
 import { newUlid } from '@/lib/ulid';
 import { ConfirmBySlug } from './confirm-by-slug';
-import { completeContractValues, type ContractField, prefillContracted } from './contract-values';
+import { completeContractValues, type ContractField, gbDayHint, prefillContracted } from './contract-values';
 import { ContractValueLine, ContractValuesSection } from './contract-values-view';
 import { CUSTOMER_PROBLEM_LABELS, HOSTING_LABELS, PROBLEM_LABELS } from './labels';
 import { useInvalidateTenants } from './queries';
@@ -67,15 +66,6 @@ type Draft = Partial<Omit<DirectTenantRequest, 'configuration' | 'contracted'>> 
   configuration?: Partial<DirectConfiguration>;
   contracted?: Partial<Record<ContractField, unknown>>;
 };
-
-/** O que cada plano cota na tabela vigente, para a dica do volume. */
-function gbDayHint(table: PriceTable, plan: unknown): string {
-  const { plataforma, dedicado } = table.plans;
-  if (plan === 'plataforma') {
-    return `${formatInteger(plataforma.includedGbDay)} GB/dia incluídos, até ${formatInteger(plataforma.maxOnlineGbDay)}.`;
-  }
-  return `De ${formatInteger(dedicado.minGbDay)} a ${formatInteger(dedicado.maxGbDay)} GB/dia (abaixo do mínimo, sobe até ele).`;
-}
 
 function isHosting(value: unknown): value is Hosting {
   return value === 'verax' || value === 'customer';
