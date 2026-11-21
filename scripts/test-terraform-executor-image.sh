@@ -43,6 +43,7 @@ expect 'bash, curl e jq presentes' 'ok' "$(sh_in 'command -v bash >/dev/null && 
 # avalia cada `re_*=` e cada `=~ ^...$` literal; o `[[ =~ ]]` devolve 2 com a expressão inválida.
 regex_check=$(docker run "${hardened[@]}" --entrypoint /bin/bash "$image" -c '
   bad=0
+  checked=0
   while IFS= read -r line; do
     eval "$line"
   done < <(grep -E "^re_[a-z_]+=" /opt/verax/entrypoint.sh)
@@ -50,8 +51,10 @@ regex_check=$(docker run "${hardened[@]}" --entrypoint /bin/bash "$image" -c '
     [[ x =~ ${!name} ]]; [[ $? -eq 2 ]] && { echo "inválida: $name"; bad=1; }
   done
   while IFS= read -r pattern; do
+    checked=$((checked + 1))
     [[ x =~ $pattern ]]; [[ $? -eq 2 ]] && { echo "inválida: $pattern"; bad=1; }
-  done < <(grep -oE "=~ \^[^ ]+\$" /opt/verax/entrypoint.sh | sed "s/^=~ //")
+  done < <(grep -oE "=~ \^[^ ]+[$]" /opt/verax/entrypoint.sh | sed "s/^=~ //")
+  [[ $checked -gt 0 ]] || { echo "nenhuma expressão literal achada"; bad=1; }
   [[ $bad -eq 0 ]] && echo ok' 2>&1) || true
 expect 'as expressões regulares do entrypoint compilam no bash da imagem' 'ok' "$regex_check"
 expect 'sem testes, estado, plano, variáveis nem chave privada na imagem' '' \
