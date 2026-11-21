@@ -103,7 +103,9 @@ re_mail_top='^[A-Za-z]{2,}$'
 re_worker_sa='^cp-worker@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$'
 re_ghcr='^ghcr\.io/[a-z0-9-]{1,39}/[a-z0-9._-]{1,100}$'
 re_artifact_registry='^[a-z0-9-]+-docker\.pkg\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9-]{1,63}$'
-re_token='^[A-Za-z0-9._~+/=-]{16,4096}$'
+# Só o alfabeto: o tamanho é conferido à parte. O bash da imagem (Alpine, musl) recusa repetição acima de 255 numa
+# expressão regular ({16,4096} dava "Invalid contents of {}" e o passo das saídas falhava depois do apply).
+re_token='^[A-Za-z0-9._~+/=-]+$'
 re_smtp_port='^[1-9][0-9]{0,4}$'
 re_smtp_user='^[A-Za-z0-9][A-Za-z0-9@._+-]{0,253}$'
 re_cell_id='^[a-z][a-z0-9]{1,7}$'
@@ -113,7 +115,7 @@ auth_header() {
   local token
   token=$(curl -fsS --proto '=http' --max-time 10 -H 'Metadata-Flavor: Google' "$metadata_token_url" |
     jq -er '.access_token') || return 1
-  [[ $token =~ $re_token ]] || return 1
+  if [[ ! $token =~ $re_token ]] || ((${#token} < 16 || ${#token} > 4096)); then return 1; fi
   printf 'Authorization: Bearer %s\n' "$token" >"$work/auth.header"
 }
 
@@ -516,7 +518,7 @@ cleanup_compute() {
       >>"$work/snapshots.txt" || finish 4 failed cleanup_failed
     token=$(jq -r '.nextPageToken // ""' "$work/response.json") || finish 4 failed cleanup_failed
     [[ -n $token ]] || break
-    [[ $token =~ ^[A-Za-z0-9_=-]{1,2000}$ ]] || finish 4 failed cleanup_failed
+    if [[ ! $token =~ ^[A-Za-z0-9_=-]+$ ]] || ((${#token} > 2000)); then finish 4 failed cleanup_failed; fi
   done
   while IFS= read -r name; do
     [[ $name =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || finish 4 failed cleanup_failed

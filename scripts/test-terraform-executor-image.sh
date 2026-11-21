@@ -37,6 +37,26 @@ expect 'Terraform 1.17.1' 'Terraform v1\.17\.1' "$(sh_in 'terraform version | he
 expect 'roda como o usuário executor (10001)' '10001' "$(sh_in 'id -u')"
 expect 'a raiz não aceita escrita' 'recusado' "$(sh_in 'touch /opt/verax/x 2>/dev/null && echo escreveu || echo recusado')"
 expect 'bash, curl e jq presentes' 'ok' "$(sh_in 'command -v bash >/dev/null && command -v curl >/dev/null && command -v jq >/dev/null && echo ok')"
+
+# Toda expressão regular do entrypoint compila no bash da imagem (Alpine, musl: repetição até 255). Um `{16,4096}` dava
+# "Invalid contents of {}" só aqui, nunca no Ubuntu dos testes, e o passo das saídas falhava depois do apply. O teste
+# avalia cada `re_*=` e cada `=~ ^...$` literal; o `[[ =~ ]]` devolve 2 com a expressão inválida.
+regex_check=$(docker run "${hardened[@]}" --entrypoint /bin/bash "$image" -c '
+  bad=0
+  checked=0
+  while IFS= read -r line; do
+    eval "$line"
+  done < <(grep -E "^re_[a-z_]+=" /opt/verax/entrypoint.sh)
+  for name in $(compgen -v re_); do
+    [[ x =~ ${!name} ]]; [[ $? -eq 2 ]] && { echo "inválida: $name"; bad=1; }
+  done
+  while IFS= read -r pattern; do
+    checked=$((checked + 1))
+    [[ x =~ $pattern ]]; [[ $? -eq 2 ]] && { echo "inválida: $pattern"; bad=1; }
+  done < <(grep -oE "=~ \^[^ ]+[$]" /opt/verax/entrypoint.sh | sed "s/^=~ //")
+  [[ $checked -gt 0 ]] || { echo "nenhuma expressão literal achada"; bad=1; }
+  [[ $bad -eq 0 ]] && echo ok' 2>&1) || true
+expect 'as expressões regulares do entrypoint compilam no bash da imagem' 'ok' "$regex_check"
 expect 'sem testes, estado, plano, variáveis nem chave privada na imagem' '' \
   "$(sh_in 'find /opt/verax \( -name tests -o -name "*.tfstate*" -o -name "*.tfplan" -o -name "*.tfvars" -o -name "*.key" -o -name ".terraform" \) -print; find /opt/verax -name "*.pem" ! -path "/opt/verax/infra/node/keys/release-*.pem" -print')"
 expect 'o que o módulo lê de infra/node está na imagem' 'ok' \
