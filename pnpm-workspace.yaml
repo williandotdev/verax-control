@@ -43,6 +43,10 @@ engineStrict: true
 
 # Correções de segurança em dependências transitivas (remover quando os pacotes pais atualizarem).
 overrides:
+  # CVE-2026-121707 / GHSA-7589-6fvf-x4pw (ReDoS no Schema.TemplateLiteral). Entra só pelo CLI do Prisma
+  # (@prisma/config@7.10.1 fixa o effect@3.20.0); a 3.22.1 é da mesma major. Remover quando o @prisma/config trouxer
+  # a versão corrigida.
+  'effect@<3.22.1': 3.22.1
   # GHSA-g3hv-75wg-m249 (DoS em globparts). Entra via ESLint, typescript-eslint e Nest CLI.
   'minimatch@<11.0.1': 11.0.1
   # GHSA-3g3m-2fjr-6pw4 (o AbortSignal não interrompe a travessia do disco). Entra só pelo plano de controle:
