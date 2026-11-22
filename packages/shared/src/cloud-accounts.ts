@@ -12,6 +12,14 @@ export const CLOUD_ACCOUNT_STATUSES = ['active', 'inactive'] as const;
  */
 export const CLOUD_ACCOUNT_CONNECTIONS = ['waiting', 'connected', 'error'] as const;
 export type CloudAccountConnection = (typeof CLOUD_ACCOUNT_CONNECTIONS)[number];
+/**
+ * Quem cadastrou a conta: o cliente, no painel, ou a Verax, pelo console (a sincronização do nó com o plano de
+ * controle, `node-sync.ts`). A conta da Verax não muda nem é desativada pelo painel (409 `CONSOLE_MANAGED_CODE`).
+ */
+export const CLOUD_ACCOUNT_MANAGERS = ['panel', 'verax'] as const;
+export type CloudAccountManager = (typeof CLOUD_ACCOUNT_MANAGERS)[number];
+/** Código da recusa do painel ao alterar ou desativar a conta que a Verax cadastrou pelo console. */
+export const CONSOLE_MANAGED_CODE = 'CONSOLE_MANAGED';
 
 /**
  * Erros de conexão do coletor do Cloudflare (fase 2, PR-12) que param a coleta da conta: o Cloudflare recusou o token
@@ -483,6 +491,11 @@ export const cloudAccountSchema = z.strictObject({
   lastCollectedAt: z.iso.datetime().nullable(),
   /** Horário do último alerta recebido desta conta (T5.3); null se nunca chegou nada. */
   lastEventAt: z.iso.datetime().nullable().optional(),
+  /**
+   * Quem cadastrou a conta (`CLOUD_ACCOUNT_MANAGERS`). A da Verax não muda nem é desativada pelo painel; a credencial e
+   * o "Verificar" continuam com o cliente. Opcional para o painel ler um nó de antes dele.
+   */
+  managedBy: z.enum(CLOUD_ACCOUNT_MANAGERS).optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });

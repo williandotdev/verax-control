@@ -215,6 +215,77 @@ export function googleIdTokenSubject(token: string): string | null {
   }
 }
 
+/** O vencimento do token (`exp`, em segundos), lido sem conferir a assinatura; null fora do formato. */
+function googleIdTokenExpiry(token: string): number | null {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const payload: unknown = JSON.parse(Buffer.from(parts[1] ?? '', 'base64url').toString('utf8'));
+    const claims = z.object({ exp: z.number().int().positive() }).safeParse(payload);
+    return claims.success ? claims.data.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+/** O token da sincronização guardado até faltarem 5 min para vencer (`SESSION_REFRESH_MARGIN_MS`), por audience. */
+export type NodeSyncTokenCache = Map<string, { token: string; refreshAt: number }>;
+const nodeSyncTokens: NodeSyncTokenCache = new Map();
+
+export interface NodeSyncTokenOptions extends GoogleIdTokenOptions {
+  /** O relógio, em ms (os testes fixam). */
+  now?: () => number;
+  /** Onde o token fica guardado (um por processo; os testes passam o deles). */
+  cache?: NodeSyncTokenCache;
+}
+
+/**
+ * O token do Google da conta de serviço do nó para a sincronização com o plano de controle (`POST /v1/node-sync`): o
+ * audience é o endereço da própria rota (`<origem>/v1/node-sync`), e o formato é `full`, com o projeto, a VM e a zona
+ * (`google.compute_engine`), que o plano de controle confere com o que ele criou para o cliente. É outro audience que o
+ * da AWS, então o token não serve para entrar no papel de leitura, nem o da AWS serve aqui. Guardado até faltarem 5 min
+ * para vencer: a chamada de cada 5 min não pede um token novo ao metadata a cada vez. As falhas são as de
+ * `fetchGoogleIdToken` (`metadata_unavailable`); o token nunca vai para log nem para erro.
+ */
+export async function fetchNodeSyncToken(
+  audience: string,
+  signal?: AbortSignal,
+  {
+    url = GOOGLE_IDENTITY_URL,
+    fetch: fetchImpl = fetch,
+    timeoutMs = METADATA_TIMEOUT_MS,
+    now = Date.now,
+    cache = nodeSyncTokens,
+  }: NodeSyncTokenOptions = {},
+): Promise<string> {
+  const cached = cache.get(audience);
+  if (cached !== undefined && now() < cached.refreshAt) return cached.token;
+  if (!isWebIdentityAudience(audience)) throw new AwsConnectionError('metadata_unavailable', false);
+  const query = new URLSearchParams({ audience, format: 'full' });
+  const timeout = AbortSignal.timeout(timeoutMs);
+  let text: string;
+  try {
+    const response = await fetchImpl(`${url}?${query.toString()}`, {
+      headers: { 'Metadata-Flavor': 'Google' },
+      redirect: 'error',
+      signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
+    });
+    if (!response.ok) throw new AwsConnectionError('metadata_unavailable', true);
+    text = (await response.text()).trim();
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason;
+    if (error instanceof AwsConnectionError) throw error;
+    throw new AwsConnectionError('metadata_unavailable', true);
+  }
+  const token = idTokenSchema.safeParse(text);
+  if (!token.success) throw new AwsConnectionError('metadata_unavailable', true);
+  const expiry = googleIdTokenExpiry(token.data);
+  // Sem `exp` legível, o token vale para esta chamada e não fica guardado.
+  if (expiry === null) cache.delete(audience);
+  else cache.set(audience, { token: token.data, refreshAt: expiry * 1000 - SESSION_REFRESH_MARGIN_MS });
+  return token.data;
+}
+
 /** O resultado da conferência da identidade do nó na partida do worker. Nenhum campo é segredo. */
 export type NodeIdentityCheck =
   | { readonly status: 'ok' }

@@ -11,6 +11,7 @@ import {
   cloudAccountListQuerySchema,
   cloudAccountSchema,
   cloudAccountUpdateSchema,
+  CONSOLE_MANAGED_CODE,
   cloudCredentialInputSchema,
   CREDENTIAL_KIND_PROVIDERS,
   credentialStatus,
@@ -206,6 +207,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       ingestFrom: !other && collection.connection === 'connected' ? at(41).slice(0, 10) : null,
       lastCollectedAt: minutesBefore(collection.collectedMinutes),
       lastEventAt: minutesBefore(lastEventMinutes),
+      managedBy: 'panel',
       createdAt: at(40),
       updatedAt: at(10),
     });
@@ -844,6 +846,7 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         keyStatus: null,
         egressIps: data.provider === 'gcp' ? [] : DEMO_EGRESS_IPS,
         status: 'active',
+        managedBy: 'panel',
         connection: 'waiting',
         connectionError: null,
         checkRequestedAt: null,
@@ -863,6 +866,10 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         (candidate) => candidate.id === params['id'],
       );
       if (!account) return problem(404, 'Conta não encontrada');
+      // Como a API: a conta que a Verax cadastrou pelo console não muda pelo painel.
+      if (account.managedBy === 'verax') {
+        return problem(409, 'Cadastrada pela Verax: peça a alteração à Verax.', CONSOLE_MANAGED_CODE);
+      }
       const input = cloudAccountUpdateSchema.safeParse(await body(request));
       if (!input.success) return problem(400, 'Dados inválidos');
       const foreign = fieldsOutsideProvider(account.provider, input.data);

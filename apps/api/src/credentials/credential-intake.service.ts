@@ -313,6 +313,10 @@ export class CredentialIntakeService {
         expiresAt: checked.expiresAt,
         verifiedAt: new Date(),
         rotationNoticeAt: null,
+        // Colada no painel: a do cliente, sem revisão do console. Numa conta cadastrada pela Verax, ela vale até o
+        // console mandar uma revisão nova, e a sincronização conta de volta que a vigente é a do painel.
+        origin: 'panel',
+        controlPlaneRevision: null,
       } satisfies Prisma.CloudCredentialUpdateInput;
       const saved = await db.cloudCredential.upsert({
         where: { cloudAccountId: id },

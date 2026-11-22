@@ -3,6 +3,8 @@ import {
   type AuditEntry,
   type AuditEntryDetail,
   type AuditListQuery,
+  CONTROL_PLANE_AUDIT_ACTOR_ID,
+  CONTROL_PLANE_AUDIT_ACTOR_NAME,
   historyPeriodStart,
   type Paginated,
 } from '@verax/shared';
@@ -39,13 +41,24 @@ type Actor = { id: string; name: string; role: UserRole };
 /** Quem lê a trilha: o papel e o cliente da sessão. */
 type Viewer = Pick<RequestAuth, 'role' | 'scopeTenantId'>;
 
+/**
+ * O nome que a trilha mostra para quem agiu: o da pessoa e, no sistema, só o do console da Verax (o que o nó aplicou da
+ * sincronização com o plano de controle); o resto do sistema fica sem nome.
+ */
+function actorName(row: EntryRow, user: Actor | undefined): string | null {
+  if (row.actorType === 'system') {
+    return row.actorId === CONTROL_PLANE_AUDIT_ACTOR_ID ? CONTROL_PLANE_AUDIT_ACTOR_NAME : null;
+  }
+  return user?.name ?? null;
+}
+
 function toEntry(row: EntryRow, actors: ReadonlyMap<string, Actor>, viewer: Viewer): AuditEntry {
   const user = row.actorType === 'user' && row.actorId !== null ? actors.get(row.actorId) : undefined;
   const verax = user?.role === 'admin_verax';
   return {
     id: row.id,
     occurredAt: row.occurredAt.toISOString(),
-    actor: { type: row.actorType, id: user?.id ?? null, name: user?.name ?? null, verax },
+    actor: { type: row.actorType, id: user?.id ?? null, name: actorName(row, user), verax },
     action: row.action,
     resourceType: row.resourceType,
     resourceId: row.resourceId,

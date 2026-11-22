@@ -189,7 +189,16 @@ export function LogBucketsList({ buckets }: { buckets: LogBuckets }) {
  * uma lista com outros nomes, a tela diz o que falta: atualizar o `LogBucketArns` da pilha (o passo 2 já mostra a lista
  * nova) e clicar em "Verificar conexão". A API volta a conexão para "aguardando" e não pede nada à AWS sozinha.
  */
-export function AwsLogBuckets({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+export function AwsLogBuckets({
+  account,
+  canWrite,
+  managed = false,
+}: {
+  account: CloudAccount;
+  canWrite: boolean;
+  /** A conta que a Verax cadastrou pelo console: os buckets só mudam por lá. */
+  managed?: boolean;
+}) {
   const titleId = useId();
   return (
     <section aria-labelledby={titleId} className="space-y-3 rounded-md border p-3">
@@ -205,7 +214,11 @@ export function AwsLogBuckets({ account, canWrite }: { account: CloudAccount; ca
       ) : (
         <>
           <LogBucketsList buckets={account.buckets} />
-          <p className="text-xs text-muted-foreground">Quem administra as contas altera os buckets.</p>
+          <p className="text-xs text-muted-foreground">
+            {managed
+              ? 'A Verax altera os buckets desta conta.'
+              : 'Quem administra as contas altera os buckets.'}
+          </p>
         </>
       )}
     </section>

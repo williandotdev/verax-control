@@ -43,6 +43,11 @@ import {
   NODE_MODES,
   type NodeMode,
 } from './cell.js';
+import {
+  checkControlPlaneSyncEnv,
+  controlPlaneSyncConfigOf,
+  controlPlaneSyncEnvShape,
+} from './control-plane-sync.js';
 import { checkSsoEnv, ssoConfigOf, ssoEnvShape } from './sso.js';
 
 const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
@@ -814,11 +819,16 @@ const workerEnvObjectSchema = z
       .string()
       .regex(/^[0-9a-f]{40}$/, { error: 'deve ser o commit instalado (40 caracteres hexadecimais)' })
       .optional(),
+    // Sincronização com o plano de controle (nó dedicado de cliente, CUSTOMER_MODE=true no node.conf): a tarefa
+    // `control-plane-sync` conta o que o nó aplicou e traz as fontes de log que a Verax cadastrou no console. Na VM
+    // própria, a chave do nó vem por arquivo (`common/config/control-plane-sync.ts`).
+    ...controlPlaneSyncEnvShape,
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
     checkMailEnv(env, ctx);
     checkNodePlatformEnv(env, ctx);
+    checkControlPlaneSyncEnv(env, ctx);
     // Os avisos ainda montam os links com um WEB_ORIGIN só: na célula, levariam o cliente ao painel de outro. Até os
     // links serem por cliente, a célula não manda aviso (ficam na fila como `skipped`, como no nó sem e-mail).
     if (env.NODE_MODE === 'cell' && env.MAIL_TRANSPORT !== 'none') {
@@ -910,6 +920,9 @@ const workerEnvObjectSchema = z
         CELL_REPORTS_TOPIC,
         TENANT_BOOTSTRAP_DIR,
         TENANT_BOOTSTRAP_STATUS_DIR,
+        CONTROL_PLANE_SYNC,
+        CONTROL_PLANE_ORIGIN,
+        CONTROL_PLANE_NODE_KEY_FILE,
         ...env
       },
       ctx,
@@ -945,11 +958,25 @@ const workerEnvObjectSchema = z
         TENANT_BOOTSTRAP_DIR !== undefined && TENANT_BOOTSTRAP_STATUS_DIR !== undefined
           ? { requestsDir: TENANT_BOOTSTRAP_DIR, statusDir: TENANT_BOOTSTRAP_STATUS_DIR }
           : null;
+      // A sincronização num objeto só (null, desligada), com a chave do nó já lida; o caminho não fica na configuração.
+      const controlPlaneSync = controlPlaneSyncConfigOf(
+        {
+          CONTROL_PLANE_SYNC,
+          CONTROL_PLANE_ORIGIN,
+          CONTROL_PLANE_NODE_KEY_FILE,
+          NODE_MODE: env.NODE_MODE,
+          NODE_PLATFORM: env.NODE_PLATFORM,
+          NODE_SA_UNIQUE_ID: env.NODE_SA_UNIQUE_ID,
+          VERAX_NODE_COMMIT,
+        },
+        ctx,
+      );
       return {
         ...withDefaultPlan(env),
         credentialsKeyring,
         wazuhAgents,
         nodeStatus,
+        controlPlaneSync,
         wazuhApi,
         cellChannel,
         tenantBootstrap,
