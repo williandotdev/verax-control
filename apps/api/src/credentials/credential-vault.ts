@@ -1,20 +1,19 @@
-import {
-  constants,
-  createCipheriv,
-  createDecipheriv,
-  type KeyObject,
-  privateDecrypt,
-  publicEncrypt,
-  randomBytes,
-} from 'node:crypto';
 import { inspect } from 'node:util';
+import type { GcpServiceAccountKeyFields } from '@verax/shared';
 import {
-  AWS_ACCESS_KEY_ID_PATTERN,
-  AWS_SECRET_ACCESS_KEY_PATTERN,
-  type GcpServiceAccountKeyFields,
-  gcpServiceAccountKeyFieldsSchema,
-} from '@verax/shared';
-import { z } from 'zod';
+  awsCredentialPayloadSchema,
+  cloudflareCredentialPayloadSchema,
+  type CredentialBinding,
+  CREDENTIAL_KIND_PROVIDER,
+  CredentialVaultError,
+  type CredentialPayload,
+  envelopeVersion,
+  gcpCredentialPayloadSchema,
+  type OpenedCredential,
+  openCredential,
+  type SealedCredential,
+  sealCredential,
+} from '@verax/vault-envelope';
 import { forgetLiveSecret, registerLiveSecret } from '../common/logger/sanitize.js';
 import type { CloudCredentialKind, CloudProvider } from '../generated/prisma/enums.js';
 import type { VaultKeyring, VaultPublicKey } from './credential-keys.js';
@@ -41,105 +40,29 @@ import type { VaultKeyring, VaultPublicKey } from './credential-keys.js';
  *   e registram o segredo no logger, que passa a ocultá-lo em qualquer linha (`registerLiveSecret`).
  *
  * Os erros levam só um código (`CredentialVaultError.code`), nunca o segredo, o texto cifrado ou a chave.
+ *
+ * O envelope em si (rótulo, cifra, formato e o texto claro de cada tipo) mora no `@verax/vault-envelope`, que o plano
+ * de controle também usa para cifrar para o nó; aqui ficam os invólucros e as funções que a API e o worker chamam.
  */
 
-/** O máximo que o RSA-3072 com OAEP-SHA256 cifra: 384 - 2 × 32 - 2 bytes. Vale também para as chaves maiores. */
-export const MAX_PLAINTEXT_BYTES = 318;
-/** O máximo do envelope híbrido: com a RSA-4096, ele ainda cabe na coluna. */
-export const MAX_HYBRID_PLAINTEXT_BYTES = 5120;
-/** Tamanho da coluna `CloudCredential.ciphertext`. */
-export const MAX_CIPHERTEXT_LENGTH = 8192;
-const AES_KEY_BYTES = 32;
-const GCM_IV_BYTES = 12;
-const GCM_TAG_BYTES = 16;
+export {
+  CLOUDFLARE_API_TOKEN,
+  CREDENTIAL_KIND_PROVIDER,
+  type CredentialBinding,
+  credentialBinding,
+  CredentialVaultError,
+  type CredentialVaultErrorCode,
+  envelopeVersion,
+  MAX_CIPHERTEXT_LENGTH,
+  MAX_HYBRID_PLAINTEXT_BYTES,
+  MAX_PLAINTEXT_BYTES,
+  oaepLabel,
+  type SealedCredential,
+} from '@verax/vault-envelope';
 
-const LABEL_PREFIX = 'verax-cred:v1';
-const ENVELOPE = /^v([1-9][0-9]{0,8}):([A-Za-z0-9+/]+={0,2})$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-/**
- * ID da conta no provedor (32 hexadecimais no Cloudflare, 12 dígitos na AWS, o ID do projeto na GCP). Sem `:`, que
- * separa o rótulo.
- */
-const PROVIDER_ACCOUNT_ID = /^[A-Za-z0-9-]{1,64}$/;
-
-/**
- * Token do Cloudflare: o alfabeto do Bearer (RFC 6750), com tamanho limitado. Expressão ancorada, de tamanho limitado e
- * sem quantificador aninhado: o tempo de conferir é proporcional ao tamanho da entrada.
- */
-export const CLOUDFLARE_API_TOKEN = /^[A-Za-z0-9._~+/-]{20,255}={0,2}$/;
-
-/**
- * O texto claro de cada tipo, em JSON de chave curta. É a régua única do formato: o invólucro a aplica ao que a API
- * recebe colado (antes de cifrar), e `open`, ao que saiu da cifra. Na AWS e na GCP, as regras do contrato
- * (`packages/shared`), conferidas de novo aqui.
- */
-const cloudflarePayload = z.strictObject({ t: z.string().regex(CLOUDFLARE_API_TOKEN) });
-const awsPayload = z.strictObject({
-  i: z.string().regex(AWS_ACCESS_KEY_ID_PATTERN),
-  s: z.string().regex(AWS_SECRET_ACCESS_KEY_PATTERN),
-});
-const gcpFields = gcpServiceAccountKeyFieldsSchema.shape;
-const gcpPayload = z.strictObject({
-  p: gcpFields.projectId,
-  e: gcpFields.clientEmail,
-  d: gcpFields.privateKeyId,
-  k: gcpFields.privateKey,
-});
-
-/** Provedor de cada tipo de credencial: o token do Cloudflare só vale numa conta do Cloudflare, e assim por diante. */
-export const CREDENTIAL_KIND_PROVIDER = {
-  cloudflare_api_token: 'cloudflare',
-  aws_access_key: 'aws',
-  gcp_service_account_key: 'gcp',
-} as const satisfies Record<CloudCredentialKind, CloudProvider>;
-
-export type CredentialVaultErrorCode =
-  | 'binding_invalid'
-  | 'secret_invalid'
-  | 'plaintext_too_large'
-  | 'envelope_invalid'
-  | 'key_version_missing'
-  | 'decrypt_failed'
-  | 'payload_invalid';
-
-export class CredentialVaultError extends Error {
-  constructor(readonly code: CredentialVaultErrorCode) {
-    super(`cofre de credenciais: ${code}`);
-    this.name = 'CredentialVaultError';
-  }
-}
-
-/** A quem a credencial pertence. Montada sempre pelo cadastro da conta no banco, nunca por um valor do request. */
-export interface CredentialBinding {
-  readonly tenantId: string;
-  readonly cloudAccountId: string;
-  readonly kind: CloudCredentialKind;
-  /** ID da conta no provedor (32 hexadecimais no Cloudflare, 12 dígitos na AWS, o projeto na GCP). */
-  readonly accountId: string;
-}
-
-/** A amarração de uma credencial à conta cadastrada; o tipo tem de ser o do provedor da conta. */
-export function credentialBinding(
-  account: { id: string; tenantId: string; provider: CloudProvider; accountId: string },
-  kind: CloudCredentialKind,
-): CredentialBinding {
-  if (CREDENTIAL_KIND_PROVIDER[kind] !== account.provider) throw new CredentialVaultError('binding_invalid');
-  return { tenantId: account.tenantId, cloudAccountId: account.id, kind, accountId: account.accountId };
-}
-
-/** `verax-cred:v1:<cliente>:<conta>:<tipo>:<ID no provedor>`, conferido parte a parte (nenhuma parte tem `:`). */
-export function oaepLabel(binding: CredentialBinding): Buffer {
-  const { tenantId, cloudAccountId, kind, accountId } = binding;
-  if (
-    !UUID.test(tenantId) ||
-    !UUID.test(cloudAccountId) ||
-    !Object.hasOwn(CREDENTIAL_KIND_PROVIDER, kind) ||
-    !PROVIDER_ACCOUNT_ID.test(accountId)
-  ) {
-    throw new CredentialVaultError('binding_invalid');
-  }
-  return Buffer.from(`${LABEL_PREFIX}:${tenantId}:${cloudAccountId}:${kind}:${accountId}`, 'utf8');
-}
+/** O enum do banco e a lista do contrato andam juntos: um tipo novo no banco sem provedor aqui não compila. */
+const _kindProviderOfDatabase: Readonly<Record<CloudCredentialKind, CloudProvider>> =
+  CREDENTIAL_KIND_PROVIDER;
 
 const HIDDEN_CLOUDFLARE = '[token do Cloudflare]';
 
@@ -148,7 +71,8 @@ export class CloudflareToken {
   readonly #token: string;
 
   constructor(token: string) {
-    if (!cloudflarePayload.safeParse({ t: token }).success) throw new CredentialVaultError('secret_invalid');
+    if (!cloudflareCredentialPayloadSchema.safeParse({ t: token }).success)
+      throw new CredentialVaultError('secret_invalid');
     registerLiveSecret(token);
     this.#token = token;
   }
@@ -185,7 +109,7 @@ export class AwsAccessKey {
   readonly #secret: string;
 
   constructor(accessKeyId: string, secretAccessKey: string) {
-    if (!awsPayload.safeParse({ i: accessKeyId, s: secretAccessKey }).success) {
+    if (!awsCredentialPayloadSchema.safeParse({ i: accessKeyId, s: secretAccessKey }).success) {
       throw new CredentialVaultError('secret_invalid');
     }
     registerLiveSecret(secretAccessKey);
@@ -227,7 +151,7 @@ export class GcpServiceAccountKey {
   readonly #privateKey: string;
 
   constructor(fields: GcpServiceAccountKeyFields) {
-    const parsed = gcpPayload.safeParse({
+    const parsed = gcpCredentialPayloadSchema.safeParse({
       p: fields.projectId,
       e: fields.clientEmail,
       d: fields.privateKeyId,
@@ -280,108 +204,35 @@ export function releaseSecret(credential: VaultSecret): void {
   forgetLiveSecret(secretOf(credential));
 }
 
-/** O que vai para a linha: o envelope e a versão da chave que cifrou. */
-export interface SealedCredential {
-  ciphertext: string;
-  keyVersion: number;
-}
-
-function payloadOf(credential: VaultSecret): string {
+function payloadOf(credential: VaultSecret): CredentialPayload {
   if (credential instanceof AwsAccessKey) {
-    return JSON.stringify({ i: credential.accessKeyId, s: credential.secret() });
+    return { i: credential.accessKeyId, s: credential.secret() };
   }
   if (credential instanceof GcpServiceAccountKey) {
-    return JSON.stringify({
+    return {
       p: credential.projectId,
       e: credential.clientEmail,
       d: credential.privateKeyId,
       k: credential.privateKey(),
-    });
+    };
   }
-  return JSON.stringify({ t: credential.value() });
+  return { t: credential.value() };
 }
 
-/** O invólucro do texto claro já aberto, pelo tipo da amarração; fora do formato, `payload_invalid`. */
-function secretFrom(kind: CloudCredentialKind, json: unknown): VaultSecret {
-  switch (kind) {
-    case 'cloudflare_api_token': {
-      const parsed = cloudflarePayload.safeParse(json);
-      if (!parsed.success) throw new CredentialVaultError('payload_invalid');
-      return new CloudflareToken(parsed.data.t);
-    }
-    case 'aws_access_key': {
-      const parsed = awsPayload.safeParse(json);
-      if (!parsed.success) throw new CredentialVaultError('payload_invalid');
-      return new AwsAccessKey(parsed.data.i, parsed.data.s);
-    }
-    case 'gcp_service_account_key': {
-      const parsed = gcpPayload.safeParse(json);
-      if (!parsed.success) throw new CredentialVaultError('payload_invalid');
+/** O invólucro do texto claro já aberto e conferido pelo tipo da amarração. */
+function secretFrom(opened: OpenedCredential): VaultSecret {
+  switch (opened.kind) {
+    case 'cloudflare_api_token':
+      return new CloudflareToken(opened.payload.t);
+    case 'aws_access_key':
+      return new AwsAccessKey(opened.payload.i, opened.payload.s);
+    case 'gcp_service_account_key':
       return new GcpServiceAccountKey({
-        projectId: parsed.data.p,
-        clientEmail: parsed.data.e,
-        privateKeyId: parsed.data.d,
-        privateKey: parsed.data.k,
+        projectId: opened.payload.p,
+        clientEmail: opened.payload.e,
+        privateKeyId: opened.payload.d,
+        privateKey: opened.payload.k,
       });
-    }
-  }
-}
-
-/** RSA-OAEP com SHA-256 e o rótulo da amarração, igual ao cifrar e ao decifrar. */
-function oaep(key: KeyObject, label: Buffer) {
-  return { key, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256', oaepLabel: label };
-}
-
-/** O tamanho do bloco do RSA da chave (384 bytes na RSA-3072): o tamanho exato do envelope só de RSA. */
-function rsaBlockBytes(key: KeyObject): number {
-  const bits = key.asymmetricKeyDetails?.modulusLength;
-  if (bits === undefined) throw new CredentialVaultError('decrypt_failed');
-  return bits / 8;
-}
-
-/**
- * O envelope híbrido: a chave AES-256-GCM aleatória cifrada com a RSA do nó (OAEP, com o rótulo), o IV, a etiqueta e o
- * texto cifrado, com o rótulo também como dado autenticado. A chave AES é zerada no fim.
- */
-function sealHybrid(publicKey: KeyObject, label: Buffer, plaintext: Buffer): Buffer {
-  const aesKey = randomBytes(AES_KEY_BYTES);
-  try {
-    const wrapped = publicEncrypt(oaep(publicKey, label), aesKey);
-    const iv = randomBytes(GCM_IV_BYTES);
-    const cipher = createCipheriv('aes-256-gcm', aesKey, iv, { authTagLength: GCM_TAG_BYTES });
-    cipher.setAAD(label);
-    const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-    return Buffer.concat([wrapped, iv, cipher.getAuthTag(), encrypted]);
-  } finally {
-    aesKey.fill(0);
-  }
-}
-
-/** Abre o envelope híbrido; qualquer divergência (rótulo, etiqueta, tamanho) é `decrypt_failed`. */
-function openHybrid(privateKey: KeyObject, label: Buffer, body: Buffer, block: number): Buffer {
-  let aesKey: Buffer;
-  try {
-    aesKey = privateDecrypt(oaep(privateKey, label), body.subarray(0, block));
-  } catch {
-    throw new CredentialVaultError('decrypt_failed');
-  }
-  try {
-    if (aesKey.length !== AES_KEY_BYTES) throw new CredentialVaultError('decrypt_failed');
-    const iv = body.subarray(block, block + GCM_IV_BYTES);
-    const tag = body.subarray(block + GCM_IV_BYTES, block + GCM_IV_BYTES + GCM_TAG_BYTES);
-    const decipher = createDecipheriv('aes-256-gcm', aesKey, iv, { authTagLength: GCM_TAG_BYTES });
-    decipher.setAAD(label);
-    decipher.setAuthTag(tag);
-    try {
-      return Buffer.concat([
-        decipher.update(body.subarray(block + GCM_IV_BYTES + GCM_TAG_BYTES)),
-        decipher.final(),
-      ]);
-    } catch {
-      throw new CredentialVaultError('decrypt_failed');
-    }
-  } finally {
-    aesKey.fill(0);
   }
 }
 
@@ -392,61 +243,12 @@ export function seal(
   credential: VaultSecret,
 ): SealedCredential {
   if (credential.kind !== binding.kind) throw new CredentialVaultError('binding_invalid');
-  const label = oaepLabel(binding);
-  const plaintext = Buffer.from(payloadOf(credential), 'utf8');
-  try {
-    if (plaintext.length > MAX_HYBRID_PLAINTEXT_BYTES) throw new CredentialVaultError('plaintext_too_large');
-    const encrypted =
-      plaintext.length > MAX_PLAINTEXT_BYTES
-        ? sealHybrid(publicKey.key, label, plaintext)
-        : publicEncrypt(oaep(publicKey.key, label), plaintext);
-    const ciphertext = `v${publicKey.version}:${encrypted.toString('base64')}`;
-    if (ciphertext.length > MAX_CIPHERTEXT_LENGTH) throw new CredentialVaultError('plaintext_too_large');
-    return { ciphertext, keyVersion: publicKey.version };
-  } finally {
-    plaintext.fill(0);
-  }
-}
-
-/** Versão da chave que cifrou o envelope, sem decifrar nada. */
-export function envelopeVersion(ciphertext: string): number {
-  if (ciphertext.length > MAX_CIPHERTEXT_LENGTH) throw new CredentialVaultError('envelope_invalid');
-  const match = ENVELOPE.exec(ciphertext);
-  if (!match) throw new CredentialVaultError('envelope_invalid');
-  return Number(match[1]);
+  return sealCredential(publicKey, binding, payloadOf(credential));
 }
 
 /** Decifra a credencial (só o worker tem as chaves privadas). Qualquer divergência falha fechado. */
 export function open(keyring: VaultKeyring, binding: CredentialBinding, ciphertext: string): VaultSecret {
-  const version = envelopeVersion(ciphertext);
-  const key = keyring.privateKey(version);
-  if (key === undefined) throw new CredentialVaultError('key_version_missing');
-  const label = oaepLabel(binding);
-  const body = Buffer.from(ciphertext.slice(ciphertext.indexOf(':') + 1), 'base64');
-  const block = rsaBlockBytes(key);
-  let plaintext: Buffer;
-  if (body.length === block) {
-    try {
-      plaintext = privateDecrypt(oaep(key, label), body);
-    } catch {
-      throw new CredentialVaultError('decrypt_failed');
-    }
-  } else if (body.length > block + GCM_IV_BYTES + GCM_TAG_BYTES) {
-    plaintext = openHybrid(key, label, body, block);
-  } else {
-    throw new CredentialVaultError('decrypt_failed');
-  }
-  try {
-    let json: unknown;
-    try {
-      json = JSON.parse(plaintext.toString('utf8'));
-    } catch {
-      throw new CredentialVaultError('payload_invalid');
-    }
-    return secretFrom(binding.kind, json);
-  } finally {
-    plaintext.fill(0);
-  }
+  return secretFrom(openCredential(keyring, binding, ciphertext));
 }
 
 /**

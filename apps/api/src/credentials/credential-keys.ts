@@ -1,5 +1,6 @@
 import { createPrivateKey, createPublicKey, type KeyObject } from 'node:crypto';
 import { inspect } from 'node:util';
+import { MAX_KEY_BITS, MAX_KEY_VERSION, MIN_KEY_BITS } from '@verax/vault-envelope';
 
 /**
  * Chaves do cofre de credenciais do nó (fase 2, PR-V1). O par RSA nasce na VM, na instalação (`infra/node/bin/
@@ -16,10 +17,9 @@ import { inspect } from 'node:util';
  * O PEM vai em base64 para caber numa linha. As mensagens de erro citam no máximo a versão, nunca o conteúdo da chave.
  */
 
-/** RSA de 3072 bits (o que o `install.sh` gera) a 4096: o envelope de 4096 ainda cabe na coluna de 1024. */
-export const MIN_KEY_BITS = 3072;
-export const MAX_KEY_BITS = 4096;
-export const MAX_KEY_VERSION = 999_999_999;
+// RSA de 3072 bits (o que o `install.sh` gera) a 4096: o envelope de 4096 ainda cabe na coluna. Os limites são os do
+// envelope (`@verax/vault-envelope`), que o plano de controle também confere.
+export { MAX_KEY_BITS, MAX_KEY_VERSION, MIN_KEY_BITS } from '@verax/vault-envelope';
 
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const PRIVATE_KEY_ENTRY = /^([1-9][0-9]{0,8}):([A-Za-z0-9+/]+={0,2})$/;

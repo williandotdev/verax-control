@@ -41,6 +41,7 @@
     "@prisma/adapter-pg": "7.10.1",
     "@prisma/client": "7.10.1",
     "@verax/shared": "workspace:*",
+    "@verax/vault-envelope": "workspace:*",
     "better-auth": "1.7.14",
     "cookie-parser": "1.4.7",
     "csrf-csrf": "4.0.3",
