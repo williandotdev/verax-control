@@ -132,7 +132,12 @@ services:
     env_file: /run/verax/worker.env
     environment:
       NODE_OPTIONS: --max-old-space-size=${WORKER_HEAP_MB:-160}
-    volumes: [*database-ca]
+    # A pasta da chave do nó para a sincronização com o plano de controle (só na VM própria do cliente; vazia nos nós da
+    # GCP e no nó da Verax), só leitura: CONTROL_PLANE_DIR e CONTROL_PLANE_MOUNT do start.sh. Fora da pasta do cofre
+    # (compose.vault.yaml), que o job aws-sessions também monta: só o worker vê a chave do nó.
+    volumes:
+      - *database-ca
+      - /run/verax/cp:/run/cp:ro
     # A imagem confere a porta da API; o worker não tem porta.
     healthcheck:
       disable: true

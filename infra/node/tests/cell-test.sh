@@ -234,6 +234,8 @@ new_root "célula: o ID da conta de serviço da VM fica de fora, com o aviso" ce
   NODE_SA_UNIQUE_ID=123456789012345678901 AWS_WEB_IDENTITY_AUDIENCE=https://control.exemplo.com.br/aws-reader
 start render || fail "o render falhou: $(cat "$root/out")"
 grep -q NODE_SA_UNIQUE_ID "$root/run/verax/api.env" "$root/run/verax/worker.env" && fail "o ID da conta de serviço da VM entrou"
+# A célula tem o canal dela com o plano de controle: nunca a sincronização do nó dedicado.
+grep -q CONTROL_PLANE_ "$root/run/verax/worker.env" && fail "a célula ganhou a sincronização do nó dedicado"
 grep -q "NODE_SA_UNIQUE_ID não vale na célula" "$root/out" || fail "sem o aviso: $(cat "$root/out")"
 grep -q "^AWS_WEB_IDENTITY_AUDIENCE=" "$root/run/verax/api.env" || fail "o audience saiu junto"
 ok

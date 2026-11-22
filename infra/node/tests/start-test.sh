@@ -844,6 +844,7 @@ metadata verax-support-email suporte@verax.example
 new_root "nó da Verax: worker.env sem o estado do nó" verax
 start render || fail "o render falhou: $(cat "$root/out")"
 grep -q -e NODE_STATUS -e VERAX_NODE_COMMIT "$root/run/verax/worker.env" && fail "o worker.env ganhou o estado do nó"
+grep -q CONTROL_PLANE_ "$root/run/verax/worker.env" && fail "o nó da Verax ganhou a sincronização com o plano de controle"
 verax_worker=$(cat "$root/run/verax/worker.env")
 verax_api=$(cat "$root/run/verax/api.env")
 if start customer-bootstrap; then fail "o customer-bootstrap rodou fora do modo cliente"; fi
@@ -862,6 +863,9 @@ status_lines="NODE_STATUS='true'"$'\n'"VERAX_NODE_COMMIT='$commit'"
 expected_worker=${verax_worker/DATABASE_URL=/$status_lines$'\n'DATABASE_URL=}
 [[ "$(cat "$root/run/verax/worker.env")" == "$expected_worker" ]] ||
   fail "worker.env inesperado: $(diff <(echo "$expected_worker") "$root/run/verax/worker.env" || true)"
+# Sem o NODE_SA_UNIQUE_ID, o nó da GCP sobe sem a sincronização com o plano de controle (o token não teria como ser
+# conferido), com o aviso.
+grep -q 'sem o NODE_SA_UNIQUE_ID no formato' "$root/out" || fail "sem o aviso da sincronização: $(cat "$root/out")"
 # Com o e-mail do nó (o node.conf que a instalação sem operador escreve com as chaves `verax-smtp-*` dos metadados): a
 # senha da caixa vem do cofre do nó, com a identidade da VM, e vai só para o api.env e o worker.env, com o mesmo bloco
 # do nó da Verax (PR-16); o estado do nó continua logo antes do banco. Sem a senha no cofre, a partida para (é por isso
@@ -910,11 +914,29 @@ NODE_SA_UNIQUE_ID='123456789012345678901'
 AWS_WEB_IDENTITY_AUDIENCE='https://control.veraxsistemas.com.br/aws-reader'
 NODE_STATUS='true'
 VERAX_NODE_COMMIT='$commit'
+CONTROL_PLANE_SYNC='true'
 DATABASE_URL='postgresql://verax_app:interno-postgres-app@postgres:5432/verax?sslmode=verify-full&sslrootcert=/etc/verax/tls/ca.crt'
 EOF
 )
 [[ "$(cat "$root/run/verax/worker.env")" == "$expected_worker" ]] ||
   fail "worker.env inesperado: $(diff <(echo "$expected_worker") "$root/run/verax/worker.env" || true)"
+! grep -q 'sincronização com o' "$root/out" || fail "aviso da sincronização com a identidade do nó: $(cat "$root/out")"
+[[ -z $(ls -A "$root/run/verax/cp") ]] || fail "a chave do nó foi para a pasta num nó da GCP"
+# A origem do plano de controle vem do node.conf só no formato (a origem https, sem caminho); fora dele, o worker usa a
+# padrão, com o aviso.
+new_root "modo cliente: a origem do plano de controle do node.conf" render-origem CUSTOMER_MODE=true \
+  NODE_SA_UNIQUE_ID=123456789012345678901 CONTROL_PLANE_ORIGIN=https://conta.exemplo.com.br
+start render || fail "o render falhou: $(cat "$root/out")"
+grep -qx "CONTROL_PLANE_ORIGIN='https://conta.exemplo.com.br'" "$root/run/verax/worker.env" || fail "sem a origem"
+! grep -q CONTROL_PLANE_ORIGIN "$root/run/verax/api.env" || fail "a API recebeu a origem do plano de controle"
+for bad in http://conta.exemplo.com.br https://conta.exemplo.com.br/v1 'https://conta.exemplo.com.br:8443'; do
+  new_root "modo cliente: a origem do plano de controle fora do formato ($bad)" render-origem-ruim CUSTOMER_MODE=true \
+    NODE_SA_UNIQUE_ID=123456789012345678901 "CONTROL_PLANE_ORIGIN=$bad"
+  start render || fail "o render falhou: $(cat "$root/out")"
+  grep -q 'CONTROL_PLANE_ORIGIN fora do formato' "$root/out" || fail "sem o aviso: $(cat "$root/out")"
+  ! grep -q CONTROL_PLANE_ORIGIN "$root/run/verax/worker.env" || fail "a origem fora do formato entrou"
+  grep -qx "CONTROL_PLANE_SYNC='true'" "$root/run/verax/worker.env" || fail "a sincronização caiu com a origem ruim"
+done
 for bad in CUSTOMER_MODE=sim versao-fora-do-formato sem-images-env; do
   new_root "modo cliente: o render recusa ($bad)" "render-recusa-${bad%%=*}" CUSTOMER_MODE=true
   case $bad in

@@ -86,7 +86,13 @@ WAZUH_AGENTS=false
 # (`verax-support-email`), cria as contas com senha temporária e grava cada senha no Secret Manager
 # (`<prefixo>-admin-bootstrap` e `<prefixo>-support-bootstrap`, criados pelo Terraform do tenant); e o worker publica o
 # estado do nó nos guest attributes da VM (`verax/*`). Sem a linha, vale false: o nó da Verax não muda.
+# O modo cliente liga também a sincronização com o plano de controle (o worker conta ao console o que aplicou e traz as
+# fontes de log que a Verax cadastrou lá, a cada 5 min): nos nós da GCP, com o token do Google do nó (exige o
+# NODE_SA_UNIQUE_ID acima); na VM própria, com a chave do nó do registro. Nunca na célula.
 CUSTOMER_MODE=false
+# A origem da API pública do plano de controle, para a sincronização (opcional; só a origem https, sem caminho). Sem a
+# linha, vale a de produção.
+# CONTROL_PLANE_ORIGIN=https://conta.veraxsistemas.com.br
 # Célula compartilhada (NODE_MODE=cell; sem a linha, dedicated): o nó atende vários clientes da Plataforma, cada um no
 # próprio endereço (`api-<subdomínio>.<CELL_DOMAIN>`); a API amarra cada requisição ao cliente do endereço, e a equipe
 # da Verax só entra pelo endereço `api-<CELL_STAFF_SLUG>`. Só no perfil standard, sem o PLAN e os ajustes (o plano é de
