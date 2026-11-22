@@ -67,12 +67,14 @@ resource "google_firebaserules_release" "firestore" {
 #   - adminLoginThrottle: o fim da janela de 15 min das falhas de login ou do bloqueio;
 #   - adminEnrollments: 10 min, a troca do aplicativo pendente;
 #   - adminSsoCodes: 60 s, o código da entrada única no SIEM (o app recusa o vencido; o TTL só limpa);
-#   - cellReports: 90 dias, os relatórios recebidos das células (CE-06).
+#   - cellReports: 90 dias, os relatórios recebidos das células (CE-06);
+#   - logSourceSecrets e nodeUserSecrets (subcoleções de `tenants`, a sincronização do nó): o envelope cifrado para o
+#     cofre do nó, 7 dias (fonte) ou 1 dia depois do prazo do pedido (usuário). O cp-worker apaga antes; o TTL só limpa.
 # `adminAccounts` (a conta do responsável) não tem prazo.
 # `tenants`, `transitions` e `invoices` não têm prazo (5 anos de faturas e a identificação fiscal ficam), nem as
 # tabelas de preços e de custos (`pricingTables`, `costModels`), que são o histórico do que foi vendido.
 resource "google_firestore_field" "ttl" {
-  for_each = toset(["slugs", "stripeEvents", "statusTokens", "rateLimits", "provisioningRuns", "steps", "auditLog", "quotes", "adminSessions", "adminLoginThrottle", "adminEnrollments", "adminSsoCodes", "cellReports"])
+  for_each = toset(["slugs", "stripeEvents", "statusTokens", "rateLimits", "provisioningRuns", "steps", "auditLog", "quotes", "adminSessions", "adminLoginThrottle", "adminEnrollments", "adminSsoCodes", "cellReports", "logSourceSecrets", "nodeUserSecrets"])
 
   database   = google_firestore_database.default.name
   collection = each.key

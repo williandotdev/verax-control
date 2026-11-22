@@ -3,6 +3,7 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { z } from 'zod';
 import { AuditService } from '../audit/audit.service.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
+import { DOCUMENT_STORE, type DocumentStore } from '../firestore/document-store.js';
 import type { StepContext, StepInput } from '../internal/step-handler.js';
 import { MAIL_SENDER, type MailSender, MailUnavailableError } from '../mail/mail-sender.js';
 import { executorEnv, purgeExecutorEnv } from '../provisioning/executor-env.js';
@@ -31,6 +32,7 @@ import {
   type DeletionStepRun,
 } from './deletion-engine.js';
 import { adminBootstrapSecret } from '../enrollment/enrollment.js';
+import { purgeNodeSync } from '../node-sync/node-sync-purge.js';
 import { buildDeletionRecord } from './deletion-record.js';
 import { afterDeletion, minimalRecord } from './lifecycle-rules.js';
 
@@ -440,6 +442,43 @@ export class DeletionBootstrapSecretStep extends BaseDeletionStep {
 }
 
 /**
+ * `deletion.node_sync`: apaga do Firestore tudo da sincronização do nó (`purgeNodeSync`): o estado do nó, o estado
+ * desejado, as fontes e os usuários pedidos pelo console (com nomes e e-mails), os envelopes ainda pendentes e os
+ * relatos do nó. Só Firestore, nos dois tipos de hospedagem e mesmo sem provisionamento (então nada a apagar). Repetir
+ * não dá erro.
+ */
+@Injectable()
+export class DeletionNodeSyncStep extends BaseDeletionStep {
+  readonly name = 'deletion.node_sync';
+  readonly kind = 'delete' as const;
+  readonly external = false;
+
+  constructor(
+    engine: DeletionEngine,
+    @Inject(DOCUMENT_STORE) private readonly store: DocumentStore,
+    private readonly audit: AuditService,
+  ) {
+    super(engine);
+  }
+
+  async execute({ tenant, requestId }: DeletionStepRun): Promise<DeletionOutcome> {
+    const deleted = await purgeNodeSync(this.store, tenant.id);
+    const total = Object.values(deleted).reduce((sum, count) => sum + count, 0);
+    if (total > 0) {
+      await this.audit.write({
+        actor: 'system',
+        action: 'node_sync.purged',
+        tenantId: tenant.id,
+        // Só o total: o nome de uma subcoleção (`logSourceSecrets`) cairia na máscara da auditoria.
+        details: { documents: total },
+        requestId,
+      });
+    }
+    return { kind: 'next', outputs: { deleted: total } };
+  }
+}
+
+/**
  * `deletion.record`: o registro de exclusão por e-mail ao admin do cliente, depois o cliente perde o e-mail, o acesso e
  * os recursos que a Exclusão 2 não usa (`afterDeletion`). Sem SMTP configurado, ou com o envio falhando até a última
  * tentativa da fila, a exclusão segue sem o e-mail (a linha `event=deletion_record_unsent` avisa a Verax): apagar o dado
@@ -713,6 +752,7 @@ export const DELETION_STEP_CLASSES = [
   DeletionCloudflareStep,
   DeletionFirebaseStep,
   DeletionBootstrapSecretStep,
+  DeletionNodeSyncStep,
   DeletionRecordStep,
   CryptoDestroyKeyStep,
   CryptoPurgeStep,

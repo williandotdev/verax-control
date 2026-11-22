@@ -90,7 +90,36 @@ export const COLLECTIONS = {
     if (!isUlid(rolloutId)) throw new TypeError('id de rodada inválido');
     return `${ROLLOUTS}/${rolloutId}/nodes`;
   },
+  /**
+   * Sincronização do nó dedicado com o plano de controle (`node-sync/`; docs/ARQUITETURA.md, "Sincronização com o plano
+   * de controle"), tudo sob o cliente e apagado pelo passo `deletion.node_sync`:
+   * - `nodeSync/state` (o que o nó disse de si na última chamada, gravado pelo cp-worker) e `nodeSync/desired` (a
+   *   geração do estado desejado, gravada pelo console);
+   * - `logSources/{id}` e `nodeUsers/{id}`: o que o responsável cadastrou no console (o id da fonte é um UUID; o do
+   *   pedido de usuário, um ULID);
+   * - `logSourceSecrets/{id}` e `nodeUserSecrets/{id}`: o envelope cifrado para o cofre do nó, apagado pelo cp-worker
+   *   quando o nó conta que aplicou (ou que não vai aplicar nunca), com o TTL de `expiresAt` como rede de segurança;
+   * - `logSourceReports/{id}` e `nodeUserReports/{id}`: o que o nó contou de cada item.
+   */
+  nodeSync: (tenantId: string): string => tenantSubcollection(tenantId, 'nodeSync'),
+  logSources: (tenantId: string): string => tenantSubcollection(tenantId, 'logSources'),
+  logSourceSecrets: (tenantId: string): string => tenantSubcollection(tenantId, 'logSourceSecrets'),
+  logSourceReports: (tenantId: string): string => tenantSubcollection(tenantId, 'logSourceReports'),
+  nodeUsers: (tenantId: string): string => tenantSubcollection(tenantId, 'nodeUsers'),
+  nodeUserSecrets: (tenantId: string): string => tenantSubcollection(tenantId, 'nodeUserSecrets'),
+  nodeUserReports: (tenantId: string): string => tenantSubcollection(tenantId, 'nodeUserReports'),
 } as const;
+
+/** As subcoleções da sincronização do nó sob `tenants/{id}`, todas apagadas na exclusão (`deletion.node_sync`). */
+export const NODE_SYNC_COLLECTIONS = [
+  'nodeSync',
+  'logSources',
+  'logSourceSecrets',
+  'logSourceReports',
+  'nodeUsers',
+  'nodeUserSecrets',
+  'nodeUserReports',
+] as const satisfies readonly (keyof typeof COLLECTIONS)[];
 
 export interface CompositeIndex {
   collectionGroup: string;
@@ -177,4 +206,14 @@ export const TTL_FIELDS: readonly TtlField[] = [
     retention: '60 s (código da entrada única no SIEM)',
   },
   { collectionGroup: COLLECTIONS.cellReports, field: TTL_FIELD, retention: '90 dias' },
+  {
+    collectionGroup: 'logSourceSecrets',
+    field: TTL_FIELD,
+    retention: '7 dias (o cp-worker apaga antes, quando o nó conta o resultado)',
+  },
+  {
+    collectionGroup: 'nodeUserSecrets',
+    field: TTL_FIELD,
+    retention: '1 dia depois do prazo do pedido (o cp-worker apaga antes, quando o nó conta o resultado)',
+  },
 ];

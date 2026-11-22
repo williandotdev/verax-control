@@ -10,6 +10,7 @@ import { EXPORT_LINK_SECONDS } from '../src/lifecycle/export.service.js';
 import type { MemoryQueuedTask } from '../src/queue/memory-step-queue.js';
 import { MemoryStepQueue } from '../src/queue/memory-step-queue.js';
 import { stepTaskBody } from '../src/queue/step-queue.js';
+import { COLLECTIONS, NODE_SYNC_COLLECTIONS } from '../src/firestore/collections.js';
 import { TenantStore } from '../src/tenants/tenant-store.js';
 import type { Tenant, TenantRecord, TenantState } from '../src/tenants/tenant.schema.js';
 import { minimalRecord } from '../src/lifecycle/lifecycle-rules.js';
@@ -857,6 +858,36 @@ describe('cp-worker: suspensão, reativação, cancelamento e exclusão (CP-11)'
       expect(done.body).toEqual({ deletion: 'purged' });
       await tick(at(200));
       expect(queue.tasks.slice(cursor)).toHaveLength(0);
+    });
+
+    it('deletion.node_sync: o que a sincronização do nó guardou sai na Exclusão 1, e só do cliente excluído', async () => {
+      const seeded = await provisioned('sinc-a');
+      const other = await provisioned('sinc-b');
+      const id = seeded.tenant.id;
+      // Os documentos da sincronização dos dois clientes (o conteúdo não importa à limpeza).
+      await documents.runTransaction((tx) => {
+        for (const tenantId of [id, other.tenant.id]) {
+          for (const name of NODE_SYNC_COLLECTIONS)
+            tx.set(COLLECTIONS[name](tenantId), 'doc-1', { marca: name });
+        }
+        return Promise.resolve();
+      });
+      await cancel(id);
+      await tick(at(30));
+      const delivered = await drain();
+      expect(delivered.every((d) => d.status === 200)).toBe(true);
+      const steps = delivered.map((d) => d.step);
+      expect(steps.indexOf('deletion.node_sync')).toBeGreaterThan(steps.indexOf('deletion.bootstrap_secret'));
+      expect(steps.indexOf('deletion.node_sync')).toBeLessThan(steps.indexOf('deletion.record'));
+      for (const name of NODE_SYNC_COLLECTIONS) {
+        expect(await documents.query(COLLECTIONS[name](id)), name).toEqual([]);
+        expect(await documents.query(COLLECTIONS[name](other.tenant.id)), name).toHaveLength(1);
+      }
+      const purged = (await audit.listForTenant(id)).find((record) => record.action === 'node_sync.purged');
+      expect(purged?.details).toEqual({ documents: NODE_SYNC_COLLECTIONS.length });
+      expect((await audit.listForTenant(other.tenant.id)).map((record) => record.action)).not.toContain(
+        'node_sync.purged',
+      );
     });
 
     it('uma exclusão que parou (Cloudflare recusou) avisa a Verax, e o delete-now recomeça e termina', async () => {

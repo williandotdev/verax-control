@@ -1,5 +1,7 @@
+import type { IncomingMessage } from 'node:http';
 import { type NestApplicationOptions, RequestMethod } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { NODE_SYNC_PATH, NODE_SYNC_REQUEST_MAX_BYTES } from '@verax/shared';
 import type { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
@@ -19,6 +21,32 @@ export const JSON_BODY_LIMIT = '16kb';
  * legal no teto (`MAX_LEGAL_TEXT_BYTES`, 100 KB) também, com o escape das quebras de linha e das aspas no JSON.
  */
 export const ADMIN_JSON_BODY_LIMIT = '256kb';
+
+/**
+ * A sincronização do nó dedicado (`node-sync/`) leva o relato de até 500 fontes e 200 usuários: 256 KB na rota pública
+ * (`NODE_SYNC_REQUEST_MAX_BYTES`, o teto do protocolo) e, no cp-worker, o mesmo corpo mais a credencial do nó que o
+ * cp-public acrescenta (um token de até 4 KB). Só nessas duas rotas: as outras seguem com `JSON_BODY_LIMIT`.
+ */
+export const NODE_SYNC_INTERNAL_PATHS = [
+  '/internal/node-sync/managed',
+  '/internal/node-sync/customer',
+] as const;
+export const NODE_SYNC_INTERNAL_BODY_LIMIT_BYTES = NODE_SYNC_REQUEST_MAX_BYTES + 8 * 1024;
+
+function pathOf(url: string | undefined): string {
+  return (url ?? '').split('?', 1)[0] ?? '';
+}
+
+/** O leitor de JSON só de algumas rotas (`POST` nelas, com `Content-Type` JSON), com o limite delas. */
+function routeJson(app: NestExpressApplication, paths: readonly string[], limit: number): void {
+  app.useBodyParser('json', {
+    limit,
+    type: (req: IncomingMessage) =>
+      req.method === 'POST' &&
+      paths.includes(pathOf(req.url)) &&
+      (req.headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase() === 'application/json',
+  });
+}
 
 /**
  * Opções de criação da aplicação, iguais em produção e nos testes. Sem body parser padrão: só JSON, registrado
@@ -80,6 +108,10 @@ export function configureApp(
   // O webhook da Stripe (CP-04, só no cp-public) lê o corpo bruto até 1 MB: a assinatura vale sobre os bytes exatos.
   // Registrado antes do JSON, que encontra a requisição já lida e não a toca.
   if (config.ROLE === 'public') app.use(WEBHOOK_PATH, rawBodyParser(WEBHOOK_BODY_LIMIT_BYTES));
+  // A sincronização do nó lê o corpo com o limite dela antes do leitor geral, que encontra a requisição já lida e não a
+  // toca (como no webhook).
+  if (config.ROLE === 'public') routeJson(app, [NODE_SYNC_PATH], NODE_SYNC_REQUEST_MAX_BYTES);
+  if (config.ROLE === 'worker') routeJson(app, NODE_SYNC_INTERNAL_PATHS, NODE_SYNC_INTERNAL_BODY_LIMIT_BYTES);
   app.useBodyParser('json', { limit: config.ROLE === 'admin' ? ADMIN_JSON_BODY_LIMIT : JSON_BODY_LIMIT });
   app.use(helmet(HELMET_OPTIONS));
   // Toda resposta é dinâmica: nem o cache do Hosting nem o do navegador guardam (plano §2.4).

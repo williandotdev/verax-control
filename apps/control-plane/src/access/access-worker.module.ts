@@ -29,6 +29,7 @@ import type { FleetCloud } from '../fleet/fleet-cloud.js';
 import { FLEET_CONTROLLERS, fleetProviders } from '../fleet/fleet.module.js';
 import { FleetTickStep } from '../fleet/rollout-engine.js';
 import { MAIL_SENDER, type MailSender, mailSenderFor } from '../mail/mail-sender.js';
+import { NODE_SYNC_WORKER_CONTROLLERS, NODE_SYNC_WORKER_PROVIDERS } from '../node-sync/node-sync.module.js';
 import { InstallationController } from '../provisioning/installation.js';
 import { NodeMailSyncController } from '../provisioning/node-mail.js';
 import { ProvisioningResumeController } from '../provisioning/provisioning-resume.js';
@@ -78,7 +79,9 @@ export interface AccessWorkerModuleOptions {
  * 18/11/2026, o registro da VM do cliente: o código de instalação do responsável
  * (`POST /internal/tenants/:id/enrollment-code`) e o `claim`/`report` da VM, repassados pelo cp-public
  * (`/internal/node-enrollment/*`). Desde 22/11/2026, a revelação única também pelo responsável
- * (`POST /internal/tenants/:id/reveal-access`), que copia o acesso no console e manda ao cliente.
+ * (`POST /internal/tenants/:id/reveal-access`), que copia o acesso no console e manda ao cliente, e a sincronização do
+ * nó dedicado (`POST /internal/node-sync/managed` e `/customer`, só para o cp-public, `node-sync/`), que usa as mesmas chaves do Google para
+ * conferir o token do nó gerenciado.
  */
 @Module({})
 export class AccessWorkerModule {
@@ -96,6 +99,7 @@ export class AccessWorkerModule {
         NodeMailSyncController,
         EnrollmentCodeController,
         InternalEnrollmentController,
+        ...NODE_SYNC_WORKER_CONTROLLERS,
         ...LIFECYCLE_CONTROLLERS,
         ...CELL_CONTROLLERS,
         ...FLEET_CONTROLLERS,
@@ -152,6 +156,7 @@ export class AccessWorkerModule {
           inject: [ID_TOKEN_KEY_SOURCE, CLOCK],
         },
         WorkerCallerGuard,
+        ...NODE_SYNC_WORKER_PROVIDERS,
       ],
       exports: [RevealEmailService, CellCommandPublisher, EnrollmentService],
     };

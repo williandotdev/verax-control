@@ -1,7 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { COLLECTIONS, COMPOSITE_INDEXES, TTL_FIELD, TTL_FIELDS } from './collections.js';
+import {
+  COLLECTIONS,
+  COMPOSITE_INDEXES,
+  NODE_SYNC_COLLECTIONS,
+  TTL_FIELD,
+  TTL_FIELDS,
+} from './collections.js';
 
 const indexesFile = new URL('../../firestore.indexes.json', import.meta.url);
 const ttlFile = new URL('../../firestore.ttl.json', import.meta.url);
@@ -79,6 +85,8 @@ describe('índices e TTL do Firestore (CP-02)', () => {
       COLLECTIONS.adminSessions,
       COLLECTIONS.adminLoginThrottle,
       COLLECTIONS.adminEnrollments,
+      'logSourceSecrets',
+      'nodeUserSecrets',
     ]) {
       expect(withTtl).toContain(group);
     }
@@ -91,6 +99,12 @@ describe('índices e TTL do Firestore (CP-02)', () => {
       COLLECTIONS.pricingTables,
       COLLECTIONS.costModels,
       COLLECTIONS.adminAccounts,
+      // A sincronização do nó: o estado, o desejado e os relatos têm a vida do cliente (o `deletion.node_sync` apaga).
+      'nodeSync',
+      'logSources',
+      'logSourceReports',
+      'nodeUsers',
+      'nodeUserReports',
     ]) {
       expect(withTtl).not.toContain(group);
     }
@@ -108,6 +122,11 @@ describe('índices e TTL do Firestore (CP-02)', () => {
       'tenants/01ARZ3NDEKTSV4RRFFQ69G5FAV/amendments',
     );
     expect(COLLECTIONS.steps('run-1')).toBe('provisioningRuns/run-1/steps');
+    for (const name of NODE_SYNC_COLLECTIONS) {
+      expect(COLLECTIONS[name]('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBe(
+        `tenants/01ARZ3NDEKTSV4RRFFQ69G5FAV/${name}`,
+      );
+    }
   });
 
   it('o id do documento pai é validado: nada escapa do caminho da subcoleção', () => {
@@ -115,6 +134,7 @@ describe('índices e TTL do Firestore (CP-02)', () => {
       expect(() => COLLECTIONS.transitions(bad)).toThrow(TypeError);
       expect(() => COLLECTIONS.invoices(bad)).toThrow(TypeError);
       expect(() => COLLECTIONS.amendments(bad)).toThrow(TypeError);
+      for (const name of NODE_SYNC_COLLECTIONS) expect(() => COLLECTIONS[name](bad)).toThrow(TypeError);
     }
     for (const bad of ['run-1/steps/x', '', '.', '..', 'a/b']) {
       expect(() => COLLECTIONS.steps(bad)).toThrow(TypeError);

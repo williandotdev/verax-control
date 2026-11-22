@@ -21,6 +21,7 @@ import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/log
 import type { DocumentStore } from './firestore/document-store.js';
 import { FirestoreModule } from './firestore/firestore.module.js';
 import { HealthModule } from './health/health.module.js';
+import { NodeSyncModule, type NodeSyncModuleOptions } from './node-sync/node-sync.module.js';
 import { LegalModule } from './legal/legal.module.js';
 import { PricingModule } from './pricing/pricing.module.js';
 import type { StepQueue } from './queue/step-queue.js';
@@ -40,6 +41,8 @@ export interface AppModuleOptions {
   revealGateway?: StatusModuleOptions['revealGateway'];
   /** Só nos testes: o caminho do cp-public até o registro da VM do cliente sem HTTP (em produção, o cp-worker). */
   enrollmentGateway?: NodeEnrollmentModuleOptions['enrollmentGateway'];
+  /** Só nos testes: o caminho do cp-public até a sincronização do nó sem HTTP (em produção, o cp-worker). */
+  nodeSyncGateway?: NodeSyncModuleOptions['nodeSyncGateway'];
   /** Só nos testes: o cofre da senha inicial em memória (em produção, o Secret Manager do projeto dos nós). */
   bootstrapSecrets?: AccessWorkerModuleOptions['bootstrapSecrets'];
   /** Só nos testes: o envio de e-mail em memória (em produção, o SMTP da configuração). */
@@ -101,13 +104,15 @@ function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMe
  * Página de status e revelação única (CP-05), com a mesma separação por papel: no `cp-public`, as rotas
  * `/v1/public/status*`; no `cp-worker`, a revelação em si (só ele lê o segredo), os passos `/internal/steps/*` e o
  * gatilho do plano B. Nenhum outro papel carrega estes módulos. O registro da VM do cliente segue o mesmo desenho: no
- * `cp-public`, `/v1/node-enrollment/*`, repassado ao cp-worker em `WORKER_URL` (`/internal/node-enrollment/*`).
+ * `cp-public`, `/v1/node-enrollment/*`, repassado ao cp-worker em `WORKER_URL` (`/internal/node-enrollment/*`), e a
+ * sincronização do nó dedicado também: `/v1/node-sync` no cp-public, `/internal/node-sync/{managed,customer}` no cp-worker.
  */
 function accessModulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMetadata['imports']> {
   if (role === 'public') {
     return [
       StatusModule.forRoot({ revealGateway: options.revealGateway }),
       NodeEnrollmentModule.forRoot({ enrollmentGateway: options.enrollmentGateway }),
+      NodeSyncModule.forRoot({ nodeSyncGateway: options.nodeSyncGateway }),
     ];
   }
   if (role === 'worker') {
