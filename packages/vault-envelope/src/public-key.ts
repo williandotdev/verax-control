@@ -11,7 +11,15 @@ export const MIN_KEY_BITS = 3072;
 export const MAX_KEY_BITS = 4096;
 export const MAX_KEY_VERSION = 999_999_999;
 
-const PUBLIC_PEM = /^-----BEGIN PUBLIC KEY-----\r?\n/;
+const PUBLIC_PEM_HEADER = '-----BEGIN PUBLIC KEY-----';
+
+/** O PEM da chave pública (SPKI), nunca o da privada: começa pelo cabeçalho da pública e não cita chave privada. */
+function isPublicPem(pem: string): boolean {
+  return (
+    !pem.includes('PRIVATE KEY') &&
+    (pem.startsWith(`${PUBLIC_PEM_HEADER}\n`) || pem.startsWith(`${PUBLIC_PEM_HEADER}\r\n`))
+  );
+}
 
 /** A chave pública e a versão dela, a que vai no prefixo do envelope (`v<versão>:`). */
 export interface EnvelopePublicKey {
@@ -48,7 +56,7 @@ export function assertEnvelopePublicKey(publicKey: EnvelopePublicKey): void {
  * dela (o `createPublicKey` aceitaria e derivaria a pública), outro algoritmo e outro tamanho.
  */
 export function vaultPublicKeyFromPem(pem: string, version: number): EnvelopePublicKey {
-  if (pem.includes('PRIVATE KEY') || !PUBLIC_PEM.test(pem)) {
+  if (!isPublicPem(pem)) {
     throw new CredentialVaultError('public_key_invalid');
   }
   let key: KeyObject;
@@ -70,7 +78,7 @@ export function vaultPublicKeyFromPem(pem: string, version: number): EnvelopePub
 export function publicKeyFingerprint(publicKey: string | KeyObject): string {
   let key: KeyObject;
   if (typeof publicKey === 'string') {
-    if (publicKey.includes('PRIVATE KEY') || !PUBLIC_PEM.test(publicKey)) {
+    if (!isPublicPem(publicKey)) {
       throw new CredentialVaultError('public_key_invalid');
     }
     try {
