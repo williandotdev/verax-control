@@ -29,6 +29,8 @@ export interface CreateAppOptions {
   revealGateway?: Parameters<typeof AppModule.register>[1]['revealGateway'];
   /** O registro da VM do cliente: o caminho do cp-public até o cp-worker, num dublê. */
   enrollmentGateway?: Parameters<typeof AppModule.register>[1]['enrollmentGateway'];
+  /** A sincronização do nó: o caminho do cp-public até o cp-worker, num dublê. */
+  nodeSyncGateway?: Parameters<typeof AppModule.register>[1]['nodeSyncGateway'];
   bootstrapSecrets?: Parameters<typeof AppModule.register>[1]['bootstrapSecrets'];
   mailSender?: Parameters<typeof AppModule.register>[1]['mailSender'];
   /** As chaves de um "Google" gerado no teste (`TestGoogleIdentity`), para os tokens das rotas internas. */
@@ -79,6 +81,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         logger: { destination: options.capture ?? new LogCapture() },
         revealGateway: options.revealGateway,
         enrollmentGateway: options.enrollmentGateway,
+        nodeSyncGateway: options.nodeSyncGateway,
         bootstrapSecrets: options.bootstrapSecrets,
         mailSender: options.mailSender,
         idTokenKeys: options.idTokenKeys,

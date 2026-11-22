@@ -285,6 +285,27 @@ describe('loadConfig (CP-01)', () => {
     ]);
   });
 
+  it('NODE_SYNC_AUDIENCE: o endereço de produção por padrão; só https, canônico e no caminho da rota', () => {
+    expect(loadConfig(validEnv).NODE_SYNC_AUDIENCE).toBe('https://conta.veraxsistemas.com.br/v1/node-sync');
+    expect(loadConfig(cpWorkerEnv, () => undefined).NODE_SYNC_AUDIENCE).toBe(
+      'https://conta.veraxsistemas.com.br/v1/node-sync',
+    );
+    expect(
+      loadConfig({ ...validEnv, NODE_SYNC_AUDIENCE: 'https://conta.exemplo.example/v1/node-sync' })
+        .NODE_SYNC_AUDIENCE,
+    ).toBe('https://conta.exemplo.example/v1/node-sync');
+    for (const value of [
+      'http://conta.exemplo.example/v1/node-sync',
+      'https://conta.exemplo.example',
+      'https://conta.exemplo.example/v1/node-sync/',
+      'https://conta.exemplo.example/v1/node-sync?x=1',
+      'https://conta.exemplo.example:8443/v1/node-sync',
+      'https://conta.exemplo.example/v1/node-enrollment/report',
+    ]) {
+      expect(problemsOf({ ...validEnv, NODE_SYNC_AUDIENCE: value }), value).toHaveLength(1);
+    }
+  });
+
   it('o ambiente que o Terraform dá ao cp-public sobe sem SMTP, sem aviso e com os saltos padrão', () => {
     expect(warningsOf(cpPublicEnv)).toEqual([]);
     const config = loadConfig(cpPublicEnv, () => undefined);

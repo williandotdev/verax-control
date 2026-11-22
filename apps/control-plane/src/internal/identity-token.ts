@@ -64,10 +64,10 @@ const identityClaimsSchema = z.object({
 export type IdentityClaims = z.infer<typeof identityClaimsSchema>;
 
 /** Um token de identidade tem por volta de 1 KB; acima disto nem se tenta decodificar. */
-const MAX_CREDENTIAL_LENGTH = 4096;
+export const MAX_CREDENTIAL_LENGTH = 4096;
 
 /** Só letras, números, `-` e `_` (base64url sem preenchimento), sem regex sobre a entrada. */
-function isBase64Url(value: string): boolean {
+export function isBase64Url(value: string): boolean {
   if (value.length === 0) return false;
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
@@ -78,7 +78,8 @@ function isBase64Url(value: string): boolean {
   return true;
 }
 
-function decodeSegment(segment: string): Record<string, unknown> | undefined {
+/** Uma parte do JWT (cabeçalho ou declarações) como objeto JSON; qualquer outra coisa, `undefined`. */
+export function decodeSegment(segment: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
@@ -134,6 +135,39 @@ function normalizeAudience(value: string): string {
 }
 
 /**
+ * A assinatura de um JWT de três partes com as chaves do Google: RS256, `kid` conhecido (relendo as chaves uma vez,
+ * para um `kid` novo depois de uma rotação), emissor, audiência (uma das `audiences`), `iat` e `exp` (com a folga da
+ * biblioteca, pelo relógio do sistema). Devolve o motivo da recusa, ou `undefined` quando confere. Usada aqui e pelo
+ * verificador do token do nó (`node-sync/node-identity.ts`). As mensagens de erro da biblioteca repetem o token
+ * inteiro: nada delas sai daqui.
+ */
+export async function verifyGoogleSignature(
+  client: OAuth2Client,
+  keySource: IdTokenKeySource,
+  jwt: string,
+  jose: Record<string, unknown>,
+  audiences: string[],
+): Promise<IdentityFailure | undefined> {
+  if (jose['alg'] !== 'RS256') return 'algorithm';
+  const kid = jose['kid'];
+  if (typeof kid !== 'string' || kid === '') return 'malformed';
+  let keys: Readonly<Record<string, string>>;
+  try {
+    keys = await keySource.keys();
+    if (!Object.hasOwn(keys, kid)) keys = await keySource.keys(true);
+  } catch {
+    return 'keys_unavailable';
+  }
+  if (!Object.hasOwn(keys, kid)) return 'unknown_key';
+  try {
+    await client.verifySignedJwtWithCertsAsync(jwt, { ...keys }, audiences, [...GOOGLE_ISSUERS]);
+  } catch {
+    return 'invalid';
+  }
+  return undefined;
+}
+
+/**
  * Confere o token do cabeçalho escolhido (`selectValidatedCredential`). As mensagens de erro da biblioteca repetem o
  * token inteiro: nada delas sai daqui, só o motivo.
  */
@@ -167,29 +201,11 @@ export class IdentityTokenVerifier {
       return this.checkClaims(payload, audience, true);
     }
     if (!isBase64Url(signature)) return { ok: false, reason: 'malformed' };
-    if (jose['alg'] !== 'RS256') return { ok: false, reason: 'algorithm' };
-    const kid = jose['kid'];
-    if (typeof kid !== 'string' || kid === '') return { ok: false, reason: 'malformed' };
-
-    let keys: Readonly<Record<string, string>>;
-    try {
-      keys = await this.keySource.keys();
-      if (!Object.hasOwn(keys, kid)) keys = await this.keySource.keys(true);
-    } catch {
-      return { ok: false, reason: 'keys_unavailable' };
-    }
-    if (!Object.hasOwn(keys, kid)) return { ok: false, reason: 'unknown_key' };
-    try {
-      // Assinatura, emissor, audiência, `iat` e `exp` (com a folga da biblioteca, pelo relógio do sistema).
-      await this.client.verifySignedJwtWithCertsAsync(
-        jwt,
-        { ...keys },
-        [normalizeAudience(audience), `${normalizeAudience(audience)}/`],
-        [...GOOGLE_ISSUERS],
-      );
-    } catch {
-      return { ok: false, reason: 'invalid' };
-    }
+    const failure = await verifyGoogleSignature(this.client, this.keySource, jwt, jose, [
+      normalizeAudience(audience),
+      `${normalizeAudience(audience)}/`,
+    ]);
+    if (failure !== undefined) return { ok: false, reason: failure };
     return this.checkClaims(payload, audience, false);
   }
 

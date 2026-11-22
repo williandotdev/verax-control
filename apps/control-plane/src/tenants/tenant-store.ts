@@ -326,6 +326,22 @@ export class TenantStore {
   }
 
   /**
+   * Os clientes com a conta de serviço do nó deste ID único (`resources.serviceAccountUniqueId`, o `sub` do token do nó
+   * gerenciado; `node-sync/`), pelo índice simples. Até 2: quem chama recusa quando há mais de um (a conta é de um nó
+   * só; dois clientes com o mesmo ID é um erro a investigar, nunca um a escolher).
+   */
+  async findByServiceAccountUniqueId(uniqueId: string): Promise<TenantRecord[]> {
+    const docs = await this.store.query(COLLECTIONS.tenants, {
+      where: [{ field: 'resources.serviceAccountUniqueId', op: '==', value: uniqueId }],
+      limit: 2,
+    });
+    return docs.map((doc) => ({
+      id: doc.id,
+      ...parseDocument(tenantSchema, COLLECTIONS.tenants, doc.id, doc.data),
+    }));
+  }
+
+  /**
    * Os clientes num estado, para o `tick` (CP-11). Com `due`, só os que têm o prazo (`billing.graceUntil`,
    * `lifecycle.deleteAfter` ou `lifecycle.cryptoDestroyAfter`) até `due.at`, pelo índice composto (estado, prazo) de
    * `collections.ts`; sem, a igualdade pelo índice simples. Até `limit` por chamada (o `tick` seguinte pega o resto).

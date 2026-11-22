@@ -2661,6 +2661,61 @@ panel.domain_wait → access.ready`. Sem `terraform.*`, `secrets.smtp_password`,
   VM do cliente; e só se algum código foi gerado); nada de Terraform, cofre de credenciais ou backups. O registro da VM
   sai com o acesso.
 
+### Sincronização com o plano de controle (22/11/2026)
+
+O nó dedicado (gerenciado na GCP ou na VM do cliente; nunca a célula) chama o plano de controle a cada 5 min (±30 s), conta
+o que aplicou e recebe o estado desejado: as fontes de log que o responsável cadastrou no console e os usuários que a
+Verax pediu para o cliente. O contrato está em `packages/shared/src/node-sync.ts` (protocolo 1, estrito dos dois
+lados); os envelopes, em `packages/vault-envelope`. O lado do plano de controle fica em
+`apps/control-plane/src/node-sync/` (o console que escreve o desejado e o nó que aplica vêm nos PRs seguintes).
+
+- **Caminho:** `POST /v1/node-sync` no `cp-public` (pelo Hosting de `conta.veraxsistemas.com.br`) → `POST
+/internal/node-sync` no `cp-worker` (`@WorkerCallers('public')`, o token do cp-public), como o registro da VM. O
+  cp-public só faz o barato: o limite por IP (120/h), só JSON até 256 KB (o leitor próprio da rota; as outras seguem com
+  16 KB; no worker, 256 KB mais a credencial), o formato da credencial, uma olhada sem assinatura no token (`aud`, `sub`,
+  prazo) e o corpo estrito. Sem CORS (`NO_CORS_PATHS`), `Cache-Control: private, no-store`, erro genérico: 400
+  `invalid_request` ou `clock_skew`, 401, 404 (cliente fora dos estados com nó), 409 `stale_sequence`, 429 com
+  `Retry-After`, 503.
+- **Credencial e cliente:** o cliente sai **só** da credencial, conferida de novo no cp-worker; o corpo nunca traz o id
+  do cliente do plano de controle.
+  - Nó gerenciado: `Authorization: Bearer <token de identidade>` da conta de serviço do nó, pedido ao servidor de
+    metadados com `audience=<NODE_SYNC_AUDIENCE>&format=full` (padrão `https://conta.veraxsistemas.com.br/v1/node-sync`).
+    O `NodeIdentityVerifier` aceita só token assinado (as chaves do Google, com a releitura numa rotação), o emissor, o
+    `aud` exato, o prazo (vida de até 1 h) e o `sub` de 21 dígitos, que acha o cliente por
+    `resources.serviceAccountUniqueId`; `google.compute_engine.project_id` e `instance_name` têm de ser
+    `resources.nodesProject` e `instanceName`. Dois clientes com o mesmo `sub`: recusado e `node_sync_identity_ambiguous`
+    no log. Vale em `provisioning`, `waiting_customer_connection`, `active` e `past_due`, com `hosting = verax` e sem
+    `placement`.
+  - VM do cliente: `Authorization: Bearer <nodeKey>` (a chave do registro, guardada só como SHA-256), com as regras do
+    `report` do registro (`nodeKeyValid`).
+  - A plataforma do corpo tem de ser a da credencial (`gcp` com o token, `vm` com a chave) e, no gerenciado,
+    `node.serviceAccountId` o `sub` do token; senão 401.
+- **Repetição e ritmo:** `sentAt` a até 10 min do relógio do plano de controle; `sequence` maior que a última aceita (o nó
+  guarda no banco dele); no máximo uma chamada aceita por cliente a cada 20 s. Uma recusa não grava nada.
+- **Firestore** (sob `tenants/{id}`, `node-sync.schema.ts`, tudo estrito):
+  - `nodeSync/state` (cp-worker, a cada chamada): `lastSeenAt`, `sequence`, `authKind`, plataforma, commit, capacidades,
+    `nodeTenantId` (o cliente no banco do nó, o do rótulo dos envelopes), `vaultKey` (versão, chave pública, impressão
+    digital e `since`), conta de serviço, IPs de saída, audience e erro do nó. `nodeSync/desired` (console): `generation`;
+  - `logSources/{UUID}` e `nodeUsers/{ULID}` (console): o cadastro desejado com revisão e lápide (`removed`), e o
+    usuário pedido com `notAfter`;
+  - `logSourceSecrets/{id}` e `nodeUserSecrets/{id}` (console cria, cp-worker apaga): só o envelope cifrado para a chave
+    do cofre do nó, com a impressão digital e o `nodeTenantId` dela, e o TTL de `expiresAt` (7 dias; o do usuário, 1
+    dia depois de `notAfter`) como rede de segurança (`firestore.tf`);
+  - `logSourceReports/{id}` e `nodeUserReports/{id}` (cp-worker): o último relato, regravado só quando muda.
+- **O que o cp-worker faz:** grava relatos só dos ids que existem sob o cliente da credencial (os outros são ignorados e
+  contados no log); apaga o envelope da fonte quando o relato mostra aquela revisão da credencial aplicada ou recusada
+  de vez (`credential_unreadable`, `credential_rejected_*`, `credential_kind_not_allowed`, `vault_disabled`), quando a
+  fonte sai ou o pedido vence, e o do usuário com qualquer resultado; responde só as seções das capacidades anunciadas,
+  a fonte com a credencial quando a revisão do envelope é maior que a última aplicada e o envelope é da chave atual do
+  nó, o usuário sem `created`, no prazo; até 512 KB de envelopes por resposta (o resto vai na seguinte, com
+  `pollAfterSeconds` mínimo), e a resposta conferida com `nodeSyncResponseSchema`.
+- **Reinstalação:** outro `nodeTenantId` ou outra impressão digital da chave do cofre → `node_sync.identity_changed` na
+  auditoria do plano de controle e os envelopes pendentes descartados (não abririam mais).
+- **Segurança:** o cp-public vê a credencial do nó em trânsito (como no registro), mas o worker confere de novo e nunca
+  há texto claro de segredo no caminho; um nó comprometido só alcança os próprios envelopes e só pode mentir sobre o
+  próprio estado (o console mostra como "o nó disse"); o token e a chave do nó entram na máscara do logger e nunca vão a
+  log, auditoria nem Firestore. **Exclusão:** o passo `deletion.node_sync` apaga todas essas subcoleções na Exclusão 1.
+
 ### Exclusão em dois tempos
 
 Só existe a partir de `canceled`, por dois caminhos: o `tick` com `deleteAfter` vencido e o `delete-now` do responsável
@@ -2673,10 +2728,10 @@ recomeça do primeiro passo da mesma fase (todos reconhecem o que já foi apagad
 `provisioning.runId`; o subdomínio dele pode ser de outro cliente agora) é excluído só no Firestore. Com recursos fora,
 o subdomínio tem de ser do cliente (`slugs/{slug}`), senão a exclusão para com `slug_not_owned` sem tocar em nada.
 
-| Momento              | Passos (fila `lifecycle`)                                                                                      | O que acontece                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| -------------------- | -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D+30 do cancelamento | `deletion.terraform`, `deletion.terraform_wait`, `deletion.cloudflare`, `deletion.firebase`, `deletion.record` | **Exclusão 1:** o executor com `EXECUTOR_ACTION=destroy`, `RUN_KIND=delete` (abaixo): VM, conta de serviço do nó, rede, NAT, tópicos e assinaturas, os cofres `admin-bootstrap`, `support-bootstrap`, `cloudflare-tunnel-token` e `smtp-password` e as permissões; o disco, os snapshots dele e o IP do NAT pela API. O túnel `vx-<slug>` e os registros de DNS só dos nomes do cliente (`api-<slug>.<zona>`, `<slug>.control...` e abaixo dele). O domínio e o site `vxc-<slug>-<hex>` do Firebase. Ficam o bucket de backups e o cofre `credentials-key`. O registro de exclusão por e-mail ao admin (sem SMTP, segue sem ele: `event=deletion_record_unsent`); o cliente perde `adminEmail`, `access` e os recursos que a Exclusão 2 não usa (`lifecycle.deletedAt`) |
-| D+97 do cancelamento | `crypto.destroy_key`, `crypto.purge`, `crypto.purge_wait`, `crypto.finish`                                     | **Exclusão 2 (cripto-destruição):** o cp-worker destrói todas as versões de `vx-<slug>-credentials-key` (`cpSecretVersionDestroyer`: lista e destrói, sem ler) e confere que nenhuma ficou viva (`lifecycle.cryptoDestroyedAt`); o executor com `EXECUTOR_ACTION=purge`, `RUN_KIND=crypto_destroy` apaga o cofre, o bucket de backups (só vazio) e `tenants/<slug>/default.tfstate`. O tenant vira registro mínimo (`lifecycle.purgedAt`; o prazo `cryptoDestroyAfter` sai, para o `tick` só consultar quem ainda tem trabalho): ficam `slug`, `company`, `stripe.customerId`, `billing.mode` (se houver), `lifecycle`, o que foi vendido (`configuration`, `limits`, `pricing`), o aceite dos textos (`consent`) e as faturas por 5 anos                               |
+| Momento              | Passos (fila `lifecycle`)                                                                                                            | O que acontece                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D+30 do cancelamento | `deletion.terraform`, `deletion.terraform_wait`, `deletion.cloudflare`, `deletion.firebase`, `deletion.node_sync`, `deletion.record` | **Exclusão 1:** o executor com `EXECUTOR_ACTION=destroy`, `RUN_KIND=delete` (abaixo): VM, conta de serviço do nó, rede, NAT, tópicos e assinaturas, os cofres `admin-bootstrap`, `support-bootstrap`, `cloudflare-tunnel-token` e `smtp-password` e as permissões; o disco, os snapshots dele e o IP do NAT pela API. O túnel `vx-<slug>` e os registros de DNS só dos nomes do cliente (`api-<slug>.<zona>`, `<slug>.control...` e abaixo dele). O domínio e o site `vxc-<slug>-<hex>` do Firebase. Ficam o bucket de backups e o cofre `credentials-key`. O que a sincronização do nó guardou no Firestore (o estado do nó, as fontes e os usuários pedidos pelo console, os envelopes e os relatos). O registro de exclusão por e-mail ao admin (sem SMTP, segue sem ele: `event=deletion_record_unsent`); o cliente perde `adminEmail`, `access` e os recursos que a Exclusão 2 não usa (`lifecycle.deletedAt`) |
+| D+97 do cancelamento | `crypto.destroy_key`, `crypto.purge`, `crypto.purge_wait`, `crypto.finish`                                                           | **Exclusão 2 (cripto-destruição):** o cp-worker destrói todas as versões de `vx-<slug>-credentials-key` (`cpSecretVersionDestroyer`: lista e destrói, sem ler) e confere que nenhuma ficou viva (`lifecycle.cryptoDestroyedAt`); o executor com `EXECUTOR_ACTION=purge`, `RUN_KIND=crypto_destroy` apaga o cofre, o bucket de backups (só vazio) e `tenants/<slug>/default.tfstate`. O tenant vira registro mínimo (`lifecycle.purgedAt`; o prazo `cryptoDestroyAfter` sai, para o `tick` só consultar quem ainda tem trabalho): ficam `slug`, `company`, `stripe.customerId`, `billing.mode` (se houver), `lifecycle`, o que foi vendido (`configuration`, `limits`, `pricing`), o aceite dos textos (`consent`) e as faturas por 5 anos                                                                                                                                                                           |
 
 **O executor na Exclusão 1 (`entrypoint.sh`, `destroy` só com `RUN_KIND=delete`):** `init`; `state list`; com a VM no
 estado, tira a proteção dela pela API (`instances.setDeletionProtection`; nada de `apply`, que num estado pela metade

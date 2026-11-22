@@ -128,6 +128,17 @@ export function isExactRedirectUri(value: string): boolean {
   }
 }
 
+/** O endereço público da sincronização do nó (`NODE_SYNC_PATH` no cp-public), o audience do token do nó gerenciado. */
+export const DEFAULT_NODE_SYNC_AUDIENCE = 'https://conta.veraxsistemas.com.br/v1/node-sync';
+
+/**
+ * O audience do token de identidade do nó gerenciado: https, sem porta, usuário, consulta nem fragmento, já na forma
+ * canônica e terminando no caminho da rota (`/v1/node-sync`). Comparado por igualdade exata com o `aud` do token.
+ */
+export function isNodeSyncAudience(value: string): boolean {
+  return isExactRedirectUri(value) && new URL(value).pathname === '/v1/node-sync';
+}
+
 /**
  * Versão do nó que o provisionamento instala: o release `node-vX.Y.Z` do manifesto assinado (`scripts/node-release.sh`),
  * o mesmo formato da variável `node_version` do `envs/tenant` e do `boot-install.sh` (PR-N7).
@@ -455,6 +466,17 @@ const envShape = {
   // dos nós, e o cp-worker só assina como ela (GUIA, "Exportação sob pedido"). Sem ela, a exportação responde 503: o
   // plano de controle não alcança os backups de nenhum cliente até o responsável decidir criar a conta.
   EXPORT_SIGNER_SA_EMAIL: serviceAccountEmail.optional(),
+  // A sincronização do nó dedicado (`node-sync/`): o `aud` que o token de identidade do nó gerenciado tem de trazer, o
+  // endereço público da rota (`https://<origem do cp-public>/v1/node-sync`, que o nó pede ao servidor de metadados).
+  // O cp-public o confere sem a assinatura (barra lixo sem acordar o worker) e o cp-worker com ela. O padrão é o
+  // endereço de produção: o Terraform não precisa defini-lo. Os dois papéis usam; o console, não.
+  NODE_SYNC_AUDIENCE: z
+    .string()
+    .refine(isNodeSyncAudience, {
+      error:
+        'deve ser o endereço https da rota, sem consulta nem fragmento (ex.: https://conta.exemplo.com.br/v1/node-sync)',
+    })
+    .default(DEFAULT_NODE_SYNC_AUDIENCE),
   // A conta do console do responsável (`cp-admin`, CP-11): o cp-worker aceita o token dela só nas operações do
   // responsável (`delete-now`, `export`, `resume`, cancelar, suspender e reativar um contrato direto), com quem agiu no
   // corpo. O console usa `WORKER_URL` para chamar.

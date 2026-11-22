@@ -18,7 +18,8 @@ import { ownsSlug } from './node-power.js';
  * - Exclusão 1 (`delete`): o `destroy` do Terraform do cliente pelo executor (com o `state rm` do disco, do IP do NAT,
  *   do bucket de backups e do cofre `credentials-key`, e o disco, os snapshots e o IP apagados pela API), o túnel e os
  *   registros de DNS do cliente no Cloudflare, o domínio e o site no Firebase, o cofre da senha inicial da VM do
- *   cliente (`hosting = customer`, que o Terraform não tem) e o registro de exclusão;
+ *   cliente (`hosting = customer`, que o Terraform não tem), o que a sincronização do nó guardou no Firestore (as fontes
+ *   e os usuários pedidos pelo console, os envelopes e os relatos do nó) e o registro de exclusão;
  * - Exclusão 2 (`crypto_destroy`): as versões de `credentials-key` destruídas pelo cp-worker, o cofre, o bucket de
  *   backups e o estado apagados pelo executor, e o registro mínimo.
  */
@@ -28,6 +29,7 @@ export const DELETE_STEPS = [
   'deletion.cloudflare',
   'deletion.firebase',
   'deletion.bootstrap_secret',
+  'deletion.node_sync',
   'deletion.record',
 ] as const;
 export const CRYPTO_DESTROY_STEPS = [

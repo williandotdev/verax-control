@@ -758,6 +758,27 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
       expect(await h.store.findByStripeCustomer('cus_demo_x')).toBeUndefined();
     });
 
+    it('acha pela conta de serviço do nó (até 2, para quem chama recusar a duplicada)', async () => {
+      const withAccount = async (slug: string, uniqueId: string) => {
+        const created = await h.store.create(demoTenant(slug), { reason: 'teste', audit: AUDIT });
+        return (
+          await h.store.change(created.id, () => ({
+            reason: 'teste',
+            audit: AUDIT,
+            mutate: (t) => ({ ...t, resources: { serviceAccountUniqueId: uniqueId } }),
+          }))
+        ).tenant;
+      };
+      const a = await withAccount('conta-sa-a', '100000000000000000001');
+      expect((await h.store.findByServiceAccountUniqueId('100000000000000000001')).map((t) => t.id)).toEqual([
+        a.id,
+      ]);
+      expect(await h.store.findByServiceAccountUniqueId('100000000000000000009')).toEqual([]);
+      await withAccount('conta-sa-b', '100000000000000000001');
+      await withAccount('conta-sa-c', '100000000000000000001');
+      expect(await h.store.findByServiceAccountUniqueId('100000000000000000001')).toHaveLength(2);
+    });
+
     it('páginas pelo subdomínio: ordem estável, o último slug é o cursor, e mudar um documento não muda a ordem', async () => {
       // Criados fora da ordem alfabética, para a ordem vir do slug e não da criação.
       for (const slug of [

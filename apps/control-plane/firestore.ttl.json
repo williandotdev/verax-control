@@ -44,6 +44,16 @@
       "collectionGroup": "cellReports",
       "field": "expiresAt",
       "retention": "90 dias"
+    },
+    {
+      "collectionGroup": "logSourceSecrets",
+      "field": "expiresAt",
+      "retention": "7 dias (o cp-worker apaga antes, quando o nó conta o resultado)"
+    },
+    {
+      "collectionGroup": "nodeUserSecrets",
+      "field": "expiresAt",
+      "retention": "1 dia depois do prazo do pedido (o cp-worker apaga antes, quando o nó conta o resultado)"
     }
   ]
 }
