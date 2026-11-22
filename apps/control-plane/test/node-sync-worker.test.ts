@@ -66,7 +66,8 @@ interface ManagedNode {
 }
 
 /**
- * A sincronização do nó pelo cp-worker inteiro (`POST /internal/node-sync`, como o cp-public a repassa, com o token
+ * A sincronização do nó pelo cp-worker inteiro (`POST /internal/node-sync/managed|customer`, como o cp-public a
+ * repassa, com o token
  * dele), sobre o Firestore em memória: a credencial conferida de novo e o cliente derivado só dela (o token do nó
  * gerenciado, assinado pelo "Google" do teste, ou a chave do nó da VM do cliente), o estado do nó, os relatos só sob o
  * cliente certo, a sequência e o intervalo, o relógio, os envelopes consumidos, as capacidades e a troca de identidade.
@@ -190,11 +191,18 @@ describe('cp-worker: sincronização do nó dedicado', () => {
     return { tenant, nodeKey };
   }
 
+  /** Como o cp-public repassa: o token do nó gerenciado em `/managed`, a chave da VM do cliente em `/customer`. */
   function call(credential: NodeSyncCredential, body: NodeSyncRequest): request.Test {
-    return request(app.getHttpServer())
-      .post('/internal/node-sync')
-      .set('Authorization', bearer(PUBLIC_SA))
-      .send({ credential, request: body });
+    const http = request(app.getHttpServer());
+    return credential.kind === 'gcp_identity'
+      ? http
+          .post('/internal/node-sync/managed')
+          .set('Authorization', bearer(PUBLIC_SA))
+          .send({ token: credential.token, request: body })
+      : http
+          .post('/internal/node-sync/customer')
+          .set('Authorization', bearer(PUBLIC_SA))
+          .send({ nodeKey: credential.nodeKey, request: body });
   }
 
   /** Uma chamada do nó gerenciado, com a próxima sequência e o relógio agora. */
@@ -888,36 +896,52 @@ describe('cp-worker: sincronização do nó dedicado', () => {
     expect(line).toMatchObject({ sources: 500, unknownSources: 500, reportsWritten: 0 });
   });
 
-  it('só o cp-public chama; corpo fora do protocolo é 400', async () => {
+  it('só o cp-public chama; cada rota só com a sua credencial; corpo fora do protocolo é 400', async () => {
     const node = await managed();
-    const body = {
-      credential: { kind: 'gcp_identity', token: nodeToken(node) },
-      request: nodeSyncRequest({
-        sequence: 1,
-        sentAt: clock.now(),
-        identity: node.identity,
-        serviceAccountId: node.sub,
-      }),
-    };
-    for (const email of [OWNER, INVOKER]) {
-      const response = await request(app.getHttpServer())
-        .post('/internal/node-sync')
+    const vm = await customer();
+    const token = nodeToken(node);
+    const syncBody = nodeSyncRequest({
+      sequence: 1,
+      sentAt: clock.now(),
+      identity: node.identity,
+      serviceAccountId: node.sub,
+    });
+    const post = (path: string, email: string, body: unknown): request.Test =>
+      request(app.getHttpServer())
+        .post(path)
         .set('Authorization', bearer(email))
-        .send(body);
-      expect(response.status).toBe(403);
+        .send(body as object);
+    for (const email of [OWNER, INVOKER]) {
+      expect((await post('/internal/node-sync/managed', email, { token, request: syncBody })).status).toBe(
+        403,
+      );
+      expect(
+        (await post('/internal/node-sync/customer', email, { nodeKey: vm.nodeKey, request: syncBody }))
+          .status,
+      ).toBe(403);
     }
-    for (const bad of [
-      { ...body, extra: 1 },
-      { ...body, credential: { kind: 'node_key', nodeKey: 'curta' } },
-      { ...body, credential: { kind: 'tenant', tenantId: node.tenant.id } },
-      { ...body, request: { ...body.request, protocol: 2 } },
-    ]) {
-      const response = await request(app.getHttpServer())
-        .post('/internal/node-sync')
-        .set('Authorization', bearer(PUBLIC_SA))
-        .send(bad);
-      expect(response.status).toBe(400);
+    // A rota antiga, com a credencial dentro do corpo, não existe mais.
+    const legacy = await post('/internal/node-sync', PUBLIC_SA, {
+      credential: { kind: 'gcp_identity', token },
+      request: syncBody,
+    });
+    expect(legacy.status).toBe(404);
+    for (const [path, bad] of [
+      // A credencial da outra rota, no campo desta ou no da outra: recusada pelo corpo estrito.
+      ['/internal/node-sync/customer', { nodeKey: token, request: syncBody }],
+      ['/internal/node-sync/customer', { token, request: syncBody }],
+      ['/internal/node-sync/managed', { token: vm.nodeKey, request: syncBody }],
+      ['/internal/node-sync/managed', { nodeKey: vm.nodeKey, request: syncBody }],
+      // O formato antigo, um campo a mais e um corpo fora do protocolo.
+      ['/internal/node-sync/managed', { credential: { kind: 'gcp_identity', token }, request: syncBody }],
+      ['/internal/node-sync/managed', { token, request: syncBody, kind: 'node_key' }],
+      ['/internal/node-sync/customer', { nodeKey: 'curta', request: syncBody }],
+      ['/internal/node-sync/managed', { token, request: { ...syncBody, protocol: 2 } }],
+    ] as const) {
+      expect((await post(path, PUBLIC_SA, bad)).status, path).toBe(400);
     }
     expect(await documents.get(COLLECTIONS.nodeSync(node.tenant.id), NODE_SYNC_STATE_DOC)).toBeUndefined();
+    expect(await documents.get(COLLECTIONS.nodeSync(vm.tenant.id), NODE_SYNC_STATE_DOC)).toBeUndefined();
+    expect(capture.text).not.toContain(vm.nodeKey);
   });
 });

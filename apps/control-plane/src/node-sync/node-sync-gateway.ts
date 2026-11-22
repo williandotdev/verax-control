@@ -1,6 +1,5 @@
 import { type NodeSyncRequest, type NodeSyncResponse, nodeSyncResponseSchema } from '@verax/shared';
 import type { IdTokenSource } from '../status/id-token.js';
-import type { NodeSyncCredential } from './node-identity.js';
 
 /** Os desfechos da sincronização que o nó vê pelo código; qualquer outra falha é `unavailable`. */
 export type NodeSyncFailureCode =
@@ -26,14 +25,14 @@ export class NodeSyncGatewayError extends Error {
 /**
  * O caminho do cp-public até a sincronização no cp-worker. O cp-public não lê nem grava nada do estado do nó: repassa a
  * credencial do nó (conferida de novo no worker) e o corpo já conferido, com a identidade dele, como o registro da VM.
+ * Um método por credencial, cada um com a sua rota no worker (a rota diz qual credencial é; o corpo, nunca).
  * Implementações: `WorkerNodeSyncGateway` (produção) e, nos testes, um dublê.
  */
 export interface NodeSyncGateway {
-  sync(
-    credential: NodeSyncCredential,
-    request: NodeSyncRequest,
-    requestId?: string,
-  ): Promise<NodeSyncResponse>;
+  /** O nó gerenciado: o token de identidade do Google (`/internal/node-sync/managed`). */
+  syncManaged(token: string, request: NodeSyncRequest, requestId?: string): Promise<NodeSyncResponse>;
+  /** A VM do cliente: a chave do nó (`/internal/node-sync/customer`). */
+  syncCustomer(nodeKey: string, request: NodeSyncRequest, requestId?: string): Promise<NodeSyncResponse>;
 }
 
 export const NODE_SYNC_GATEWAY = Symbol('NODE_SYNC_GATEWAY');
@@ -64,8 +63,8 @@ function codeOf(text: string): unknown {
 }
 
 /**
- * `POST <WORKER_URL>/internal/node-sync` `{credential, request}` com o token de identidade do cp-public. A resposta é
- * conferida com o schema do protocolo antes de voltar ao nó; o texto dela nunca vai a log.
+ * `POST <WORKER_URL>/internal/node-sync/managed` `{token, request}` ou `/internal/node-sync/customer` `{nodeKey,
+ * request}`, com o token de identidade do cp-public. A resposta é conferida com o schema do protocolo antes de voltar ao nó; o texto dela nunca vai a log.
  */
 export class WorkerNodeSyncGateway implements NodeSyncGateway {
   constructor(
@@ -75,20 +74,24 @@ export class WorkerNodeSyncGateway implements NodeSyncGateway {
     private readonly timeoutMs: number = WORKER_TIMEOUT_MS,
   ) {}
 
-  async sync(
-    credential: NodeSyncCredential,
-    request: NodeSyncRequest,
-    requestId?: string,
-  ): Promise<NodeSyncResponse> {
+  syncManaged(token: string, request: NodeSyncRequest, requestId?: string): Promise<NodeSyncResponse> {
+    return this.post('/internal/node-sync/managed', { token, request }, requestId);
+  }
+
+  syncCustomer(nodeKey: string, request: NodeSyncRequest, requestId?: string): Promise<NodeSyncResponse> {
+    return this.post('/internal/node-sync/customer', { nodeKey, request }, requestId);
+  }
+
+  private async post(path: string, payload: unknown, requestId?: string): Promise<NodeSyncResponse> {
     const identity = await this.idTokens.get(this.workerUrl);
-    const response = await this.fetchFn(new URL('/internal/node-sync', this.workerUrl), {
+    const response = await this.fetchFn(new URL(path, this.workerUrl), {
       method: 'POST',
       headers: {
         authorization: `Bearer ${identity}`,
         'content-type': 'application/json',
         ...(requestId === undefined ? {} : { 'x-request-id': requestId }),
       },
-      body: JSON.stringify({ credential, request }),
+      body: JSON.stringify(payload),
       redirect: 'error',
       signal: AbortSignal.timeout(this.timeoutMs),
     });
@@ -115,7 +118,11 @@ export class WorkerNodeSyncGateway implements NodeSyncGateway {
 
 /** Sem `WORKER_URL`: a sincronização responde 503 e nada é lido nem gravado. */
 export class UnconfiguredNodeSyncGateway implements NodeSyncGateway {
-  sync(): Promise<never> {
+  syncManaged(): Promise<never> {
+    return Promise.reject(new NodeSyncGatewayError('unavailable'));
+  }
+
+  syncCustomer(): Promise<never> {
     return Promise.reject(new NodeSyncGatewayError('unavailable'));
   }
 }

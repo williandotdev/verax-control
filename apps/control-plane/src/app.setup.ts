@@ -27,20 +27,23 @@ export const ADMIN_JSON_BODY_LIMIT = '256kb';
  * (`NODE_SYNC_REQUEST_MAX_BYTES`, o teto do protocolo) e, no cp-worker, o mesmo corpo mais a credencial do nó que o
  * cp-public acrescenta (um token de até 4 KB). Só nessas duas rotas: as outras seguem com `JSON_BODY_LIMIT`.
  */
-export const NODE_SYNC_INTERNAL_PATH = '/internal/node-sync';
+export const NODE_SYNC_INTERNAL_PATHS = [
+  '/internal/node-sync/managed',
+  '/internal/node-sync/customer',
+] as const;
 export const NODE_SYNC_INTERNAL_BODY_LIMIT_BYTES = NODE_SYNC_REQUEST_MAX_BYTES + 8 * 1024;
 
 function pathOf(url: string | undefined): string {
   return (url ?? '').split('?', 1)[0] ?? '';
 }
 
-/** O leitor de JSON só de uma rota (`POST` nela, com `Content-Type` JSON), com o limite dela. */
-function routeJson(app: NestExpressApplication, path: string, limit: number): void {
+/** O leitor de JSON só de algumas rotas (`POST` nelas, com `Content-Type` JSON), com o limite delas. */
+function routeJson(app: NestExpressApplication, paths: readonly string[], limit: number): void {
   app.useBodyParser('json', {
     limit,
     type: (req: IncomingMessage) =>
       req.method === 'POST' &&
-      pathOf(req.url) === path &&
+      paths.includes(pathOf(req.url)) &&
       (req.headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase() === 'application/json',
   });
 }
@@ -107,8 +110,8 @@ export function configureApp(
   if (config.ROLE === 'public') app.use(WEBHOOK_PATH, rawBodyParser(WEBHOOK_BODY_LIMIT_BYTES));
   // A sincronização do nó lê o corpo com o limite dela antes do leitor geral, que encontra a requisição já lida e não a
   // toca (como no webhook).
-  if (config.ROLE === 'public') routeJson(app, NODE_SYNC_PATH, NODE_SYNC_REQUEST_MAX_BYTES);
-  if (config.ROLE === 'worker') routeJson(app, NODE_SYNC_INTERNAL_PATH, NODE_SYNC_INTERNAL_BODY_LIMIT_BYTES);
+  if (config.ROLE === 'public') routeJson(app, [NODE_SYNC_PATH], NODE_SYNC_REQUEST_MAX_BYTES);
+  if (config.ROLE === 'worker') routeJson(app, NODE_SYNC_INTERNAL_PATHS, NODE_SYNC_INTERNAL_BODY_LIMIT_BYTES);
   app.useBodyParser('json', { limit: config.ROLE === 'admin' ? ADMIN_JSON_BODY_LIMIT : JSON_BODY_LIMIT });
   app.use(helmet(HELMET_OPTIONS));
   // Toda resposta é dinâmica: nem o cache do Hosting nem o do navegador guardam (plano §2.4).

@@ -30,7 +30,16 @@ class FakeNodeSyncGateway implements NodeSyncGateway {
   retryAfter: number | undefined;
   response: NodeSyncResponse = { protocol: 1, generation: 0, pollAfterSeconds: 300, sources: [], users: [] };
 
-  sync(credential: NodeSyncCredential, request: NodeSyncRequest): Promise<NodeSyncResponse> {
+  syncManaged(token: string, request: NodeSyncRequest): Promise<NodeSyncResponse> {
+    return this.answer({ kind: 'gcp_identity', token }, request);
+  }
+
+  syncCustomer(nodeKey: string, request: NodeSyncRequest): Promise<NodeSyncResponse> {
+    return this.answer({ kind: 'node_key', nodeKey }, request);
+  }
+
+  /** Grava qual método (e com que credencial) o cp-public chamou e responde o que o teste mandou. */
+  private answer(credential: NodeSyncCredential, request: NodeSyncRequest): Promise<NodeSyncResponse> {
     this.calls.push({ credential, request });
     if (this.failure === 'crash') return Promise.reject(new Error('rede'));
     if (this.failure !== undefined) {

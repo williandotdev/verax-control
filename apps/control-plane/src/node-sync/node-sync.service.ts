@@ -37,10 +37,10 @@ import {
 } from '../firestore/document-store.js';
 import { TenantStore } from '../tenants/tenant-store.js';
 import { hostingOf, type TenantRecord, type TenantState } from '../tenants/tenant.schema.js';
-import type { NodeSyncCredential } from './node-identity.js';
 import { NodeIdentityVerifier } from './node-identity.js';
 import {
   type LogSource,
+  type NodeSyncAuthKind,
   logSourceReportSchema,
   logSourceSchema,
   type LogSourceSecret,
@@ -200,7 +200,6 @@ type ApplyResult =
   | { ok: false; reason: 'stale_sequence' }
   | { ok: false; reason: 'too_soon'; retryAfterSeconds: number };
 
-type CredentialOf<K extends NodeSyncCredential['kind']> = Extract<NodeSyncCredential, { kind: K }>;
 type Refuse = (reason: 'unauthenticated' | 'not_found', detail: string, tenantId?: string) => Resolution;
 
 type Resolution = { ok: true; tenant: TenantRecord } | { ok: false; reason: 'unauthenticated' | 'not_found' };
@@ -236,12 +235,34 @@ export class NodeSyncService {
     @InjectPinoLogger(NodeSyncService.name) private readonly logger: PinoLogger,
   ) {}
 
-  async sync(
-    credential: NodeSyncCredential,
+  /** O nó gerenciado na GCP (`POST /internal/node-sync/managed`): o token de identidade do Google da conta do nó. */
+  async syncManaged(token: string, request: NodeSyncRequest, requestId?: string): Promise<NodeSyncOutcome> {
+    const resolved = await this.resolveManaged(
+      token,
+      request,
+      this.refuser('gcp_identity', requestId),
+      requestId,
+    );
+    return this.syncResolved(resolved, 'gcp_identity', request, requestId);
+  }
+
+  /** A VM do cliente (`POST /internal/node-sync/customer`): a chave do nó que o registro entregou. */
+  async syncCustomer(
+    nodeKey: string,
     request: NodeSyncRequest,
     requestId?: string,
   ): Promise<NodeSyncOutcome> {
-    const resolved = await this.resolve(credential, request, requestId);
+    const resolved = await this.resolveCustomer(nodeKey, request, this.refuser('node_key', requestId));
+    return this.syncResolved(resolved, 'node_key', request, requestId);
+  }
+
+  /** O caminho comum depois da credencial conferida: o relógio, a transação e o log. */
+  private async syncResolved(
+    resolved: Resolution,
+    authKind: NodeSyncAuthKind,
+    request: NodeSyncRequest,
+    requestId: string | undefined,
+  ): Promise<NodeSyncOutcome> {
     if (!resolved.ok) return resolved;
     const tenant = resolved.tenant;
     const now = this.clock.now();
@@ -253,7 +274,7 @@ export class NodeSyncService {
       return { ok: false, reason: 'clock_skew' };
     }
     const result = await this.store.runTransaction((tx) =>
-      this.apply(tx, tenant.id, credential.kind, request, now, requestId),
+      this.apply(tx, tenant.id, authKind, request, now, requestId),
     );
     if (!result.ok) {
       this.logger.info(
@@ -273,7 +294,7 @@ export class NodeSyncService {
       {
         event: 'node_sync',
         tenantId: tenant.id,
-        authKind: credential.kind,
+        authKind,
         sequence: request.sequence,
         generation: result.response.generation,
         sources: request.sources.length,
@@ -286,28 +307,15 @@ export class NodeSyncService {
     return { ok: true, response: result.response };
   }
 
-  /**
-   * O cliente da credencial, conferida aqui; nada do corpo escolhe o cliente (só a plataforma é cruzada). Cada tipo de
-   * credencial tem o seu caminho, e os dois autenticam por inteiro: o token do Google do nó gerenciado (assinatura,
-   * audiência, conta de serviço, projeto e VM) e a chave do registro da VM do cliente (o hash guardado no registro). O
-   * tipo só escolhe qual dos dois roda; nenhum deles é dispensado por ele.
+  /*
+   * O cliente sai da credencial, conferida aqui; nada do corpo escolhe o cliente (só a plataforma é cruzada). Cada
+   * credencial tem a sua rota e a sua entrada (`syncManaged`, `syncCustomer`), e as duas autenticam por inteiro: o
+   * token do Google do nó gerenciado (assinatura, audiência, conta de serviço, projeto e VM) e a chave do registro da VM
+   * do cliente (o hash guardado no registro). Nada no worker lê do corpo qual das duas é.
    */
-  private resolve(
-    credential: NodeSyncCredential,
-    request: NodeSyncRequest,
-    requestId: string | undefined,
-  ): Promise<Resolution> {
-    const refuse = this.refuser(credential.kind, requestId);
-    const resolvers: { [K in NodeSyncCredential['kind']]: (value: CredentialOf<K>) => Promise<Resolution> } =
-      {
-        gcp_identity: (value) => this.resolveManaged(value.token, request, refuse, requestId),
-        node_key: (value) => this.resolveCustomer(value.nodeKey, request, refuse),
-      };
-    return (resolvers[credential.kind] as (value: NodeSyncCredential) => Promise<Resolution>)(credential);
-  }
 
   /** A recusa com o motivo no log (nunca a credencial), no formato de `Resolution`. */
-  private refuser(authKind: NodeSyncCredential['kind'], requestId: string | undefined): Refuse {
+  private refuser(authKind: NodeSyncAuthKind, requestId: string | undefined): Refuse {
     return (reason, detail, tenantId) => {
       this.logger.warn(
         { event: 'node_sync_refused', reason: detail, authKind, tenantId, requestId },
@@ -382,7 +390,7 @@ export class NodeSyncService {
   private async apply(
     tx: DocumentTransaction,
     tenantId: string,
-    authKind: NodeSyncCredential['kind'],
+    authKind: NodeSyncAuthKind,
     request: NodeSyncRequest,
     now: Date,
     requestId: string | undefined,

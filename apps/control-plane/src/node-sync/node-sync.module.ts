@@ -49,7 +49,7 @@ export class NodeSyncModule {
 
 /**
  * O lado do cp-worker, registrado pelo `AccessWorkerModule` (que já tem a guarda das rotas internas e as chaves do
- * Google, `ID_TOKEN_KEY_SOURCE`): `POST /internal/node-sync`, só para o cp-public.
+ * Google, `ID_TOKEN_KEY_SOURCE`): `POST /internal/node-sync/managed` e `/customer`, só para o cp-public.
  */
 export const NODE_SYNC_WORKER_CONTROLLERS = [InternalNodeSyncController] as const;
 

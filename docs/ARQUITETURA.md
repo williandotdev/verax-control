@@ -2669,8 +2669,11 @@ Verax pediu para o cliente. O contrato está em `packages/shared/src/node-sync.t
 lados); os envelopes, em `packages/vault-envelope`. O lado do plano de controle fica em
 `apps/control-plane/src/node-sync/` (o console que escreve o desejado e o nó que aplica vêm nos PRs seguintes).
 
-- **Caminho:** `POST /v1/node-sync` no `cp-public` (pelo Hosting de `conta.veraxsistemas.com.br`) → `POST
-/internal/node-sync` no `cp-worker` (`@WorkerCallers('public')`, o token do cp-public), como o registro da VM. O
+- **Caminho:** `POST /v1/node-sync` no `cp-public` (pelo Hosting de `conta.veraxsistemas.com.br`) → no `cp-worker`
+  (`@WorkerCallers('public')`, o token do cp-public), como o registro da VM, uma rota por credencial: `POST
+/internal/node-sync/managed` `{token, request}` (o nó gerenciado) ou `POST /internal/node-sync/customer` `{nodeKey,
+request}` (a VM do cliente). O cp-public escolhe a rota pelo formato do `Authorization` que já confere; no worker,
+  nada lê do corpo qual credencial é, e cada rota tem a sua entrada no serviço (`syncManaged`, `syncCustomer`). O
   cp-public só faz o barato: o limite por IP (120/h), só JSON até 256 KB (o leitor próprio da rota; as outras seguem com
   16 KB; no worker, 256 KB mais a credencial), o formato da credencial, uma olhada sem assinatura no token (`aud`, `sub`,
   prazo) e o corpo estrito. Sem CORS (`NO_CORS_PATHS`), `Cache-Control: private, no-store`, erro genérico: 400

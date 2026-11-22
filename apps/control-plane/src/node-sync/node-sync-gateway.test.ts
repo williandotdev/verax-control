@@ -4,7 +4,11 @@ import { NodeSyncGatewayError, WorkerNodeSyncGateway } from './node-sync-gateway
 
 const WORKER_URL = 'https://cp-worker-123456789012.southamerica-east1.run.app';
 const IDENTITY = { get: (audience: string) => Promise.resolve(`identidade-para-${audience}`) };
-const CREDENTIAL = { kind: 'node_key', nodeKey: 'A'.repeat(43) } as const;
+const NODE_KEY = 'A'.repeat(43);
+/** Um JWT de mentira, montado aqui (só a forma importa: o gateway não o confere). */
+const TOKEN = [{ alg: 'RS256' }, { sub: 'teste' }, 'assinatura']
+  .map((part) => Buffer.from(JSON.stringify(part)).toString('base64url'))
+  .join('.');
 const REQUEST = { protocol: 1 } as unknown as NodeSyncRequest;
 const RESPONSE = { protocol: 1, generation: 3, pollAfterSeconds: 300, sources: [] };
 
@@ -33,21 +37,24 @@ async function failure(promise: Promise<unknown>): Promise<NodeSyncGatewayError>
   throw new Error('esperava a recusa');
 }
 
-/** O caminho do cp-public até o cp-worker (`POST /internal/node-sync`), com o `fetch` num dublê. */
+/** O caminho do cp-public até o cp-worker (`POST /internal/node-sync/managed|customer`), com o `fetch` num dublê. */
 describe('WorkerNodeSyncGateway', () => {
-  it('manda a credencial e o pedido com o token do cp-public e confere a resposta do protocolo', async () => {
+  it('cada credencial na sua rota, com o token do cp-public; a resposta conferida pelo protocolo', async () => {
     const fetch = fakeFetch(200, RESPONSE);
     const gateway = new WorkerNodeSyncGateway(WORKER_URL, IDENTITY, fetch.fn);
-    expect(await gateway.sync(CREDENTIAL, REQUEST, 'req-00000001')).toEqual(RESPONSE);
-    const [call] = fetch.calls;
-    expect(call?.url).toBe(`${WORKER_URL}/internal/node-sync`);
+    expect(await gateway.syncManaged(TOKEN, REQUEST, 'req-00000002')).toEqual(RESPONSE);
+    expect(await gateway.syncCustomer(NODE_KEY, REQUEST, 'req-00000001')).toEqual(RESPONSE);
+    const [managed, call] = fetch.calls;
+    expect(managed?.url).toBe(`${WORKER_URL}/internal/node-sync/managed`);
+    expect(JSON.parse(managed?.init.body as string)).toEqual({ token: TOKEN, request: REQUEST });
+    expect(call?.url).toBe(`${WORKER_URL}/internal/node-sync/customer`);
     expect(call?.init.method).toBe('POST');
     expect(call?.init.redirect).toBe('error');
     expect(call?.init.headers).toMatchObject({
       authorization: `Bearer identidade-para-${WORKER_URL}`,
       'x-request-id': 'req-00000001',
     });
-    expect(JSON.parse(call?.init.body as string)).toEqual({ credential: CREDENTIAL, request: REQUEST });
+    expect(JSON.parse(call?.init.body as string)).toEqual({ nodeKey: NODE_KEY, request: REQUEST });
   });
 
   it('traduz o status do worker no código que o nó vê; o resto é unavailable', async () => {
@@ -64,7 +71,8 @@ describe('WorkerNodeSyncGateway', () => {
     ];
     for (const [status, body, code] of cases) {
       const gateway = new WorkerNodeSyncGateway(WORKER_URL, IDENTITY, fakeFetch(status, body).fn);
-      expect((await failure(gateway.sync(CREDENTIAL, REQUEST))).code, String(status)).toBe(code);
+      expect((await failure(gateway.syncCustomer(NODE_KEY, REQUEST))).code, String(status)).toBe(code);
+      expect((await failure(gateway.syncManaged(TOKEN, REQUEST))).code, String(status)).toBe(code);
     }
   });
 
@@ -74,7 +82,7 @@ describe('WorkerNodeSyncGateway', () => {
       IDENTITY,
       fakeFetch(429, {}, { 'retry-after': '7' }).fn,
     );
-    expect(await failure(limited.sync(CREDENTIAL, REQUEST))).toMatchObject({
+    expect(await failure(limited.syncManaged(TOKEN, REQUEST))).toMatchObject({
       code: 'too_soon',
       retryAfterSeconds: 7,
     });
@@ -83,13 +91,13 @@ describe('WorkerNodeSyncGateway', () => {
       IDENTITY,
       fakeFetch(429, {}, { 'retry-after': 'x' }).fn,
     );
-    expect(await failure(odd.sync(CREDENTIAL, REQUEST))).toMatchObject({ retryAfterSeconds: 20 });
+    expect(await failure(odd.syncCustomer(NODE_KEY, REQUEST))).toMatchObject({ retryAfterSeconds: 20 });
   });
 
   it('uma resposta 200 fora do protocolo não chega ao nó', async () => {
     for (const body of ['{', { ...RESPONSE, extra: true }, { ...RESPONSE, pollAfterSeconds: 5 }]) {
       const gateway = new WorkerNodeSyncGateway(WORKER_URL, IDENTITY, fakeFetch(200, body).fn);
-      expect((await failure(gateway.sync(CREDENTIAL, REQUEST))).code).toBe('unavailable');
+      expect((await failure(gateway.syncManaged(TOKEN, REQUEST))).code).toBe('unavailable');
     }
   });
 });

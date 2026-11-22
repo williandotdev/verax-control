@@ -1,5 +1,5 @@
 import { Body, Controller, HttpCode, HttpStatus, Inject, Post, Req, Res } from '@nestjs/common';
-import { type NodeSyncResponse, nodeSyncRequestSchema } from '@verax/shared';
+import { type NodeSyncRequest, type NodeSyncResponse, nodeSyncRequestSchema } from '@verax/shared';
 import type { Request, Response } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { CLOCK, type Clock } from '../common/clock.js';
@@ -55,6 +55,12 @@ const ERRORS: Readonly<Record<Exclude<NodeSyncFailureCode, 'too_soon'>, () => Ap
   unavailable: () => new ApiError(HttpStatus.SERVICE_UNAVAILABLE, 'Indisponível', 'node_sync_unavailable'),
 };
 
+/** A credencial do nó na máscara do logger até a resposta terminar. */
+function mask(value: string, res: Response): void {
+  registerLiveSecret(value);
+  res.on('close', () => forgetLiveSecret(value));
+}
+
 function requestIdOf(req: Request): string | undefined {
   const id = (req as Request & { id?: unknown }).id;
   return typeof id === 'string' ? id : undefined;
@@ -69,7 +75,7 @@ function requestIdOf(req: Request): string | undefined {
  * `POST /v1/node-sync` com `Authorization: Bearer <token do Google | nodeKey>` e o corpo do protocolo
  * (`nodeSyncRequestSchema`). Aqui só o que é barato: o limite por IP, o formato da credencial (e, no token, o `aud`, o
  * `sub` e o prazo, sem a assinatura) e o corpo estrito. Quem confere a credencial de verdade e escolhe o cliente é o
- * cp-worker (`/internal/node-sync`); o cp-public não lê o Firestore aqui. A credencial entra na máscara do logger
+ * cp-worker (`/internal/node-sync/managed` ou `/customer`, pela credencial); o cp-public não lê o Firestore aqui. A credencial entra na máscara do logger
  * antes de qualquer `await` e sai quando a resposta termina.
  */
 @Controller('node-sync')
@@ -99,19 +105,26 @@ export class NodeSyncController {
     }
     const credential = nodeSyncCredentialFromAuthorization(req.headers.authorization);
     if (credential === undefined) throw ERRORS.unauthenticated();
-    const secret = credential.kind === 'gcp_identity' ? credential.token : credential.nodeKey;
-    registerLiveSecret(secret);
-    res.on('close', () => forgetLiveSecret(secret));
-    if (
-      credential.kind === 'gcp_identity' &&
-      !plausibleNodeIdentity(credential.token, this.config.NODE_SYNC_AUDIENCE, this.clock.now())
-    ) {
-      throw ERRORS.unauthenticated();
+    // A rota do worker sai do formato do `Authorization` (o token assinado ou a chave do nó). Cada caminho faz as
+    // conferências dele aqui, e o cp-worker confere a credencial inteira de novo na rota dela.
+    const requestId = requestIdOf(req);
+    let forward: (request: NodeSyncRequest) => Promise<NodeSyncResponse>;
+    if (credential.kind === 'gcp_identity') {
+      const token = credential.token;
+      mask(token, res);
+      if (!plausibleNodeIdentity(token, this.config.NODE_SYNC_AUDIENCE, this.clock.now())) {
+        throw ERRORS.unauthenticated();
+      }
+      forward = (request) => this.gateway.syncManaged(token, request, requestId);
+    } else {
+      const nodeKey = credential.nodeKey;
+      mask(nodeKey, res);
+      forward = (request) => this.gateway.syncCustomer(nodeKey, request, requestId);
     }
     const parsed = nodeSyncRequestSchema.safeParse(body);
     if (!parsed.success) throw ERRORS.invalid_request();
     try {
-      return await this.gateway.sync(credential, parsed.data, requestIdOf(req));
+      return await forward(parsed.data);
     } catch (error) {
       if (error instanceof NodeSyncGatewayError) {
         if (error.code === 'too_soon') {

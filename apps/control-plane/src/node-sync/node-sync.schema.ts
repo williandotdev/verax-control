@@ -48,6 +48,7 @@ const node = nodeSyncNodeSchema.shape;
 
 /** Como o nó se autenticou na última chamada. */
 export const NODE_SYNC_AUTH_KINDS = ['gcp_identity', 'node_key'] as const;
+export type NodeSyncAuthKind = (typeof NODE_SYNC_AUTH_KINDS)[number];
 
 /**
  * `nodeSync/state`: o que o nó disse de si na última chamada aceita (gravado a cada chamada pelo cp-worker). A chave do

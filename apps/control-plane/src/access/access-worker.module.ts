@@ -80,7 +80,7 @@ export interface AccessWorkerModuleOptions {
  * (`POST /internal/tenants/:id/enrollment-code`) e o `claim`/`report` da VM, repassados pelo cp-public
  * (`/internal/node-enrollment/*`). Desde 22/11/2026, a revelação única também pelo responsável
  * (`POST /internal/tenants/:id/reveal-access`), que copia o acesso no console e manda ao cliente, e a sincronização do
- * nó dedicado (`POST /internal/node-sync`, só para o cp-public, `node-sync/`), que usa as mesmas chaves do Google para
+ * nó dedicado (`POST /internal/node-sync/managed` e `/customer`, só para o cp-public, `node-sync/`), que usa as mesmas chaves do Google para
  * conferir o token do nó gerenciado.
  */
 @Module({})
