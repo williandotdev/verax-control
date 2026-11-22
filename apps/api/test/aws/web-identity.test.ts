@@ -12,6 +12,7 @@ import {
   AwsConnectionError,
   checkNodeIdentity,
   fetchGoogleIdToken,
+  fetchNodeSyncToken,
   GOOGLE_IDENTITY_URL,
   googleIdTokenSubject,
   reportNodeIdentity,
@@ -126,6 +127,67 @@ describe('token do Google pelo metadata (PR-V5)', () => {
     const pending = fetchGoogleIdToken(AUDIENCE, controller.signal, { fetch: fake });
     controller.abort(new DOMException('o worker está parando', 'AbortError'));
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('token do nó para a sincronização com o plano de controle', () => {
+  const SYNC_AUDIENCE = 'https://conta.verax.example/v1/node-sync';
+  /** Um token com `exp` (em segundos), na forma do do Google. */
+  function tokenExpiringAt(exp: number): string {
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    return `${part({ alg: 'RS256' })}.${part({ sub: SERVICE_ACCOUNT, aud: SYNC_AUDIENCE, exp })}.${randomBytes(48).toString('base64url')}`;
+  }
+
+  it('pede em format=full, para o audience da rota, e guarda até faltarem 5 min para vencer', async () => {
+    let now = 1_800_000_000_000;
+    const urls: string[] = [];
+    let token = tokenExpiringAt(now / 1000 + 3600);
+    const fake: typeof fetch = (input) => {
+      urls.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      return Promise.resolve(new Response(token));
+    };
+    const cache = new Map();
+    const options = { fetch: fake, now: () => now, cache };
+    const first = token;
+    expect(await fetchNodeSyncToken(SYNC_AUDIENCE, undefined, options)).toBe(first);
+    expect(Object.fromEntries(new URL(urls[0] ?? '').searchParams)).toEqual({
+      audience: SYNC_AUDIENCE,
+      format: 'full',
+    });
+    now += HOUR - SESSION_REFRESH_MARGIN_MS - 1;
+    token = tokenExpiringAt(now / 1000 + 3600);
+    expect(await fetchNodeSyncToken(SYNC_AUDIENCE, undefined, options)).toBe(first);
+    expect(urls).toHaveLength(1);
+    now += 1;
+    expect(await fetchNodeSyncToken(SYNC_AUDIENCE, undefined, options)).toBe(token);
+    expect(urls).toHaveLength(2);
+  });
+
+  it('sem exp legível não guarda; metadata fora dá metadata_unavailable; audience inválido nem chama', async () => {
+    let calls = 0;
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const noExp = `${part({ alg: 'RS256' })}.${part({ sub: SERVICE_ACCOUNT })}.${randomBytes(48).toString('base64url')}`;
+    const fake: typeof fetch = () => {
+      calls += 1;
+      return Promise.resolve(new Response(noExp));
+    };
+    const cache = new Map();
+    await fetchNodeSyncToken(SYNC_AUDIENCE, undefined, { fetch: fake, cache });
+    await fetchNodeSyncToken(SYNC_AUDIENCE, undefined, { fetch: fake, cache });
+    expect(calls).toBe(2);
+    await expect(
+      fetchNodeSyncToken(SYNC_AUDIENCE, undefined, {
+        fetch: () => Promise.resolve(new Response('não', { status: 500 })),
+        cache: new Map(),
+      }),
+    ).rejects.toMatchObject({ code: 'metadata_unavailable' });
+    await expect(
+      fetchNodeSyncToken('http://conta.verax.example/v1/node-sync', undefined, {
+        fetch: fake,
+        cache: new Map(),
+      }),
+    ).rejects.toMatchObject({ code: 'metadata_unavailable' });
+    expect(calls).toBe(2);
   });
 });
 

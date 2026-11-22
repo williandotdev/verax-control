@@ -1,18 +1,12 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import {
   AWS_READER_AUDIENCE,
-  awsReaderRoleArn,
   type CloudAccount,
   type CloudAccountCreate,
   type CloudAccountListQuery,
   type CloudAccountUpdate,
-  credentialStatus,
+  CONSOLE_MANAGED_CODE,
   fieldsOutsideProvider,
-  isAwsCollectionErrorCode,
-  isAwsConnectionWarningCode,
-  LOG_SOURCES,
-  type LogBuckets,
-  type LogSource,
   mergeLogBuckets,
   type Paginated,
   sameLogBucketNames,
@@ -26,153 +20,22 @@ import { PrismaService } from '../common/prisma/prisma.service.js';
 import { lockCredential } from '../credentials/credential-rekey.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { PlanService } from '../plan/plan.service.js';
+import {
+  type AccountRow,
+  accountSelect,
+  bucketData,
+  bucketsOf,
+  type NodeFacts,
+  providerData,
+  RESET_CONNECTION,
+  toAccount,
+} from './cloud-account-data.js';
+import { assertLogOriginsFree, type LogOrigins } from './log-origins.js';
 
-const accountSelect = {
-  id: true,
-  tenantId: true,
-  provider: true,
-  accountId: true,
-  regions: true,
-  cloudtrailBucket: true,
-  guarddutyBucket: true,
-  wafBucket: true,
-  pubsubSubscription: true,
-  sinkWriterIdentity: true,
-  zones: true,
-  lastEventAt: true,
-  connection: true,
-  connectionError: true,
-  collectionError: true,
-  lastCollectedAt: true,
-  checkRequestedAt: true,
-  ingestFrom: true,
-  status: true,
-  createdAt: true,
-  updatedAt: true,
-  // Do cofre, só os metadados: nunca o texto cifrado nem a versão da chave do nó.
-  credential: {
-    select: { kind: true, keyIdSuffix: true, issuedAt: true, expiresAt: true, verifiedAt: true },
-  },
-} as const satisfies Prisma.CloudAccountSelect;
-
-type AccountRow = Prisma.CloudAccountGetPayload<{ select: typeof accountSelect }>;
-
-const BUCKET_COLUMN = {
-  cloudtrail: 'cloudtrailBucket',
-  guardduty: 'guarddutyBucket',
-  waf: 'wafBucket',
-} as const satisfies Record<LogSource, keyof AccountRow>;
-
-/** O que vem da configuração do nó, igual para todas as contas. Nada disso é segredo. */
-interface NodeFacts {
-  /** Começo do nome dos tópicos do nó (`GCP_SINK_TOPIC_PREFIX`). */
-  sinkTopicPrefix?: string | undefined;
-  /** IPs de saída do nó (`NODE_EGRESS_IPS`). */
-  egressIps: readonly string[];
-  /** ID único da conta de serviço do nó no Google (`NODE_SA_UNIQUE_ID`); null quando o nó não informa. */
-  serviceAccountId: string | null;
-  /** Audience do token do nó (`AWS_WEB_IDENTITY_AUDIENCE`, ou o padrão do template). */
-  audience: string;
-}
-
-/** Os buckets de log gravados na conta, por fonte. */
-function bucketsOf(row: Pick<AccountRow, (typeof BUCKET_COLUMN)[LogSource]>): LogBuckets {
-  return { cloudtrail: row.cloudtrailBucket, guardduty: row.guarddutyBucket, waf: row.wafBucket };
-}
-
-/** O dia de uma coluna `DATE` (o Prisma a devolve como meia-noite UTC): `AAAA-MM-DD`. */
-function isoDate(day: Date | null): string | null {
-  return day === null ? null : day.toISOString().slice(0, 10);
-}
-
-/**
- * Como a conta sai da API. Com o prefixo dos tópicos do nó, o projeto da GCP ganha o tópico do comando do sink; sem
- * ele (ambiente local), o tópico fica null. A conta AWS leva os três valores do nó que a pilha do papel de leitura pede
- * (o ID da conta de serviço, o audience e os IPs de saída) e o ARN do papel, derivado do ID; a do Cloudflare, os IPs de
- * saída, o filtro de IP recomendado para o token. Nenhum ExternalId: o papel não tem.
- */
-function toAccount(row: AccountRow, node: NodeFacts): CloudAccount {
-  const aws = row.provider === 'aws';
-  const gcp = row.provider === 'gcp';
-  const { credential } = row;
-  return {
-    id: row.id,
-    provider: row.provider,
-    accountId: row.accountId,
-    regions: aws ? row.regions : [],
-    readerRoleArn: aws ? awsReaderRoleArn(row.accountId) : null,
-    nodeServiceAccountId: aws ? node.serviceAccountId : null,
-    webIdentityAudience: aws ? node.audience : null,
-    buckets: bucketsOf(row),
-    pubsubSubscription: row.pubsubSubscription,
-    sinkTopic: gcp && node.sinkTopicPrefix ? `${node.sinkTopicPrefix}${row.accountId}` : null,
-    sinkWriterIdentity: gcp ? row.sinkWriterIdentity : null,
-    zones: row.zones,
-    keyStatus: credential
-      ? {
-          kind: credential.kind,
-          keyIdSuffix: credential.keyIdSuffix,
-          issuedAt: credential.issuedAt?.toISOString() ?? null,
-          expiresAt: credential.expiresAt?.toISOString() ?? null,
-          verifiedAt: credential.verifiedAt.toISOString(),
-          status: credentialStatus(credential.expiresAt),
-        }
-      : null,
-    egressIps: gcp ? [] : [...node.egressIps],
-    status: row.status,
-    // Gravados pelo coletor da conta: só o worker escreve, nunca o request. O "Verificar" da AWS só pede. Na AWS, uma
-    // conta conectada pode ter um aviso que não para a coleta (PR-V5': trilha, export, permissão demais, STS da região).
-    connection: row.connection,
-    connectionError:
-      row.connection === 'error' ||
-      (aws && row.connection === 'connected' && isAwsConnectionWarningCode(row.connectionError))
-        ? row.connectionError
-        : null,
-    // AWS: o aviso da coleta pelo Wazuh do nó (PR-V4'), à parte da conexão; só a tarefa wazuh-config o grava.
-    collectionError:
-      aws && row.status === 'active' && isAwsCollectionErrorCode(row.collectionError)
-        ? row.collectionError
-        : null,
-    checkRequestedAt: aws ? (row.checkRequestedAt?.toISOString() ?? null) : null,
-    ingestFrom: aws ? isoDate(row.ingestFrom) : null,
-    lastCollectedAt: row.lastCollectedAt?.toISOString() ?? null,
-    // Gravado pelo sync de alertas (T5.3).
-    lastEventAt: row.lastEventAt?.toISOString() ?? null,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
-  };
-}
-
-/** Colunas de bucket a gravar: só as fontes informadas; `null` apaga. */
-type BucketColumn = (typeof BUCKET_COLUMN)[LogSource];
-
-type AwsBuckets = Extract<CloudAccountCreate, { provider: 'aws' }>['buckets'];
-
-function bucketData(buckets: AwsBuckets): Partial<Record<BucketColumn, string | null>> {
-  const data: Partial<Record<BucketColumn, string | null>> = {};
-  for (const source of LOG_SOURCES) {
-    const value = buckets?.[source];
-    if (value !== undefined) data[BUCKET_COLUMN[source]] = value;
-  }
-  return data;
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
-}
+// A credencial e as tarefas do worker importam daqui desde antes da extração para `cloud-account-data.ts`.
+export { RESET_CONNECTION } from './cloud-account-data.js';
 
 const NOT_FOUND = 'Conta não encontrada';
-
-/**
- * A conexão recomeça (outra fonte, como a assinatura do Pub/Sub ou a lista de buckets da AWS; credencial nova ou
- * removida; conta desativada ou reativada): aguardando, sem erro e sem "Verificar" pendente (a AWS pede de novo). A
- * última coleta é história.
- */
-export const RESET_CONNECTION = {
-  connection: 'waiting',
-  connectionError: null,
-  checkRequestedAt: null,
-} as const satisfies Prisma.CloudAccountUpdateInput;
 
 /** O que a trilha guarda do "Verificar": a conexão antes e depois do pedido. */
 function checkState(row: Pick<AccountRow, 'connection' | 'connectionError' | 'checkRequestedAt'>) {
@@ -183,33 +46,31 @@ function checkState(row: Pick<AccountRow, 'connection' | 'connectionError' | 'ch
   };
 }
 
-/** Dados próprios de cada provedor no cadastro. Os campos dos outros provedores ficam vazios. */
-function providerData(input: CloudAccountCreate): Prisma.CloudAccountUncheckedCreateInput {
-  const base = {
-    provider: input.provider,
-    accountId: input.accountId,
-  } as Prisma.CloudAccountUncheckedCreateInput;
-  switch (input.provider) {
-    case 'aws':
-      return { ...base, regions: input.regions, ...bucketData(input.buckets) };
-    case 'gcp':
-      return {
-        ...base,
-        regions: [],
-        pubsubSubscription: input.pubsubSubscription ?? null,
-        sinkWriterIdentity: input.sinkWriterIdentity ?? null,
-      };
-    case 'cloudflare':
-      return { ...base, regions: [], zones: input.zones ?? [] };
-  }
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }
 
-/** Origens de log que identificam o cliente de um alerta: nenhuma pode ser de dois clientes. */
-interface LogOrigins {
-  buckets?: AwsBuckets;
-  pubsubSubscription?: string | null;
-  sinkWriterIdentity?: string | null;
-  zones?: string[];
+/**
+ * Campos do cadastro que, na conta que a Verax cadastrou pelo console (`origin = control_plane`), só o console muda: a
+ * fonte (regiões, buckets, assinatura, identidade do sink, zonas) e o monitoramento (desativar e reativar). A credencial
+ * e o "Verificar" continuam com o cliente.
+ */
+const CONSOLE_OWNED_FIELDS = [
+  'regions',
+  'buckets',
+  'pubsubSubscription',
+  'sinkWriterIdentity',
+  'zones',
+  'status',
+] as const satisfies readonly (keyof CloudAccountUpdate)[];
+
+/** A recusa do painel na conta do console: 409 com o código que o painel reconhece. */
+function consoleManaged(): ApiError {
+  return new ApiError(
+    HttpStatus.CONFLICT,
+    'Cadastrada pela Verax: peça a alteração à Verax.',
+    CONSOLE_MANAGED_CODE,
+  );
 }
 
 /**
@@ -303,6 +164,15 @@ export class CloudAccountsService {
     // sobre o status lido vale até a gravação (uma desativação ao mesmo tempo espera, ou já foi confirmada e é lida).
     if (input.status !== undefined) await this.plan.lockSeats('cloudAccounts', auth.scopeTenantId as string);
     const beforeRow = await this.find(id);
+    // A conta que a Verax cadastrou pelo console: a fonte e o monitoramento só mudam por lá (a sincronização com o plano
+    // de controle desfaria a alteração do painel na revisão seguinte).
+    if (
+      beforeRow.origin === 'control_plane' &&
+      CONSOLE_OWNED_FIELDS.some((field) => input[field] !== undefined)
+    ) {
+      this.audit.describe({ action: 'cloud_account.update', resourceType: 'cloud_account', resourceId: id });
+      throw consoleManaged();
+    }
     // Cada campo só existe num provedor: recusar, em vez de ignorar, evita achar que algo foi gravado.
     const foreign = fieldsOutsideProvider(beforeRow.provider, input);
     if (foreign.length > 0) {
@@ -364,6 +234,15 @@ export class CloudAccountsService {
     // Libera uma vaga do plano: sob o mesmo lock da criação e da reativação, lido e gravado na mesma transação.
     await this.plan.lockSeats('cloudAccounts', auth.scopeTenantId as string);
     const before = await this.find(id);
+    // A conta que a Verax cadastrou pelo console só é removida por lá (a lápide da sincronização).
+    if (before.origin === 'control_plane') {
+      this.audit.describe({
+        action: 'cloud_account.deactivate',
+        resourceType: 'cloud_account',
+        resourceId: id,
+      });
+      throw consoleManaged();
+    }
     await this.wipeCredential(id);
     const row = await this.prisma.scoped().cloudAccount.update({
       where: { id },
@@ -442,91 +321,12 @@ export class CloudAccountsService {
     return row;
   }
 
-  /**
-   * Uma origem de log não pode ser de dois clientes: o alerta lido dela seria atribuído a qualquer um.
-   * - Bucket: o nome é único no S3, então vale para qualquer fonte (o mesmo bucket como CloudTrail de um cliente e
-   *   GuardDuty de outro também é ambíguo).
-   * - Assinatura do Pub/Sub: um coletor agregado pode servir vários projetos do mesmo cliente, nunca de dois.
-   * - Identidade do sink: é o agente do Cloud Logging do projeto do cliente, e quem a tem publica no tópico dele.
-   *   Vale para um projeto só: colada em outro cliente, daria a publicação a um projeto que não é dele; colada em
-   *   outro projeto do mesmo cliente, daria a um projeto a publicação no tópico de outro (o Terraform do nó recusa
-   *   a repetição em `customer_projects` pela mesma razão). Por isso é a única origem que também não se repete
-   *   entre as contas do próprio cliente (`exceptId` é a conta que está sendo alterada).
-   * - Zona do Cloudflare: o domínio identifica o cliente nos eventos do WAF.
-   *
-   * A checagem roda sob um lock transacional por origem, para dois cadastros simultâneos não passarem juntos.
-   * Responde só "já cadastrado", sem dizer de quem. Na célula (CE-01), nem se é de outro cliente: a mesma frase para a
-   * origem de outro cliente e para a de outra conta do próprio, e nada nela aponta para quem tem a origem.
-   */
-  private async assertOriginsFree(auth: RequestAuth, origins: LogOrigins, exceptId?: string): Promise<void> {
-    const tenantId = auth.scopeTenantId as string;
-    const checks: {
-      key: string;
-      label: string;
-      where: Prisma.CloudAccountWhereInput;
-      /** A origem também não pode estar em outra conta do mesmo cliente. */
-      onePerAccount?: boolean;
-    }[] = [];
-    const buckets = new Set(
-      LOG_SOURCES.map((source) => origins.buckets?.[source]).filter((name) => typeof name === 'string'),
-    );
-    for (const name of buckets) {
-      checks.push({
-        key: `verax:bucket:${name}`,
-        label: `O bucket ${name} já está cadastrado`,
-        where: { OR: LOG_SOURCES.map((source) => ({ [BUCKET_COLUMN[source]]: name })) },
-      });
-    }
-    if (origins.pubsubSubscription) {
-      const name = origins.pubsubSubscription;
-      checks.push({
-        key: `verax:pubsub:${name}`,
-        label: `A assinatura ${name} já está cadastrada`,
-        where: { pubsubSubscription: name },
-      });
-    }
-    if (origins.sinkWriterIdentity) {
-      const identity = origins.sinkWriterIdentity;
-      checks.push({
-        key: `verax:sink:${identity}`,
-        label: 'A identidade do sink já está cadastrada',
-        where: { sinkWriterIdentity: identity },
-        onePerAccount: true,
-      });
-    }
-    for (const zone of origins.zones ?? []) {
-      checks.push({
-        key: `verax:zone:${zone}`,
-        label: `A zona ${zone} já está cadastrada`,
-        where: { zones: { has: zone } },
-      });
-    }
-    // Ordem fixa dos locks: dois cadastros com as mesmas origens não se travam um ao outro.
-    checks.sort((a, b) => a.key.localeCompare(b.key));
-    const db = this.prisma.db();
-    for (const check of checks) {
-      await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${check.key}))`;
-      const taken = await db.cloudAccount.findFirst({
-        where: { tenantId: { not: tenantId }, ...check.where },
-        select: { id: true },
-      });
-      if (taken) {
-        throw new ApiError(
-          HttpStatus.CONFLICT,
-          this.sharedCell ? check.label : `${check.label} em outro cliente`,
-        );
-      }
-      if (!check.onePerAccount) continue;
-      const repeated = await db.cloudAccount.findFirst({
-        where: { tenantId, ...check.where, ...(exceptId && { id: { not: exceptId } }) },
-        select: { id: true },
-      });
-      if (repeated) {
-        throw new ApiError(
-          HttpStatus.CONFLICT,
-          this.sharedCell ? check.label : `${check.label} em outra conta deste cliente`,
-        );
-      }
-    }
+  /** As origens de log livres (`assertLogOriginsFree`), na transação da requisição e para o cliente da sessão. */
+  private assertOriginsFree(auth: RequestAuth, origins: LogOrigins, exceptId?: string): Promise<void> {
+    return assertLogOriginsFree(this.prisma.db(), origins, {
+      tenantId: auth.scopeTenantId as string,
+      exceptId,
+      sharedCell: this.sharedCell,
+    });
   }
 }

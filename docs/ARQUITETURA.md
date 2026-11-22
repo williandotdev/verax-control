@@ -2119,6 +2119,74 @@ e não muda nada.
   (`WritePacer`, 500 ms entre um começo e o seguinte), então nenhuma janela de 1 s tem mais de 3. São 4 gravações a
   cada 5 min, menos de 1 por minuto.
 
+### Sincronização com o plano de controle: o lado do nó (fontes de log do console)
+
+O responsável cadastra as fontes de log do cliente (AWS e Cloudflare; projetos da GCP só na VM própria) no console, e o
+nó dedicado as aplica. O contrato está em `packages/shared/src/node-sync.ts` (estrito dos dois lados); o envelope da
+credencial, em `packages/vault-envelope`. Aqui, só o lado do nó (`apps/api/src/control-plane-sync/`).
+
+- **Quem liga:** o `start.sh`, no modo cliente (`CUSTOMER_MODE=true`), nas duas plataformas, nunca na célula (que tem o
+  canal dela): `CONTROL_PLANE_SYNC=true` e `VERAX_NODE_COMMIT` no `worker.env`; `CONTROL_PLANE_ORIGIN` do `node.conf`
+  quando está no formato (sem a linha, `https://conta.veraxsistemas.com.br`). A configuração do worker recusa a
+  sincronização com `NODE_MODE=cell`, sem o `NODE_SA_UNIQUE_ID` num nó da GCP, sem a chave na VM própria e sem o commit;
+  o `start.sh` deixa a sincronização de fora, com o aviso, quando falta a identidade, para o worker subir.
+- **Identidade do nó:** num nó da GCP, o token do Google da conta de serviço do nó, pedido ao metadata com o audience da
+  própria rota (`<origem>/v1/node-sync`) e `format=full` (o plano de controle confere o `sub`, o projeto e a VM), guardado
+  até faltarem 5 min para vencer (`fetchNodeSyncToken`). Na VM própria, a chave do nó que o registro deixou em
+  `/etc/verax/vault/node-key`: o `start.sh` a copia para `/run/verax/cp/node-key` (tmpfs, 0440 de root e do grupo do
+  worker), montada só leitura só no worker (`compose.yaml`, `/run/cp`), fora de `/run/verax/vault`, que o job
+  `aws-sessions` também monta; o worker a lê na partida (`CONTROL_PLANE_NODE_KEY_FILE`) num objeto que não vira JSON
+  nem texto de log. A chave nunca passa pelo ambiente do contêiner.
+- **Ritmo:** a tarefa `control-plane-sync` acorda a cada 15 s e só chama quando a próxima chamada chegou: a cada 5 min
+  ±30 s (o `pollAfterSeconds` da resposta manda), guardada em `ControlPlaneSync` (sobrevive à partida do worker). A
+  reserva de cada chamada roda sob `pg_advisory_xact_lock('verax:control-plane-sync')` e adia a próxima pelo orçamento
+  (60 s), para duas réplicas não chamarem juntas. A sequência é a maior entre a anterior mais um e o relógio em ms: um
+  banco que voltou de um backup não repete uma sequência já aceita.
+- **Pedido:** o commit, a plataforma, o cliente do banco do nó (o do rótulo dos envelopes; com mais de um cliente,
+  `tenant_ambiguous` e nada é aplicado), a chave pública corrente do cofre (o PEM do SPKI em base64, a versão e a
+  impressão digital SHA-256 do DER), o ID da conta de serviço (GCP), os IPs de saída, o audience da AWS e o que aconteceu
+  com cada fonte do console (as contas `origin = control_plane` e os itens de `ControlPlaneSyncItem`: a revisão, o
+  resultado, o código da falha, a credencial vigente, só metadados, e a situação da conta). Capacidade anunciada: só
+  `log_sources` (os usuários entram depois). Sem seguir redirecionamento, em até 20 s, lendo no máximo 1 MB da resposta,
+  conferida pelo contrato estrito. O corpo inteiro cabe em `NODE_SYNC_REQUEST_MAX_BYTES` (256 KiB, o limite da rota no
+  `cp-public`): vão antes os relatos que mudaram desde o último aceito (o SHA-256 dele fica no `ControlPlaneSyncItem`)
+  e, entre os outros, os aceitos há mais tempo, para os que ficam de fora irem nas chamadas seguintes. Deixar um relato
+  de fora é seguro: o plano de controle só atualiza o relato das fontes que vieram no pedido.
+- **Credencial colada no painel numa conta do console:** o `PUT` da credencial grava `origin = panel` e a revisão do
+  console vazia; o nó conta de volta `revision: null`, e a revisão já aplicada do console não volta, só uma mais nova.
+- **Cada fonte numa transação** (`apply-source.ts`), no escopo do cliente do nó:
+  - criar: a vaga do plano (`lockPlanSeats`/`assertWithinPlan`; sem vaga, `plan_limit_reached`, tentado de novo a cada
+    hora), a mesma conta do provedor já cadastrada pelo cliente (`account_exists_panel`; o nó nunca toca numa conta do
+    painel), as origens de log livres (`assertLogOriginsFree`, a mesma régua do painel; `origin_conflict`) e a conta
+    com o id da fonte, `origin = control_plane` e `controlPlaneRevision`;
+  - alterar: só com revisão maior que a aplicada, só os campos do console, com as regras de conexão do painel (outra
+    lista de buckets ou outra assinatura recomeçam a conexão); outro provedor ou outro ID é `immutable_changed`;
+  - lápide (`removed`): como o "Desativar" do painel (a conta inativa, a credencial apagada);
+  - a credencial, depois da conta e só quando a revisão do console é mais nova que a última do console aplicada (uma
+    colada no painel vale até o console mandar outra): aberta com as chaves do cofre (prova a amarração ao cliente, à
+    conta, ao tipo e ao ID no provedor; senão `credential_unreadable`), o tipo tem de valer na plataforma
+    (`credential_kind_not_allowed`), conferida na origem pelas mesmas conferências do painel, fora de transação
+    (`credential_rejected_<motivo>`; a origem fora do ar, `source_unavailable`, tentada de novo em 1, 2, 4... min até 30)
+    e gravada com o envelope exatamente como veio, sem recifrar.
+
+  Uma revisão que falhou só é tentada de novo com outra revisão (menos as duas falhas que passam sozinhas). Se algo
+  mudou, o nó chama mais uma vez na mesma execução, para contar logo (no máximo duas chamadas).
+
+- **Trilha:** toda mudança entra na trilha do cliente como sistema, com o ator fixo `verax-control-plane`, que a tela
+  Auditoria mostra como **"Verax (administrativo)"** (o e-mail de quem cadastrou no console fica só na auditoria do plano
+  de controle), com a origem no estado novo.
+- **Painel:** a conta do console sai com `managedBy: 'verax'` e o selo "Cadastrada pela Verax"; alterar a fonte ou o
+  monitoramento dela pelo painel dá 409 `CONSOLE_MANAGED` ("Cadastrada pela Verax: peça a alteração à Verax"). A
+  credencial (colar e remover) e o "Verificar" da AWS continuam com o cliente.
+- **Falhas da chamada:** 401, log de erro `control_plane_unauthenticated` e nova tentativa em 1 h; 404 (cliente não
+  apto), 6 h; 409 `stale_sequence`, a sequência avança e a chamada é repetida na mesma execução; 429, o `Retry-After`;
+  400 com o relógio do nó fora dos 10 min aceitos, log de erro `clock_skew`; 5xx, rede ou resposta fora do contrato,
+  1, 2, 4... min até 30; sem o token do metadata, a próxima chamada no intervalo de sempre. No log, só ids de fonte,
+  contagens e códigos.
+- **Atualização dos nós instalados:** o `update.sh` (nós da GCP) e o `verax-install.sh --atualizar` (VM própria) rodam o
+  `install.sh` do pacote novo, que reinstala o `bin/start.sh` e o `compose.yaml` em `/opt/verax`: a sincronização liga
+  na primeira partida depois da atualização, sem mudar o `node.conf`.
+
 ### O nó de cada cliente: `envs/tenant` e `envs/nodes-platform` (CP-06)
 
 O projeto dos nós tem dois tipos de ambiente do Terraform em `infra/gcp/envs/`:

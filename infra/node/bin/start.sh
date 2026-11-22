@@ -68,6 +68,17 @@ WORKER_UID=1000
 WAZUH_AWS=$run/wazuh-aws
 WAZUH_SIGNAL=$run/wazuh-signal
 WAZUH_SIGNAL_MOUNT=/run/wazuh-signal
+# Sincronização com o plano de controle (nó dedicado de cliente, CUSTOMER_MODE=true; nunca na célula): o worker chama
+# POST /v1/node-sync a cada 5 min (CONTROL_PLANE_SYNC=true e VERAX_NODE_COMMIT no worker.env). Nos nós da GCP, com o
+# token do Google da conta de serviço do nó (exige o NODE_SA_UNIQUE_ID). Na VM própria, com a chave do nó que o registro
+# deixou no cofre local (vault_dir/node-key): ela vai para uma pasta própria de /run/verax (memória), montada só
+# leitura no worker em CONTROL_PLANE_MOUNT (compose.yaml), nunca pela worker.env (o Docker grava o ambiente no disco) e
+# nunca na pasta do cofre de credenciais (WORKER_VAULT), que o job aws-sessions também monta. A pasta existe sempre
+# (vazia nos nós da GCP e no nó da Verax), para o Docker não criá-la no lugar.
+CONTROL_PLANE_DIR=$run/cp
+CONTROL_PLANE_KEY=$CONTROL_PLANE_DIR/node-key
+CONTROL_PLANE_MOUNT=/run/cp
+CONTROL_PLANE_KEY_MOUNT=$CONTROL_PLANE_MOUNT/node-key
 # Modo cliente (fase 3, CP-10; CUSTOMER_MODE=true no node.conf; sem a linha, false): o nó de cliente que o plano de
 # controle cria, sem SSH. O `customer-bootstrap` lê dos metadados da VM as entradas do primeiro acesso, roda o
 # node-bootstrap no modo customer e grava cada senha nova como versão de um segredo do Secret Manager; o worker publica o
@@ -381,6 +392,29 @@ discard_worker_keys() {
   rm -rf "$WORKER_VAULT"
 }
 
+# A pasta da chave do nó (CONTROL_PLANE_DIR), 0750 de root, criada em toda partida antes de o worker subir (o
+# compose.yaml a monta nele). Sem a chave (nós da GCP, nó da Verax), fica vazia.
+control_plane_dir() {
+  install -d -m 0750 "$CONTROL_PLANE_DIR"
+}
+
+# Modo vm: a chave do nó do cofre local vai para CONTROL_PLANE_KEY, 0440 de root e do grupo do worker (o único que a
+# lê), por troca atômica (rename), como o arquivo das chaves do worker. Sai com 1, sem copiar nada, quando o cofre não
+# tem a chave, o arquivo não é comum só do dono (0600 ou 0400) ou o valor não é o da chave do registro (43 caracteres
+# em base64url). O valor nunca vai para a tela.
+write_node_key() {
+  local source=$vault_dir/node-key value file
+  if [[ -L $source || ! -f $source || ! $(stat -c %a "$source") =~ ^[46]00$ ]]; then return 1; fi
+  value=$(<"$source")
+  if [[ ! $value =~ ^[A-Za-z0-9_-]{43}$ ]]; then return 1; fi
+  chown "0:$WORKER_UID" "$CONTROL_PLANE_DIR"
+  file=$(mktemp "$CONTROL_PLANE_DIR/.node-key.XXXXXX")
+  printf '%s' "$value" >"$file"
+  chmod 0440 "$file"
+  chown "0:$WORKER_UID" "$file"
+  mv -fT "$file" "$CONTROL_PLANE_KEY"
+}
+
 # A pasta dos sinais do Wazuh (standard): root:<grupo do worker> 1770. O worker grava nela a `generation` dele (as contas
 # AWS mudaram), e o bit t impede que ele troque ou apague os sinais do host (`aws-token` e `applied`), que ele só lê.
 # O aws-token.sh e o wazuh-apply.sh a criam do mesmo jeito.
@@ -673,7 +707,12 @@ render() {
         echo "NODE_VERSION ausente ou fora do formato em $images_env: rode o deploy.sh (ou o install.sh na VM) de novo." >&2
         return 1
       fi
-      if ! vm; then node_status=(NODE_STATUS=true "VERAX_NODE_COMMIT=$version"); fi
+      # A versão vai também na VM própria: o worker a informa ao plano de controle na sincronização.
+      if vm; then
+        node_status=("VERAX_NODE_COMMIT=$version")
+      else
+        node_status=(NODE_STATUS=true "VERAX_NODE_COMMIT=$version")
+      fi
       ;;
     false) ;;
     *)
@@ -816,6 +855,39 @@ render() {
         "padrão do template." >&2
     fi
   fi
+  # Sincronização com o plano de controle: no modo cliente, nas duas plataformas, nunca na célula (que tem o canal
+  # dela). A origem vem do node.conf só no formato (a origem https, sem caminho); fora dele ou sem a linha, o worker usa
+  # a de produção. Sem a identidade, o nó sobe sem a sincronização, com o aviso: nos nós da GCP, o NODE_SA_UNIQUE_ID
+  # (o plano de controle confere o `sub` do token); na VM própria, a chave do nó do cofre local. Nenhum valor vai para a
+  # tela.
+  local control_plane=()
+  if customer && ! cell; then
+    # A chave da partida anterior sai antes de tudo: só a do cofre de agora entra.
+    control_plane_dir
+    rm -f "$CONTROL_PLANE_DIR"/.node-key.* "$CONTROL_PLANE_KEY"
+    control_plane=(CONTROL_PLANE_SYNC=true)
+    if [[ -n ${CONTROL_PLANE_ORIGIN:-} ]]; then
+      if ((${#CONTROL_PLANE_ORIGIN} <= 200)) && [[ $CONTROL_PLANE_ORIGIN =~ ^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+        control_plane+=("CONTROL_PLANE_ORIGIN=$CONTROL_PLANE_ORIGIN")
+      else
+        echo "AVISO: CONTROL_PLANE_ORIGIN fora do formato em /etc/verax/node.conf (só a origem https, sem caminho):" \
+          "o worker usa a origem padrão do plano de controle." >&2
+      fi
+    fi
+    if vm; then
+      if write_node_key; then
+        control_plane+=("CONTROL_PLANE_NODE_KEY_FILE=$CONTROL_PLANE_KEY_MOUNT")
+      else
+        echo "AVISO: o cofre local não tem a chave do nó ($vault_dir/node-key, 0600, do registro): o nó sobe sem a" \
+          "sincronização com o plano de controle. Rode o instalador de novo (sudo bash verax-install.sh --atualizar)." >&2
+        control_plane=()
+      fi
+    elif [[ " ${aws_reader[*]} " != *' NODE_SA_UNIQUE_ID='* ]]; then
+      echo "AVISO: sem o NODE_SA_UNIQUE_ID no formato em /etc/verax/node.conf, o nó sobe sem a sincronização com o" \
+        "plano de controle (o token do nó não teria como ser conferido)." >&2
+      control_plane=()
+    fi
+  fi
   # Turnstile (desafio no login e no "esqueci minha senha" do painel): a chave do site no node.conf é o interruptor.
   # Sem a linha, nada é lido e o api.env sai como sempre (o nó da Verax, enquanto não ligar). Com ela, a chave secreta
   # vem do cofre como o token do túnel: cofre ainda sem valor, o nó sobe sem o desafio e avisa; qualquer outro erro
@@ -880,6 +952,7 @@ render() {
     "${agents_worker[@]}" \
     "${vault_worker[@]}" \
     "${node_status[@]}" \
+    "${control_plane[@]}" \
     "${platform[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   # Túnel: com o cofre ainda sem valor, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa; gravado o
@@ -996,6 +1069,9 @@ up() {
   # Célula: as pastas dos pedidos do primeiro acesso antes de o worker subir (o compose.cell.yaml as monta nele). Sem
   # elas, o Docker criaria a dos pedidos só para o root, e o worker não gravaria.
   if cell; then tenant_bootstrap_dirs; fi
+  # A pasta da chave do nó antes de o worker subir (o compose.yaml a monta nele), vazia fora da VM própria. Sem ela, o
+  # Docker a criaria no lugar.
+  control_plane_dir
   # Só as imagens da aplicação: as do Wazuh ficam para o `wazuh-up`, e o painel não espera por elas.
   pull_images --base
   compose up --detach --wait postgres
@@ -1029,14 +1105,15 @@ tunnel() {
   compose up --detach --no-deps cloudflared
 }
 
-# A parada tira as chaves do cofre da memória junto com os contêineres, mesmo que o Compose falhe, e também o token do
-# Google, os profiles da AWS e os sinais do Wazuh: sem a pasta dos profiles, o aws-token.sh e o wazuh-apply.sh não fazem
-# nada até o próximo wazuh-up. O resto de /run/verax, os arquivos de ambiente, fica e é reescrito na próxima partida,
-# como sempre foi.
+# A parada tira as chaves do cofre e a chave do nó da memória junto com os contêineres, mesmo que o Compose falhe, e
+# também o token do Google, os profiles da AWS e os sinais do Wazuh: sem a pasta dos profiles, o aws-token.sh e o
+# wazuh-apply.sh não fazem nada até o próximo wazuh-up. O resto de /run/verax, os arquivos de ambiente, fica e é
+# reescrito na próxima partida, como sempre foi.
 down() {
   local status=0
   compose down || status=$?
   discard_worker_keys
+  rm -f "$CONTROL_PLANE_KEY"
   rm -rf "$WAZUH_AWS" "$WAZUH_SIGNAL" "$run/wazuh-apply"
   return "$status"
 }

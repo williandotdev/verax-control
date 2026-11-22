@@ -101,6 +101,18 @@ function subscriptionLabel(account: CloudAccount): string | null {
 }
 
 /** O que a conta monitora: regiões (AWS), a assinatura do Pub/Sub (GCP) ou as zonas (Cloudflare). */
+/** A conta que a Verax cadastrou pelo console (a sincronização do nó com o plano de controle). */
+const isManagedByVerax = (account: CloudAccount) => account.managedBy === 'verax';
+
+/** O selo da conta do console. */
+function ManagedBadge() {
+  return (
+    <span className="inline-block rounded-full border px-1.5 py-0.5 text-[0.7rem] font-medium leading-none">
+      Cadastrada pela Verax
+    </span>
+  );
+}
+
 function scopeOf(account: CloudAccount): string | null {
   if (account.provider === 'aws') return account.regions.join(', ');
   if (account.provider === 'gcp') return subscriptionLabel(account);
@@ -150,6 +162,11 @@ export function CloudAccountsPage() {
         <button type="button" className="text-left hover:underline" onClick={() => setOpen(row.id)}>
           <span className="block text-xs text-muted-foreground">{PROVIDER_LABELS[row.provider]}</span>
           <span className="break-all font-mono text-sm">{row.accountId}</span>
+          {isManagedByVerax(row) && (
+            <span className="mt-1 block">
+              <ManagedBadge />
+            </span>
+          )}
         </button>
       ),
     },
@@ -347,7 +364,7 @@ function CreateAccount() {
               ? 'Falta colar o token de leitura do Cloudflare.'
               : 'Falta configurar a leitura no nó.'}
         </p>
-        <ProviderSteps account={create.data} canWrite />
+        <ProviderSteps account={create.data} canWrite canEditSource />
       </div>
     );
   }
@@ -454,8 +471,21 @@ function CreateAccount() {
 
 function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
   const update = useUpdateCloudAccount(account.id);
+  // A conta do console: a fonte e o monitoramento só mudam pela Verax (a API recusa com 409 CONSOLE_MANAGED). A
+  // credencial e o "Verificar" continuam com o cliente.
+  const managed = isManagedByVerax(account);
+  const canEditSource = canWrite && !managed;
   return (
     <div className="space-y-5">
+      {managed && (
+        <div className="space-y-1 rounded-md border p-3 text-sm">
+          <ManagedBadge />
+          <p className="text-muted-foreground">
+            A Verax cadastrou esta conta: peça à Verax para alterar a fonte ou o monitoramento. A credencial e
+            a verificação continuam aqui.
+          </p>
+        </div>
+      )}
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
         <dt className="text-muted-foreground">Conexão</dt>
         <dd className="space-y-0.5">
@@ -481,14 +511,16 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
           </>
         )}
       </dl>
-      {account.provider === 'aws' && <AwsLogBuckets account={account} canWrite={canWrite} />}
-      <ProviderSteps account={account} canWrite={canWrite} />
-      {canWrite && account.provider !== 'aws' && <EditSource account={account} />}
+      {account.provider === 'aws' && (
+        <AwsLogBuckets account={account} canWrite={canEditSource} managed={managed} />
+      )}
+      <ProviderSteps account={account} canWrite={canWrite} canEditSource={canEditSource} />
+      {canWrite && account.provider !== 'aws' && <EditSource account={account} disabled={managed} />}
       {canWrite && (
         <div className="space-y-2">
           <Button
             variant="secondary"
-            disabled={update.isPending}
+            disabled={managed || update.isPending}
             onClick={() => update.mutate({ status: account.status === 'active' ? 'inactive' : 'active' })}
           >
             {account.status === 'active' ? 'Desativar monitoramento' : 'Reativar monitoramento'}
@@ -500,8 +532,11 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
   );
 }
 
-/** GCP: a assinatura do Pub/Sub; Cloudflare: as zonas. Os dois podem chegar depois do cadastro. */
-function EditSource({ account }: { account: CloudAccount }) {
+/**
+ * GCP: a assinatura do Pub/Sub; Cloudflare: as zonas. Os dois podem chegar depois do cadastro. Na conta que a Verax
+ * cadastrou, o campo fica desligado.
+ */
+function EditSource({ account, disabled = false }: { account: CloudAccount; disabled?: boolean }) {
   const gcp = account.provider === 'gcp';
   const [value, setValue] = useState(gcp ? (subscriptionLabel(account) ?? '') : account.zones.join(', '));
   const [error, setError] = useState<string>();
@@ -534,9 +569,10 @@ function EditSource({ account }: { account: CloudAccount }) {
         value={value}
         onChange={(event) => setValue(event.target.value)}
         error={error}
+        disabled={disabled}
       />
       <FormError error={update.error} />
-      <Button type="submit" variant="secondary" disabled={update.isPending}>
+      <Button type="submit" variant="secondary" disabled={disabled || update.isPending}>
         {gcp ? 'Salvar assinatura' : 'Salvar zonas'}
       </Button>
     </form>
@@ -548,14 +584,23 @@ function EditSource({ account }: { account: CloudAccount }) {
  * nó não tem identidade do Google: a AWS e a GCP são lidas com a chave de uma identidade só de leitura, colada aqui. A
  * API recusa as chaves nos outros nós; a escolha aqui é só a das instruções.
  */
-function ProviderSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+function ProviderSteps({
+  account,
+  canWrite,
+  canEditSource,
+}: {
+  account: CloudAccount;
+  canWrite: boolean;
+  /** Alterar a fonte (a identidade do sink): não na conta que a Verax cadastrou. A credencial segue `canWrite`. */
+  canEditSource: boolean;
+}) {
   const config = useAuthClientConfig();
   const vm = config.data?.nodePlatform === 'vm';
   if (account.provider === 'gcp') {
     return vm ? (
       <GcpKeySteps account={account} canWrite={canWrite} />
     ) : (
-      <GcpSteps account={account} canWrite={canWrite} />
+      <GcpSteps account={account} canWrite={canEditSource} />
     );
   }
   if (account.provider === 'cloudflare') return <CloudflareSteps account={account} canWrite={canWrite} />;
