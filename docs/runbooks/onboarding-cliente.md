@@ -299,11 +299,36 @@ suporte da Verax (`verax-support-email`), cria o cliente com o plano do nó, o a
 senha como versão de um segredo do Secret Manager no projeto dos nós:
 
 - `vx-<slug>-admin-bootstrap`: a do administrador do cliente, que a página de status revela **uma vez** ao cliente e
-  depois destrói (plano de controle, CP-05);
+  depois destrói (plano de controle, CP-05). Essa revelação única também pode ser feita por você, no console (abaixo,
+  "Mandar o acesso você mesmo");
 - `vx-<slug>-support-bootstrap`: a da conta de suporte, que **só o responsável** lê.
 
 A VM só acrescenta versões nesses dois segredos e não lê nenhum deles de volta. Nenhuma senha aparece na tela, no
 journal ou na auditoria. Da segunda partida em diante, nada muda e nenhuma senha nova é gerada.
+
+**Mandar o acesso você mesmo (a senha do administrador do cliente, pelo console):** quando for melhor você mandar
+o acesso ao cliente (ele não achou o e-mail, prefere receber por outro canal, o contrato direto combinou assim), abra o
+cliente no console (`/clientes/<id>`), no bloco "Acesso do administrador", e use **Mostrar senha inicial…**. O botão
+só aparece com o cliente em "Esperando a conexão" e com a senha ainda não revelada. Digite o subdomínio para
+confirmar. O console mostra o painel, o login, a senha temporária e a validade, cada um com um botão de copiar, e
+**Copiar mensagem para o cliente**, que monta o texto pronto (o painel, o login, a senha, a validade e o aviso de que o
+primeiro acesso pede a troca da senha e o MFA). Mande por um canal seguro.
+
+Isso **é** a revelação única, não uma cópia:
+
+- a senha aparece só nessa vez; ao fechar o bloco (ou sair da página) ela não volta;
+- a versão do `admin-bootstrap` é destruída logo em seguida (o mesmo `secrets.destroy_bootstrap` da revelação do
+  cliente);
+- o link que o cliente recebeu por e-mail e a página de status passam a responder "senha já revelada";
+- a auditoria registra `access.revealed` com você como autor (`owner:<seu e-mail>`, `via: owner`) e o pedido do
+  console (`tenant.console_request`, `operation: reveal-access`), nunca a senha.
+
+O que o console pode responder: **já revelada** (o cliente viu antes, ou outro responsável: daqui em diante, só o
+"Esqueci minha senha" do painel ou uma senha temporária gerada pela conta de suporte em Usuários); **cliente fora da
+espera** (ainda provisionando, ou já ativo); **senha vencida** (nada foi mostrado nem marcado: gere uma senha nova com a
+renovação abaixo, `BOOTSTRAP_RENEW_ADMIN_PASSWORD=true`, e tente de novo); **subdomínio que não confere** (nada
+marcado); **muitas operações** (o limite das operações do responsável, 20 por hora); **senha indisponível** ou
+**cp-worker fora** (nada marcado: tente de novo).
 
 **Ler a senha da conta de suporte** (o login é o `verax-support-email` do nó), com a sua conta de responsável:
 
@@ -330,8 +355,9 @@ sudo BOOTSTRAP_RENEW_SUPPORT_PASSWORD=true /opt/verax/bin/start.sh customer-boot
 
 e leia a versão nova como acima. A senha anterior e as sessões abertas da conta deixam de valer; o MFA continua. A do
 administrador do cliente segue o mesmo caminho com `BOOTSTRAP_RENEW_ADMIN_PASSWORD=true` (a versão nova de
-`admin-bootstrap` só chega ao cliente se a revelação ainda não aconteceu; depois dela, o caminho é o "Esqueci minha
-senha" do painel ou uma senha temporária gerada pela conta de suporte em Usuários).
+`admin-bootstrap` só chega ao cliente se a revelação ainda não aconteceu, pela página de status, pelo link do e-mail
+ou pelo "Mostrar senha inicial…" do console; depois dela, o caminho é o "Esqueci minha senha" do painel ou uma senha
+temporária gerada pela conta de suporte em Usuários). É também o caminho quando o console responde "senha vencida".
 
 **Quando o serviço falha** (`systemctl status verax-customer-bootstrap`, motivo no `journalctl -u
 verax-customer-bootstrap`): ele tenta de novo a cada minuto, até dez vezes em uma hora. Os motivos esperados são um

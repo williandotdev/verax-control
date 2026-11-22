@@ -60,12 +60,30 @@ export interface ResolvedStatusToken extends StatusTokenDocument {
   id: string;
 }
 
+/**
+ * O subdomínio digitado pelo responsável não confere com o do cliente: nada foi marcado (a revelação pelo console,
+ * como as outras operações do responsável, exige a confirmação).
+ */
+export class RevealConfirmationMismatchError extends Error {
+  constructor(readonly tenantId: string) {
+    super(`o subdomínio digitado não confere com o do cliente ${tenantId}`);
+    this.name = 'RevealConfirmationMismatchError';
+  }
+}
+
+/**
+ * Por onde a senha foi revelada: a página de status (`cookie`), o link do e-mail do plano B (`email_reveal`) ou o
+ * console do responsável (`owner`), que a copia e manda ao cliente. Qualquer um dos três é **a** revelação única.
+ */
+export type RevealVia = StatusTokenKind | 'owner';
+
 /** A revelação marcada (o ponto sem volta): o cliente como ficou e o carimbo, para desfazer se a leitura falhar. */
 export interface RevealClaim {
   tenant: TenantRecord;
   revealedAt: Date;
-  tokenId: string;
-  kind: StatusTokenKind;
+  /** A credencial usada (o hash), só na revelação do cliente; o responsável não usa credencial da página de status. */
+  tokenId?: string;
+  kind: RevealVia;
 }
 
 export interface AccessAuditContext {
@@ -177,23 +195,65 @@ export class AccessStore {
   }
 
   /**
+   * Marca a revelação pelo responsável (o console, ou um responsável direto), numa transação com as mesmas regras da do
+   * cliente: cliente existente e não excluído (`StatusAccessNotFoundError`), o subdomínio digitado igual ao do cliente
+   * (`RevealConfirmationMismatchError`, antes de qualquer outra conferência, para que um engano não diga nada sobre o
+   * estado), ainda sem revelação (`AlreadyRevealedError`) e esperando a conexão (`RevealNotAvailableError`). Grava
+   * `access.passwordRevealedAt` e a auditoria `access.revealed` com quem agiu (`owner:<e-mail>`) e `via: 'owner'`.
+   * Depois dela, o cookie da página de status e o link do e-mail recebem `AlreadyRevealedError`: é a mesma revelação
+   * única, só que pelas mãos do responsável.
+   */
+  async claimRevealByOwner(
+    tenantId: string,
+    confirmSlug: string,
+    actor: string,
+    context: AccessAuditContext = {},
+  ): Promise<RevealClaim> {
+    if (!isUlid(tenantId)) throw new StatusAccessNotFoundError();
+    return this.store.runTransaction(async (tx) => {
+      const tenant = await this.readTenant(tx, tenantId);
+      if (tenant === undefined || tenant.state === 'deleted') throw new StatusAccessNotFoundError();
+      if (tenant.slug !== confirmSlug) throw new RevealConfirmationMismatchError(tenantId);
+      if (tenant.access?.passwordRevealedAt !== undefined) throw new AlreadyRevealedError(tenantId);
+      if (tenant.state !== REVEAL_STATE) throw new RevealNotAvailableError(tenantId);
+      const now = this.clock.now();
+      const updated = tenantSchema.parse({
+        ...tenant,
+        access: { ...tenant.access, passwordRevealedAt: now },
+        updatedAt: now,
+      });
+      tx.set(COLLECTIONS.tenants, tenantId, updated);
+      this.audit.record(tx, {
+        actor,
+        action: 'access.revealed',
+        tenantId,
+        details: { via: 'owner' },
+        requestId: context.requestId,
+      });
+      return { tenant: { id: tenantId, ...updated }, revealedAt: now, kind: 'owner' };
+    });
+  }
+
+  /**
    * Desfaz a marcação quando nada foi mostrado (o segredo não pôde ser lido, a senha venceu, a destruição não entrou
-   * na fila): o cliente pode tentar de novo, com o mesmo link se veio do e-mail. Só desfaz a marcação desta revelação
-   * (mesmo carimbo); devolve `false` se ela não estiver mais lá.
+   * na fila): o cliente (ou o responsável) pode tentar de novo, com o mesmo link se veio do e-mail. Só desfaz a marcação
+   * desta revelação (mesmo carimbo); devolve `false` se ela não estiver mais lá. Só a revelação pelo link do e-mail
+   * mexe na credencial (o uso dela volta); a do cookie e a do responsável, só no cliente.
    */
   async revertReveal(claim: RevealClaim, reason: string, context: AccessAuditContext = {}): Promise<boolean> {
     const tenantId = claim.tenant.id;
     return this.store.runTransaction(async (tx) => {
       const tenant = await this.readTenant(tx, tenantId);
-      const credential = claim.kind === 'email_reveal' ? await this.readToken(tx, claim.tokenId) : undefined;
+      const tokenId = claim.kind === 'email_reveal' ? claim.tokenId : undefined;
+      const credential = tokenId === undefined ? undefined : await this.readToken(tx, tokenId);
       const marked = tenant?.access?.passwordRevealedAt;
       if (tenant === undefined || marked?.getTime() !== claim.revealedAt.getTime()) return false;
       const now = this.clock.now();
       const { passwordRevealedAt: _undone, ...access } = tenant.access ?? {};
       tx.set(COLLECTIONS.tenants, tenantId, tenantSchema.parse({ ...tenant, access, updatedAt: now }));
-      if (credential?.usedAt?.getTime() === claim.revealedAt.getTime()) {
+      if (tokenId !== undefined && credential?.usedAt?.getTime() === claim.revealedAt.getTime()) {
         const { usedAt: _unused, ...rest } = credential;
-        tx.set(COLLECTIONS.statusTokens, claim.tokenId, statusTokenDocumentSchema.parse(rest));
+        tx.set(COLLECTIONS.statusTokens, tokenId, statusTokenDocumentSchema.parse(rest));
       }
       this.audit.record(tx, {
         actor: 'system',

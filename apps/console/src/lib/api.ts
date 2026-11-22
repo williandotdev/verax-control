@@ -1,4 +1,5 @@
 import type {
+  AccessRevealed,
   AdminClientConfig,
   AmendmentRequest,
   ContractAmendmentResult,
@@ -211,6 +212,12 @@ export const tenantsApi = {
   /** O código de instalação de uso único da VM do cliente: volta uma vez, e o console não o guarda. */
   enrollmentCode: (id: string, confirmSlug: string): Promise<EnrollmentCodeIssued> =>
     request('POST', `${TENANTS}/${encodeURIComponent(id)}/enrollment-code`, { confirmSlug }),
+  /**
+   * A senha inicial do administrador do cliente, uma única vez (a revelação única): volta só nesta resposta, e o console
+   * a guarda só no estado da tela, nunca no cache das consultas.
+   */
+  revealAccess: (id: string, confirmSlug: string): Promise<AccessRevealed> =>
+    request('POST', `${TENANTS}/${encodeURIComponent(id)}/reveal-access`, { confirmSlug }),
   create: (body: DirectTenantRequest): Promise<DirectTenantCreated> => request('POST', TENANTS, body),
   act: (id: string, action: TenantAction, body: TenantActionRequest): Promise<TenantActionResult> =>
     request('POST', `${TENANTS}/${encodeURIComponent(id)}/${action}`, body),

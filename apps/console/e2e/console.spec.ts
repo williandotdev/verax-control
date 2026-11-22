@@ -216,6 +216,31 @@ for (const theme of THEMES) {
       expect(violations).toEqual([]);
     });
 
+    test('senha inicial: a confirmação pelo subdomínio com o aviso, e o acesso mostrado uma vez para copiar', async ({
+      page,
+    }, testInfo) => {
+      const state = createFakeState();
+      const tenant = state.tenants.tenants.get('01JC0000000000000000000E01');
+      if (tenant === undefined) throw new Error('cliente de exemplo ausente');
+      state.tenants.tenants.set(tenant.id, { ...tenant, state: 'waiting_customer_connection', access: {} });
+      const violations = await prepare(page, theme, state);
+      await page.goto(`/clientes/${tenant.id}`);
+      const panel = page.getByRole('region', { name: 'Acesso do administrador' });
+      await panel.getByRole('button', { name: 'Mostrar senha inicial…' }).click();
+      await expect(panel).toContainText('A senha aparece uma única vez.');
+      await panel.getByLabel(/Digite o subdomínio/).fill('cliente-demo-e');
+      await audit(page, testInfo, `senha-inicial-confirmar-${theme}`);
+      await panel.getByRole('button', { name: 'Confirmar: mostrar a senha' }).click();
+      const revealed = panel.getByRole('region', { name: 'Acesso para enviar ao cliente' });
+      await expect(revealed).toContainText('https://cliente-demo-e.control.veraxsistemas.com.br');
+      await expect(revealed.getByRole('button', { name: 'Copiar mensagem para o cliente' })).toBeVisible();
+      await audit(page, testInfo, `senha-inicial-mostrada-${theme}`);
+      await revealed.getByRole('button', { name: 'Fechar' }).click();
+      await expect(revealed).toHaveCount(0);
+      await expect(panel.getByRole('button', { name: 'Mostrar senha inicial…' })).toHaveCount(0);
+      expect(violations).toEqual([]);
+    });
+
     test('acesso: a entrada sem sessão, com o erro genérico, e a entrada com o código', async ({
       page,
     }, testInfo) => {

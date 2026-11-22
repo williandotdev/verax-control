@@ -56,6 +56,11 @@ function grpcCodeOf(error: unknown): unknown {
  * 4. devolve painel, login e senha. A auditoria `access.revealed` entrou na transação do passo 1.
  * Se o passo 2 ou o 3 falhar, ou a senha já tiver vencido, nada foi mostrado: a marcação é desfeita
  * (`access.reveal_reverted`) e o cliente pode tentar de novo.
+ *
+ * Desde 22/11/2026, a revelação tem duas portas e continua única: a do cliente (`reveal`, a página de status ou o link
+ * do e-mail, pelo cp-public) e a do responsável (`revealForOwner`, pelo console), que copia o acesso e manda ao
+ * cliente. A primeira que marcar leva; a outra recebe `AlreadyRevealedError`. Os passos 2 a 4 são os mesmos
+ * (`deliver`).
  */
 @Injectable()
 export class RevealService {
@@ -73,15 +78,45 @@ export class RevealService {
     value: string,
     context: AccessAuditContext = {},
   ): Promise<RevealedAccess> {
-    // Sem o projeto dos nós não há de onde ler: recusa antes de marcar.
-    if (this.config.NODES_PROJECT_ID === undefined) {
-      this.logger.warn(
-        { event: 'reveal_unconfigured', missing: ['NODES_PROJECT_ID'] },
-        'revelação sem configuração',
-      );
-      throw new RevealUnavailableError('unconfigured');
-    }
+    this.requireConfigured();
     const claim = await this.access.claimReveal(value, kind, context);
+    return this.deliver(claim, context);
+  }
+
+  /**
+   * A mesma revelação única, pelas mãos do responsável (o console, `POST /internal/tenants/:id/reveal-access`): ele
+   * copia o acesso e manda ao cliente. O subdomínio digitado é conferido na transação que marca (nada é marcado se não
+   * conferir); depois dela, o cookie da página de status e o link do e-mail recebem `AlreadyRevealedError`. O resto é o
+   * caminho do cliente: lê, confere o prazo, enfileira a destruição antes de responder e desfaz se nada foi mostrado.
+   * `actor`: quem agiu, `owner:<e-mail>` (`ownerActorOf`), na auditoria `access.revealed`.
+   */
+  async revealForOwner(
+    tenantId: string,
+    confirmSlug: string,
+    actor: string,
+    context: AccessAuditContext = {},
+  ): Promise<RevealedAccess> {
+    this.requireConfigured();
+    const claim = await this.access.claimRevealByOwner(tenantId, confirmSlug, actor, context);
+    return this.deliver(claim, context);
+  }
+
+  /** Sem o projeto dos nós não há de onde ler: recusa antes de marcar. */
+  private requireConfigured(): void {
+    if (this.config.NODES_PROJECT_ID !== undefined) return;
+    this.logger.warn(
+      { event: 'reveal_unconfigured', missing: ['NODES_PROJECT_ID'] },
+      'revelação sem configuração',
+    );
+    throw new RevealUnavailableError('unconfigured');
+  }
+
+  /**
+   * O que vem depois da marcação, igual para o cliente e para o responsável: lê a versão `latest` (a senha entra na
+   * máscara do logger antes do próximo `await`), confere o prazo, enfileira a destruição e devolve. Qualquer falha
+   * desfaz a marcação. O log leva só por onde foi (`via`), nunca a senha nem os e-mails.
+   */
+  private async deliver(claim: RevealClaim, context: AccessAuditContext): Promise<RevealedAccess> {
     const tenantId = claim.tenant.id;
 
     let credentials: BootstrapCredentials;
@@ -93,7 +128,13 @@ export class RevealService {
         error instanceof BootstrapUnavailableError ? `bootstrap_${error.reason}` : 'bootstrap_read_failed';
       // Só o código do erro: a mensagem do Secret Manager cita o nome do segredo (com o slug e o projeto).
       this.logger.error(
-        { event: 'reveal_bootstrap_unavailable', tenantId, reason, grpcCode: grpcCodeOf(error) },
+        {
+          event: 'reveal_bootstrap_unavailable',
+          tenantId,
+          reason,
+          grpcCode: grpcCodeOf(error),
+          via: claim.kind,
+        },
         'senha inicial indisponível; revelação desfeita',
       );
       await this.undo(claim, reason, context);
@@ -102,7 +143,10 @@ export class RevealService {
 
     if (credentials.expiresAt.getTime() <= this.clock.now().getTime()) {
       forgetLiveSecret(credentials.password);
-      this.logger.warn({ event: 'reveal_password_expired', tenantId }, 'senha temporária vencida');
+      this.logger.warn(
+        { event: 'reveal_password_expired', tenantId, via: claim.kind },
+        'senha temporária vencida',
+      );
       await this.undo(claim, 'password_expired', context);
       throw new PasswordExpiredError();
     }
@@ -117,7 +161,7 @@ export class RevealService {
     } catch (error) {
       forgetLiveSecret(credentials.password);
       this.logger.error(
-        { event: 'reveal_destroy_not_enqueued', tenantId, err: error },
+        { event: 'reveal_destroy_not_enqueued', tenantId, via: claim.kind, err: error },
         'a destruição da senha inicial não entrou na fila; revelação desfeita',
       );
       await this.undo(claim, 'destroy_not_enqueued', context);
@@ -128,11 +172,11 @@ export class RevealService {
       // O e-mail do cliente mudou depois do provisionamento (customer.updated) ou o segredo é de outra conta: a
       // revelação segue com o login do segredo, e o responsável confere. Nenhum dos dois e-mails vai ao log.
       this.logger.warn(
-        { event: 'reveal_admin_email_differs', tenantId },
+        { event: 'reveal_admin_email_differs', tenantId, via: claim.kind },
         'login do segredo difere do cadastro',
       );
     }
-    this.logger.info({ event: 'access_revealed', tenantId, via: kind }, 'senha inicial revelada');
+    this.logger.info({ event: 'access_revealed', tenantId, via: claim.kind }, 'senha inicial revelada');
     return {
       panelUrl: tenantUrls(claim.tenant.slug, this.config).panelUrl,
       adminEmail: credentials.email,
