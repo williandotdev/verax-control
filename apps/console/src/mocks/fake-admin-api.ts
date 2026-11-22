@@ -12,6 +12,7 @@ import { createFakeAuth, type FakeAuthState, handleAuthRequest } from './fake-au
 import { dre, guard, quote } from './fake-engine';
 import { createFakeFleet, type FakeFleetState, handleFleetRequest } from './fake-fleet';
 import { createFakeLegal, type FakeLegalState, handleLegalRequest } from './fake-legal';
+import { createFakeLogSources, type FakeLogSourcesState, handleLogSourcesRequest } from './fake-log-sources';
 import { createFakeTenants, type FakeTenantsState, handleTenantsRequest } from './fake-tenants';
 import { FICTITIOUS_OWNER, fictitiousCostModel, fictitiousPriceTable } from './fixtures';
 
@@ -45,6 +46,8 @@ export interface FakeAdminState {
   legacy: Set<string>;
   /** A frota: as versões, os nós e as rodadas (`fake-fleet.ts`). */
   fleet: FakeFleetState;
+  /** O nó de cada cliente e as fontes de log (`fake-log-sources.ts`). */
+  logSources: FakeLogSourcesState;
 }
 
 const DAY = 86_400_000;
@@ -71,6 +74,8 @@ export function createFakeState(
     legal: createFakeLegal(now, options.empty === true),
     legacy: new Set(),
     fleet: createFakeFleet(now()),
+    logSources:
+      options.empty === true ? { tenants: new Map(), panelAccounts: new Set() } : createFakeLogSources(now()),
   };
   if (options.empty === true) return state;
   const at = (days: number): string => iso(new Date(now().getTime() - days * DAY));
@@ -290,6 +295,19 @@ export function handleAdminRequest(
       state.email,
       method,
       parts.slice(1).map(decodeURIComponent),
+      body,
+    );
+  }
+
+  if (first === 'tenants' && (third === 'node-sync' || third === 'log-sources') && second !== undefined) {
+    const tenant = state.tenants.tenants.get(second);
+    if (tenant === undefined) return error(404, 'Cliente não encontrado.', 'tenant_not_found');
+    return handleLogSourcesRequest(
+      state.logSources,
+      tenant,
+      now,
+      method,
+      parts.slice(2).map(decodeURIComponent),
       body,
     );
   }

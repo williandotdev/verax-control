@@ -36,7 +36,11 @@ const EGRESS: readonly { hosts: string; ports: string; purpose: string }[] = [
     ports: '443 e 7844 (TCP e UDP)',
     purpose: 'O túnel da Verax no Cloudflare',
   },
-  { hosts: 'conta.veraxsistemas.com.br', ports: '443', purpose: 'O registro da VM na Verax' },
+  {
+    hosts: 'conta.veraxsistemas.com.br',
+    ports: '443',
+    purpose: 'O registro da VM e a sincronização com a Verax',
+  },
   { hosts: 'github.com, objects.githubusercontent.com', ports: '443', purpose: 'O instalador e o pacote' },
   { hosts: 'ghcr.io, pkg-containers.githubusercontent.com', ports: '443', purpose: 'As imagens do Verax' },
   {

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { tenantsApi } from '@/lib/api';
+import { logSourcesApi, tenantsApi } from '@/lib/api';
 
 /** Enquanto o cliente provisiona, o detalhe se atualiza sozinho (os passos andam no cp-worker). */
 const PROVISIONING_REFRESH_MS = 15_000;
@@ -25,6 +25,27 @@ export function useTenantInstallation(id: string, enabled: boolean) {
     enabled,
     retry: false,
   });
+}
+
+/** Com algo esperando o nó (que sincroniza a cada 5 minutos), as fontes de log se atualizam sozinhas. */
+const NODE_SYNC_REFRESH_MS = 60_000;
+
+/** O nó do cliente e as fontes de log (`GET .../node-sync`). Nenhuma resposta leva segredo. */
+export function useNodeSync(id: string) {
+  return useQuery({
+    queryKey: ['tenant', id, 'node-sync'],
+    queryFn: () => logSourcesApi.overview(id),
+    refetchInterval: (query) =>
+      query.state.data?.sources.some((source) => source.pending) === true ? NODE_SYNC_REFRESH_MS : false,
+  });
+}
+
+/** Depois de uma escrita nas fontes de log: só a leitura delas. */
+export function useInvalidateNodeSync(): (id: string) => Promise<void> {
+  const client = useQueryClient();
+  return async (id) => {
+    await client.invalidateQueries({ queryKey: ['tenant', id, 'node-sync'] });
+  };
 }
 
 /** Depois de uma operação: a lista e o detalhe do cliente. */

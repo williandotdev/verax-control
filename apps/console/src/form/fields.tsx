@@ -15,11 +15,11 @@ import {
 import type { Path } from '@/lib/paths';
 import { type FieldBinding, fieldId, useField, useList } from './form-context';
 
-const INPUT =
+export const INPUT =
   'h-9 w-full rounded-md border border-border-strong bg-surface-raised px-3 text-sm tabular-nums placeholder:text-subtle-foreground disabled:cursor-not-allowed disabled:opacity-70 aria-invalid:border-critical';
 
 /** Rótulo, controle, dica e erros ligados por `aria-describedby`; o erro sai em `--critical-text` com o texto. */
-function FieldShell({
+export function FieldShell({
   binding,
   label,
   hint,

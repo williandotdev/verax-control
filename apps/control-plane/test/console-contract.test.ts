@@ -1,7 +1,19 @@
 import { readFileSync } from 'node:fs';
+import type {
+  cloudAccountUpdateSchema,
+  cloudCredentialInputSchema,
+  NodeSyncNodeError,
+  NodeSyncSourceCode,
+} from '@verax/shared';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { z } from 'zod';
 import type * as Console from '../../console/src/lib/api-types.js';
+import type {
+  logSourceCreateRequestSchema,
+  logSourceRemoveRequestSchema,
+  LogSourceWriteResult,
+  NodeSyncOverview,
+} from '../src/admin/admin-log-sources.schema.js';
 import type {
   AccessRevealed,
   amendmentRequestSchema,
@@ -98,6 +110,11 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<Json<LegalOverview>>().toEqualTypeOf<Console.LegalOverview>();
     expectTypeOf<Json<LegalTextRecord>>().toExtend<Console.LegalTextRecord>();
     expectTypeOf<Json<LegalAuditEntry>>().toEqualTypeOf<Console.LegalAuditEntry>();
+    // As fontes de log: o nó, as fontes com o relato dele e o que mandar ao cliente; os códigos do nó, todos.
+    expectTypeOf<Json<NodeSyncOverview>>().toEqualTypeOf<Console.NodeSyncOverview>();
+    expectTypeOf<Json<LogSourceWriteResult>>().toEqualTypeOf<Console.LogSourceWriteResult>();
+    expectTypeOf<NodeSyncSourceCode>().toEqualTypeOf<Console.NodeSyncSourceCode>();
+    expectTypeOf<NodeSyncNodeError>().toEqualTypeOf<Console.NodeSyncNodeError>();
   });
 
   it('o que as telas mandam cabe no que a API aceita', () => {
@@ -122,6 +139,10 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<Console.LegalCreateRequest>().toExtend<z.input<typeof legalCreateBodySchema>>();
     expectTypeOf<Console.LegalUpdateRequest>().toExtend<z.input<typeof legalUpdateBodySchema>>();
     expectTypeOf<Console.LegalPublishRequest>().toExtend<z.input<typeof legalPublishBodySchema>>();
+    expectTypeOf<Console.LogSourceCreateRequest>().toExtend<z.input<typeof logSourceCreateRequestSchema>>();
+    expectTypeOf<Console.LogSourceUpdateRequest>().toExtend<z.input<typeof cloudAccountUpdateSchema>>();
+    expectTypeOf<Console.LogSourceCredentialInput>().toExtend<z.input<typeof cloudCredentialInputSchema>>();
+    expectTypeOf<Console.LogSourceRemoveRequest>().toExtend<z.input<typeof logSourceRemoveRequestSchema>>();
   });
 
   it('o vite preview dos testes de navegador do console manda a mesma CSP do cp-admin', () => {

@@ -20,6 +20,7 @@ import {
   SUSPENSION_LABELS,
   workerFailureMessage,
 } from './labels';
+import { LogSourcesPanel } from './log-sources-panel';
 import { useTenant } from './queries';
 import { RevealInitialAccess } from './reveal-access';
 import { TenantActionButtons } from './tenant-actions';
@@ -122,8 +123,8 @@ function createdNotice(
 /**
  * Um cliente: quem é, como paga, onde o ambiente roda, o que contratou, a linha do tempo do provisionamento (cada
  * passo, com o código de quem parou) ou, no ambiente do cliente, a situação da instalação e o que mandar a ele (o perfil
- * da VM, a rede e o comando único); o acesso do
- * administrador e o histórico de estados; e as operações do responsável, com o subdomínio digitado como confirmação.
+ * da VM, a rede e o comando único); as fontes de log (o que o servidor do cliente lê, cadastradas aqui e aplicadas por
+ * ele na sincronização); o acesso do administrador e o histórico de estados; e as operações do responsável, com o subdomínio digitado como confirmação.
  * Enquanto provisiona, a página se atualiza sozinha.
  */
 export function TenantDetailPage() {
@@ -302,6 +303,8 @@ export function TenantDetailPage() {
           <TenantActionButtons tenant={data} actions={['start', 'resume']} />
         </Panel>
       )}
+
+      {data.state !== 'deleted' && <LogSourcesPanel tenant={data} />}
 
       <Panel title="Acesso do administrador" id="acesso">
         <p className="text-sm">
