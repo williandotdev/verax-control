@@ -829,3 +829,255 @@ export interface LegalAuditEntry {
   bytes?: number;
   contentSha256?: string;
 }
+
+// --- Fontes de log do cliente (a sincronização com o nó) ----------------------------------------------------------
+
+/** Onde o nó roda: na GCP (o gerenciado) ou na VM própria do cliente. */
+export type NodePlatform = 'gcp' | 'vm';
+
+/** Os provedores de uma fonte de log. */
+export type LogSourceProvider = 'aws' | 'gcp' | 'cloudflare';
+
+/** As fontes da AWS lidas de buckets S3 (um bucket por fonte). */
+export type AwsLogBucketSource = 'cloudtrail' | 'guardduty' | 'waf';
+
+/** Os tipos de credencial que o console cola (o Cloudflare em todo nó; a AWS e a GCP só na VM do cliente). */
+export type CredentialKind = 'cloudflare_api_token' | 'aws_access_key' | 'gcp_service_account_key';
+
+/** Por que o nó não aplicou uma fonte (ou a credencial dela): `NODE_SYNC_SOURCE_CODES` de `@verax/shared`. */
+export type NodeSyncSourceCode =
+  | 'invalid_spec'
+  | 'immutable_changed'
+  | 'tenant_ambiguous'
+  | 'plan_limit_reached'
+  | 'tenant_plan_missing'
+  | 'account_exists_panel'
+  | 'origin_conflict'
+  | 'vault_disabled'
+  | 'credential_kind_not_allowed'
+  | 'credential_unreadable'
+  | 'credential_rejected_invalid'
+  | 'credential_rejected_inactive'
+  | 'credential_rejected_expired'
+  | 'credential_rejected_not_yet_valid'
+  | 'credential_rejected_no_account_access'
+  | 'credential_rejected_wrong_identity'
+  | 'source_unavailable'
+  | 'internal_error';
+
+/** O problema do nó inteiro: mais de um cliente no banco, ou o cofre ilegível. */
+export type NodeSyncNodeError = 'tenant_ambiguous' | 'vault_unreadable';
+
+/** Os buckets de log de uma conta AWS por fonte (`null` tira o bucket numa alteração). */
+export interface AwsLogBuckets {
+  cloudtrail?: string | null;
+  guardduty?: string | null;
+  waf?: string | null;
+}
+
+/** O cadastro de uma fonte, com as regras do painel do nó (`cloudAccountCreateSchema`). */
+export type LogSourceSpec =
+  | { provider: 'aws'; accountId: string; regions: string[]; buckets?: AwsLogBuckets }
+  | {
+      provider: 'gcp';
+      accountId: string;
+      pubsubSubscription?: string | null;
+      sinkWriterIdentity?: string | null;
+    }
+  | { provider: 'cloudflare'; accountId: string; zones?: string[] };
+
+/** A credencial colada no console: só no corpo do pedido, nunca volta (`cloudCredentialInputSchema`). */
+export type LogSourceCredentialInput =
+  | { kind: 'cloudflare_api_token'; token: string }
+  | { kind: 'aws_access_key'; accessKeyId: string; secretAccessKey: string }
+  | {
+      kind: 'gcp_service_account_key';
+      projectId: string;
+      clientEmail: string;
+      privateKeyId: string;
+      privateKey: string;
+    };
+
+/** `POST /v1/admin/tenants/:id/log-sources`. */
+export interface LogSourceCreateRequest {
+  spec: LogSourceSpec;
+  credential?: LogSourceCredentialInput;
+}
+
+/** `PATCH /v1/admin/tenants/:id/log-sources/:sourceId`: só os campos do provedor (o provedor e a conta não mudam). */
+export interface LogSourceUpdateRequest {
+  regions?: string[];
+  buckets?: AwsLogBuckets;
+  pubsubSubscription?: string | null;
+  sinkWriterIdentity?: string | null;
+  zones?: string[];
+}
+
+/** `POST .../log-sources/:sourceId/remove`: o subdomínio do cliente, digitado de novo. */
+export interface LogSourceRemoveRequest {
+  confirmSlug: string;
+}
+
+/** O que o nó disse de si na última sincronização aceita. Nada aqui é segredo. */
+export interface NodeSyncView {
+  lastSeenAt: string;
+  /** Mais de 15 minutos sem sincronizar. */
+  stale: boolean;
+  platform: NodePlatform;
+  /** A plataforma informada não é a do lugar do cliente. */
+  platformMismatch: boolean;
+  commit: string;
+  capabilities: string[];
+  authKind: 'gcp_identity' | 'node_key';
+  nodeTenantId: string | null;
+  /** O nó tem o cofre com a chave pública conferida: o console pode cifrar para ele. */
+  vaultReady: boolean;
+  keyVersion: number | null;
+  /** SHA-256 da chave pública do cofre (o painel do cliente mostra a mesma). */
+  fingerprint: string | null;
+  keySince: string | null;
+  serviceAccountId: string | null;
+  egressIps: string[];
+  audience: string;
+  error: NodeSyncNodeError | null;
+}
+
+/** Os metadados da credencial colada no console (nunca o envelope nem o texto claro). */
+export interface LogSourceCredentialView {
+  kind: CredentialKind;
+  revision: number;
+  keyVersion: number;
+  fingerprint: string;
+  submittedAt: string;
+  submittedBy: string;
+  /** O envelope ainda espera o nó (falso: consumido, descartado ou vencido). */
+  envelopeStored: boolean;
+}
+
+/** A credencial como está no nó: a do console (com a revisão) ou a colada no painel (revisão null). */
+export interface NodeSyncCredentialReport {
+  revision: number | null;
+  outcome: 'applied' | 'failed';
+  code: NodeSyncSourceCode | null;
+  kind: CredentialKind | null;
+  /** Os 4 últimos caracteres do ID da credencial na origem, nunca do segredo. */
+  keyIdSuffix: string | null;
+  expiresAt: string | null;
+  verifiedAt: string | null;
+}
+
+/** A conta como está no nó (a coleta). */
+export interface NodeSyncAccountReport {
+  status: 'active' | 'inactive';
+  connection: 'waiting' | 'connected' | 'error';
+  connectionError: string | null;
+  collectionError: 'aws_token_stale' | 'wazuh_apply_failed' | null;
+  /** AWS: a data (AAAA-MM-DD) a partir da qual o nó lê os buckets. */
+  ingestFrom: string | null;
+  lastEventAt: string | null;
+  lastCollectedAt: string | null;
+  checkRequestedAt: string | null;
+}
+
+/** O último relato do nó sobre a fonte, com quando chegou. */
+export interface LogSourceReport {
+  id: string;
+  revision: number;
+  outcome: 'applied' | 'failed' | 'removed';
+  code: NodeSyncSourceCode | null;
+  credential: NodeSyncCredentialReport | null;
+  account: NodeSyncAccountReport | null;
+  reportedAt: string;
+}
+
+/**
+ * A situação da fonte: `pending` (o nó ainda não processou a revisão ou a credencial nova), `applied`, `failed` (com o
+ * código), `removing` (a lápide ainda não chegou ao nó) e `removed`.
+ */
+export type LogSourceStatus = 'pending' | 'applied' | 'failed' | 'removing' | 'removed';
+
+export type AwsStackMismatchField = 'serviceAccountId' | 'egressIps' | 'audience';
+
+/** A pilha do papel de leitura sem chave (nó gerenciado), com os valores que o plano de controle conhece. */
+export interface AwsStackView {
+  stackName: string;
+  roleArn: string;
+  /** null: o provisionamento ainda não gravou (o comando leva o marcador). */
+  nodeServiceAccountId: string | null;
+  egressIps: string[];
+  audience: string;
+  bucketArns: string[];
+  deployCommand: string;
+  consoleUrl: string;
+  templateUrl: string;
+  mismatch: boolean;
+  mismatches: AwsStackMismatchField[];
+}
+
+/** As chaves de leitura que o cliente cria na conta dele (VM do cliente). */
+export type ReadKeysView =
+  | {
+      provider: 'aws';
+      userArn: string;
+      readerPolicyName: string;
+      readerPolicyFile: string;
+      readerPolicy: unknown;
+      guardrailsPolicyName: string;
+      guardrailsPolicyFile: string;
+      guardrailsPolicy: unknown;
+      commands: string;
+      egressIps: string[];
+    }
+  | {
+      provider: 'gcp';
+      subscription: string;
+      serviceAccountEmail: string;
+      role: string;
+      keyFile: string;
+      commands: string;
+    };
+
+/** O token de leitura do Cloudflare: o link com as permissões marcadas e os IPs para o filtro do token. */
+export interface CloudflareTokenView {
+  templateUrl: string;
+  tokenName: string;
+  egressIps: string[];
+}
+
+export interface LogSourceView {
+  id: string;
+  spec: LogSourceSpec;
+  state: 'active' | 'removed';
+  revision: number;
+  credential: LogSourceCredentialView | null;
+  report: LogSourceReport | null;
+  pending: boolean;
+  status: LogSourceStatus;
+  code: NodeSyncSourceCode | null;
+  awsStack: AwsStackView | null;
+  readKeys: ReadKeysView | null;
+  cloudflareToken: CloudflareTokenView | null;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+/** `GET /v1/admin/tenants/:id/node-sync`. */
+export interface NodeSyncOverview {
+  hosting: Hosting;
+  platform: NodePlatform;
+  /** Os tipos de credencial que o console aceita colar para este cliente. */
+  credentialKinds: CredentialKind[];
+  generation: number;
+  /** null: o nó nunca sincronizou. */
+  node: NodeSyncView | null;
+  sources: LogSourceView[];
+  templateUrl: string;
+}
+
+/** O resultado de toda escrita: a fonte como ficou e a geração nova. */
+export interface LogSourceWriteResult {
+  source: LogSourceView;
+  generation: number;
+}

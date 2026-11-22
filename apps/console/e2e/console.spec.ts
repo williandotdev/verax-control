@@ -241,6 +241,58 @@ for (const theme of THEMES) {
       expect(violations).toEqual([]);
     });
 
+    test('fontes de log: o servidor sincronizado, a pilha da AWS, o cadastro do Cloudflare com a chave e a remoção', async ({
+      page,
+    }, testInfo) => {
+      const state = createFakeState();
+      const violations = await prepare(page, theme, state);
+      await page.goto('/clientes/01JC0000000000000000000D01');
+      const sources = page.getByRole('region', { name: 'Fontes de log' });
+      await expect(sources.getByRole('group', { name: 'Situação da sincronização' })).toContainText(
+        'Servidor sincronizado',
+      );
+      await expect(sources.getByRole('row', { name: /222222222222/ })).toContainText(
+        'O cliente já cadastrou esta conta no painel dele',
+      );
+      await audit(page, testInfo, `fontes-de-log-${theme}`);
+
+      // Pelo teclado: o botão da fonte abre o detalhe com a pilha do papel de leitura.
+      await sources.getByRole('button', { name: 'Abrir a fonte AWS 111111111111' }).focus();
+      await page.keyboard.press('Enter');
+      const aws = sources.getByRole('region', { name: 'AWS 111111111111' });
+      const stack = aws.getByRole('region', { name: 'Papel de leitura da AWS (CloudFormation)' });
+      await expect(stack.getByRole('link', { name: 'Baixar modelo' })).toBeVisible();
+      await expect(stack.getByLabel('Comando da AWS CLI', { exact: true })).toContainText(
+        'aws cloudformation deploy',
+      );
+      await audit(page, testInfo, `fonte-aws-${theme}`);
+
+      await sources.getByRole('button', { name: 'Cadastrar fonte…' }).click();
+      const form = sources.getByRole('form', { name: 'Cadastrar fonte de log' });
+      await form.getByLabel('Provedor').selectOption('cloudflare');
+      await form.getByLabel('ID da conta do Cloudflare').fill('cf000000000000000000000000000009');
+      await form.getByLabel('Zonas (opcional)').fill('exemplo.com.br');
+      await form.getByLabel('Token de API do Cloudflare').fill('demo'.repeat(10));
+      await audit(page, testInfo, `fonte-nova-${theme}`);
+      await form.getByRole('button', { name: 'Cadastrar a fonte' }).click();
+      await expect(sources.getByText(/^Fonte cadastrada, com a chave cifrada/)).toBeVisible();
+      const cloudflare = sources.getByRole('region', { name: 'Cloudflare cf000000000000000000000000000009' });
+      await expect(cloudflare.getByRole('region', { name: 'Token de leitura do Cloudflare' })).toBeVisible();
+      await expect(cloudflare).toContainText('Pendente');
+      await audit(page, testInfo, `fonte-cadastrada-${theme}`);
+
+      await cloudflare.getByRole('button', { name: 'Remover…' }).click();
+      await expect(cloudflare).toContainText('para a coleta desta fonte na próxima sincronização');
+      await cloudflare.getByLabel(/Digite o subdomínio/).fill('contrato-ativo');
+      await cloudflare.getByRole('button', { name: 'Confirmar: remover a fonte' }).click();
+      await expect(sources.getByText(/^Fonte removida\./)).toBeVisible();
+      await expect(sources.getByRole('row', { name: /cf000000000000000000000000000009/ })).toContainText(
+        'Removendo',
+      );
+      await audit(page, testInfo, `fonte-removida-${theme}`);
+      expect(violations).toEqual([]);
+    });
+
     test('acesso: a entrada sem sessão, com o erro genérico, e a entrada com o código', async ({
       page,
     }, testInfo) => {

@@ -574,25 +574,66 @@ enviado de novo (nada muda) é recusado; conta no limite de 20 operações por h
 
 O responsável cadastra as fontes de log (AWS e Cloudflare nos dois lugares; projetos da GCP só no ambiente na VM do
 cliente) e o nó do cliente as aplica na próxima sincronização, a cada 5 minutos (`docs/ARQUITETURA.md`, "Sincronização
-com o plano de controle"). A API está no `cp-admin` (`/v1/admin/tenants/<id>/node-sync` e `.../log-sources`); a tela vem
-com o PR do console.
+com o plano de controle"). A tela é o bloco **Fontes de log** no detalhe do cliente (**Clientes** → o cliente); a API
+está no `cp-admin` (`/v1/admin/tenants/<id>/node-sync` e `.../log-sources`).
 
-- **Antes da credencial:** o nó tem de ter sincronizado ao menos uma vez com o cofre ligado ("O nó ainda não
-  sincronizou" / "sem o cofre" = 409 `node_not_synced` / `vault_disabled`). Sem pressa: a fonte pode ser cadastrada
-  sem credencial, e o cliente cola no painel dele. No gerenciado, a AWS não leva chave (o papel sem chave): mande ao
-  cliente o template, o comando e o link do bloco `awsStack`; com `mismatch`, o nó informou outro ID de conta de
-  serviço, IP ou audience que o plano de controle: confira a VM antes de mandar. Na VM do cliente, o bloco `readKeys`
-  tem o usuário IAM (ou a conta de serviço da GCP) que o cliente cria, e a chave dele pode ser colada aqui ou no painel.
-- **Credencial:** colada uma vez, cifrada para o cofre daquele nó e nunca mostrada de novo; a resposta e a auditoria
-  levam só o tipo, a revisão e a impressão digital da chave do cofre (a mesma que o painel do cliente mostra). Vale a
-  mais nova: uma colada no painel depois vence até a próxima daqui. Recusada pelo nó (`failed` com
-  `credential_rejected_*`) ou com o envelope descartado, cole de novo.
-- **Situação:** `pending` até o nó contar, `applied`, `failed` com o código do nó (`account_exists_panel`: o cliente já
-  cadastrou a conta no painel e o nó não mexe nela; `origin_conflict`, `plan_limit_reached` etc.), `removing` e
-  `removed`. `stale`: o nó não chama há mais de 15 minutos.
-- **Remover:** digite o subdomínio; a fonte vira lápide (o nó desativa a conta) e o envelope pendente sai. A mesma conta
-  pode voltar depois como fonte nova. Cadastro, alteração, credencial e remoção contam no limite de 20 operações por
-  hora e vão à auditoria (`tenant.console_request`, `operation: log_source.*`).
+**O que a tela mostra:**
+
+- **A situação do servidor do cliente.** "O servidor do cliente ainda não se comunicou com a Verax": a sincronização
+  chega com a versão `node-v1.2.0` do nó (ou mais nova); no gerenciado, promova a versão em **Versões**; na VM do
+  cliente, ele atualiza o servidor. "Não se comunica há mais de 15 minutos" (`stale`): confira se o servidor está no
+  ar. Sincronizado, aparecem a última sincronização, a plataforma (GCP ou VM do cliente), a versão (o commit curto), o
+  cofre de credenciais e o começo da impressão digital da chave do cofre (o botão copia a inteira; o painel do cliente
+  mostra a mesma). Um aviso vermelho aparece com a plataforma trocada ou com o erro do nó (`tenant_ambiguous`: mais de
+  um cliente no banco; `vault_unreadable`: o cofre não abre).
+- **A tabela das fontes** cadastradas pelo console (as que o cliente cadastrou no painel não aparecem): o provedor, a
+  conta, o que lê (regiões e buckets, zonas ou a assinatura), a situação (**Pendente**, **Aplicada**, **Falhou** com o
+  motivo, **Removendo**, **Removida**), a chave (a enviada daqui, com a revisão, a aplicada no servidor, ou "Chave
+  colada pelo cliente no painel") e a coleta (a conexão, desde quando lê e o último evento). Com alguma pendente, a
+  tela se atualiza sozinha a cada minuto.
+- **A fonte aberta** ("Abrir"): o motivo da falha com o que fazer (cada código do nó tem o seu:
+  `account_exists_panel` é a conta que o cliente já tinha no painel e continua dele; `plan_limit_reached`, o limite de
+  contas do plano; `credential_rejected_*`, a origem recusou a chave, com o porquê), o cadastro, as ações e o que
+  mandar ao cliente:
+  - **AWS no gerenciado:** o bloco "Papel de leitura da AWS (CloudFormation)": o nome da pilha, o papel, os parâmetros
+    (`NodeServiceAccountId`, `NodeEgressIps`, `Audience`, `LogBucketArns`), cada um com "Copiar", o comando da AWS CLI,
+    o link do CloudFormation no console da AWS, **Baixar modelo** (o `verax-control-reader.yaml` para anexar) e
+    **Copiar mensagem para o cliente** (os passos, os parâmetros e o comando). Com o aviso "O servidor informou valores
+    diferentes" (`mismatch`), confira a VM antes de mandar; sem o ID da conta de serviço ou o IP de saída gravados pelo
+    provisionamento, a mensagem fica desligada.
+  - **AWS e GCP na VM do cliente:** o usuário IAM de leitura (as duas políticas, os comandos e os IPs de saída) ou a
+    conta de serviço da GCP (os comandos do Cloud Shell), com a mensagem pronta. A chave que o cliente gera, ele cola
+    no painel, ou você envia aqui.
+  - **Cloudflare:** o link que cria o token de leitura com as permissões marcadas, o nome do token e os IPs para o
+    filtro de IP, com a mensagem pronta.
+
+**Cadastrar, alterar, enviar a chave, remover:**
+
+- **Cadastrar fonte…:** o provedor (a GCP só aparece no cliente da VM), a conta e os campos dele: na AWS, as regiões
+  (uma por linha) e os buckets opcionais do CloudTrail, do GuardDuty e do WAF (este começa com `aws-waf-logs-`); no
+  Cloudflare, as zonas; na GCP, a assinatura (só o nome vira o nome completo no projeto). A chave é opcional ("o
+  cliente também pode colar a chave no painel dele") e só vale o tipo que o servidor aceita: o token do Cloudflare em
+  todo lugar; a chave de acesso da AWS e o arquivo JSON da conta de serviço da GCP só na VM do cliente. No gerenciado,
+  a AWS não leva chave (o papel sem chave).
+- **Antes da chave:** o nó tem de ter sincronizado ao menos uma vez com o cofre ligado. Sem isso, os campos da chave
+  ficam desligados com o motivo (e a API recusa com 409 `node_not_synced` / `vault_disabled`). Sem pressa: a fonte pode
+  ser cadastrada sem a chave, e o cliente cola no painel dele.
+- **A chave** ("Enviar chave…" numa fonte que já existe, ou no cadastro): os campos são de senha (o arquivo da GCP, um
+  campo de texto do qual só o projeto, o e-mail, o ID e a chave saem do navegador), a chamada vai direto à API, fora do
+  cache da tela, e os campos se apagam depois do envio, dê certo ou não. A chave é cifrada para o cofre daquele nó e
+  nunca aparece de novo; a resposta e a auditoria levam só o tipo, a revisão e a impressão digital da chave do cofre.
+  Vale a mais nova: uma colada no painel depois vence até a próxima daqui. Recusada pelo nó (`credential_rejected_*`)
+  ou com o envelope descartado, cole de novo.
+- **Alterar…:** só os campos do provedor (o provedor e a conta não mudam: outra conta é outra fonte); vira uma
+  revisão nova, e a fonte volta a **Pendente** até o nó aplicar. Sem mudança, a tela avisa e nada vai à API.
+- **Remover…:** digite o subdomínio; o servidor do cliente desativa a conta e para a coleta na próxima sincronização
+  (**Removendo** até ele contar), e a chave pendente sai. A mesma conta pode voltar depois como fonte nova.
+- **Recusas:** cada código da API tem a mensagem do que fazer (`source_exists`, `source_limit`, `source_removed`,
+  `no_change`, `placement_unsupported`, `not_allowed`, `node_not_synced`, `vault_disabled`, `platform_mismatch`,
+  `vault_key_invalid`, `gcp_unsupported_managed`, `credential_kind_not_allowed`, `credential_provider_mismatch`,
+  `confirmation_mismatch`, `rate_limited`); os problemas de campo (`invalid_request`) aparecem ao lado de cada campo. O
+  contrato terminado (cancelado ou excluído) deixa as fontes só para consulta. Cadastro, alteração, chave e remoção
+  contam no limite de 20 operações por hora e vão à auditoria (`tenant.console_request`, `operation: log_source.*`).
 
 ## 8. Textos legais (Termos, Privacidade e DPA)
 

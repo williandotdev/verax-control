@@ -27,6 +27,11 @@ import type {
   LegalTextRecord,
   LegalUpdateRequest,
   LegalVersionSummary,
+  LogSourceCreateRequest,
+  LogSourceCredentialInput,
+  LogSourceUpdateRequest,
+  LogSourceWriteResult,
+  NodeSyncOverview,
   PriceTable,
   PublishResult,
   SimulationRequest,
@@ -74,7 +79,7 @@ export class SessionExpiredError extends Error {
   }
 }
 
-type Method = 'GET' | 'POST' | 'PUT';
+type Method = 'GET' | 'POST' | 'PUT' | 'PATCH';
 
 /** O header do token do Turnstile na entrada (`features/auth/turnstile.ts`), o mesmo do painel. */
 export const TURNSTILE_TOKEN_HEADER = 'X-Turnstile-Token';
@@ -224,6 +229,34 @@ export const tenantsApi = {
   /** O aditivo do contrato direto: o plano, o volume, onde roda (antes de instalar) e os valores. */
   amend: (id: string, body: AmendmentRequest): Promise<ContractAmendmentResult> =>
     request('POST', `${TENANTS}/${encodeURIComponent(id)}/amend`, body),
+};
+
+function logSourcePath(tenantId: string, sourceId?: string, action?: string): string {
+  const parts = [`${TENANTS}/${encodeURIComponent(tenantId)}/log-sources`];
+  if (sourceId !== undefined) parts.push(encodeURIComponent(sourceId));
+  if (action !== undefined) parts.push(action);
+  return parts.join('/');
+}
+
+/**
+ * As fontes de log de um cliente: o que o nó dele disse de si e de cada fonte, e as escritas do estado desejado, que o
+ * nó aplica na próxima sincronização. A credencial colada vai só no corpo do pedido (cifrada no cp-admin para o cofre
+ * do nó) e nunca volta: as telas a mandam por chamada direta, fora do cache das consultas e das mutações.
+ */
+export const logSourcesApi = {
+  overview: (tenantId: string): Promise<NodeSyncOverview> =>
+    request('GET', `${TENANTS}/${encodeURIComponent(tenantId)}/node-sync`),
+  create: (tenantId: string, body: LogSourceCreateRequest): Promise<LogSourceWriteResult> =>
+    request('POST', logSourcePath(tenantId), body),
+  update: (tenantId: string, sourceId: string, body: LogSourceUpdateRequest): Promise<LogSourceWriteResult> =>
+    request('PATCH', logSourcePath(tenantId, sourceId), body),
+  credential: (
+    tenantId: string,
+    sourceId: string,
+    body: LogSourceCredentialInput,
+  ): Promise<LogSourceWriteResult> => request('PUT', logSourcePath(tenantId, sourceId, 'credential'), body),
+  remove: (tenantId: string, sourceId: string, confirmSlug: string): Promise<LogSourceWriteResult> =>
+    request('POST', logSourcePath(tenantId, sourceId, 'remove'), { confirmSlug }),
 };
 
 const ACCOUNT = `${BASE}/account`;
