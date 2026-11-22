@@ -570,6 +570,30 @@ antes e depois, a vigência, a mudança de estado e a observação. Cada aditivo
 auditoria (`tenant.contract_amended`, com o antes e o depois; as recusas em `tenant.amend_refused`). O mesmo aditivo
 enviado de novo (nada muda) é recusado; conta no limite de 20 operações por hora.
 
+### 7.2. Fontes de log (a sincronização com o nó)
+
+O responsável cadastra as fontes de log (AWS e Cloudflare nos dois lugares; projetos da GCP só no ambiente na VM do
+cliente) e o nó do cliente as aplica na próxima sincronização, a cada 5 minutos (`docs/ARQUITETURA.md`, "Sincronização
+com o plano de controle"). A API está no `cp-admin` (`/v1/admin/tenants/<id>/node-sync` e `.../log-sources`); a tela vem
+com o PR do console.
+
+- **Antes da credencial:** o nó tem de ter sincronizado ao menos uma vez com o cofre ligado ("O nó ainda não
+  sincronizou" / "sem o cofre" = 409 `node_not_synced` / `vault_disabled`). Sem pressa: a fonte pode ser cadastrada
+  sem credencial, e o cliente cola no painel dele. No gerenciado, a AWS não leva chave (o papel sem chave): mande ao
+  cliente o template, o comando e o link do bloco `awsStack`; com `mismatch`, o nó informou outro ID de conta de
+  serviço, IP ou audience que o plano de controle: confira a VM antes de mandar. Na VM do cliente, o bloco `readKeys`
+  tem o usuário IAM (ou a conta de serviço da GCP) que o cliente cria, e a chave dele pode ser colada aqui ou no painel.
+- **Credencial:** colada uma vez, cifrada para o cofre daquele nó e nunca mostrada de novo; a resposta e a auditoria
+  levam só o tipo, a revisão e a impressão digital da chave do cofre (a mesma que o painel do cliente mostra). Vale a
+  mais nova: uma colada no painel depois vence até a próxima daqui. Recusada pelo nó (`failed` com
+  `credential_rejected_*`) ou com o envelope descartado, cole de novo.
+- **Situação:** `pending` até o nó contar, `applied`, `failed` com o código do nó (`account_exists_panel`: o cliente já
+  cadastrou a conta no painel e o nó não mexe nela; `origin_conflict`, `plan_limit_reached` etc.), `removing` e
+  `removed`. `stale`: o nó não chama há mais de 15 minutos.
+- **Remover:** digite o subdomínio; a fonte vira lápide (o nó desativa a conta) e o envelope pendente sai. A mesma conta
+  pode voltar depois como fonte nova. Cadastro, alteração, credencial e remoção contam no limite de 20 operações por
+  hora e vão à auditoria (`tenant.console_request`, `operation: log_source.*`).
+
 ## 8. Textos legais (Termos, Privacidade e DPA)
 
 Os três textos que o cliente aceita no checkout vivem no Firestore (`legalTexts/{terms|privacy|dpa}/versions`), em
