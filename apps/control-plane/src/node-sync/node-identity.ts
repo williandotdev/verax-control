@@ -1,5 +1,6 @@
 import { OAuth2Client } from 'google-auth-library';
 import { z } from 'zod';
+import { isNodeServiceAccountId } from '@verax/shared';
 import type { Clock } from '../common/clock.js';
 import { ENROLLMENT_SECRET_PATTERN } from '../enrollment/enrollment.js';
 import {
@@ -92,7 +93,7 @@ export function plausibleNodeIdentity(token: string, audience: string, now: Date
   return (
     payload['aud'] === audience &&
     typeof payload['sub'] === 'string' &&
-    NODE_SA_SUB_PATTERN.test(payload['sub']) &&
+    isNodeServiceAccountId(payload['sub']) &&
     typeof payload['exp'] === 'number' &&
     payload['exp'] * 1000 > now.getTime()
   );
