@@ -8,6 +8,9 @@
 !packages/shared/package.json
 !packages/shared/tsconfig*.json
 !packages/shared/src
+!packages/vault-envelope/package.json
+!packages/vault-envelope/tsconfig*.json
+!packages/vault-envelope/src
 !apps/api/package.json
 !apps/api/tsconfig*.json
 !apps/api/nest-cli.json

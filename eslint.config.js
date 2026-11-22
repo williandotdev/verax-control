@@ -98,6 +98,11 @@ export default tseslint.config(
     },
   },
   {
+    // O envelope do cofre (`@verax/vault-envelope`) só roda em Node: a API, o worker e o plano de controle.
+    files: ['packages/vault-envelope/**/*.ts'],
+    languageOptions: { globals: { ...globals.node } },
+  },
+  {
     // Testes criam arquivos em diretórios temporários gerados pelo próprio teste.
     files: [
       '**/*.test.{ts,tsx}',

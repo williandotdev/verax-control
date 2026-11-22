@@ -17,11 +17,13 @@ ENV CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CHECKPOINT_DISABLE=1
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
+COPY packages/vault-envelope/package.json packages/vault-envelope/
 COPY apps/api/package.json apps/api/
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter @verax/api...
 COPY packages/shared packages/shared
+COPY packages/vault-envelope packages/vault-envelope
 COPY apps/api apps/api
-RUN pnpm --filter @verax/shared build && pnpm --filter @verax/api build
+RUN pnpm --filter @verax/shared build && pnpm --filter @verax/vault-envelope build && pnpm --filter @verax/api build
 RUN pnpm --filter @verax/api deploy --prod --legacy --ignore-scripts /out
 
 FROM ${NODE_IMAGE} AS runtime

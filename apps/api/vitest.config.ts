@@ -8,6 +8,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@verax/shared': fileURLToPath(new URL('../../packages/shared/src/index.ts', import.meta.url)),
+      '@verax/vault-envelope': fileURLToPath(
+        new URL('../../packages/vault-envelope/src/index.ts', import.meta.url),
+      ),
     },
   },
   test: {

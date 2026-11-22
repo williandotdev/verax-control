@@ -15,6 +15,7 @@ export * from './history.js';
 export * from './incidents.js';
 export * from './inventory.js';
 export * from './mitre.js';
+export * from './node-sync.js';
 export * from './notification-preferences.js';
 export * from './pagination.js';
 export * from './permissions.js';

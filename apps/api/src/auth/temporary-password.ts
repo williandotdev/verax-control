@@ -1,5 +1,5 @@
-import { randomInt } from 'node:crypto';
 import { TEMPORARY_PASSWORD_HOURS, type TemporaryPassword } from '@verax/shared';
+import { generateTemporaryPassword } from '@verax/vault-envelope';
 import { hashPassword } from 'better-auth/crypto';
 import { requestContext } from '../common/context/request-context.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
@@ -12,15 +12,11 @@ import type { Auth } from './auth.factory.js';
  * só o hash, como qualquer senha.
  */
 
-/** Sem os caracteres que se confundem ao ler ou ditar (0/O, 1/l/I). */
-const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-const LENGTH = 20;
-
-/** 20 sorteios de 57 símbolos (cerca de 116 bits), em quatro grupos de cinco para ler e ditar. */
-export function generateTemporaryPassword(): string {
-  const chars = Array.from({ length: LENGTH }, () => ALPHABET.charAt(randomInt(ALPHABET.length)));
-  return [0, 5, 10, 15].map((start) => chars.slice(start, start + 5).join('')).join('-');
-}
+/**
+ * A geradora (20 sorteios de 57 símbolos, em quatro grupos de cinco) mora no `@verax/vault-envelope`: o plano de
+ * controle gera com ela a senha do usuário que a Verax cria no nó.
+ */
+export { generateTemporaryPassword };
 
 export function temporaryPasswordExpiry(now: Date = new Date()): Date {
   return new Date(now.getTime() + TEMPORARY_PASSWORD_HOURS * 60 * 60 * 1000);
