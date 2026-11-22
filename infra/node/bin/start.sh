@@ -877,7 +877,8 @@ render() {
     # Usuários pedidos pela Verax no console: ligados por padrão; CONTROL_PLANE_USERS=false no node.conf é o interruptor
     # do cliente (o worker recusa cada pedido com users_disabled). Outro valor desliga também, com o aviso: quem mexeu
     # na linha queria mudar alguma coisa, e o lado seguro é não criar contas.
-    case ${CONTROL_PLANE_USERS:-true} in
+    # Sem a linha, ligados; a linha vazia (`CONTROL_PLANE_USERS=`) é um valor fora do formato e desliga, com o aviso.
+    case ${CONTROL_PLANE_USERS-true} in
       true) ;;
       false) control_plane+=(CONTROL_PLANE_USERS=false) ;;
       *)

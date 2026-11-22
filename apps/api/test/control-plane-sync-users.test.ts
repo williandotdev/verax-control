@@ -14,7 +14,7 @@ import {
 } from '@verax/shared';
 import { generateTemporaryPassword, sealUserPassword } from '@verax/vault-envelope';
 import request from 'supertest';
-import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 import type { SyncLogger } from '../src/control-plane-sync/apply-source.js';
 import {
   ControlPlaneSync,
@@ -24,6 +24,7 @@ import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { parsePrivateKeys, type VaultKeyring } from '../src/credentials/credential-keys.js';
 import { fixedTenantPlans } from '../src/plan/tenant-plan.js';
 import { authPost, createUser, enrollMfa, signIn } from './support/auth-helpers.js';
+import { ControlPlaneSyncRowLock } from './support/control-plane-sync-lock.js';
 import { createApp } from './support/create-app.js';
 
 /** Versão da chave do nó neste arquivo, fora das dos outros arquivos (900 a 903 e 910). */
@@ -109,6 +110,8 @@ class RecordingLogger implements SyncLogger {
 describe('tarefa control-plane-sync do worker: usuários pedidos no console (banco real e plano de controle falso)', () => {
   const cp = new FakeControlPlane();
   const prisma = new PrismaService({ DATABASE_URL: inject('testDatabaseUrl') });
+  /** Um teste por vez entre este arquivo e o outro da tarefa: a linha única de `ControlPlaneSync` é do banco inteiro. */
+  const rowLock = new ControlPlaneSyncRowLock(inject('testDatabaseUrl'));
   let url: string;
   let keyring: VaultKeyring;
   let tenantA: string;
@@ -132,7 +135,12 @@ describe('tarefa control-plane-sync do worker: usuários pedidos no console (ban
     await prisma.$disconnect();
   });
 
+  afterEach(async () => {
+    await rowLock.release();
+  });
+
   beforeEach(async () => {
+    await rowLock.acquire();
     cp.reset();
     // O relógio de verdade: o login confere a validade da senha temporária com ele.
     clock = new Date();
@@ -476,13 +484,23 @@ describe('tarefa control-plane-sync do worker: usuários pedidos no console (ban
     const accepted = await itemOf(desired.requestId);
     expect(accepted?.reportedHash).toMatch(/^[0-9a-f]{64}$/);
 
-    // A pessoa entrou, trocou a senha e cadastrou o MFA; depois, o administrador do cliente a desativou.
-    await prisma.user.update({
-      where: { id: created?.id },
-      data: { mustChangePassword: false, twoFactorEnabled: true, status: 'disabled' },
-    });
-    later();
-    await run();
+    // A pessoa entrou e trocou a senha; depois cadastrou o MFA; depois o administrador do cliente a desativou. Cada
+    // mudança sozinha muda a marca do último relato aceito (vai como mudado na chamada seguinte).
+    const steps = [
+      { mustChangePassword: false },
+      { twoFactorEnabled: true },
+      { status: 'disabled' as const },
+    ];
+    let previous = accepted?.reportedHash;
+    for (const data of steps) {
+      await prisma.user.update({ where: { id: created?.id }, data });
+      later();
+      await run();
+      const hash = (await itemOf(desired.requestId))?.reportedHash;
+      expect(hash, JSON.stringify(data)).toMatch(/^[0-9a-f]{64}$/);
+      expect(hash, JSON.stringify(data)).not.toBe(previous);
+      previous = hash;
+    }
 
     expect(reportOf(cp.last(), desired.requestId)).toEqual({
       requestId: desired.requestId,
@@ -490,7 +508,10 @@ describe('tarefa control-plane-sync do worker: usuários pedidos no console (ban
       code: null,
       user: { status: 'disabled', mfaEnabled: true, mustChangePassword: false },
     });
-    expect((await itemOf(desired.requestId))?.reportedHash).not.toBe(accepted?.reportedHash);
+    // Sem mudança, a mesma marca.
+    later();
+    await run();
+    expect((await itemOf(desired.requestId))?.reportedHash).toBe(previous);
   });
 
   it('os relatos dos usuários cabem no limite do pedido junto com o resto', async () => {

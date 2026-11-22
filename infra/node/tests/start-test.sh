@@ -951,7 +951,7 @@ grep -qx "CONTROL_PLANE_USERS='false'" "$root/run/verax/worker.env" || fail "sem
 grep -qx "CONTROL_PLANE_SYNC='true'" "$root/run/verax/worker.env" || fail "a sincronização caiu com os usuários desligados"
 ! grep -q CONTROL_PLANE_USERS "$root/run/verax/api.env" || fail "a API recebeu o interruptor dos usuários"
 ! grep -q 'CONTROL_PLANE_USERS fora do formato' "$root/out" || fail "aviso com o valor certo: $(cat "$root/out")"
-for bad in FALSE nao 'false # comentário'; do
+for bad in FALSE nao 'false # comentário' ''; do
   new_root "modo cliente: CONTROL_PLANE_USERS fora do formato ($bad)" render-usuarios-ruim CUSTOMER_MODE=true \
     NODE_SA_UNIQUE_ID=123456789012345678901 "CONTROL_PLANE_USERS=\"$bad\""
   start render || fail "o render falhou: $(cat "$root/out")"

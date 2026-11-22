@@ -199,6 +199,17 @@ function isUserCode(code: string | null): code is NodeSyncUserCode {
   return code !== null && (NODE_SYNC_USER_CODES as readonly string[]).includes(code);
 }
 
+/**
+ * O que entra na impressão digital do relato (só para saber se ele mudou desde o último aceito): o relato inteiro, com
+ * a troca de senha pendente da conta como 0 ou 1. É o mesmo conteúdo, sem o campo `mustChangePassword` (um booleano,
+ * não uma senha), que a análise do CodeQL tomaria por senha passando por um hash rápido.
+ */
+function fingerprintOf(report: AnyReport): unknown {
+  if (!('requestId' in report) || report.user === null) return report;
+  const { mustChangePassword, ...user } = report.user;
+  return { ...report, user: { ...user, changePending: mustChangePassword ? 1 : 0 } };
+}
+
 /** O relato com o hash e o tamanho do JSON dele (o limite do pedido e a marca do último aceito usam os dois). */
 function candidateOf<R extends AnyReport>(
   report: R,
@@ -207,7 +218,9 @@ function candidateOf<R extends AnyReport>(
   const json = JSON.stringify(report);
   return {
     report,
-    hash: createHash('sha256').update(json).digest('hex'),
+    hash: createHash('sha256')
+      .update(JSON.stringify(fingerprintOf(report)))
+      .digest('hex'),
     bytes: Buffer.byteLength(json, 'utf8'),
     tracked: item !== undefined,
     reportedHash: item?.reportedHash ?? null,

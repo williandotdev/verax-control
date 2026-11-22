@@ -13,7 +13,7 @@ import {
 } from '@verax/shared';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
-import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 import { CloudflareTokenCheck } from '../src/cloudflare/cloudflare-token-check.js';
 import type { SyncLogger } from '../src/control-plane-sync/apply-source.js';
 import {
@@ -40,6 +40,7 @@ import {
 } from '../src/credentials/credential-vault.js';
 import { fixedTenantPlans, type TenantPlans } from '../src/plan/tenant-plan.js';
 import { createSignedInUser, withCsrf } from './support/auth-helpers.js';
+import { ControlPlaneSyncRowLock } from './support/control-plane-sync-lock.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 
 /** Versão da chave do nó neste arquivo, fora das dos outros arquivos (900 a 902 e 910), para a recifragem não se cruzar. */
@@ -163,6 +164,8 @@ class RecordingLogger implements SyncLogger {
 describe('tarefa control-plane-sync do worker: fontes de log do console (banco real e plano de controle falso)', () => {
   const cp = new FakeControlPlane();
   const prisma = new PrismaService({ DATABASE_URL: inject('testDatabaseUrl') });
+  /** Um teste por vez entre este arquivo e o outro da tarefa: a linha única de `ControlPlaneSync` é do banco inteiro. */
+  const rowLock = new ControlPlaneSyncRowLock(inject('testDatabaseUrl'));
   let url: string;
   let keyring: VaultKeyring;
   let tenantA: string;
@@ -218,7 +221,12 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
     return value;
   }
 
+  afterEach(async () => {
+    await rowLock.release();
+  });
+
   beforeEach(async () => {
+    await rowLock.acquire();
     cp.reset();
     clock = START;
     checks = new FakeChecks();
