@@ -200,27 +200,19 @@ function isUserCode(code: string | null): code is NodeSyncUserCode {
 }
 
 /**
- * O que entra na impressão digital do relato (só para saber se ele mudou desde o último aceito): o relato inteiro, com
- * a troca de senha pendente da conta como 0 ou 1. É o mesmo conteúdo, sem o campo `mustChangePassword` (um booleano,
- * não uma senha), que a análise do CodeQL tomaria por senha passando por um hash rápido.
+ * O relato com a impressão digital e o tamanho do JSON dele (o limite do pedido usa o tamanho; a marca do último aceito,
+ * a impressão digital). A impressão digital só serve para saber se o relato mudou: quem chama passa o texto dela (o
+ * JSON do relato de fonte; no de usuário, os campos um a um, com os booleanos como 0 ou 1).
  */
-function fingerprintOf(report: AnyReport): unknown {
-  if (!('requestId' in report) || report.user === null) return report;
-  const { mustChangePassword, ...user } = report.user;
-  return { ...report, user: { ...user, changePending: mustChangePassword ? 1 : 0 } };
-}
-
-/** O relato com o hash e o tamanho do JSON dele (o limite do pedido e a marca do último aceito usam os dois). */
 function candidateOf<R extends AnyReport>(
   report: R,
   item: { reportedHash: string | null; reportedAt: Date | null } | undefined,
+  fingerprint: string,
 ): ReportCandidate<R> {
   const json = JSON.stringify(report);
   return {
     report,
-    hash: createHash('sha256')
-      .update(JSON.stringify(fingerprintOf(report)))
-      .digest('hex'),
+    hash: createHash('sha256').update(fingerprint).digest('hex'),
     bytes: Buffer.byteLength(json, 'utf8'),
     tracked: item !== undefined,
     reportedHash: item?.reportedHash ?? null,
@@ -569,6 +561,7 @@ export class ControlPlaneSync {
       const item = itemsById.get(requestId);
       const user = usersById.get(requestId);
       let report: NodeSyncUserReport;
+      let fingerprint: string;
       if (user !== undefined) {
         report = {
           requestId,
@@ -580,6 +573,13 @@ export class ControlPlaneSync {
             mustChangePassword: user.mustChangePassword,
           },
         };
+        fingerprint = [
+          'created',
+          requestId,
+          user.status,
+          user.twoFactorEnabled ? 1 : 0,
+          user.mustChangePassword ? 1 : 0,
+        ].join('|');
       } else if (item?.outcome === 'failed') {
         report = {
           requestId,
@@ -587,11 +587,12 @@ export class ControlPlaneSync {
           code: isUserCode(item.code) ? item.code : 'internal_error',
           user: null,
         };
+        fingerprint = ['failed', requestId, report.code].join('|');
       } else {
         // O item diz criada, mas a conta não está mais no cliente: não há situação para contar.
         continue;
       }
-      reports.push(candidateOf(report, item));
+      reports.push(candidateOf(report, item, fingerprint));
     }
     return reports;
   }
@@ -694,7 +695,7 @@ export class ControlPlaneSync {
                 checkRequestedAt: account.checkRequestedAt,
               },
       };
-      reports.push(candidateOf(sourceReport, item));
+      reports.push(candidateOf(sourceReport, item, JSON.stringify(sourceReport)));
     }
     return reports;
   }
