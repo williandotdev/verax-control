@@ -32,8 +32,16 @@ const TAKEN_EMAIL_PREFIX = 'ja-existe@';
 
 /** A senha temporária sorteada no formato da geradora (quatro grupos de cinco). */
 function fakeUserPassword(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(20));
-  const chars = [...bytes].map((byte) => ALPHABET.charAt(byte % ALPHABET.length));
+  // Sorteio sem viés: cada letra fica com a mesma faixa de bytes (`span` valores), e os bytes que sobram no fim são
+  // descartados.
+  const span = Math.floor(256 / ALPHABET.length);
+  const limit = span * ALPHABET.length;
+  const chars: string[] = [];
+  while (chars.length < 20) {
+    for (const byte of crypto.getRandomValues(new Uint8Array(32))) {
+      if (byte < limit && chars.length < 20) chars.push(ALPHABET.charAt(Math.floor(byte / span)));
+    }
+  }
   return [0, 5, 10, 15].map((start) => chars.slice(start, start + 5).join('')).join('-');
 }
 

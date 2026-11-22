@@ -495,13 +495,15 @@ export class AdminLogSourcesService {
     const tenant = await this.tenant(tenantId);
     const hosting = hostingOf(tenant);
     const platform = platformOf(hosting);
-    const snapshot = await this.snapshot(this.store, tenant.id);
-    const [reports, secrets, users] = await Promise.all([
-      readCollection(this.store, COLLECTIONS.logSourceReports(tenant.id), logSourceReportSchema),
+    // Uma leitura só, numa transação: o cp-worker grava o relato e apaga o envelope juntos, então relatos e envelopes
+    // lidos em momentos diferentes poderiam mostrar um pedido concluído como vencido (relato antigo, envelope já apagado).
+    const { snapshot, reports, secrets, users } = await this.store.runTransaction(async (tx) => ({
+      snapshot: await this.snapshot(tx, tenant.id),
+      reports: await readCollection(tx, COLLECTIONS.logSourceReports(tenant.id), logSourceReportSchema),
       // Só os ids interessam (o envelope ainda espera o nó?): o envelope nunca sai daqui.
-      this.store.query(COLLECTIONS.logSourceSecrets(tenant.id)),
-      readNodeUsers(this.store, tenant.id),
-    ]);
+      secrets: await tx.query(COLLECTIONS.logSourceSecrets(tenant.id)),
+      users: await readNodeUsers(tx, tenant.id),
+    }));
     const stored = new Set(secrets.map((doc) => doc.id));
     const now = this.clock.now();
     const sources = [...snapshot.sources].map(([id, source]) =>
