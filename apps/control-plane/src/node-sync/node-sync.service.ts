@@ -4,6 +4,7 @@ import {
   NODE_SYNC_MAX_CLOCK_SKEW_MS,
   NODE_SYNC_MAX_SOURCES,
   NODE_SYNC_MAX_USERS,
+  NODE_SYNC_POLL_MAX_SECONDS,
   NODE_SYNC_POLL_MIN_SECONDS,
   NODE_SYNC_PROTOCOL,
   NODE_SYNC_RESPONSE_MAX_BYTES,
@@ -97,10 +98,36 @@ export const TERMINAL_CREDENTIAL_CODES: ReadonlySet<NodeSyncSourceCode> = new Se
 ]);
 
 /**
- * Quanto dos envelopes cabe numa resposta (o nó lê até 1 MB, `NODE_SYNC_RESPONSE_MAX_BYTES`). O que passar fica para a
- * próxima chamada, que vem logo (`pollAfterSeconds` no mínimo): o nó faz uma segunda volta depois de aplicar.
+ * A ordem dos itens na resposta, do que pede ação ao que só confirma (o nó nunca deduz remoção da ausência: o que fica
+ * de fora espera a próxima chamada). Quando a resposta inteira não cabe no que o nó lê, saem primeiro os que pedem ação;
+ * o nó aplica, conta, e na volta seguinte esses passam para o fim, abrindo lugar para os adiados.
  */
-const ENVELOPE_BUDGET_BYTES = 512 * 1024;
+const TIER = {
+  /** Fonte com a credencial pendente. */
+  sourceCredential: 0,
+  /** Usuário pedido ainda sem resultado (pequeno, e com prazo: `notAfter`). */
+  user: 1,
+  /** Fonte numa revisão que o nó ainda não processou (ou nunca relatou). */
+  sourcePending: 2,
+  /** Fonte que falhou nesta revisão: o nó tenta de novo pela regra dele. */
+  sourceFailed: 3,
+  /** Fonte já aplicada (ou removida) nesta revisão. */
+  sourceInSync: 4,
+} as const;
+
+interface ResponseItem {
+  tier: (typeof TIER)[keyof typeof TIER];
+  id: string;
+  /** Bytes do item no JSON, com a vírgula que o separa do anterior. */
+  bytes: number;
+  envelope: boolean;
+  source?: NodeSyncDesiredSource;
+  user?: NodeSyncDesiredUser;
+}
+
+function jsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
 
 /** A credencial da fonte, conferida contra o relato do nó, saiu do Firestore? */
 function credentialConsumed(
@@ -117,6 +144,20 @@ function appliedCredentialRevision(report: NodeSyncSourceReport | undefined): nu
   const credential = report?.credential;
   if (credential === null || credential === undefined || credential.revision === null) return 0;
   return credential.outcome === 'applied' ? credential.revision : 0;
+}
+
+/**
+ * Outra instalação do nó (uma reinstalação, com o banco novo): o cliente do banco do nó ou a impressão digital da chave
+ * do cofre mudou, com o valor guardado e o do pedido presentes. A sequência do nó novo recomeça do 1.
+ */
+function isNewInstallation(state: NodeSyncState, node: NodeSyncRequest['node']): boolean {
+  const tenantChanged =
+    state.nodeTenantId !== null && node.tenantId !== null && state.nodeTenantId !== node.tenantId;
+  const keyChanged =
+    state.vaultKey !== null &&
+    node.vaultKey !== null &&
+    state.vaultKey.fingerprint !== node.vaultKey.fingerprint;
+  return tenantChanged || keyChanged;
 }
 
 function retryAfterSeconds(elapsedMs: number): number {
@@ -144,9 +185,13 @@ interface SyncCounts {
   reportsWritten: number;
   consumedEnvelopes: number;
   sentEnvelopes: number;
-  deferredEnvelopes: number;
+  /** Itens que não couberam na resposta (vão na próxima chamada). */
+  deferredItems: number;
+  responseBytes: number;
   invalidItems: number;
   identityChanged: boolean;
+  /** Outra instalação (outro cliente no banco do nó ou outra chave do cofre): a sequência recomeçou. */
+  newInstallation: boolean;
   firstSeen: boolean;
 }
 
@@ -166,12 +211,16 @@ type Resolution = { ok: true; tenant: TenantRecord } | { ok: false; reason: 'una
  *    nó da VM do cliente (o hash, como no `report` do registro). Credencial de uma plataforma com o corpo da outra:
  *    401. Cliente fora dos estados com nó, da célula (`placement`) ou de outra hospedagem: 404;
  * 2. o `sentAt` dentro de ±10 min do relógio do plano de controle e, na transação, a `sequence` maior que a última
- *    aceita (409 `stale_sequence`) e no máximo uma chamada a cada 20 s (429);
+ *    aceita (409 `stale_sequence`) e no máximo uma chamada a cada 20 s (429). Uma instalação nova (outro cliente no
+ *    banco do nó ou outra chave do cofre, as duas identidades presentes) recomeça a sequência: é aceita com qualquer
+ *    `sequence`, desde que o `sentAt` seja mais novo que o da última chamada aceita (senão 409: um pedido capturado da
+ *    instalação anterior não troca a identidade de volta);
  * 3. grava `nodeSync/state`; com outro cliente no banco do nó ou outra chave do cofre (reinstalação), audita
  *    `node_sync.identity_changed` e descarta os envelopes pendentes, que não abririam mais;
  * 4. grava os relatos só dos itens que existem sob este cliente (os outros são ignorados e contados no log) e apaga os
  *    envelopes consumidos;
- * 5. responde o estado desejado das capacidades que o nó anunciou, conferido com os schemas estritos do protocolo.
+ * 5. responde o estado desejado das capacidades que o nó anunciou, conferido com os schemas estritos do protocolo e
+ *    dentro do que o nó lê (`NODE_SYNC_RESPONSE_MAX_BYTES`): o que não cabe fica para a próxima chamada, nunca um 503.
  */
 @Injectable()
 export class NodeSyncService {
@@ -209,15 +258,6 @@ export class NodeSyncService {
         'sincronização do nó recusada',
       );
       return result;
-    }
-    const size = Buffer.byteLength(JSON.stringify(result.response), 'utf8');
-    if (size > NODE_SYNC_RESPONSE_MAX_BYTES) {
-      // Nada a fazer pelo nó: o estado desejado passou do que ele lê. O relato e o estado já foram gravados.
-      this.logger.error(
-        { event: 'node_sync_response_too_large', tenantId: tenant.id, bytes: size, requestId },
-        'resposta da sincronização maior que o nó lê',
-      );
-      throw new Error('node_sync_response_too_large');
     }
     const { counts } = result;
     if (counts.invalidItems > 0) {
@@ -323,8 +363,15 @@ export class NodeSyncService {
       stateData === undefined
         ? undefined
         : parseDocument(nodeSyncStateSchema, stateCollection, NODE_SYNC_STATE_DOC, stateData);
-    if (state !== undefined && request.sequence <= state.sequence)
+    const node = request.node;
+    const newInstallation = state !== undefined && isNewInstallation(state, node);
+    if (newInstallation) {
+      // A sequência recomeça com a instalação; o `sentAt` é que tem de andar para a frente.
+      if (Date.parse(request.sentAt) <= state.lastSentAt.getTime())
+        return { ok: false, reason: 'stale_sequence' };
+    } else if (state !== undefined && request.sequence <= state.sequence) {
       return { ok: false, reason: 'stale_sequence' };
+    }
     if (state !== undefined) {
       const elapsed = now.getTime() - state.lastSeenAt.getTime();
       if (elapsed < NODE_SYNC_MIN_INTERVAL_MS) {
@@ -357,12 +404,13 @@ export class NodeSyncService {
       reportsWritten: 0,
       consumedEnvelopes: 0,
       sentEnvelopes: 0,
-      deferredEnvelopes: 0,
+      deferredItems: 0,
+      responseBytes: 0,
       invalidItems: 0,
       identityChanged: false,
+      newInstallation,
       firstSeen: state === undefined,
     };
-    const node = request.node;
     const previousFingerprint = state?.vaultKey?.fingerprint ?? null;
     const fingerprint = node.vaultKey?.fingerprint ?? null;
     counts.identityChanged =
@@ -439,6 +487,7 @@ export class NodeSyncService {
           };
     const nextState: NodeSyncState = nodeSyncStateSchema.parse({
       lastSeenAt: now,
+      lastSentAt: new Date(request.sentAt),
       sequence: request.sequence,
       authKind,
       platform: node.platform,
@@ -465,6 +514,9 @@ export class NodeSyncService {
           previousKeyVersion: state?.vaultKey?.version ?? null,
           keyVersion: node.vaultKey?.version ?? null,
           discardedEnvelopes: counts.consumedEnvelopes,
+          newInstallation,
+          previousSequence: state?.sequence ?? null,
+          sequence: request.sequence,
         },
         requestId,
       });
@@ -475,110 +527,125 @@ export class NodeSyncService {
       node.vaultKey !== null &&
       secret.fingerprint === node.vaultKey.fingerprint &&
       secret.nodeTenantId === node.tenantId;
-    let budget = ENVELOPE_BUDGET_BYTES;
-    const take = (envelope: string): boolean => {
-      if (envelope.length > budget) {
-        counts.deferredEnvelopes += 1;
-        return false;
-      }
-      budget -= envelope.length;
-      counts.sentEnvelopes += 1;
-      return true;
-    };
-    const response: NodeSyncResponse = {
-      protocol: NODE_SYNC_PROTOCOL,
-      generation: desired?.generation ?? 0,
-      pollAfterSeconds: NODE_SYNC_INTERVAL_SECONDS,
-    };
+    const items: ResponseItem[] = [];
     if (respondsTo(request.capabilities, 'log_sources')) {
-      response.sources = this.desiredSources(sources, sourceSecrets, consumedSources, sourceReportsById, {
-        usable,
-        take,
-        counts,
-      });
+      items.push(
+        ...this.sourceItems(sources, sourceSecrets, consumedSources, sourceReportsById, usable, counts),
+      );
     }
     if (respondsTo(request.capabilities, 'users')) {
-      response.users = this.desiredUsers(users, userSecrets, consumedUsers, userReports, {
-        usable,
-        take,
-        counts,
-        now,
-      });
+      items.push(...this.userItems(users, userSecrets, consumedUsers, userReports, usable, now, counts));
     }
-    if (counts.deferredEnvelopes > 0) response.pollAfterSeconds = NODE_SYNC_POLL_MIN_SECONDS;
+    const response = this.fit(
+      {
+        protocol: NODE_SYNC_PROTOCOL,
+        generation: desired?.generation ?? 0,
+        pollAfterSeconds: NODE_SYNC_INTERVAL_SECONDS,
+        ...(respondsTo(request.capabilities, 'log_sources') ? { sources: [] } : {}),
+        ...(respondsTo(request.capabilities, 'users') ? { users: [] } : {}),
+      },
+      items,
+      counts,
+    );
     // O que sai é o que o protocolo aceita: um erro aqui é do plano de controle (503), nunca uma resposta torta.
     return { ok: true, response: nodeSyncResponseSchema.parse(response), counts };
   }
 
+  /**
+   * Monta a resposta dentro do que o nó lê: os itens na ordem de `TIER` (e pelo id dentro de cada um), cada um só se
+   * couber inteiro no que sobra de `NODE_SYNC_RESPONSE_MAX_BYTES` e no teto de itens do protocolo. O que fica de fora
+   * vai na próxima chamada, com `pollAfterSeconds` no mínimo; ausência nunca é remoção.
+   */
+  private fit(base: NodeSyncResponse, items: ResponseItem[], counts: SyncCounts): NodeSyncResponse {
+    // O esqueleto com o maior `pollAfterSeconds` possível: o tamanho final nunca passa do que foi contado.
+    let used = jsonBytes({ ...base, pollAfterSeconds: NODE_SYNC_POLL_MAX_SECONDS });
+    const sources: NodeSyncDesiredSource[] = [];
+    const users: NodeSyncDesiredUser[] = [];
+    const ordered = [...items].sort((a, b) => a.tier - b.tier || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (const item of ordered) {
+      const full =
+        item.source !== undefined
+          ? sources.length >= NODE_SYNC_MAX_SOURCES
+          : users.length >= NODE_SYNC_MAX_USERS;
+      if (full || used + item.bytes > NODE_SYNC_RESPONSE_MAX_BYTES) {
+        counts.deferredItems += 1;
+        continue;
+      }
+      used += item.bytes;
+      if (item.envelope) counts.sentEnvelopes += 1;
+      if (item.source !== undefined) sources.push(item.source);
+      if (item.user !== undefined) users.push(item.user);
+    }
+    const byId = <T>(list: T[], id: (item: T) => string): T[] =>
+      list.sort((a, b) => (id(a) < id(b) ? -1 : id(a) > id(b) ? 1 : 0));
+    const response: NodeSyncResponse = { ...base };
+    if (base.sources !== undefined) response.sources = byId(sources, (source) => source.id);
+    if (base.users !== undefined) response.users = byId(users, (user) => user.requestId);
+    if (counts.deferredItems > 0) response.pollAfterSeconds = NODE_SYNC_POLL_MIN_SECONDS;
+    counts.responseBytes = jsonBytes(response);
+    return response;
+  }
+
   /** As fontes desejadas, com a credencial pendente quando a revisão dela é mais nova que a última aplicada. */
-  private desiredSources(
+  private sourceItems(
     sources: ReadonlyMap<string, LogSource>,
     secrets: ReadonlyMap<string, LogSourceSecret>,
     consumed: ReadonlySet<string>,
     reports: ReadonlyMap<string, NodeSyncSourceReport>,
-    context: {
-      usable: (secret: LogSourceSecret) => boolean;
-      take: (envelope: string) => boolean;
-      counts: SyncCounts;
-    },
-  ): NodeSyncDesiredSource[] {
-    const result: NodeSyncDesiredSource[] = [];
+    usable: (secret: LogSourceSecret) => boolean,
+    counts: SyncCounts,
+  ): ResponseItem[] {
+    const items: ResponseItem[] = [];
     for (const [id, source] of sources) {
-      if (result.length >= NODE_SYNC_MAX_SOURCES) {
-        context.counts.invalidItems += 1;
-        continue;
-      }
       const secret = secrets.get(id);
+      const report = reports.get(id);
       const pending =
         source.state === 'active' &&
         secret !== undefined &&
         !consumed.has(id) &&
-        context.usable(secret) &&
-        secret.revision > appliedCredentialRevision(reports.get(id));
-      const credential =
-        pending && context.take(secret.envelope)
-          ? { revision: secret.revision, kind: secret.kind, envelope: secret.envelope }
-          : null;
+        usable(secret) &&
+        secret.revision > appliedCredentialRevision(report);
       const parsed = nodeSyncDesiredSourceSchema.safeParse({
         id,
         revision: source.revision,
         state: source.state,
         spec: source.spec,
-        credential,
+        credential: pending
+          ? { revision: secret.revision, kind: secret.kind, envelope: secret.envelope }
+          : null,
       });
       if (!parsed.success) {
-        context.counts.invalidItems += 1;
+        counts.invalidItems += 1;
         continue;
       }
-      result.push(parsed.data);
+      const tier = pending
+        ? TIER.sourceCredential
+        : report === undefined || report.revision < source.revision
+          ? TIER.sourcePending
+          : report.outcome === 'failed'
+            ? TIER.sourceFailed
+            : TIER.sourceInSync;
+      items.push({ tier, id, bytes: jsonBytes(parsed.data) + 1, envelope: pending, source: parsed.data });
     }
-    return result;
+    return items;
   }
 
   /** Os usuários pedidos ainda sem resultado, no prazo e com o envelope para a chave atual do nó. */
-  private desiredUsers(
+  private userItems(
     users: ReadonlyMap<string, NodeUser>,
     secrets: ReadonlyMap<string, NodeUserSecret>,
     consumed: ReadonlySet<string>,
     stored: ReadonlyMap<string, { report: NodeSyncUserReport }>,
-    context: {
-      usable: (secret: NodeUserSecret) => boolean;
-      take: (envelope: string) => boolean;
-      counts: SyncCounts;
-      now: Date;
-    },
-  ): NodeSyncDesiredUser[] {
-    const result: NodeSyncDesiredUser[] = [];
+    usable: (secret: NodeUserSecret) => boolean,
+    now: Date,
+    counts: SyncCounts,
+  ): ResponseItem[] {
+    const items: ResponseItem[] = [];
     for (const [id, user] of users) {
       const secret = secrets.get(id);
-      if (secret === undefined || consumed.has(id) || !context.usable(secret)) continue;
+      if (secret === undefined || consumed.has(id) || !usable(secret)) continue;
       if (stored.get(id)?.report.outcome === 'created') continue;
-      if (user.notAfter.getTime() <= context.now.getTime()) continue;
-      if (result.length >= NODE_SYNC_MAX_USERS) {
-        context.counts.invalidItems += 1;
-        continue;
-      }
-      if (!context.take(secret.envelope)) continue;
+      if (user.notAfter.getTime() <= now.getTime()) continue;
       const parsed = nodeSyncDesiredUserSchema.safeParse({
         requestId: id,
         name: user.name,
@@ -588,11 +655,17 @@ export class NodeSyncService {
         notAfter: user.notAfter.toISOString(),
       });
       if (!parsed.success) {
-        context.counts.invalidItems += 1;
+        counts.invalidItems += 1;
         continue;
       }
-      result.push(parsed.data);
+      items.push({
+        tier: TIER.user,
+        id,
+        bytes: jsonBytes(parsed.data) + 1,
+        envelope: true,
+        user: parsed.data,
+      });
     }
-    return result;
+    return items;
   }
 }

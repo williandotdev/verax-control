@@ -2691,9 +2691,13 @@ lados); os envelopes, em `packages/vault-envelope`. O lado do plano de controle 
   - A plataforma do corpo tem de ser a da credencial (`gcp` com o token, `vm` com a chave) e, no gerenciado,
     `node.serviceAccountId` o `sub` do token; senão 401.
 - **Repetição e ritmo:** `sentAt` a até 10 min do relógio do plano de controle; `sequence` maior que a última aceita (o nó
-  guarda no banco dele); no máximo uma chamada aceita por cliente a cada 20 s. Uma recusa não grava nada.
+  guarda no banco dele); no máximo uma chamada aceita por cliente a cada 20 s. Uma recusa não grava nada. Numa
+  reinstalação (o banco novo: outro `nodeTenantId` ou outra impressão digital, com o guardado e o do pedido presentes)
+  a sequência recomeça: o pedido é aceito com qualquer `sequence`, desde que o `sentAt` seja mais novo que o da última
+  chamada aceita (`lastSentAt`), e a sequência guardada passa a ser a dele; um pedido capturado da instalação anterior
+  não troca a identidade de volta (409).
 - **Firestore** (sob `tenants/{id}`, `node-sync.schema.ts`, tudo estrito):
-  - `nodeSync/state` (cp-worker, a cada chamada): `lastSeenAt`, `sequence`, `authKind`, plataforma, commit, capacidades,
+  - `nodeSync/state` (cp-worker, a cada chamada): `lastSeenAt`, `lastSentAt`, `sequence`, `authKind`, plataforma, commit, capacidades,
     `nodeTenantId` (o cliente no banco do nó, o do rótulo dos envelopes), `vaultKey` (versão, chave pública, impressão
     digital e `since`), conta de serviço, IPs de saída, audience e erro do nó. `nodeSync/desired` (console): `generation`;
   - `logSources/{UUID}` e `nodeUsers/{ULID}` (console): o cadastro desejado com revisão e lápide (`removed`), e o
@@ -2707,8 +2711,10 @@ lados); os envelopes, em `packages/vault-envelope`. O lado do plano de controle 
   de vez (`credential_unreadable`, `credential_rejected_*`, `credential_kind_not_allowed`, `vault_disabled`), quando a
   fonte sai ou o pedido vence, e o do usuário com qualquer resultado; responde só as seções das capacidades anunciadas,
   a fonte com a credencial quando a revisão do envelope é maior que a última aplicada e o envelope é da chave atual do
-  nó, o usuário sem `created`, no prazo; até 512 KB de envelopes por resposta (o resto vai na seguinte, com
-  `pollAfterSeconds` mínimo), e a resposta conferida com `nodeSyncResponseSchema`.
+  nó, o usuário sem `created`, no prazo, e a resposta conferida com `nodeSyncResponseSchema`. A resposta inteira cabe
+  no que o nó lê (`NODE_SYNC_RESPONSE_MAX_BYTES`, 1 MB): os itens entram pela ordem do que pede ação (credencial
+  pendente, usuário pedido, revisão ainda não processada, fonte que falhou, fonte já aplicada) e pelo id; o que não
+  cabe vai na chamada seguinte, com `pollAfterSeconds` mínimo. Nunca 503 por tamanho, e a ausência nunca é remoção.
 - **Reinstalação:** outro `nodeTenantId` ou outra impressão digital da chave do cofre → `node_sync.identity_changed` na
   auditoria do plano de controle e os envelopes pendentes descartados (não abririam mais).
 - **Segurança:** o cp-public vê a credencial do nó em trânsito (como no registro), mas o worker confere de novo e nunca

@@ -51,10 +51,13 @@ export const NODE_SYNC_AUTH_KINDS = ['gcp_identity', 'node_key'] as const;
 
 /**
  * `nodeSync/state`: o que o nó disse de si na última chamada aceita (gravado a cada chamada pelo cp-worker). A chave do
- * cofre leva `since`, quando o plano de controle a viu pela primeira vez (muda com a impressão digital).
+ * cofre leva `since`, quando o plano de controle a viu pela primeira vez (muda com a impressão digital). `lastSentAt` é o
+ * `sentAt` da última chamada aceita: uma instalação nova (outra identidade) só é aceita com um `sentAt` mais novo que
+ * ele, para um pedido capturado da instalação anterior não trocar a identidade de volta.
  */
 export const nodeSyncStateSchema = z.strictObject({
   lastSeenAt: z.date(),
+  lastSentAt: z.date(),
   sequence: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
   authKind: z.enum(NODE_SYNC_AUTH_KINDS),
   platform: z.enum(NODE_PLATFORMS),

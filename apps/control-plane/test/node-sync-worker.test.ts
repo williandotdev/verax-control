@@ -1,5 +1,12 @@
+import { randomBytes } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { type NodeSyncRequest, type NodeSyncResponse, nodeSyncResponseSchema } from '@verax/shared';
+import {
+  NODE_SYNC_POLL_MIN_SECONDS,
+  NODE_SYNC_RESPONSE_MAX_BYTES,
+  type NodeSyncRequest,
+  type NodeSyncResponse,
+  nodeSyncResponseSchema,
+} from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AuditService } from '../src/audit/audit.service.js';
@@ -709,6 +716,164 @@ describe('cp-worker: sincronização do nó dedicado', () => {
     );
     expect(canceled.status).toBe(404);
     expect(capture.text).not.toContain(vm.nodeKey);
+  });
+
+  it('reinstalação com o banco novo: a sequência recomeça do 1; o pedido capturado da instalação anterior não volta', async () => {
+    const node = await managed();
+    const tenantId = node.tenant.id;
+    // A instalação anterior já ia na sequência 41; o pedido dela fica guardado, como um atacante o guardaria.
+    const oldToken = nodeToken(node);
+    const oldBody = nodeSyncRequest({
+      sequence: 41,
+      sentAt: clock.now(),
+      identity: node.identity,
+      serviceAccountId: node.sub,
+    });
+    expect((await call({ kind: 'gcp_identity', token: oldToken }, oldBody)).status).toBe(200);
+    const pending = await seedSource(tenantId, { secret: { revision: 1, identity: node.identity } });
+
+    // Reinstalada: outro cliente no banco do nó, outra chave do cofre e a sequência do 1.
+    clock.advance(MINUTE_MS);
+    const previous = node.identity;
+    node.identity = fakeNodeIdentity();
+    node.sequence = 0;
+    const fresh = await syncManaged(node);
+    expect(fresh.status).toBe(200);
+    expect(nodeSyncResponseSchema.parse(fresh.body).sources).toEqual([
+      expect.objectContaining({ id: pending.id, credential: null }),
+    ]);
+    const stateOf = async () =>
+      nodeSyncStateSchema.parse(await documents.get(COLLECTIONS.nodeSync(tenantId), NODE_SYNC_STATE_DOC));
+    expect(await stateOf()).toMatchObject({ sequence: 1, nodeTenantId: node.identity.tenantId });
+    expect(await ids(COLLECTIONS.logSourceSecrets(tenantId))).toEqual([]);
+    const changed = (await audit.listForTenant(tenantId)).find(
+      (record) => record.action === 'node_sync.identity_changed',
+    );
+    expect(changed?.details).toMatchObject({
+      previousNodeTenantId: previous.tenantId,
+      nodeTenantId: node.identity.tenantId,
+      newInstallation: true,
+      previousSequence: 41,
+      sequence: 1,
+    });
+
+    // O pedido capturado da instalação anterior (outra identidade, sequência maior, ainda dentro dos 10 min): recusado,
+    // e a identidade fica a da instalação nova.
+    clock.advance(MINUTE_MS);
+    const replay = await call({ kind: 'gcp_identity', token: oldToken }, oldBody);
+    expect(replay.status).toBe(409);
+    expect(replay.body).toMatchObject({ code: 'stale_sequence' });
+    expect(await stateOf()).toMatchObject({ sequence: 1, nodeTenantId: node.identity.tenantId });
+    expect(
+      (await audit.listForTenant(tenantId)).filter(
+        (record) => record.action === 'node_sync.identity_changed',
+      ),
+    ).toHaveLength(1);
+    // A instalação nova segue a própria sequência.
+    expect((await syncManaged(node)).status).toBe(200);
+    expect(await stateOf()).toMatchObject({ sequence: 2 });
+  });
+
+  it('VM do cliente reinstalada: a chave nova e o banco novo começam do 1 sem 409', async () => {
+    const vm = await customer();
+    const before = await call(
+      { kind: 'node_key', nodeKey: vm.nodeKey },
+      nodeSyncRequest({ sequence: 900, sentAt: clock.now(), platform: 'vm', identity: fakeNodeIdentity() }),
+    );
+    expect(before.status).toBe(200);
+    // O código novo troca a chave do nó (o registro); o nó novo manda a sequência 1.
+    const nodeKey = newEnrollmentSecret();
+    await tenants.change(vm.tenant.id, () => ({
+      reason: 'teste',
+      audit: { actor: 'system' },
+      mutate: (t) => ({
+        ...t,
+        enrollment: { ...t.enrollment!, nodeKeyHash: enrollmentHash(nodeKey) },
+      }),
+    }));
+    clock.advance(MINUTE_MS);
+    const after = await call(
+      { kind: 'node_key', nodeKey },
+      nodeSyncRequest({ sequence: 1, sentAt: clock.now(), platform: 'vm', identity: fakeNodeIdentity() }),
+    );
+    expect(after.status).toBe(200);
+  });
+
+  it('desejado maior que o nó lê: 200 dentro do teto, o que pede ação primeiro, e o resto nas chamadas seguintes', async () => {
+    const node = await managed();
+    const tenantId = node.tenant.id;
+    const now = clock.now();
+    // 200 fontes do Cloudflare com 50 zonas longas cada (~10 KB por fonte, ~2 MB ao todo), sem nenhum envelope.
+    const big = Array.from({ length: 200 }, (_, index) => ({
+      id: sourceId(),
+      spec: {
+        provider: 'cloudflare' as const,
+        accountId: randomBytes(16).toString('hex'),
+        zones: Array.from(
+          { length: 50 },
+          (_, zone) => `z${index}-${zone}-${'a'.repeat(50)}.${'b'.repeat(60)}.${'c'.repeat(60)}.example`,
+        ),
+      },
+    }));
+    for (let start = 0; start < big.length; start += 50) {
+      await seed((tx) => {
+        for (const source of big.slice(start, start + 50)) {
+          tx.set(
+            COLLECTIONS.logSources(tenantId),
+            source.id,
+            logSourceSchema.parse({
+              spec: source.spec,
+              state: 'active',
+              revision: 1,
+              credentialMeta: null,
+              createdAt: now,
+              createdBy: ACTOR,
+              updatedAt: now,
+              updatedBy: ACTOR,
+            }),
+          );
+        }
+      });
+    }
+    // Uma credencial pendente e um usuário pedido: vão na primeira resposta, antes do resto.
+    const withCredential = await seedSource(tenantId, { secret: { revision: 1, identity: node.identity } });
+    const user = await seedUser(tenantId, node.identity);
+    const all = new Set([...big.map((source) => source.id), withCredential.id]);
+
+    const received = new Set<string>();
+    let calls = 0;
+    while (received.size < all.size && calls < 5) {
+      calls += 1;
+      // O nó conta o que já aplicou (tudo o que recebeu até aqui).
+      const response = await syncManaged(node, {
+        sources: [...received].map((id) =>
+          id === withCredential.id
+            ? sourceReport(id, 1, { revision: 1, outcome: 'applied' })
+            : sourceReport(id, 1),
+        ),
+        users: calls > 1 ? [userCreated(user.id)] : [],
+      });
+      expect(response.status, `chamada ${calls}`).toBe(200);
+      expect(Buffer.byteLength(JSON.stringify(response.body))).toBeLessThanOrEqual(
+        NODE_SYNC_RESPONSE_MAX_BYTES,
+      );
+      const body = nodeSyncResponseSchema.parse(response.body);
+      const sent = (body.sources ?? []).map((source) => source.id);
+      if (calls === 1) {
+        expect(sent).toContain(withCredential.id);
+        expect(body.users?.map((entry) => entry.requestId)).toEqual([user.id]);
+        expect(sent.length).toBeLessThan(all.size);
+        expect(body.pollAfterSeconds).toBe(NODE_SYNC_POLL_MIN_SECONDS);
+      } else {
+        // O que já foi aplicado fica para o fim: o que faltava vem agora, antes de repetir o que o nó já tem.
+        const missing = [...all].filter((id) => !received.has(id));
+        expect(sent).toEqual(expect.arrayContaining(missing.slice(0, Math.min(missing.length, 50))));
+      }
+      for (const id of sent) received.add(id);
+      clock.advance(MINUTE_MS);
+    }
+    expect(received).toEqual(all);
+    expect(calls).toBeGreaterThan(1);
   });
 
   it('o relato cheio (500 fontes) passa pelo leitor próprio da rota, acima dos 16 KB das outras', async () => {
