@@ -288,6 +288,9 @@ importers:
       '@verax/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@verax/vault-envelope':
+        specifier: workspace:*
+        version: link:../../packages/vault-envelope
       google-auth-library:
         specifier: 11.3.2
         version: 11.3.2

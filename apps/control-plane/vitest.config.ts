@@ -9,6 +9,10 @@ export default defineConfig({
   resolve: {
     alias: {
       '@verax/shared': fileURLToPath(new URL('../../packages/shared/src/index.ts', import.meta.url)),
+      // O envelope do cofre do nó (as credenciais que o console cifra para o nó), também do código-fonte.
+      '@verax/vault-envelope': fileURLToPath(
+        new URL('../../packages/vault-envelope/src/index.ts', import.meta.url),
+      ),
     },
   },
   test: {
