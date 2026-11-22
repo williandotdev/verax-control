@@ -299,7 +299,11 @@ export function handleAdminRequest(
     );
   }
 
-  if (first === 'tenants' && (third === 'node-sync' || third === 'log-sources') && second !== undefined) {
+  if (
+    first === 'tenants' &&
+    (third === 'node-sync' || third === 'log-sources' || third === 'users') &&
+    second !== undefined
+  ) {
     const tenant = state.tenants.tenants.get(second);
     if (tenant === undefined) return error(404, 'Cliente não encontrado.', 'tenant_not_found');
     return handleLogSourcesRequest(

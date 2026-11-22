@@ -738,6 +738,72 @@ export interface AccessRevealed {
   passwordExpiresAt: string;
 }
 
+/** Os papéis que um usuário do cliente pode ter (`TENANT_ROLES` do `@verax/shared`). */
+export type TenantRole = 'admin_cliente' | 'analista_cliente' | 'leitura';
+
+/** A situação da conta no painel do cliente (`USER_STATUSES` do `@verax/shared`). */
+export type CustomerUserStatus = 'invited' | 'active' | 'disabled';
+
+/** Por que o nó não criou o usuário pedido pela Verax (`NODE_SYNC_USER_CODES` do `@verax/shared`). */
+export type NodeSyncUserCode =
+  | 'email_taken'
+  | 'plan_limit_reached'
+  | 'tenant_plan_missing'
+  | 'expired'
+  | 'vault_disabled'
+  | 'envelope_unreadable'
+  | 'tenant_ambiguous'
+  | 'users_disabled'
+  | 'internal_error';
+
+/** A situação de um pedido de usuário: esperando o nó, criado, recusado pelo nó, vencido. */
+export type NodeUserStatus = 'pending' | 'created' | 'failed' | 'expired';
+
+/** Por que o console não pode pedir usuário agora (a mesma conferência da criação). */
+export type NodeUserBlock =
+  | 'not_allowed'
+  | 'placement_unsupported'
+  | 'node_not_synced'
+  | 'node_outdated'
+  | 'platform_mismatch'
+  | 'vault_disabled'
+  | 'vault_key_invalid';
+
+/** Um usuário que a Verax pediu ao nó do cliente, com o último relato do nó. Nunca a senha. */
+export interface NodeUserView {
+  requestId: string;
+  name: string;
+  email: string;
+  role: TenantRole;
+  notAfter: string;
+  createdAt: string;
+  createdBy: string;
+  status: NodeUserStatus;
+  code?: NodeSyncUserCode;
+  user?: { status: CustomerUserStatus; mfaEnabled: boolean; mustChangePassword: boolean };
+  reportedAt?: string;
+}
+
+/** `POST /v1/admin/tenants/:id/users`. */
+export interface NodeUserCreateRequest {
+  name: string;
+  email: string;
+  role: TenantRole;
+}
+
+/**
+ * A resposta da criação, uma única vez: o painel, o login, o papel, a senha temporária e a validade. O console guarda só
+ * no estado da tela, nunca no cache.
+ */
+export interface NodeUserCreated {
+  requestId: string;
+  panelUrl: string;
+  email: string;
+  role: TenantRole;
+  temporaryPassword: string;
+  notAfter: string;
+}
+
 /** `POST /v1/admin/tenants/:id/<operação>`: o que o cp-worker fez. */
 export type TenantActionResult =
   | { action: 'start' | 'resume'; runId: string; step: string }
@@ -1074,6 +1140,12 @@ export interface NodeSyncOverview {
   node: NodeSyncView | null;
   sources: LogSourceView[];
   templateUrl: string;
+  /** Os usuários do cliente pedidos pelo console, do mais novo ao mais antigo, com o relato do nó. */
+  users: NodeUserView[];
+  /** O nó anunciou a criação de usuários (`users`) na última sincronização. */
+  usersSupported: boolean;
+  /** Por que o console não pode pedir usuário agora; null: pode. */
+  usersBlockedBy: NodeUserBlock | null;
 }
 
 /** O resultado de toda escrita: a fonte como ficou e a geração nova. */

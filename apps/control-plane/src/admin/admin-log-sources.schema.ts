@@ -10,6 +10,7 @@ import {
 } from '@verax/shared';
 import { z } from 'zod';
 import type { Hosting } from '../tenants/tenant.schema.js';
+import type { NodeUserBlock, NodeUserView } from './admin-node-users.schema.js';
 
 /**
  * As formas da API das fontes de log no console do responsável (`/v1/admin/tenants/:id/node-sync` e
@@ -189,6 +190,12 @@ export interface NodeSyncOverview {
   node: NodeSyncView | null;
   sources: LogSourceView[];
   templateUrl: string;
+  /** Os usuários do cliente pedidos pelo console (`POST .../users`), do mais novo ao mais antigo, com o relato do nó. */
+  users: NodeUserView[];
+  /** O nó anunciou a criação de usuários (`users`) na última sincronização: é da versão que os recebe. */
+  usersSupported: boolean;
+  /** Por que o console não pode pedir usuário agora; null: pode. */
+  usersBlockedBy: NodeUserBlock | null;
 }
 
 /** O resultado de toda escrita: a fonte como ficou e a geração nova. */

@@ -32,6 +32,8 @@ import type {
   LogSourceUpdateRequest,
   LogSourceWriteResult,
   NodeSyncOverview,
+  NodeUserCreated,
+  NodeUserCreateRequest,
   PriceTable,
   PublishResult,
   SimulationRequest,
@@ -229,6 +231,12 @@ export const tenantsApi = {
   /** O aditivo do contrato direto: o plano, o volume, onde roda (antes de instalar) e os valores. */
   amend: (id: string, body: AmendmentRequest): Promise<ContractAmendmentResult> =>
     request('POST', `${TENANTS}/${encodeURIComponent(id)}/amend`, body),
+  /**
+   * O usuário do cliente criado pela Verax: a senha temporária volta só nesta resposta, e o console a guarda só no
+   * estado da tela, nunca no cache das consultas.
+   */
+  createUser: (id: string, body: NodeUserCreateRequest): Promise<NodeUserCreated> =>
+    request('POST', `${TENANTS}/${encodeURIComponent(id)}/users`, body),
 };
 
 function logSourcePath(tenantId: string, sourceId?: string, action?: string): string {

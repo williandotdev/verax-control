@@ -38,6 +38,11 @@ import type {
   legalPublishBodySchema,
   legalUpdateBodySchema,
 } from '../src/admin/admin-legal.service.js';
+import type {
+  NodeUserCreated,
+  nodeUserCreateRequestSchema,
+  NodeUserView,
+} from '../src/admin/admin-node-users.schema.js';
 import type { AdminSession } from '../src/admin/admin-session.controller.js';
 import type {
   enrollmentConfirmRequestSchema,
@@ -115,6 +120,9 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<Json<LogSourceWriteResult>>().toEqualTypeOf<Console.LogSourceWriteResult>();
     expectTypeOf<NodeSyncSourceCode>().toEqualTypeOf<Console.NodeSyncSourceCode>();
     expectTypeOf<NodeSyncNodeError>().toEqualTypeOf<Console.NodeSyncNodeError>();
+    // Os usuários do cliente pedidos pelo console: a lista (na mesma leitura) e a criação, uma vez.
+    expectTypeOf<Json<NodeUserView>>().toEqualTypeOf<Console.NodeUserView>();
+    expectTypeOf<NodeUserCreated>().toEqualTypeOf<Console.NodeUserCreated>();
   });
 
   it('o que as telas mandam cabe no que a API aceita', () => {
@@ -143,6 +151,7 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<Console.LogSourceUpdateRequest>().toExtend<z.input<typeof cloudAccountUpdateSchema>>();
     expectTypeOf<Console.LogSourceCredentialInput>().toExtend<z.input<typeof cloudCredentialInputSchema>>();
     expectTypeOf<Console.LogSourceRemoveRequest>().toExtend<z.input<typeof logSourceRemoveRequestSchema>>();
+    expectTypeOf<Console.NodeUserCreateRequest>().toExtend<z.input<typeof nodeUserCreateRequestSchema>>();
   });
 
   it('o vite preview dos testes de navegador do console manda a mesma CSP do cp-admin', () => {

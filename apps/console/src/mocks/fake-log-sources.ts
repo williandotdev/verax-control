@@ -11,10 +11,12 @@ import type {
   NodeSyncOverview,
   NodeSyncSourceCode,
   NodeSyncView,
+  NodeUserView,
   ReadKeysView,
   TenantDetail,
   ValidationIssue,
 } from '@/lib/api-types';
+import { createNodeUser, fakeNodeUsers, nodeUsersOverview } from './fake-node-users';
 
 /**
  * As fontes de log na API simulada do console (`/v1/admin/tenants/:id/node-sync` e `.../log-sources...`), em memória:
@@ -46,6 +48,8 @@ export interface FakeNodeSync {
   node: FakeNode | null;
   generation: number;
   sources: Map<string, FakeLogSource>;
+  /** Os usuários do cliente pedidos pelo console (`fake-node-users.ts`); ausente: nenhum. */
+  users?: NodeUserView[];
 }
 
 export interface FakeLogSourcesState {
@@ -162,10 +166,12 @@ function appliedReport(id: string, revision: number, now: Date, provider: LogSou
 export function createFakeLogSources(now: Date): FakeLogSourcesState {
   const at = (minutes: number): string => new Date(now.getTime() - minutes * MINUTE).toISOString();
   const base = { createdBy: OWNER, updatedBy: OWNER };
+  // O nó do cliente ativo é da versão que recebe usuários; o do cliente parado, de antes dela.
   const active: FakeNodeSync = {
-    node: fakeNode('gcp', now),
+    node: fakeNode('gcp', now, { capabilities: ['log_sources', 'users'] }),
     generation: 6,
     sources: new Map(),
+    users: fakeNodeUsers(now),
   };
   const aws = '00000000-0000-4000-8000-00000000a001';
   active.sources.set(aws, {
@@ -486,6 +492,7 @@ function overviewOf(state: FakeLogSourcesState, tenant: TenantDetail, now: Date)
           },
     sources: [...sync.sources].map(([id, source]) => viewOf(id, source, tenant, node)),
     templateUrl: TEMPLATE_URL,
+    ...nodeUsersOverview(tenant, sync, now),
   };
 }
 
@@ -868,7 +875,10 @@ function remove(
   return written(state, tenant, sync, id, now);
 }
 
-/** Atende `.../node-sync` e `.../log-sources[/:id[/credential|/remove]]` de um cliente (`rest` depois do id). */
+/**
+ * Atende `.../node-sync`, `.../log-sources[/:id[/credential|/remove]]` e `.../users` de um cliente (`rest` depois do
+ * id).
+ */
 export function handleLogSourcesRequest(
   state: FakeLogSourcesState,
   tenant: TenantDetail,
@@ -880,6 +890,9 @@ export function handleLogSourcesRequest(
   const [resource, sourceId, action] = rest;
   if (resource === 'node-sync' && rest.length === 1 && method === 'GET') {
     return { status: 200, body: overviewOf(state, tenant, now) };
+  }
+  if (resource === 'users' && rest.length === 1 && method === 'POST') {
+    return createNodeUser(tenant, syncOf(state, tenant.id), now, body);
   }
   if (resource !== 'log-sources') return error(404, 'Recurso não encontrado', 'not_found');
   const sync = syncOf(state, tenant.id);

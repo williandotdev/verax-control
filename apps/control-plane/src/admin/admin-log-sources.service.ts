@@ -41,16 +41,8 @@ import {
   type NodeSyncSourceCode,
   type NodeSyncSourceReport,
 } from '@verax/shared';
-import {
-  type CredentialPayload,
-  CredentialVaultError,
-  type EnvelopePublicKey,
-  publicKeyFingerprint,
-  sealCredential,
-  vaultPublicKeyFromPem,
-} from '@verax/vault-envelope';
+import { type CredentialPayload, sealCredential } from '@verax/vault-envelope';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import type { z } from 'zod';
 import { AuditService } from '../audit/audit.service.js';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { ApiError } from '../common/http/api-error.js';
@@ -80,7 +72,7 @@ import {
 } from '../node-sync/node-sync.schema.js';
 import type { OwnerContext } from '../pricing/pricing-store.js';
 import { TenantStore } from '../tenants/tenant-store.js';
-import { type Hosting, hostingOf, type TenantRecord } from '../tenants/tenant.schema.js';
+import { hostingOf, type TenantRecord } from '../tenants/tenant.schema.js';
 import {
   AWS_READER_TEMPLATE_PATH,
   type AwsStackMismatchField,
@@ -99,7 +91,15 @@ import {
   type NodeSyncView,
   type ReadKeysView,
 } from './admin-log-sources.schema.js';
+import type { NodeUserBlock } from './admin-node-users.schema.js';
 import { ADMIN_TENANT_LIMITS, type AdminTenantLimits } from './admin-tenants.service.js';
+import { nodeVaultOf, platformOf, readCollection } from './admin-node-sync-common.js';
+import {
+  nodeUserBlockOf,
+  nodeUserViewsOf,
+  readNodeUsers,
+  usersSupportedBy,
+} from './admin-node-users.service.js';
 import { type FieldIssue, invalidFields, invalidRequest } from './validation.js';
 
 /** As operações das fontes de log, como vão à auditoria (`details.operation`). */
@@ -225,11 +225,6 @@ function refusalError(code: LogSourceRefusalCode): ApiError {
 
 function notFound(): ApiError {
   return new ApiError(HttpStatus.NOT_FOUND, 'Cliente não encontrado.', 'tenant_not_found');
-}
-
-/** A plataforma do nó pelo lugar do cliente: o gerenciado roda na GCP; o do cliente, na VM dele. */
-export function platformOf(hosting: Hosting): NodePlatform {
-  return hosting === 'verax' ? 'gcp' : 'vm';
 }
 
 /** Os segredos do corpo, para a máscara do logger: registrados antes de qualquer `await`, esquecidos no fim. */
@@ -467,19 +462,6 @@ interface Sealed {
   nodeTenantId: string;
 }
 
-async function readCollection<T extends z.ZodType>(
-  reader: DocumentReader,
-  collection: string,
-  schema: T,
-): Promise<Map<string, z.infer<T>>> {
-  const docs = await reader.query(collection);
-  const result = new Map<string, z.infer<T>>();
-  for (const doc of [...docs].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
-    result.set(doc.id, parseDocument(schema, collection, doc.id, doc.data));
-  }
-  return result;
-}
-
 /**
  * As fontes de log de um cliente no console do responsável (só no cp-admin; docs/ARQUITETURA.md, "Sincronização com o
  * plano de controle"): o que o nó disse de si e de cada fonte, e as escritas do estado desejado que o cp-worker
@@ -514,10 +496,11 @@ export class AdminLogSourcesService {
     const hosting = hostingOf(tenant);
     const platform = platformOf(hosting);
     const snapshot = await this.snapshot(this.store, tenant.id);
-    const [reports, secrets] = await Promise.all([
+    const [reports, secrets, users] = await Promise.all([
       readCollection(this.store, COLLECTIONS.logSourceReports(tenant.id), logSourceReportSchema),
       // Só os ids interessam (o envelope ainda espera o nó?): o envelope nunca sai daqui.
       this.store.query(COLLECTIONS.logSourceSecrets(tenant.id)),
+      readNodeUsers(this.store, tenant.id),
     ]);
     const stored = new Set(secrets.map((doc) => doc.id));
     const now = this.clock.now();
@@ -532,6 +515,9 @@ export class AdminLogSourcesService {
       node: snapshot.state === undefined ? null : nodeViewOf(snapshot.state, platform, now),
       sources,
       templateUrl: AWS_READER_TEMPLATE_PATH,
+      users: nodeUserViewsOf(users, now),
+      usersSupported: usersSupportedBy(snapshot.state),
+      usersBlockedBy: blockOf(nodeUserBlockOf(tenant, snapshot.state)),
     };
   }
 
@@ -897,42 +883,35 @@ export class AdminLogSourcesService {
     if (!credentialKindAllowed(input.kind, platform)) {
       throw new LogSourceRefusal('credential_kind_not_allowed', sourceId);
     }
-    if (state?.nodeTenantId === null || state?.nodeTenantId === undefined) {
-      throw new LogSourceRefusal('node_not_synced', sourceId);
+    const checked = nodeVaultOf(state, platform);
+    if (!checked.ok) {
+      if (checked.code === 'vault_key_invalid') {
+        this.logger.error(
+          {
+            event: 'admin_log_source_vault_key_invalid',
+            tenantId: tenant.id,
+            keyVersion: state?.vaultKey?.version,
+          },
+          'a chave do cofre informada pelo nó não confere',
+        );
+      }
+      throw new LogSourceRefusal(checked.code, sourceId);
     }
-    if (state.platform !== platform) throw new LogSourceRefusal('platform_mismatch', sourceId);
-    const vaultKey = state.vaultKey;
-    if (vaultKey === null || state.error === 'vault_unreadable') {
-      throw new LogSourceRefusal('vault_disabled', sourceId);
-    }
-    const pem = Buffer.from(vaultKey.publicKey, 'base64').toString('utf8');
-    let publicKey: EnvelopePublicKey;
-    try {
-      publicKey = vaultPublicKeyFromPem(pem, vaultKey.version);
-      if (publicKeyFingerprint(pem) !== vaultKey.fingerprint)
-        throw new CredentialVaultError('public_key_invalid');
-    } catch (error) {
-      if (!(error instanceof CredentialVaultError)) throw error;
-      this.logger.error(
-        { event: 'admin_log_source_vault_key_invalid', tenantId: tenant.id, keyVersion: vaultKey.version },
-        'a chave do cofre informada pelo nó não confere',
-      );
-      throw new LogSourceRefusal('vault_key_invalid', sourceId);
-    }
+    const { vault } = checked;
     if (!seal) return undefined;
     const binding = {
-      tenantId: state.nodeTenantId,
+      tenantId: vault.nodeTenantId,
       cloudAccountId: sourceId,
       kind: input.kind,
       accountId: spec.accountId,
     };
-    const sealed = sealCredential(publicKey, binding, payloadOf(input));
+    const sealed = sealCredential(vault.publicKey, binding, payloadOf(input));
     return {
       kind: input.kind,
       envelope: sealed.ciphertext,
       keyVersion: sealed.keyVersion,
-      fingerprint: vaultKey.fingerprint,
-      nodeTenantId: state.nodeTenantId,
+      fingerprint: vault.fingerprint,
+      nodeTenantId: vault.nodeTenantId,
     };
   }
 
@@ -1073,6 +1052,11 @@ export class AdminLogSourcesService {
       updatedBy: source.updatedBy,
     };
   }
+}
+
+/** O motivo do bloqueio da criação de usuários, sem a chave do cofre. */
+function blockOf(result: ReturnType<typeof nodeUserBlockOf>): NodeUserBlock | null {
+  return result.ok ? null : result.code;
 }
 
 /** A fonte ativa da leitura: inexistente (ou de id fora do formato), 404; removida, 409. */

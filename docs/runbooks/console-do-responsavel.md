@@ -635,6 +635,36 @@ está no `cp-admin` (`/v1/admin/tenants/<id>/node-sync` e `.../log-sources`).
   contrato terminado (cancelado ou excluído) deixa as fontes só para consulta. Cadastro, alteração, chave e remoção
   contam no limite de 20 operações por hora e vão à auditoria (`tenant.console_request`, `operation: log_source.*`).
 
+### 7.3. Usuários do cliente
+
+No detalhe do cliente, logo abaixo de **Fontes de log**, a região **Usuários do cliente** pede ao servidor do cliente uma
+conta nova no painel dele (`docs/ARQUITETURA.md`, "Sincronização com o plano de controle", "Usuários do cliente pelo
+console"). A API está no `cp-admin` (`POST /v1/admin/tenants/<id>/users` e a lista em `.../node-sync`).
+
+- **Quando dá:** o servidor do cliente já sincronizou, com o cofre ligado, numa versão que recebe usuários. Senão o botão
+  "Criar usuário…" fica desligado com o motivo: "ainda não sincronizou" (`node_not_synced`), "precisa da versão nova
+  para receber usuários" (`node_outdated`: atualize o nó, `docs/runbooks/versao-no.md`), "sem o cofre de credenciais"
+  (`vault_disabled`) ou o contrato que terminou. A chave do cofre que não confere (`vault_key_invalid`) espera a próxima
+  sincronização; se continuar, confira a instalação.
+- **Pedir:** nome, e-mail (o login) e papel (Administrador, Analista ou Somente leitura). A senha temporária aparece
+  **uma única vez**, com Painel, Login, Senha temporária e Válida até (72 horas), cada um com "Copiar", e "Copiar
+  mensagem para o cliente". Nenhum e-mail sai da Verax: mande você, por um canal seguro. Ao fechar, a senha não volta;
+  perdeu antes de mandar? Espere o pedido virar "Criado" e peça ao administrador do cliente uma senha nova no painel
+  (Usuários), ou deixe vencer e peça de novo.
+- **Depois:** o servidor do cliente cria a conta na próxima sincronização (até uns 5 minutos); a senha só funciona com o
+  pedido em "Criado". No primeiro acesso, a pessoa troca a senha e configura o MFA. O cliente vê a criação na auditoria
+  do painel como "Verax (administrativo)" e pode desligar a criação pela Verax no servidor dele
+  (`CONTROL_PLANE_USERS=false`).
+- **Situação:** "Esperando o servidor", "Criado" (com a conta: ativa, ainda na senha temporária ou não, MFA ou não),
+  "Não criado" com o motivo (`email_taken`: já existe um usuário com esse e-mail no painel do cliente;
+  `plan_limit_reached`: sem vaga no plano; `users_disabled`: o cliente desligou a criação pela Verax;
+  `envelope_unreadable`: o servidor não abriu a senha, peça de novo depois da próxima sincronização) e "Vencido" (o
+  prazo passou, ou o servidor foi reinstalado antes de criar). Um pedido pendente por e-mail (`user_pending`); o não
+  criado ou vencido libera o e-mail.
+- **Limites:** cada pedido conta no limite de 20 operações por hora e vai à auditoria do plano de controle
+  (`tenant.console_request`, `operation: node_user.create`, sem a senha). Na v1 o console não altera nem remove
+  usuários: isso é no painel do cliente.
+
 ## 8. Textos legais (Termos, Privacidade e DPA)
 
 Os três textos que o cliente aceita no checkout vivem no Firestore (`legalTexts/{terms|privacy|dpa}/versions`), em

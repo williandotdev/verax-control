@@ -27,16 +27,28 @@ export function useTenantInstallation(id: string, enabled: boolean) {
   });
 }
 
-/** Com algo esperando o nó (que sincroniza a cada 5 minutos), as fontes de log se atualizam sozinhas. */
-const NODE_SYNC_REFRESH_MS = 60_000;
+/**
+ * Com algo esperando o nó (uma fonte pendente ou um usuário pedido; o nó sincroniza a cada 5 minutos), a leitura se
+ * atualiza sozinha.
+ */
+const NODE_SYNC_REFRESH_MS = 30_000;
 
-/** O nó do cliente e as fontes de log (`GET .../node-sync`). Nenhuma resposta leva segredo. */
+/**
+ * O nó do cliente, as fontes de log e os usuários pedidos pela Verax (`GET .../node-sync`), lidos pelas duas regiões da
+ * página. Nenhuma resposta leva segredo: a senha temporária de um usuário só vem na resposta da criação, fora daqui.
+ */
 export function useNodeSync(id: string) {
   return useQuery({
     queryKey: ['tenant', id, 'node-sync'],
     queryFn: () => logSourcesApi.overview(id),
-    refetchInterval: (query) =>
-      query.state.data?.sources.some((source) => source.pending) === true ? NODE_SYNC_REFRESH_MS : false,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const waiting =
+        data !== undefined &&
+        (data.sources.some((source) => source.pending) ||
+          data.users.some((user) => user.status === 'pending'));
+      return waiting ? NODE_SYNC_REFRESH_MS : false;
+    },
   });
 }
 
