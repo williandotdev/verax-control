@@ -60,9 +60,11 @@ import {
   type DirectTenantRequest,
   directTenantPreviewSchema,
   directTenantRequestSchema,
+  type AccessRevealed,
   type EnrollmentCodeIssued,
   enrollmentCodeRequestSchema,
   type ProvisioningRequestOutcome,
+  revealAccessRequestSchema,
   type TenantAction,
   type TenantActionResult,
   type TenantActions,
@@ -203,6 +205,22 @@ const WORKER_ERRORS: Readonly<Record<string, { status: HttpStatus; message: stri
   object_not_found: { status: HttpStatus.NOT_FOUND, message: 'Backup não encontrado.' },
   export_unavailable: { status: HttpStatus.SERVICE_UNAVAILABLE, message: 'Exportação não configurada.' },
   export_check_failed: { status: HttpStatus.BAD_GATEWAY, message: 'O backup não pôde ser conferido.' },
+  already_revealed: {
+    status: HttpStatus.CONFLICT,
+    message: 'A senha inicial já foi revelada (pelo cliente ou pelo console): ela não aparece de novo.',
+  },
+  reveal_not_available: {
+    status: HttpStatus.CONFLICT,
+    message: 'O cliente não está esperando o primeiro acesso: não há senha inicial a revelar.',
+  },
+  password_expired: {
+    status: HttpStatus.GONE,
+    message: 'A senha temporária já venceu: renove pelo runbook de onboarding (§7).',
+  },
+  reveal_unavailable: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'A senha inicial não pôde ser lida agora: nada foi marcado. Tente de novo em instantes.',
+  },
   worker_refused: { status: HttpStatus.BAD_GATEWAY, message: 'O cp-worker recusou o console.' },
   worker_unconfigured: { status: HttpStatus.SERVICE_UNAVAILABLE, message: 'Console sem o cp-worker.' },
   worker_unavailable: { status: HttpStatus.SERVICE_UNAVAILABLE, message: 'O cp-worker não respondeu.' },
@@ -210,6 +228,7 @@ const WORKER_ERRORS: Readonly<Record<string, { status: HttpStatus; message: stri
 
 /** Os 5xx do worker que têm significado próprio; qualquer outro é "o worker não respondeu". */
 const MEANINGFUL_5XX: ReadonlySet<string> = new Set([
+  'reveal_unavailable',
   'export_unavailable',
   'export_check_failed',
   'release_unconfigured',
@@ -310,6 +329,17 @@ const ENROLLMENT_CODE_SCHEMA = z.strictObject({
   reinstall: z.boolean(),
   runId: z.string().regex(ULID_PATTERN).optional(),
   step: z.string().max(64).refine(isStepName).optional(),
+});
+
+/**
+ * O que o worker devolve da revelação pelo responsável (`internal-access.controller.ts`), conferido antes de chegar ao
+ * console: nada a mais, e o painel só em `https`.
+ */
+const ACCESS_REVEALED_SCHEMA = z.strictObject({
+  panelUrl: z.url({ protocol: /^https$/ }).max(500),
+  adminEmail: z.email().max(254),
+  password: z.string().min(1).max(256),
+  passwordExpiresAt: isoDate,
 });
 
 /** O plano e o volume do contrato direto com o modo do lugar escolhido (a configuração que a cotação recebe). */
@@ -764,6 +794,71 @@ export class AdminTenantsService {
       reinstall: issued.reinstall,
       ...(issued.runId === undefined ? {} : { runId: issued.runId }),
       ...(issued.step === undefined ? {} : { step: issued.step }),
+    };
+  }
+
+  /**
+   * A revelação única da senha inicial pelo responsável, pedida ao cp-worker como as outras operações dele (o subdomínio
+   * digitado, o limite por responsável, a auditoria do pedido). O worker marca a revelação, lê a senha, enfileira a
+   * destruição do segredo e só então responde; depois disso, o link do cliente responde `already_revealed`. A senha
+   * passa por aqui uma vez, entra na máscara do logger assim que chega e nunca vai à auditoria nem ao log; o
+   * controlador a esquece quando a resposta termina. O estado do cliente (esperando a conexão, ainda sem revelação) é
+   * conferido no worker, na mesma transação que marca: aqui, só o subdomínio, para nem chamar o worker por engano.
+   */
+  async revealAccess(tenantId: string, body: unknown, owner: OwnerContext): Promise<AccessRevealed> {
+    const parsed = revealAccessRequestSchema.safeParse(body ?? {});
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    if (!isUlid(tenantId)) throw notFound();
+    const tenant = await this.tenants.get(tenantId);
+    if (tenant === undefined) throw notFound();
+    if (parsed.data.confirmSlug !== tenant.slug) {
+      await this.refuseOperation(owner, tenant, 'reveal-access', 'confirmation_mismatch');
+      throw workerError('confirmation_mismatch');
+    }
+    if (!this.limits.operations.take(owner.email).allowed) {
+      await this.refuseOperation(owner, tenant, 'reveal-access', 'rate_limited');
+      throw rateLimited();
+    }
+    const worker = this.worker;
+    let result: OwnerCallResult;
+    if (worker === null) {
+      result = { ok: false, status: 503, code: 'worker_unconfigured' };
+    } else {
+      try {
+        result = await worker.revealAccess(tenant.id, parsed.data.confirmSlug, owner.email);
+      } catch {
+        result = { ok: false, status: 0, code: 'worker_unreachable' };
+      }
+    }
+    // A senha entra na máscara antes de qualquer conferência: um corpo fora do formato também não vai ao log.
+    const candidate = result.ok ? result.body['password'] : undefined;
+    if (typeof candidate === 'string') registerLiveSecret(candidate);
+    const checked = result.ok ? ACCESS_REVEALED_SCHEMA.safeParse(result.body) : undefined;
+    if (!result.ok || checked === undefined || !checked.success) {
+      if (typeof candidate === 'string') forgetLiveSecret(candidate);
+      const failed: Extract<OwnerCallResult, { ok: false }> = result.ok
+        ? { ok: false, status: 502, code: 'worker_error' }
+        : result;
+      throw workerError(await this.recordFailure('reveal-access', tenant, owner, failed));
+    }
+    await this.audit.write({
+      actor: `owner:${owner.email}`,
+      action: 'tenant.console_request',
+      tenantId: tenant.id,
+      // Nunca a senha nem o login: só que a revelação aconteceu (o worker gravou `access.revealed`).
+      details: { operation: 'reveal-access', outcome: 'ok' },
+      requestId: owner.requestId,
+    });
+    this.logger.info(
+      { event: 'admin_tenant_operation', tenantId: tenant.id, operation: 'reveal-access' },
+      'senha inicial revelada pelo console',
+    );
+    const revealed = checked.data;
+    return {
+      panelUrl: revealed.panelUrl,
+      adminEmail: revealed.adminEmail,
+      password: revealed.password,
+      passwordExpiresAt: revealed.passwordExpiresAt,
     };
   }
 
@@ -1296,7 +1391,7 @@ export class AdminTenantsService {
 
   /** Audita e registra uma operação que o worker não atendeu; devolve o código estável. */
   private async recordFailure(
-    action: TenantAction | 'enrollment-code',
+    action: TenantAction | 'enrollment-code' | 'reveal-access',
     tenant: TenantRecord,
     owner: OwnerContext,
     result: Extract<OwnerCallResult, { ok: false }>,
@@ -1346,7 +1441,7 @@ export class AdminTenantsService {
   private async refuseOperation(
     owner: OwnerContext,
     tenant: TenantRecord,
-    action: TenantAction | 'enrollment-code' | 'amend',
+    action: TenantAction | 'enrollment-code' | 'reveal-access' | 'amend',
     code: 'confirmation_mismatch' | 'rate_limited',
   ): Promise<void> {
     await this.audit.write({

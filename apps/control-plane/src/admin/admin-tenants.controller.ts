@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, Param, Post, Req, Res } from '@nestjs/
 import type { Response } from 'express';
 import { forgetLiveSecret } from '../common/logger/sanitize.js';
 import type {
+  AccessRevealed,
   ContractAmendmentResult,
   DirectTenantCreated,
   DirectTenantPreview,
@@ -20,7 +21,8 @@ import { type OwnerRequest, ownerOf } from './owner.guard.js';
  * cotação de referência, o cadastro de um cliente de contrato direto e as operações do responsável, cada uma com o
  * subdomínio digitado como confirmação: `start`, `resume`, `cancel`, `suspend`, `reactivate`, `delete-now` e
  * `export`. Para o contrato direto com o ambiente na VM do cliente, a leitura do que mandar a ele (`installation`) e o
- * código de instalação de uso único (`enrollment-code`). O aditivo de um contrato direto (`amend`): o plano, o volume,
+ * código de instalação de uso único (`enrollment-code`). A revelação única da senha inicial (`reveal-access`), para o
+ * responsável copiar e mandar ao cliente. O aditivo de um contrato direto (`amend`): o plano, o volume,
  * onde o ambiente roda (só antes de qualquer instalação) e os valores, com o subdomínio digitado.
  */
 @Controller('admin/tenants')
@@ -66,6 +68,23 @@ export class AdminTenantsController {
     const issued = await this.service.enrollmentCode(id, body, ownerOf(req));
     res.on('close', () => forgetLiveSecret(issued.code));
     return issued;
+  }
+
+  /**
+   * A revelação única da senha inicial pelo responsável, para copiar e mandar ao cliente (a resposta sai com
+   * `Cache-Control: private, no-store`, como toda do console). A senha sai da máscara do logger quando a resposta termina.
+   */
+  @Post(':tenantId/reveal-access')
+  @HttpCode(200)
+  async revealAccess(
+    @Param('tenantId') id: string,
+    @Body() body: unknown,
+    @Req() req: OwnerRequest,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<AccessRevealed> {
+    const revealed = await this.service.revealAccess(id, body, ownerOf(req));
+    res.on('close', () => forgetLiveSecret(revealed.password));
+    return revealed;
   }
 
   /** O aditivo do contrato direto (`AdminTenantsService.amend`): grava no Firestore, nada na nuvem. */

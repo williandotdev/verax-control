@@ -726,6 +726,18 @@ export interface EnrollmentCodeIssued {
   step?: string;
 }
 
+/**
+ * `POST /v1/admin/tenants/:id/reveal-access` `{confirmSlug}`: a senha inicial do administrador do cliente, mostrada uma
+ * única vez para o responsável copiar e mandar. É a revelação única: depois dela, a versão do cofre é apagada e o link
+ * que o cliente recebeu por e-mail deixa de funcionar. O console guarda só no estado da tela, nunca no cache.
+ */
+export interface AccessRevealed {
+  panelUrl: string;
+  adminEmail: string;
+  password: string;
+  passwordExpiresAt: string;
+}
+
 /** `POST /v1/admin/tenants/:id/<operação>`: o que o cp-worker fez. */
 export type TenantActionResult =
   | { action: 'start' | 'resume'; runId: string; step: string }

@@ -17,7 +17,8 @@ export type OwnerOperation =
   | 'suspend'
   | 'reactivate'
   | 'installation'
-  | 'enrollment-code';
+  | 'enrollment-code'
+  | 'reveal-access';
 
 export type OwnerCallResult =
   { ok: true; status: number; body: Record<string, unknown> } | { ok: false; status: number; code: string };
@@ -36,6 +37,11 @@ export interface WorkerOwnerClient {
   installation(tenantId: string, actor: string): Promise<OwnerCallResult>;
   /** O código de instalação de uso único da VM do cliente (`enrollment/`); a resposta o traz uma vez. */
   enrollmentCode(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult>;
+  /**
+   * A revelação única da senha inicial pelo responsável (`internal-access.controller.ts`): a resposta traz o painel, o
+   * login e a senha temporária uma vez, e depois dela o link do cliente deixa de valer.
+   */
+  revealAccess(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult>;
 }
 
 const TIMEOUT_MS = 20_000;
@@ -91,6 +97,10 @@ export class HttpWorkerOwnerClient implements WorkerOwnerClient {
 
   enrollmentCode(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult> {
     return this.call(tenantId, 'enrollment-code', { confirmSlug, actor });
+  }
+
+  revealAccess(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult> {
+    return this.call(tenantId, 'reveal-access', { confirmSlug, actor });
   }
 
   private async call(

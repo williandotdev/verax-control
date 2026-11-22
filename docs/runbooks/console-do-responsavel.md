@@ -422,8 +422,9 @@ o checkout responde 503 `checkout_unavailable`, mesmo com a tabela e a Stripe pr
 A tela **Clientes** lista os clientes (os do site e os de contrato direto, os mais novos primeiro) com o estado, a
 cobrança, onde o ambiente roda e, no provisionamento, o passo e o código de quem parou. O detalhe de um cliente mostra
 o contratado e o preço, a linha do tempo dos passos do provisionamento (ou, no ambiente do cliente, a situação da
-instalação e o que mandar a ele), o acesso do administrador (quando o e-mail saiu e quando a senha foi vista; nunca a senha), o ciclo de
-vida e o histórico de estados. Enquanto o cliente provisiona, a página se atualiza sozinha.
+instalação e o que mandar a ele), o acesso do administrador (quando o e-mail saiu e quando a senha foi revelada; a
+senha, só se você mesmo a revelar, uma vez: "Mostrar a senha inicial", abaixo), o ciclo de vida e o histórico de
+estados. Enquanto o cliente provisiona, a página se atualiza sozinha.
 
 **Pelo site, só o SIEM Cloud, na infraestrutura da Verax** (decisões de 06/11/2026 e 10/11/2026). O SIEM Dedicado, o SIEM + vCISO
 e o ambiente na infraestrutura do cliente existem **só por contrato direto**, aqui. A cotação de referência é calculada
@@ -459,8 +460,9 @@ paga a nuvem, e a DRE mostra isso); o SIEM Cloud é a célula da Verax e nunca r
    (clique duplo, conexão que caiu) não cria dois: é o mesmo cadastro; a mesma chave com outros valores é recusada.
 6. **Na Verax**, o cliente vai a `provisioning`: acompanhe a linha do tempo. Pronto (`waiting_customer_connection`), o
    administrador do cliente recebe na hora o e-mail "ambiente pronto" com o link de uso único (24 h) para ver a senha
-   temporária uma vez. Você não vê a senha nem o link; se o cliente não receber, confira o SMTP do `cp-worker` e, com
-   o link vencido, o caminho de uma senha nova (`docs/runbooks/onboarding-cliente.md`, item 7).
+   temporária uma vez. Você não vê o link; se o cliente não receber, confira o SMTP do `cp-worker` e, com o link
+   vencido, o caminho de uma senha nova (`docs/runbooks/onboarding-cliente.md`, item 7). Se preferir mandar o acesso
+   você mesmo, veja "Mostrar a senha inicial", abaixo.
 7. **No cliente**, o cliente nasce "Aguardando instalação pelo cliente" (`waiting_customer_install`). O detalhe mostra,
    em "Instalação na infraestrutura do cliente", a situação da instalação e três blocos para mandar a ele:
    - **1. Perfil da VM:** vCPU, memória e disco do porte do contrato (P: 2, 8 GB, 60 GB; M: 4, 16 GB, 120 GB; G: 8,
@@ -496,6 +498,7 @@ novo):
 | Apagar agora            | Cliente cancelado (ou uma exclusão que parou)                      | A Exclusão 1 agora, sem volta (`docs/runbooks/ciclo-de-vida.md`)                                                   |
 | Gerar comando           | Ambiente no cliente, esperando, provisionando, parado ou pronto    | O código de uso único (7 dias) e o comando de instalação, uma vez; revoga o anterior                               |
 | Alterar contrato        | Contrato direto vivo (não cancelado)                               | O aditivo: plano, volume, valores e, antes de instalar, onde roda; a vigência recomeça (7.1)                       |
+| Mostrar senha inicial   | Esperando o primeiro acesso, com a senha ainda não revelada        | A revelação única por você: o acesso uma vez, para copiar e mandar; o link do e-mail do cliente deixa de valer     |
 
 Num cliente da Stripe, suspender, reativar e cancelar seguem a assinatura (Portal do cliente ou Dashboard da Stripe); o
 console não os oferece. **Com o ambiente no cliente**, só **Gerar comando**, **Cancelar contrato** e, depois, **Apagar
@@ -504,6 +507,16 @@ registra o fim do contrato (sem exportação, sem parar VM nenhuma) e apagar rem
 administrador e o acesso), com o registro de exclusão ao administrador dizendo que o ambiente é dele e que quem apaga é
 ele. Iniciar, retomar, suspender, reativar e exportar não existem para ele, e o `cp-worker` recusa de novo
 (`customer_hosted`) se pedirem. Os limites: 5 cadastros e 20 operações por hora por responsável.
+
+**Mostrar a senha inicial** (qualquer cliente, do site ou de contrato direto, na Verax ou no cliente): no bloco
+"Acesso do administrador", **Mostrar senha inicial…** e o subdomínio digitado. O aviso diz o que acontece: _a senha
+aparece uma única vez; depois ela é apagada do cofre e o link que o cliente recebeu por e-mail deixa de funcionar_. É
+a mesma revelação única da página de status e do link do e-mail, só que pelas suas mãos. O console mostra o painel, o
+login, a senha temporária e a validade, cada um com **Copiar**, e **Copiar mensagem para o cliente** (o texto pronto,
+com o aviso de que o primeiro acesso pede a troca da senha e o MFA). Mande por um canal seguro e feche: a senha não
+volta. A data aparece em "Senha inicial revelada", e a auditoria registra você como autor (`access.revealed`,
+`via: owner`), sem a senha. Se o console disser "já revelada", "senha vencida" ou "cliente fora da espera", o que fazer
+está em `docs/runbooks/onboarding-cliente.md`, item 7 ("Mandar o acesso você mesmo").
 
 Tudo o que se grava no console vai à auditoria (`auditLog`) como `owner:<e-mail>`: rascunho criado e editado (com a
 diferença), publicação (com o resumo da checagem), aposentadoria e publicação recusada; o cadastro de um cliente, cada
