@@ -28,6 +28,7 @@
 !apps/console/public
 !apps/console/src
 !scripts/scan-bundle.mjs
+!infra/cloudformation/verax-control-reader.yaml
 !tsconfig.base.json
 
 # Mesmo dentro das pastas permitidas.

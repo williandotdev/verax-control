@@ -2735,7 +2735,8 @@ O nó dedicado (gerenciado na GCP ou na VM do cliente; nunca a célula) chama o 
 o que aplicou e recebe o estado desejado: as fontes de log que o responsável cadastrou no console e os usuários que a
 Verax pediu para o cliente. O contrato está em `packages/shared/src/node-sync.ts` (protocolo 1, estrito dos dois
 lados); os envelopes, em `packages/vault-envelope`. O lado do plano de controle fica em
-`apps/control-plane/src/node-sync/` (o console que escreve o desejado e o nó que aplica vêm nos PRs seguintes).
+`apps/control-plane/src/node-sync/`; o console que escreve o desejado, em `apps/control-plane/src/admin/admin-log-sources.*`
+(o nó que aplica e as telas do console vêm nos PRs seguintes).
 
 - **Caminho:** `POST /v1/node-sync` no `cp-public` (pelo Hosting de `conta.veraxsistemas.com.br`) → no `cp-worker`
   (`@WorkerCallers('public')`, o token do cp-public), como o registro da VM, uma rota por credencial: `POST
@@ -2786,6 +2787,32 @@ request}` (a VM do cliente). O cp-public escolhe a rota pelo formato do `Authori
   no que o nó lê (`NODE_SYNC_RESPONSE_MAX_BYTES`, 1 MB): os itens entram pela ordem do que pede ação (credencial
   pendente, usuário pedido, revisão ainda não processada, fonte que falhou, fonte já aplicada) e pelo id; o que não
   cabe vai na chamada seguinte, com `pollAfterSeconds` mínimo. Nunca 503 por tamanho, e a ausência nunca é remoção.
+- **Console (cp-admin, `/v1/admin/tenants/:id/...`, atrás da `OwnerGuard`; escritas no limite de 20 operações por hora
+  do responsável, na auditoria como `tenant.console_request` com `operation: log_source.*`, e as recusas como
+  `tenant.console_request_refused`):
+  - `GET node-sync`: o nó como ele se descreveu (`lastSeenAt`, `stale` depois de 15 min, plataforma, commit,
+    `vaultReady`, versão e impressão digital da chave, erro) e cada fonte com o desejado, os metadados da credencial
+    (nunca o envelope), o último relato, `pending` (revisão desejada acima da relatada, ou credencial acima da
+    aplicada) e a situação (`pending`, `applied`, `failed` com o código, `removing`, `removed`). Na AWS do gerenciado, o
+    bloco `awsStack` com os valores **do plano de controle** (`resources.serviceAccountUniqueId`, `resources.natIp/32`,
+    `AWS_READER_AUDIENCE`, o ARN do papel, o `aws cloudformation deploy` e o link do CloudFormation) e `mismatch` quando
+    o nó informa outros; na VM do cliente, `readKeys` (o usuário IAM e as políticas, ou a assinatura e a conta de serviço
+    da GCP, de `read-keys.ts`); no Cloudflare, o link do token e os IPs para o filtro. O template do papel sai do
+    próprio cp-admin, do commit da imagem: `GET /v1/admin/aws-reader/verax-control-reader.yaml` (`text/yaml`; o
+    Dockerfile copia `infra/cloudformation/verax-control-reader.yaml` para `/app/cloudformation/`);
+  - `POST log-sources` (`{spec, credential?}`: `cloudAccountCreateSchema` e as regras de credencial do painel), `PATCH
+log-sources/:id` (os campos do provedor; provedor, ID da conta e `status` recusados), `PUT log-sources/:id/credential`
+    e `POST log-sources/:id/remove` (`{confirmSlug}`, a lápide; o envelope pendente sai junto). Cada escrita é uma
+    transação: a fonte (a revisão sobe; a credencial tem revisão própria), o envelope, `nodeSync/desired.generation` + 1
+    e a auditoria. O id da fonte é um `randomUUID()` (o id da conta no banco do nó). Recusados: GCP no gerenciado
+    (`gcp_unsupported_managed`, até o Terraform receber projetos de cliente), cliente da célula, cancelado ou excluído,
+    a mesma conta ativa duas vezes (`source_exists`);
+  - **Lacre:** a credencial só é cifrada para um nó que já sincronizou com o cofre (`node_not_synced`, `vault_disabled`
+    senão), na plataforma do lugar do cliente (`gcp` no gerenciado, `vm` no cliente, cruzada com a informada), com o
+    tipo que vale nela (`credentialKindAllowed`: no gerenciado, só o Cloudflare), com a chave pública informada e a
+    impressão digital conferida de novo (`vault_key_invalid`), amarrada a `{nodeTenantId, id da fonte, tipo, conta}`. O
+    texto claro entra na máscara do logger antes de qualquer `await` e sai no fim do pedido; só o envelope e os
+    metadados vão ao Firestore (`expiresAt` em 7 dias).
 - **Reinstalação:** outro `nodeTenantId` ou outra impressão digital da chave do cofre → `node_sync.identity_changed` na
   auditoria do plano de controle e os envelopes pendentes descartados (não abririam mais).
 - **Segurança:** o cp-public vê a credencial do nó em trânsito (como no registro), mas o worker confere de novo e nunca

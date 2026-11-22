@@ -18,15 +18,20 @@ ENV CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
+COPY packages/vault-envelope/package.json packages/vault-envelope/
 COPY apps/control-plane/package.json apps/control-plane/
 COPY apps/console/package.json apps/console/
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter @verax/control-plane... --filter @verax/console...
 COPY packages/shared packages/shared
+COPY packages/vault-envelope packages/vault-envelope
 COPY apps/control-plane apps/control-plane
 COPY apps/console apps/console
 COPY scripts/scan-bundle.mjs scripts/
-# O contrato do canal da célula (CE-06) vem de `packages/shared`, compilado antes do plano de controle.
-RUN pnpm --filter @verax/shared build && pnpm --filter @verax/control-plane build
+# O template do papel de leitura da AWS, servido pelo console do responsável tal como está no commit da imagem.
+COPY infra/cloudformation/verax-control-reader.yaml infra/cloudformation/
+# O contrato do canal da célula (CE-06) vem de `packages/shared`, e o envelope do cofre do nó (as credenciais que o
+# console cifra para o nó), de `packages/vault-envelope`: os dois compilados antes do plano de controle.
+RUN pnpm --filter @verax/shared build && pnpm --filter @verax/vault-envelope build   && pnpm --filter @verax/control-plane build
 # O console: checagem de tipos, build do Vite e a varredura de segredos do bundle (a mesma do painel).
 RUN pnpm --filter @verax/console build
 RUN pnpm --filter @verax/control-plane deploy --prod --legacy --ignore-scripts /out
@@ -40,6 +45,7 @@ COPY --from=build /out/package.json ./
 COPY --from=build /out/node_modules ./node_modules
 COPY --from=build /repo/apps/control-plane/dist ./dist
 COPY --from=build /repo/apps/console/dist ./console
+COPY --from=build /repo/infra/cloudformation/verax-control-reader.yaml ./cloudformation/
 ENV NODE_ENV=production PORT=8080
 USER node
 EXPOSE 8080
