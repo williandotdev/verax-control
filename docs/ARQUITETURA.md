@@ -2736,7 +2736,8 @@ o que aplicou e recebe o estado desejado: as fontes de log que o responsável ca
 Verax pediu para o cliente. O contrato está em `packages/shared/src/node-sync.ts` (protocolo 1, estrito dos dois
 lados); os envelopes, em `packages/vault-envelope`. O lado do plano de controle fica em
 `apps/control-plane/src/node-sync/`; o console que escreve o desejado, em `apps/control-plane/src/admin/admin-log-sources.*`
-(o nó que aplica e as telas do console vêm nos PRs seguintes).
+(as fontes) e `admin-node-users.*` (os usuários do cliente, com a região "Usuários do cliente" no detalhe do cliente do
+console, `apps/console/src/features/tenants/node-users.tsx`).
 
 - **Caminho:** `POST /v1/node-sync` no `cp-public` (pelo Hosting de `conta.veraxsistemas.com.br`) → no `cp-worker`
   (`@WorkerCallers('public')`, o token do cp-public), como o registro da VM, uma rota por credencial: `POST
@@ -2813,6 +2814,32 @@ log-sources/:id` (os campos do provedor; provedor, ID da conta e `status` recusa
     impressão digital conferida de novo (`vault_key_invalid`), amarrada a `{nodeTenantId, id da fonte, tipo, conta}`. O
     texto claro entra na máscara do logger antes de qualquer `await` e sai no fim do pedido; só o envelope e os
     metadados vão ao Firestore (`expiresAt` em 7 dias).
+- **Usuários do cliente pelo console** (`admin-node-users.*`; decisões D7 a D10 do plano da sincronização):
+  - `POST users` `{name, email, role}` (`userCreateSchema`; os três papéis do cliente, nunca `admin_verax`). Recusados,
+    com a auditoria `tenant.console_request_refused`: cliente cancelado ou excluído (`not_allowed`), da célula
+    (`placement_unsupported`), nó que nunca sincronizou (`node_not_synced`), nó sem a capacidade `users` na última
+    chamada (`node_outdated`: "o servidor do cliente precisa da versão nova para receber usuários"), outra plataforma,
+    sem cofre ou com a chave que não confere (`platform_mismatch`, `vault_disabled`, `vault_key_invalid`), um pedido
+    ainda pendente para o mesmo e-mail (`user_pending`, sem diferença de maiúsculas), 200 pendentes (`user_limit`) e o
+    limite de operações (429). A conferência roda antes do limite, que só gasta com um pedido que pode dar certo;
+  - a senha temporária sai da mesma geradora do painel (`generateTemporaryPassword`, `@verax/vault-envelope`), entra na
+    máscara do logger no mesmo instante e é cifrada com a chave pública do cofre do nó (a impressão digital conferida de
+    novo, como nas fontes), amarrada a `{nodeTenantId, requestId (ULID), e-mail em minúsculas}` (`sealUserPassword`).
+    Uma transação: `nodeUsers/{requestId}` (nome, e-mail, papel, `notAfter` = agora + 72 h, quem e quando),
+    `nodeUserSecrets/{requestId}` (só o envelope, `expiresAt` = `notAfter` + 1 dia), `nodeSync/desired.generation` + 1 e
+    a auditoria `tenant.console_request` com `operation: node_user.create` (o pedido, o e-mail, o papel, o prazo e a
+    chave do cofre; nunca a senha nem o envelope). O log leva só ids, o papel e a geração;
+  - a resposta (201, uma vez, `Cache-Control: private, no-store`): `{requestId, panelUrl, email, role,
+temporaryPassword, notAfter}`; o controlador tira a senha da máscara quando a resposta termina. Nenhum e-mail sai
+    para o cliente (D8): o responsável copia o acesso (ou a mensagem pronta) e manda;
+  - `GET node-sync` traz também `users` (do mais novo ao mais antigo; nunca a senha nem o envelope), com a situação:
+    `created` (com a conta: situação, MFA e se ainda está na senha temporária), `failed` com o código do nó
+    (`NODE_SYNC_USER_CODES`), `expired` (o prazo passou sem relato, o nó contou `expired`, ou o envelope foi descartado
+    numa reinstalação) e `pending`; `usersSupported` (a capacidade anunciada) e `usersBlockedBy` (o mesmo motivo da
+    recusa, para o console desligar o botão com o texto);
+  - o cp-worker entrega o pedido ao nó que anuncia `users` e apaga o envelope com qualquer resultado; o pedido falhado
+    ou vencido libera o e-mail para um novo. Na v1 o console não altera nem remove usuários: a pessoa do cliente cuida
+    da conta no painel dele, e o cliente vê a criação na auditoria do painel como "Verax (administrativo)" (D10).
 - **Reinstalação:** outro `nodeTenantId` ou outra impressão digital da chave do cofre → `node_sync.identity_changed` na
   auditoria do plano de controle e os envelopes pendentes descartados (não abririam mais).
 - **Segurança:** o cp-public vê a credencial do nó em trânsito (como no registro), mas o worker confere de novo e nunca

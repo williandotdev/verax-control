@@ -1,4 +1,3 @@
-import { TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { ApiError, tenantsApi } from '@/lib/api';
@@ -7,6 +6,7 @@ import { errorMessage } from '@/lib/errors';
 import { formatDateTime } from '@/lib/format';
 import { ConfirmBySlug } from './confirm-by-slug';
 import { WORKER_FAILURE_MESSAGES } from './labels';
+import { type AccessRow, OneTimeAccess } from './one-time-access';
 import { useInvalidateTenants } from './queries';
 
 /** O runbook da renovação da senha do administrador (`BOOTSTRAP_RENEW_ADMIN_PASSWORD`). */
@@ -54,91 +54,27 @@ function customerMessage(access: AccessRevealed): string {
   ].join('\n');
 }
 
-type CopyTarget = 'panel' | 'login' | 'password' | 'expiry' | 'message';
-
-const COPIED: Readonly<Record<CopyTarget, string>> = {
-  panel: 'Endereço do painel copiado.',
-  login: 'Login copiado.',
-  password: 'Senha copiada.',
-  expiry: 'Validade copiada.',
-  message: 'Mensagem copiada.',
-};
-
 /** O acesso revelado: só no estado desta tela, nunca na URL, no armazenamento do navegador, no cache ou no log. */
 function RevealedAccess({ access, onClose }: { access: AccessRevealed; onClose: () => void }) {
-  const [copied, setCopied] = useState<CopyTarget | 'failed' | undefined>();
-  // O `navigator.clipboard` só existe em contexto seguro (https); sem ele, os botões nem aparecem.
-  const clipboard =
-    typeof navigator === 'undefined' ? undefined : (navigator.clipboard as Clipboard | undefined);
-  const expiry = formatDateTime(access.passwordExpiresAt);
-
-  async function copy(target: CopyTarget, text: string) {
-    try {
-      await clipboard?.writeText(text);
-      setCopied(target);
-    } catch {
-      setCopied('failed');
-    }
-  }
-
-  const rows: readonly { target: CopyTarget; label: string; value: string; mono: boolean }[] = [
+  const rows: readonly AccessRow[] = [
     { target: 'panel', label: 'Painel', value: access.panelUrl, mono: true },
     { target: 'login', label: 'Login', value: access.adminEmail, mono: true },
     { target: 'password', label: 'Senha temporária', value: access.password, mono: true },
-    { target: 'expiry', label: 'Válida até', value: expiry, mono: false },
+    { target: 'expiry', label: 'Válida até', value: formatDateTime(access.passwordExpiresAt), mono: false },
   ];
-
   return (
-    <section
-      aria-label="Acesso para enviar ao cliente"
-      className="space-y-3 rounded-lg border border-high/60 bg-high/10 p-3"
-    >
-      <p className="flex items-start gap-2 text-sm font-medium">
-        <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-high" />
-        Ela aparece só agora: copie e envie ao cliente por um canal seguro. Ao fechar, ela não volta.
-      </p>
-      <dl className="space-y-2">
-        {rows.map((row) => (
-          <div key={row.target} className="flex flex-wrap items-center gap-2">
-            <dt className="w-36 shrink-0 text-xs text-muted-foreground">{row.label}</dt>
-            {/* O botão fica dentro do `dd`: numa lista de definição, o grupo só pode ter `dt` e `dd` (axe). */}
-            <dd className="flex min-w-0 flex-wrap items-center gap-2">
-              <span className={row.mono ? 'min-w-0 font-mono text-sm break-all' : 'min-w-0 text-sm'}>
-                {row.value}
-              </span>
-              {clipboard !== undefined && (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  aria-label={`Copiar: ${row.label}`}
-                  onClick={() => void copy(row.target, row.value)}
-                >
-                  Copiar
-                </Button>
-              )}
-            </dd>
-          </div>
-        ))}
-      </dl>
-      <div className="flex flex-wrap items-center gap-2">
-        {clipboard !== undefined && (
-          <Button size="sm" onClick={() => void copy('message', customerMessage(access))}>
-            Copiar mensagem para o cliente
-          </Button>
-        )}
-        <Button variant="secondary" size="sm" onClick={onClose}>
-          Fechar
-        </Button>
-        <span role="status" className="text-xs text-muted-foreground">
-          {copied === 'failed' && 'Não deu para copiar: selecione e copie à mão.'}
-          {copied !== undefined && copied !== 'failed' && COPIED[copied]}
-        </span>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        No primeiro acesso, o painel pede para o cliente trocar a senha e configurar a verificação em duas
-        etapas (MFA).
-      </p>
-    </section>
+    <OneTimeAccess
+      label="Acesso para enviar ao cliente"
+      rows={rows}
+      message={customerMessage(access)}
+      onClose={onClose}
+      footer={
+        <p>
+          No primeiro acesso, o painel pede para o cliente trocar a senha e configurar a verificação em duas
+          etapas (MFA).
+        </p>
+      }
+    />
   );
 }
 

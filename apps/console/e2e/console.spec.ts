@@ -293,6 +293,43 @@ for (const theme of THEMES) {
       expect(violations).toEqual([]);
     });
 
+    test('usuários do cliente: a lista com cada situação, o pedido e o acesso mostrado uma vez; o botão desligado com o motivo', async ({
+      page,
+    }, testInfo) => {
+      const violations = await prepare(page, theme);
+      await page.goto('/clientes/01JC0000000000000000000D01');
+      const panel = page.getByRole('region', { name: 'Usuários do cliente' });
+      await expect(panel).toContainText('Já existe um usuário com esse e-mail no painel do cliente.');
+      await expect(panel).toContainText('Conta ativa · senha trocada · MFA configurado');
+      await audit(page, testInfo, `usuarios-do-cliente-${theme}`);
+
+      await panel.getByRole('button', { name: 'Criar usuário…' }).click();
+      const form = panel.getByRole('form', { name: 'Criar usuário do cliente' });
+      await form.getByRole('button', { name: 'Criar usuário' }).click();
+      await expect(form).toContainText('Informe um e-mail válido.');
+      await audit(page, testInfo, `usuario-do-cliente-erro-${theme}`);
+      await form.getByLabel('Nome').fill('Pessoa Demo Nova');
+      await form.getByLabel('E-mail (o login)').fill('nova.pessoa@cliente-demo-z.example');
+      await form.getByLabel('Papel').selectOption('leitura');
+      await form.getByRole('button', { name: 'Criar usuário' }).click();
+      const access = panel.getByRole('region', { name: 'Acesso do novo usuário para enviar ao cliente' });
+      await expect(access).toContainText('https://contrato-ativo.control.veraxsistemas.com.br');
+      await expect(access.getByRole('button', { name: 'Copiar mensagem para o cliente' })).toBeVisible();
+      await expect(panel.getByRole('table')).toContainText('Esperando o servidor');
+      await audit(page, testInfo, `usuario-do-cliente-criado-${theme}`);
+      await access.getByRole('button', { name: 'Fechar' }).click();
+      await expect(access).toHaveCount(0);
+
+      await page.goto('/clientes/01JC0000000000000000000B01');
+      const outdated = page.getByRole('region', { name: 'Usuários do cliente' });
+      await expect(outdated.getByRole('button', { name: 'Criar usuário…' })).toBeDisabled();
+      await expect(outdated).toContainText(
+        'O servidor do cliente precisa da versão nova para receber usuários.',
+      );
+      await audit(page, testInfo, `usuarios-do-cliente-versao-antiga-${theme}`);
+      expect(violations).toEqual([]);
+    });
+
     test('acesso: a entrada sem sessão, com o erro genérico, e a entrada com o código', async ({
       page,
     }, testInfo) => {

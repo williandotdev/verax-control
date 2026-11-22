@@ -14,6 +14,8 @@ import { AdminFleetService } from './admin-fleet.service.js';
 import { AdminLegalController } from './admin-legal.controller.js';
 import { AdminLogSourcesController } from './admin-log-sources.controller.js';
 import { AdminLogSourcesService } from './admin-log-sources.service.js';
+import { AdminNodeUsersController } from './admin-node-users.controller.js';
+import { AdminNodeUsersService } from './admin-node-users.service.js';
 import { AdminLegalService } from './admin-legal.service.js';
 import { AdminPricingController } from './admin-pricing.controller.js';
 import { AdminPricingService } from './admin-pricing.service.js';
@@ -72,8 +74,9 @@ export interface AdminModuleOptions {
  * O console do responsável (`cp-admin`, `ROLE=admin`): as rotas `/v1/admin/...`, o login próprio (e-mail, senha e
  * TOTP, `auth/`), o provedor de identidade do SIEM da Verax (`/sso/...`, `sso/`) e a guarda global que exige a sessão dele em toda requisição. Só este papel carrega o módulo; no
  * `cp-public` e no `cp-worker` as rotas nem existem. Os clientes (lista, detalhe, contrato direto) e os textos legais
- * (Termos, Privacidade e DPA) e as fontes de log do nó do cliente (o estado desejado da sincronização, com a credencial
- * cifrada para o cofre do nó) leem e gravam o Firestore; as operações do provisionamento vão ao cp-worker
+ * (Termos, Privacidade e DPA), as fontes de log do nó do cliente (o estado desejado da sincronização, com a credencial
+ * cifrada para o cofre do nó) e os usuários do cliente (com a senha temporária cifrada do mesmo jeito) leem e gravam o
+ * Firestore; as operações do provisionamento vão ao cp-worker
  * pelo `CONSOLE_WORKER_CLIENT` (`worker-owner-client.ts`), com o token da conta do cp-admin.
  */
 @Module({})
@@ -87,6 +90,7 @@ export class AdminModule {
         AdminFleetController,
         AdminLegalController,
         AdminLogSourcesController,
+        AdminNodeUsersController,
         AdminPricingController,
         AdminSessionController,
         AdminTenantsController,
@@ -104,6 +108,7 @@ export class AdminModule {
         FleetStore,
         AdminLegalService,
         AdminLogSourcesService,
+        AdminNodeUsersService,
         AdminPricingService,
         AdminTenantsService,
         SsoService,

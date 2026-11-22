@@ -1,8 +1,13 @@
 import type {
   BillingMode,
+  CustomerUserStatus,
   Hosting,
   NodeFitProblem,
+  NodeSyncUserCode,
+  NodeUserBlock,
+  NodeUserStatus,
   ProvisioningStepName,
+  TenantRole,
   TenantState,
   TimelineStepStatus,
 } from '@/lib/api-types';
@@ -141,3 +146,62 @@ export function failureHint(code: string | undefined): string | undefined {
   if (code.endsWith('_denied')) return 'Um serviço recusou a credencial ou a permissão.';
   return undefined;
 }
+
+/** Os papéis do cliente, com os nomes que o painel dele mostra (`ROLE_LABELS` do `@verax/shared`). */
+export const ROLE_LABELS: Readonly<Record<TenantRole, string>> = {
+  admin_cliente: 'Administrador',
+  analista_cliente: 'Analista',
+  leitura: 'Somente leitura',
+};
+
+/** Os papéis na ordem do formulário. */
+export const TENANT_ROLES: readonly TenantRole[] = ['admin_cliente', 'analista_cliente', 'leitura'];
+
+/** A situação do pedido de usuário. */
+export const NODE_USER_STATUS_LABELS: Readonly<Record<NodeUserStatus, string>> = {
+  pending: 'Esperando o servidor',
+  created: 'Criado',
+  failed: 'Não criado',
+  expired: 'Vencido',
+};
+
+/** A situação da conta no painel do cliente, quando o nó a criou. */
+export const CUSTOMER_USER_STATUS_LABELS: Readonly<Record<CustomerUserStatus, string>> = {
+  invited: 'Convidada',
+  active: 'Ativa',
+  disabled: 'Desativada',
+};
+
+/** Por que o servidor do cliente não criou o usuário (o código que o nó contou), e o que fazer. */
+export const NODE_USER_CODE_MESSAGES: Readonly<Record<NodeSyncUserCode, string>> = {
+  email_taken: 'Já existe um usuário com esse e-mail no painel do cliente.',
+  plan_limit_reached:
+    'O plano do cliente não tem vaga para mais um usuário: o administrador do cliente desativa alguém, ou o contrato muda.',
+  tenant_plan_missing:
+    'O servidor do cliente está sem o plano gravado: confira a instalação antes de pedir de novo.',
+  expired: 'O pedido venceu antes de o servidor do cliente criar o usuário: peça de novo.',
+  vault_disabled:
+    'O servidor do cliente está sem o cofre de credenciais: não abriu a senha. Confira a instalação e peça de novo.',
+  envelope_unreadable:
+    'O servidor do cliente não conseguiu abrir a senha (a chave do cofre mudou?). Peça de novo depois da próxima sincronização.',
+  tenant_ambiguous:
+    'O banco do servidor do cliente tem mais de um cliente: nada é criado até isso ser resolvido.',
+  users_disabled: 'O cliente desligou a criação de usuários pela Verax neste servidor.',
+  internal_error:
+    'O servidor do cliente falhou ao criar o usuário. Veja o log do worker do nó e peça de novo.',
+};
+
+/** Por que o console não pode pedir usuário agora. */
+export const NODE_USER_BLOCK_MESSAGES: Readonly<Record<NodeUserBlock, string>> = {
+  not_allowed: 'O contrato deste cliente já terminou: não há usuário para criar.',
+  placement_unsupported: 'Cliente da célula compartilhada: os usuários ainda não são criados pelo console.',
+  node_not_synced:
+    'O servidor do cliente ainda não sincronizou com a Verax: o usuário só pode ser pedido depois disso.',
+  node_outdated: 'O servidor do cliente precisa da versão nova para receber usuários.',
+  platform_mismatch:
+    'O servidor do cliente informou outra plataforma que a do contrato: confira a instalação antes de pedir usuários.',
+  vault_disabled:
+    'O servidor do cliente está sem o cofre de credenciais (ou não consegue lê-lo): não há para quem cifrar a senha.',
+  vault_key_invalid:
+    'A chave do cofre que o servidor do cliente informou não confere: nada é cifrado até a próxima sincronização.',
+};
