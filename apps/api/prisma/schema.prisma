@@ -1009,6 +1009,11 @@ model ControlPlaneSyncItem {
   attempts      Int                  @default(0)
   /// A próxima tentativa da mesma revisão; null quando só uma revisão nova tenta de novo.
   nextAttemptAt DateTime?            @db.Timestamptz(3)
+  /// Fonte de log: o SHA-256 do último relato desta fonte que o plano de controle aceitou (200) e quando. O pedido tem
+  /// limite de tamanho (`NODE_SYNC_REQUEST_MAX_BYTES`): vão antes os relatos que mudaram desde o último aceito e, entre
+  /// os outros, os mandados há mais tempo, para os que ficam de fora irem na chamada seguinte.
+  reportedHash  String?              @db.Char(64)
+  reportedAt    DateTime?            @db.Timestamptz(3)
   updatedAt     DateTime             @updatedAt @db.Timestamptz(3)
 
   @@id([kind, itemId])

@@ -2148,7 +2148,12 @@ credencial, em `packages/vault-envelope`. Aqui, só o lado do nó (`apps/api/src
   com cada fonte do console (as contas `origin = control_plane` e os itens de `ControlPlaneSyncItem`: a revisão, o
   resultado, o código da falha, a credencial vigente, só metadados, e a situação da conta). Capacidade anunciada: só
   `log_sources` (os usuários entram depois). Sem seguir redirecionamento, em até 20 s, lendo no máximo 1 MB da resposta,
-  conferida pelo contrato estrito.
+  conferida pelo contrato estrito. O corpo inteiro cabe em `NODE_SYNC_REQUEST_MAX_BYTES` (256 KiB, o limite da rota no
+  `cp-public`): vão antes os relatos que mudaram desde o último aceito (o SHA-256 dele fica no `ControlPlaneSyncItem`)
+  e, entre os outros, os aceitos há mais tempo, para os que ficam de fora irem nas chamadas seguintes. Deixar um relato
+  de fora é seguro: o plano de controle só atualiza o relato das fontes que vieram no pedido.
+- **Credencial colada no painel numa conta do console:** o `PUT` da credencial grava `origin = panel` e a revisão do
+  console vazia; o nó conta de volta `revision: null`, e a revisão já aplicada do console não volta, só uma mais nova.
 - **Cada fonte numa transação** (`apply-source.ts`), no escopo do cliente do nó:
   - criar: a vaga do plano (`lockPlanSeats`/`assertWithinPlan`; sem vaga, `plan_limit_reached`, tentado de novo a cada
     hora), a mesma conta do provedor já cadastrada pelo cliente (`account_exists_panel`; o nó nunca toca numa conta do

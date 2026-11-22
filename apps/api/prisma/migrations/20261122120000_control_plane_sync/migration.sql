@@ -8,7 +8,9 @@
 -- 3. `CloudCredential.origin` e `controlPlaneRevision`: a revisão do console da credencial vigente; a colada no painel
 --    fica sem revisão (CHECK). Vale a mais recente: uma colada no painel fica até o console mandar uma revisão nova.
 -- 4. `ControlPlaneSyncItem`: o resultado da última revisão de cada item do console (o que o nó conta de volta e o que
---    não tenta de novo). Tem `tenantId`, então entra no escopo do cliente, só para leitura (`SYSTEM_WRITTEN_MODELS`).
+--    não tenta de novo) e o último relato de cada fonte que o plano de controle aceitou (o hash e o instante: o pedido
+--    tem limite de tamanho, e os relatos que ficam de fora vão primeiro na chamada seguinte). Tem `tenantId`, então
+--    entra no escopo do cliente, só para leitura (`SYSTEM_WRITTEN_MODELS`).
 -- 5. `ControlPlaneSync`: uma linha só, com a sequência das chamadas (o plano de controle recusa a repetida) e a espera
 --    até a próxima.
 --
@@ -38,6 +40,8 @@ CREATE TABLE "ControlPlaneSyncItem" (
     "code" VARCHAR(64),
     "attempts" INTEGER NOT NULL DEFAULT 0,
     "nextAttemptAt" TIMESTAMPTZ(3),
+    "reportedHash" CHAR(64),
+    "reportedAt" TIMESTAMPTZ(3),
     "updatedAt" TIMESTAMPTZ(3) NOT NULL,
 
     CONSTRAINT "ControlPlaneSyncItem_pkey" PRIMARY KEY ("kind","itemId")
@@ -86,6 +90,11 @@ ALTER TABLE "ControlPlaneSyncItem" ADD CONSTRAINT "ControlPlaneSyncItem_outcome_
   AND ("code" IS NULL OR "code" ~ '^[a-z_]{1,64}$')
 );
 ALTER TABLE "ControlPlaneSyncItem" ADD CONSTRAINT "ControlPlaneSyncItem_attempts_check" CHECK ("attempts" >= 0);
+-- O último relato aceito: o SHA-256 em hexadecimal e o instante, juntos.
+ALTER TABLE "ControlPlaneSyncItem" ADD CONSTRAINT "ControlPlaneSyncItem_reported_check" CHECK (
+  ("reportedHash" IS NULL) = ("reportedAt" IS NULL)
+  AND ("reportedHash" IS NULL OR "reportedHash" ~ '^[0-9a-f]{64}$')
+);
 -- Uma linha só, e a sequência nunca negativa.
 ALTER TABLE "ControlPlaneSync" ADD CONSTRAINT "ControlPlaneSync_singleton_check" CHECK ("id" = 'node');
 ALTER TABLE "ControlPlaneSync" ADD CONSTRAINT "ControlPlaneSync_counters_check" CHECK (

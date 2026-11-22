@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import {
   NODE_SYNC_INTERVAL_SECONDS,
   NODE_SYNC_JITTER_SECONDS,
   NODE_SYNC_MAX_SOURCES,
   NODE_SYNC_POLL_MIN_SECONDS,
   NODE_SYNC_PROTOCOL,
+  NODE_SYNC_REQUEST_MAX_BYTES,
   NODE_SYNC_SOURCE_CODES,
   type NodePlatform,
   type NodeSyncCapability,
@@ -54,6 +56,62 @@ const SYNC_ROW_ID = 'node';
 const MAX_INT = 2_147_483_647;
 const KEY_ID_SUFFIX = /^[A-Za-z0-9_-]{4}$/;
 
+/** Um relato de fonte que pode ir no pedido, com o que o nó guarda do último aceito pelo plano de controle. */
+export interface ReportCandidate {
+  report: NodeSyncSourceReport;
+  /** SHA-256 do JSON do relato. */
+  hash: string;
+  /** O tamanho do JSON do relato, em bytes. */
+  bytes: number;
+  /** Há o item `log_source` onde guardar o último relato aceito. */
+  tracked: boolean;
+  reportedHash: string | null;
+  reportedAt: Date | null;
+}
+
+/** O pedido montado e os relatos que foram nele (para marcar como aceitos depois do 200). */
+interface BuiltRequest {
+  request: NodeSyncRequest;
+  reported: { id: string; hash: string; changed: boolean }[];
+  /** Relatos que ficaram de fora pelo limite de tamanho (vão primeiro nas chamadas seguintes). */
+  omitted: number;
+}
+
+const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
+
+/**
+ * Os relatos que cabem no pedido: o corpo inteiro até `maxBytes` (o limite da rota no `cp-public`, que responde 413
+ * acima dele) e no máximo `NODE_SYNC_MAX_SOURCES`. Vão antes os que mudaram desde o último aceito e, dentro de cada
+ * grupo, os aceitos há mais tempo (o nunca aceito primeiro): os que ficam de fora numa chamada vão na seguinte, em vez
+ * de ficar sempre o mesmo pedaço de fora. Deixar um relato de fora é seguro: o plano de controle só atualiza o relato
+ * das fontes que vieram no pedido, e trata a que não veio como pendente.
+ */
+export function selectReports(
+  candidates: readonly ReportCandidate[],
+  baseBytes: number,
+  maxBytes: number,
+): { selected: ReportCandidate[]; omitted: number } {
+  const changed = (candidate: ReportCandidate) => candidate.hash !== candidate.reportedHash;
+  const ordered = [...candidates].sort(
+    (a, b) =>
+      Number(changed(b)) - Number(changed(a)) ||
+      (a.reportedAt?.getTime() ?? -1) - (b.reportedAt?.getTime() ?? -1) ||
+      a.report.id.localeCompare(b.report.id),
+  );
+  const selected: ReportCandidate[] = [];
+  let total = baseBytes;
+  for (const candidate of ordered) {
+    if (selected.length >= NODE_SYNC_MAX_SOURCES) break;
+    // A vírgula entre os itens: o primeiro não tem.
+    const cost = candidate.bytes + (selected.length === 0 ? 0 : 1);
+    if (total + cost > maxBytes) continue;
+    selected.push(candidate);
+    total += cost;
+  }
+  selected.sort((a, b) => a.report.id.localeCompare(b.report.id));
+  return { selected, omitted: candidates.length - selected.length };
+}
+
 /** A espera da falha `failures` (1, 2, 3...) que passa sozinha: 1, 2, 4... minutos, até 30. */
 export function failureRetryDelayMs(failures: number): number {
   return Math.min(FAILURE_RETRY_MAX_MS, FAILURE_RETRY_BASE_MS * 2 ** Math.max(0, failures - 1));
@@ -94,6 +152,8 @@ export interface ControlPlaneSyncOptions {
    * dividem o banco com outros arquivos, passam os deles.
    */
   tenants?: () => Promise<string[]>;
+  /** O maior corpo do pedido, em bytes (`NODE_SYNC_REQUEST_MAX_BYTES`; os testes usam um menor). */
+  requestMaxBytes?: number;
 }
 
 /** A chave pública corrente do cofre, como o plano de controle a usa para cifrar para este nó. */
@@ -165,8 +225,14 @@ export class ControlPlaneSync {
           await this.schedule({ ok: false, code: 'metadata_unavailable' });
           return report;
         }
-        const request = await this.request(sequence, tenant);
-        const result = await postNodeSync(request, signal, {
+        const built = await this.request(sequence, tenant);
+        if (built.omitted > 0) {
+          this.options.logger.warn(
+            { reported: built.request.sources.length, omitted: built.omitted },
+            'sincronização com o plano de controle: relatos de fora pelo limite do pedido; vão nas chamadas seguintes',
+          );
+        }
+        const result = await postNodeSync(built.request, signal, {
           url: this.options.config.url,
           credential,
           ...(this.options.fetch !== undefined && { fetch: this.options.fetch }),
@@ -187,6 +253,7 @@ export class ControlPlaneSync {
           return report;
         }
         lastResponse = result.response;
+        if (tenant.kind === 'single') await this.markReported(tenant.id, built.reported);
         let changed = 0;
         if (tenant.kind === 'single') {
           for (const source of result.response.sources ?? []) {
@@ -296,10 +363,13 @@ export class ControlPlaneSync {
     return tenant === undefined ? { kind: 'none' } : { kind: 'single', id: tenant };
   }
 
-  /** O pedido inteiro, conferido pelo contrato antes de sair (`postNodeSync`). */
-  async request(sequence: number, tenant: NodeTenant): Promise<NodeSyncRequest> {
+  /**
+   * O pedido inteiro (conferido pelo contrato antes de sair, `postNodeSync`), com os relatos que cabem no limite de
+   * tamanho do corpo (`selectReports`).
+   */
+  private async request(sequence: number, tenant: NodeTenant): Promise<BuiltRequest> {
     const { config, platform, node } = this.options;
-    return {
+    const base: NodeSyncRequest = {
       protocol: NODE_SYNC_PROTOCOL,
       sequence,
       sentAt: this.now().toISOString(),
@@ -315,16 +385,57 @@ export class ControlPlaneSync {
         audience: node.audience,
         error: tenant.kind === 'ambiguous' ? 'tenant_ambiguous' : null,
       },
-      sources: tenant.kind === 'single' ? await this.sourceReports(tenant.id) : [],
+      sources: [],
       users: [],
     };
+    if (tenant.kind !== 'single') return { request: base, reported: [], omitted: 0 };
+    const candidates = await this.sourceReports(tenant.id);
+    const { selected, omitted } = selectReports(
+      candidates,
+      jsonBytes(base),
+      this.options.requestMaxBytes ?? NODE_SYNC_REQUEST_MAX_BYTES,
+    );
+    return {
+      request: { ...base, sources: selected.map((candidate) => candidate.report) },
+      reported: selected
+        .filter((candidate) => candidate.tracked)
+        .map((candidate) => ({
+          id: candidate.report.id,
+          hash: candidate.hash,
+          changed: candidate.hash !== candidate.reportedHash,
+        })),
+      omitted,
+    };
+  }
+
+  /**
+   * Os relatos que o plano de controle aceitou (200): o hash e o instante nos que mudaram, um a um; só o instante nos
+   * outros, de uma vez. Só o item da fonte do cliente do nó.
+   */
+  private async markReported(tenantId: string, reported: BuiltRequest['reported']): Promise<void> {
+    if (reported.length === 0) return;
+    const now = this.now();
+    const changed = reported.filter((item) => item.changed);
+    const unchanged = reported.filter((item) => !item.changed).map((item) => item.id);
+    await this.prisma.$transaction([
+      this.prisma.controlPlaneSyncItem.updateMany({
+        where: { kind: 'log_source', tenantId, itemId: { in: unchanged }, reportedHash: { not: null } },
+        data: { reportedAt: now },
+      }),
+      ...changed.map((item) =>
+        this.prisma.controlPlaneSyncItem.updateMany({
+          where: { kind: 'log_source', tenantId, itemId: item.id },
+          data: { reportedHash: item.hash, reportedAt: now },
+        }),
+      ),
+    ]);
   }
 
   /**
    * O que aconteceu com cada fonte do console: as contas `control_plane` (a situação delas) e os resultados de
    * `ControlPlaneSyncItem` (a última revisão processada, o código da falha, a credencial). Só o cliente do nó.
    */
-  private async sourceReports(tenantId: string): Promise<NodeSyncSourceReport[]> {
+  private async sourceReports(tenantId: string): Promise<ReportCandidate[]> {
     const db = scopeToTenant(this.prisma, tenantId);
     const [accounts, items] = await Promise.all([
       db.cloudAccount.findMany({ where: { origin: 'control_plane' }, select: accountSelect }),
@@ -354,7 +465,7 @@ export class ControlPlaneSync {
       ).map((row) => [row.cloudAccountId, row]),
     );
     const ids = [...new Set([...sourceItems.keys(), ...rows.keys()])].sort();
-    const reports: NodeSyncSourceReport[] = [];
+    const reports: ReportCandidate[] = [];
     for (const id of ids) {
       const item = sourceItems.get(id);
       const row = rows.get(id);
@@ -398,7 +509,7 @@ export class ControlPlaneSync {
           ...metadata,
         };
       }
-      reports.push({
+      const sourceReport: NodeSyncSourceReport = {
         id,
         revision,
         outcome,
@@ -417,8 +528,16 @@ export class ControlPlaneSync {
                 lastCollectedAt: account.lastCollectedAt,
                 checkRequestedAt: account.checkRequestedAt,
               },
+      };
+      const json = JSON.stringify(sourceReport);
+      reports.push({
+        report: sourceReport,
+        hash: createHash('sha256').update(json).digest('hex'),
+        bytes: Buffer.byteLength(json, 'utf8'),
+        tracked: item !== undefined,
+        reportedHash: item?.reportedHash ?? null,
+        reportedAt: item?.reportedAt ?? null,
       });
-      if (reports.length >= NODE_SYNC_MAX_SOURCES) break;
     }
     return reports;
   }

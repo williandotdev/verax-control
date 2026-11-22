@@ -11,7 +11,10 @@ import {
   nodeSyncRequestSchema,
   resolvePlan,
 } from '@verax/shared';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
+import { CloudflareTokenCheck } from '../src/cloudflare/cloudflare-token-check.js';
 import type { SyncLogger } from '../src/control-plane-sync/apply-source.js';
 import {
   ControlPlaneSync,
@@ -36,6 +39,8 @@ import {
   type VaultSecret,
 } from '../src/credentials/credential-vault.js';
 import { fixedTenantPlans, type TenantPlans } from '../src/plan/tenant-plan.js';
+import { createSignedInUser, withCsrf } from './support/auth-helpers.js';
+import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 
 /** Versão da chave do nó neste arquivo, fora das dos outros arquivos (900 a 902 e 910), para a recifragem não se cruzar. */
 const KEY_VERSION = 903;
@@ -56,6 +61,8 @@ const awsKeyId = () => `AKIA${Array.from(randomBytes(16), (byte) => BASE32.charA
 interface Received {
   headers: IncomingHttpHeaders;
   body: NodeSyncRequest;
+  /** O tamanho do corpo que chegou, em bytes. */
+  bytes: number;
 }
 
 interface Reply {
@@ -82,13 +89,14 @@ class FakeControlPlane {
       const chunks: Buffer[] = [];
       request.on('data', (chunk: Buffer) => chunks.push(chunk));
       request.on('end', () => {
-        const parsed = nodeSyncRequestSchema.safeParse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        const raw = Buffer.concat(chunks);
+        const parsed = nodeSyncRequestSchema.safeParse(JSON.parse(raw.toString('utf8')));
         if (!parsed.success) {
           this.invalid += 1;
           response.writeHead(400).end('{"error":"invalid_request"}');
           return;
         }
-        this.received.push({ headers: request.headers, body: parsed.data });
+        this.received.push({ headers: request.headers, body: parsed.data, bytes: raw.byteLength });
         const reply = this.replies.shift() ?? {
           status: 200,
           body: {
@@ -162,18 +170,53 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
   let clock: Date;
   let checks: FakeChecks;
   let logger: RecordingLogger;
+  /** A API do mesmo nó (a mesma chave do cofre), para colar a credencial no painel pelo caminho de verdade. */
+  let app: NestExpressApplication;
 
   beforeAll(async () => {
     url = await cp.start();
-    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 3072 });
+    const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 3072 });
     const pem = Buffer.from(privateKey.export({ type: 'pkcs8', format: 'pem' })).toString('base64');
     keyring = parsePrivateKeys(`${KEY_VERSION}:${pem}`, KEY_VERSION);
+    app = await createApp({
+      vault: {
+        publicKey: Buffer.from(publicKey.export({ type: 'spki', format: 'pem' })).toString('base64'),
+        version: KEY_VERSION,
+      },
+      // O painel confere o token no Cloudflare; aqui, a conferência aceita e devolve o fim do ID `pain`.
+      overrideProviders: [
+        {
+          provide: CloudflareTokenCheck,
+          useValue: {
+            check: (): Promise<CheckedCredential> =>
+              Promise.resolve({ keyIdSuffix: 'pain', issuedAt: null, expiresAt: null }),
+          },
+        },
+      ],
+    });
   });
 
   afterAll(async () => {
+    await prisma.cloudCredential.deleteMany({ where: { keyVersion: KEY_VERSION } });
+    await app.close();
     await cp.stop();
     await prisma.$disconnect();
   });
+
+  /** O administrador do cliente cola um token do Cloudflare no painel (`PUT /v1/cloud-accounts/:id/credential`). */
+  async function pasteInPanel(accountId: string, tenantId = tenantA): Promise<string> {
+    const user = await createSignedInUser(app, { role: 'admin_cliente', tenantId });
+    const { cookie, token: csrf } = await withCsrf(app, user.cookie);
+    const value = tokenValue();
+    await request(app.getHttpServer())
+      .put(`/v1/cloud-accounts/${accountId}/credential`)
+      .set('Cookie', cookie)
+      .set('Origin', TEST_WEB_ORIGIN)
+      .set('X-CSRF-Token', csrf)
+      .send({ kind: 'cloudflare_api_token', token: value })
+      .expect(200);
+    return value;
+  }
 
   beforeEach(async () => {
     cp.reset();
@@ -656,18 +699,17 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
     const source = withCredential(cloudflareSource());
     cp.desired = [source];
     await run();
-    // O cliente cola outra no painel (como o PUT da credencial grava).
-    await prisma.cloudCredential.update({
-      where: { cloudAccountId: source.id },
-      data: { origin: 'panel', controlPlaneRevision: null, ciphertext: 'v903:cGFpbmVs', keyIdSuffix: 'pain' },
-    });
+    // O cliente cola outra no painel, pelo PUT da credencial de verdade.
+    await pasteInPanel(source.id);
+    const pasted = (await accountOf(source.id))?.credential;
+    expect(pasted).toMatchObject({ origin: 'panel', controlPlaneRevision: null });
+    expect(pasted?.ciphertext).not.toBe(source.credential?.envelope);
 
+    // O console ainda manda a revisão 1 (o segredo dele não foi apagado): o nó não a aplica de novo.
     clock = new Date(START.getTime() + 10 * MINUTE);
     await run();
-    expect((await accountOf(source.id))?.credential).toMatchObject({
-      origin: 'panel',
-      ciphertext: 'v903:cGFpbmVs',
-    });
+    expect((await accountOf(source.id))?.credential).toEqual(pasted);
+    expect(checks.calls).toBe(1);
     expect(cp.last().sources[0]?.credential).toMatchObject({
       revision: null,
       outcome: 'applied',
@@ -683,6 +725,43 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
       controlPlaneRevision: 2,
       ciphertext: newer.credential?.envelope,
       keyVersion: KEY_VERSION,
+    });
+  });
+
+  it('trocada no painel depois de uma revisão do console, a conta de volta diz revisão null; a revisão seguinte do console vale', async () => {
+    const source = withCredential(cloudflareSource(), 2);
+    cp.desired = [source];
+    await run();
+    expect(cp.last().sources[0]?.credential).toMatchObject({
+      revision: 2,
+      outcome: 'applied',
+      keyIdSuffix: 'c0de',
+    });
+
+    await pasteInPanel(source.id);
+    clock = new Date(START.getTime() + 10 * MINUTE);
+    await run();
+    // O relato de agora: a vigente é a do cliente, sem revisão do console (nunca a revisão 2, que não está mais lá).
+    expect(cp.last().sources[0]?.credential).toMatchObject({
+      revision: null,
+      outcome: 'applied',
+      keyIdSuffix: 'pain',
+    });
+
+    clock = new Date(START.getTime() + 20 * MINUTE);
+    const newer = withCredential({ ...source, credential: null }, 3);
+    cp.desired = [newer];
+    await run();
+    expect((await accountOf(source.id))?.credential).toEqual({
+      origin: 'control_plane',
+      controlPlaneRevision: 3,
+      ciphertext: newer.credential?.envelope,
+      keyVersion: KEY_VERSION,
+    });
+    expect(cp.last().sources[0]?.credential).toMatchObject({
+      revision: 3,
+      outcome: 'applied',
+      keyIdSuffix: 'c0de',
     });
   });
 
@@ -813,6 +892,48 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
     });
     expect(await run()).toMatchObject({ error: 'bad_request' });
     expect(logger.lines.some((line) => JSON.stringify(line.fields).includes('clock_skew'))).toBe(true);
+  });
+
+  it('o pedido cabe no limite de tamanho: os relatos que ficam de fora vão nas chamadas seguintes, os que mudaram antes', async () => {
+    const sources = Array.from({ length: 30 }, () => cloudflareSource({ zones: [zone(), zone(), zone()] }));
+    cp.desired = sources;
+    // O limite: o pedido sem relato (o primeiro, antes de aplicar) e mais uns 4 KB, onde cabem uns poucos relatos.
+    await run(syncFor({ requestMaxBytes: 1_000_000 }));
+    const empty = cp.received[0];
+    expect(empty?.body.sources).toEqual([]);
+    const limit = (empty?.bytes ?? 0) + 4_000;
+    await prisma.controlPlaneSync.deleteMany({});
+    cp.received.length = 0;
+    await prisma.controlPlaneSyncItem.updateMany({
+      where: { tenantId: tenantA },
+      data: { reportedHash: null, reportedAt: null },
+    });
+
+    const seen = new Set<string>();
+    const sync = () => syncFor({ requestMaxBytes: limit });
+    for (let round = 1; round <= 10 && seen.size < sources.length; round += 1) {
+      clock = new Date(START.getTime() + round * 10 * MINUTE);
+      await run(sync());
+      const sent = cp.last();
+      expect(cp.received.at(-1)?.bytes).toBeLessThanOrEqual(limit);
+      expect(sent.sources.length).toBeGreaterThan(0);
+      expect(sent.sources.length).toBeLessThan(sources.length);
+      for (const report of sent.sources) seen.add(report.id);
+    }
+    expect(cp.invalid).toBe(0);
+    // Todos foram, girando, e nenhum pedido passou do limite.
+    expect([...seen].sort()).toEqual(sources.map((source) => source.id).sort());
+    expect(logger.lines.some((line) => line.message.includes('relatos de fora pelo limite'))).toBe(true);
+
+    // Um relato que mudou vai na chamada seguinte, antes dos que não mudaram.
+    const [first] = sources;
+    await prisma.cloudAccount.update({ where: { id: first?.id }, data: { connection: 'connected' } });
+    clock = new Date(clock.getTime() + 10 * MINUTE);
+    await run(sync());
+    expect(cp.last().sources.map((report) => report.id)).toContain(first?.id);
+    expect(cp.last().sources.find((report) => report.id === first?.id)?.account?.connection).toBe(
+      'connected',
+    );
   });
 
   it('nenhum texto do token, da chave do nó ou do envelope vai para o log', async () => {
