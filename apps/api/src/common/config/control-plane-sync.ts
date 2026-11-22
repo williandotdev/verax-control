@@ -16,7 +16,10 @@ import { isHttpsOrigin } from './sso.js';
  * - na VM própria do cliente (`NODE_PLATFORM=vm`), sem identidade do Google, a chave do nó que o registro deixou no
  *   cofre local, num arquivo do tmpfs montado só leitura no worker (`CONTROL_PLANE_NODE_KEY_FILE`). A chave nunca vem
  *   pelo ambiente, que o Docker grava no disco na configuração do contêiner.
- * - `VERAX_NODE_COMMIT`, o commit instalado (o nó o informa a cada chamada).
+ * - `VERAX_NODE_COMMIT`, o commit instalado (o nó o informa a cada chamada);
+ * - `CONTROL_PLANE_USERS` (padrão true): os usuários do cliente que a Verax pede no console. Com false (o interruptor do
+ *   cliente no `node.conf`), o nó continua anunciando a capacidade, mas recusa cada pedido com `users_disabled`, para
+ *   o console mostrar o motivo.
  */
 
 /** A origem padrão: o site `conta` do Firebase Hosting, que repassa ao `cp-public` (a mesma do `verax-install.sh`). */
@@ -68,16 +71,20 @@ export interface ControlPlaneSyncConfig {
   /** O commit instalado (`VERAX_NODE_COMMIT`). */
   commit: string;
   credential: ControlPlaneCredential;
+  /** Cria os usuários pedidos no console (`CONTROL_PLANE_USERS`); desligado, recusa cada pedido com `users_disabled`. */
+  users: boolean;
 }
 
-const enabledFlag = z
-  .enum(['true', 'false'], { error: 'use true ou false' })
-  .default('false')
-  .transform((value) => value === 'true');
+const flag = (fallback: 'true' | 'false') =>
+  z
+    .enum(['true', 'false'], { error: 'use true ou false' })
+    .default(fallback)
+    .transform((value) => value === 'true');
 
 /** As variáveis da sincronização no worker, como o `start.sh` as escreve no `worker.env`. */
 export const controlPlaneSyncEnvShape = {
-  CONTROL_PLANE_SYNC: enabledFlag,
+  CONTROL_PLANE_SYNC: flag('false'),
+  CONTROL_PLANE_USERS: flag('true'),
   CONTROL_PLANE_ORIGIN: z
     .string()
     .refine(isHttpsOrigin, {
@@ -93,6 +100,7 @@ export const controlPlaneSyncEnvShape = {
 
 interface ControlPlaneSyncEnv {
   CONTROL_PLANE_SYNC: boolean;
+  CONTROL_PLANE_USERS: boolean;
   CONTROL_PLANE_ORIGIN: string;
   CONTROL_PLANE_NODE_KEY_FILE?: string | undefined;
   NODE_MODE: NodeMode;
@@ -190,5 +198,6 @@ export function controlPlaneSyncConfigOf(
     url: `${env.CONTROL_PLANE_ORIGIN}${NODE_SYNC_PATH}`,
     commit: env.VERAX_NODE_COMMIT,
     credential,
+    users: env.CONTROL_PLANE_USERS,
   };
 }

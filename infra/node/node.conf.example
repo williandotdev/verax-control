@@ -93,6 +93,11 @@ CUSTOMER_MODE=false
 # A origem da API pública do plano de controle, para a sincronização (opcional; só a origem https, sem caminho). Sem a
 # linha, vale a de produção.
 # CONTROL_PLANE_ORIGIN=https://conta.veraxsistemas.com.br
+# Os usuários do cliente que a Verax pede no console (a sincronização traz o pedido com a senha temporária cifrada para
+# o cofre do nó; a conta nasce com troca de senha e MFA no primeiro acesso, e a criação aparece na auditoria do painel
+# como "Verax (administrativo)"). Sem a linha, vale true. Com false, o interruptor do cliente: o nó recusa cada pedido
+# (o console mostra "users_disabled") e não cria conta nenhuma. Outro valor vale como false, com aviso na partida.
+# CONTROL_PLANE_USERS=false
 # Célula compartilhada (NODE_MODE=cell; sem a linha, dedicated): o nó atende vários clientes da Plataforma, cada um no
 # próprio endereço (`api-<subdomínio>.<CELL_DOMAIN>`); a API amarra cada requisição ao cliente do endereço, e a equipe
 # da Verax só entra pelo endereço `api-<CELL_STAFF_SLUG>`. Só no perfil standard, sem o PLAN e os ajustes (o plano é de

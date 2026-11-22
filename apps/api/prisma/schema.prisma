@@ -170,6 +170,9 @@ model User {
   mustChangePassword         Boolean                 @default(false)
   /// Validade da senha temporária: depois disso, o login com ela não abre sessão.
   temporaryPasswordExpiresAt DateTime?               @db.Timestamptz(3)
+  /// Conta pedida pela Verax no console (sincronização com o plano de controle): o id do pedido (ULID), que o worker
+  /// grava ao criar a conta. Torna a criação idempotente e é o que o nó conta de volta; null nas outras contas.
+  controlPlaneRequestId      String?                 @unique @db.VarChar(26)
   createdAt                  DateTime                @default(now()) @db.Timestamptz(3)
   updatedAt                  DateTime                @updatedAt @db.Timestamptz(3)
   sessions                   Session[]

@@ -137,6 +137,20 @@ describe('provisionamento de contas na transação da requisição', () => {
     }
   });
 
+  it('os IDs do worker (`defaultAuthIds`) são os do gerador padrão do Better Auth: a configuração não define outro', async () => {
+    const context = await app.get<Auth>(AUTH).$context;
+    const advanced = context.options.advanced as
+      { generateId?: unknown; database?: { generateId?: unknown } } | undefined;
+    // Com um gerador na configuração, o worker (sem a instância) passaria a gerar IDs de outro jeito: veja
+    // `defaultAuthIds` em user-provisioning.ts.
+    expect(advanced?.generateId).toBeUndefined();
+    expect(advanced?.database?.generateId).toBeUndefined();
+    for (const model of ['user', 'account'] as const) {
+      expect(context.generateId({ model })).toMatch(/^[A-Za-z0-9]{32}$/);
+      expect(actual.defaultAuthIds.generateId(model)).toMatch(/^[A-Za-z0-9]{32}$/);
+    }
+  });
+
   describe('e-mail confirmado por outra requisição entre a checagem e a gravação', () => {
     it('POST /users responde 409 com a mesma mensagem, sem conta pela metade', async () => {
       const address = email();

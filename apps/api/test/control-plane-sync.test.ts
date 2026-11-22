@@ -241,6 +241,7 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
         origin: 'https://conta.exemplo.com.br',
         url,
         commit: COMMIT,
+        users: true,
         credential:
           platform === 'vm'
             ? { kind: 'node_key', key: new ControlPlaneNodeKey(NODE_KEY) }
@@ -341,7 +342,7 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
     expect(first?.headers.authorization).toBe('Bearer cabecalho.corpo.assinatura');
     expect(first?.body).toMatchObject({
       protocol: 1,
-      capabilities: ['log_sources'],
+      capabilities: ['log_sources', 'users'],
       users: [],
       sources: [],
       node: {

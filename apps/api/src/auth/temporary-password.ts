@@ -4,7 +4,9 @@ import { hashPassword } from 'better-auth/crypto';
 import { requestContext } from '../common/context/request-context.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from './auth.constants.js';
 import type { Auth } from './auth.factory.js';
+import { type AuthIds, authIds } from './user-provisioning.js';
 
 /**
  * Senha temporária (no lugar do convite por e-mail): o administrador cria a conta ou gera uma senha nova, ela aparece
@@ -52,43 +54,74 @@ export async function setTemporaryPassword(
   user: { id: string; email: string },
   now: Date = new Date(),
 ): Promise<TemporaryPassword> {
-  const password = generateTemporaryPassword();
+  const prepared = await prepareTemporaryPassword(await authIds(auth), { now });
+  const requestTransaction = requestContext.getStore()?.tx;
+  if (requestTransaction) await writeTemporaryPassword(requestTransaction, user, prepared);
+  else await prisma.$transaction((tx) => writeTemporaryPassword(tx, user, prepared));
+  return { temporaryPassword: prepared.password, expiresAt: prepared.expiresAt.toISOString() };
+}
+
+/** A senha temporária pronta para gravar: o texto (mostrado uma vez), o hash, a validade e o ID da conta. */
+export interface PreparedTemporaryPassword {
+  password: string;
+  hash: string;
+  expiresAt: Date;
+  /** O ID da conta de senha, se ela ainda não existir (conta do antigo convite, ou recém-criada sem senha). */
+  accountId: string;
+}
+
+/**
+ * Prepara a senha temporária, fora da transação (o hash é lento de propósito): a gerada aqui, com validade de
+ * `TEMPORARY_PASSWORD_HOURS`, ou a dada (a do pedido do console, que o worker abriu do envelope) com a validade dada.
+ */
+export async function prepareTemporaryPassword(
+  ids: AuthIds,
+  options: { now?: Date; password?: string; expiresAt?: Date } = {},
+): Promise<PreparedTemporaryPassword> {
+  const preset = options.password;
+  if (preset !== undefined && (preset.length < PASSWORD_MIN_LENGTH || preset.length > PASSWORD_MAX_LENGTH)) {
+    throw new Error(`A senha precisa ter entre ${PASSWORD_MIN_LENGTH} e ${PASSWORD_MAX_LENGTH} caracteres`);
+  }
+  const password = preset ?? generateTemporaryPassword();
   // Hasher padrão da biblioteca (scrypt), o mesmo que o login confere.
   const hash = await hashPassword(password);
-  const context = await auth.$context;
-  const accountId = context.generateId({ model: 'account' });
-  if (accountId === false) throw new Error('O Better Auth precisa gerar os IDs das contas.');
-  const expiresAt = temporaryPasswordExpiry(now);
+  const accountId = ids.generateId('account');
+  const expiresAt = options.expiresAt ?? temporaryPasswordExpiry(options.now);
+  return { password, hash, expiresAt, accountId };
+}
 
-  const apply = async (db: Prisma.TransactionClient): Promise<void> => {
-    // Primeiro a linha do usuário: a trava serializa duas gerações simultâneas para a mesma conta, e a segunda já
-    // encontra a conta de senha criada pela primeira (sem duas contas `credential`).
-    await db.user.update({
-      where: { id: user.id },
-      data: { mustChangePassword: true, temporaryPasswordExpiresAt: expiresAt },
+/**
+ * Grava a senha temporária preparada numa transação já aberta (o que `setTemporaryPassword` descreve): o caminho dele e
+ * o do worker, que cria a conta pedida pela Verax no console (`control-plane-sync/apply-user.ts`).
+ */
+export async function writeTemporaryPassword(
+  db: Prisma.TransactionClient,
+  user: { id: string; email: string },
+  prepared: PreparedTemporaryPassword,
+): Promise<void> {
+  // Primeiro a linha do usuário: a trava serializa duas gerações simultâneas para a mesma conta, e a segunda já
+  // encontra a conta de senha criada pela primeira (sem duas contas `credential`).
+  await db.user.update({
+    where: { id: user.id },
+    data: { mustChangePassword: true, temporaryPasswordExpiresAt: prepared.expiresAt },
+  });
+  // Conta de senha (provider `credential`): troca o hash, ou cria a conta se ainda não houver (antigo convite).
+  const updated = await db.account.updateMany({
+    where: { userId: user.id, providerId: 'credential' },
+    data: { password: prepared.hash },
+  });
+  if (updated.count === 0) {
+    await db.account.create({
+      data: {
+        id: prepared.accountId,
+        userId: user.id,
+        providerId: 'credential',
+        accountId: user.id,
+        password: prepared.hash,
+      },
     });
-    // Conta de senha (provider `credential`): troca o hash, ou cria a conta se ainda não houver (antigo convite).
-    const updated = await db.account.updateMany({
-      where: { userId: user.id, providerId: 'credential' },
-      data: { password: hash },
-    });
-    if (updated.count === 0) {
-      await db.account.create({
-        data: {
-          id: accountId,
-          userId: user.id,
-          providerId: 'credential',
-          accountId: user.id,
-          password: hash,
-        },
-      });
-    }
-    await db.user.updateMany({ where: { id: user.id, status: 'invited' }, data: { status: 'active' } });
-    await db.session.deleteMany({ where: { userId: user.id } });
-    await db.loginAttempt.deleteMany({ where: { email: user.email } });
-  };
-  const requestTransaction = requestContext.getStore()?.tx;
-  if (requestTransaction) await apply(requestTransaction);
-  else await prisma.$transaction(apply);
-  return { temporaryPassword: password, expiresAt: expiresAt.toISOString() };
+  }
+  await db.user.updateMany({ where: { id: user.id, status: 'invited' }, data: { status: 'active' } });
+  await db.session.deleteMany({ where: { userId: user.id } });
+  await db.loginAttempt.deleteMany({ where: { email: user.email } });
 }

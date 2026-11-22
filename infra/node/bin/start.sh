@@ -874,6 +874,18 @@ render() {
           "o worker usa a origem padrão do plano de controle." >&2
       fi
     fi
+    # Usuários pedidos pela Verax no console: ligados por padrão; CONTROL_PLANE_USERS=false no node.conf é o interruptor
+    # do cliente (o worker recusa cada pedido com users_disabled). Outro valor desliga também, com o aviso: quem mexeu
+    # na linha queria mudar alguma coisa, e o lado seguro é não criar contas.
+    case ${CONTROL_PLANE_USERS:-true} in
+      true) ;;
+      false) control_plane+=(CONTROL_PLANE_USERS=false) ;;
+      *)
+        echo "AVISO: CONTROL_PLANE_USERS fora do formato em /etc/verax/node.conf (true ou false): o nó recusa os" \
+          "usuários pedidos pela Verax no console até a linha ser corrigida." >&2
+        control_plane+=(CONTROL_PLANE_USERS=false)
+        ;;
+    esac
     if vm; then
       if write_node_key; then
         control_plane+=("CONTROL_PLANE_NODE_KEY_FILE=$CONTROL_PLANE_KEY_MOUNT")
