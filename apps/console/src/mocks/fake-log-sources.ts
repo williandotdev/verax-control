@@ -489,7 +489,29 @@ function overviewOf(state: FakeLogSourcesState, tenant: TenantDetail, now: Date)
   };
 }
 
-const AWS_REGION = /^[a-z]{2}(?:-(?:gov|iso|isob|isoe|isof))?-[a-z]{1,16}-\d$/;
+const PARTITION_QUALIFIERS = new Set(['gov', 'iso', 'isob', 'isoe', 'isof']);
+
+const isLower = (part: string): boolean => [...part].every((char) => char >= 'a' && char <= 'z');
+
+/** Região da AWS (`sa-east-1`, `us-gov-west-1`), conferida por partes como no `isAwsRegion` do shared. */
+function isAwsRegion(name: string): boolean {
+  const parts = name.split('-');
+  if (parts.length !== 3 && parts.length !== 4) return false;
+  const [country = '', ...rest] = parts;
+  const [area = '', number = ''] = rest.slice(-2);
+  const qualifierOk = parts.length === 3 || PARTITION_QUALIFIERS.has(rest[0] ?? '');
+  return (
+    country.length === 2 &&
+    isLower(country) &&
+    qualifierOk &&
+    area.length >= 1 &&
+    area.length <= 16 &&
+    isLower(area) &&
+    number.length === 1 &&
+    number >= '0' &&
+    number <= '9'
+  );
+}
 
 /** Uma amostra das regras de `cloudAccountCreateSchema` (o ID da conta de cada provedor e as regiões). */
 function specIssues(spec: unknown): ValidationIssue[] {
@@ -505,7 +527,7 @@ function specIssues(spec: unknown): ValidationIssue[] {
         issues.push({ path: 'spec.regions', message: 'informe ao menos uma região' });
       } else {
         regions.forEach((region: unknown, index) => {
-          if (typeof region !== 'string' || !AWS_REGION.test(region)) {
+          if (typeof region !== 'string' || !isAwsRegion(region)) {
             issues.push({ path: `spec.regions.${index}`, message: 'região AWS inválida' });
           }
         });
