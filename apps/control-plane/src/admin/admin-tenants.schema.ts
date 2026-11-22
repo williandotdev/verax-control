@@ -416,6 +416,22 @@ export interface EnrollmentCodeIssued {
   step?: string;
 }
 
+/**
+ * `POST /v1/admin/tenants/:id/reveal-access` `{confirmSlug}`: a revelação única da senha inicial pelo responsável, que
+ * a copia e manda ao cliente. É **a** revelação (a mesma da página de status e do link do e-mail): marca
+ * `access.passwordRevealedAt`, a versão do `admin-bootstrap` é destruída em seguida, e o link do cliente deixa de valer.
+ * A resposta sai uma vez, com `Cache-Control: private, no-store`; a senha nunca vai à auditoria nem ao log.
+ */
+export const revealAccessRequestSchema = z.strictObject({ confirmSlug });
+
+export interface AccessRevealed {
+  panelUrl: string;
+  adminEmail: string;
+  password: string;
+  /** Até quando a senha temporária vale (ISO); depois, só a renovação do runbook de onboarding (§7). */
+  passwordExpiresAt: string;
+}
+
 /** `POST /v1/admin/tenants/:id/<operação>`: o que o cp-worker fez. */
 export type TenantActionResult =
   | { action: 'start' | 'resume'; runId: string; step: string }

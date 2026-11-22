@@ -2008,7 +2008,7 @@ tenant (`lock{owner, expiresAt}`, 20 min renovados; vencida, é tomada), que os 
 | `provisioning`                | `invoice.paid` do 1.º ciclo, `checkout.session.async_payment_succeeded` ou, no contrato direto, o `provision` do responsável                                               | Enfileira o `preflight`; 10 passos idempotentes, um por task                                             |
 | `provisioning_failed`         | Um passo esgotou as tentativas ou falhou sem repetição (`provisioning_disabled`, `ready_timeout`, `node_error`)                                                            | Alerta à Verax; o site diz "estamos finalizando"; `resume` pelo responsável retoma do passo registrado   |
 | `waiting_customer_install`    | O cadastro de um contrato direto com o ambiente na VM do cliente (`hosting = customer`), direto da criação                                                                 | Nada roda na Verax até o primeiro código de instalação, que leva a `provisioning` (a sequência reduzida) |
-| `waiting_customer_connection` | Passo `access.ready`                                                                                                                                                       | E-mail "ambiente pronto" com o link da página de status; a senha é revelada ali, uma vez                 |
+| `waiting_customer_connection` | Passo `access.ready`                                                                                                                                                       | E-mail "ambiente pronto" com o link da página de status; a senha é revelada ali (ou no console), uma vez |
 | `active`                      | O `tick` lê no nó `verax/accounts-connected >= 1`                                                                                                                          | Monitoramento normal                                                                                     |
 | `past_due`                    | `invoice.payment_failed` numa renovação                                                                                                                                    | Carência de 7 dias (relógio próprio: o Smart Retries não cobre boleto); e-mail com o Portal; nó no ar    |
 | `suspended`                   | Assinatura `unpaid`, carência vencida (`tick`), disputa ou alerta de fraude (decisão humana); no contrato direto, só o responsável                                         | VM parada (`node.stop`); disco e snapshots ficam; `invoice.paid` (ou o responsável) reativa e liga a VM  |
@@ -2047,8 +2047,23 @@ revealAvailable, boletoUrl?}`. O passo e a estimativa só em `provisioning`; os 
   no `X-Serverless-Authorization`, onde o Cloud Run a remove depois de conferir), o emissor, `aud = WORKER_URL`, o prazo
   e o e-mail por rota. O token do `cp-public` (`PUBLIC_SA_EMAIL`) só vale na revelação; o da cp-invoker e o do
   responsável, só nos passos (`POST /internal/steps/<passo>`); o do `cp-admin` (`ADMIN_SA_EMAIL`), só nas operações do
-  responsável, com quem agiu no corpo (seção "Ciclo de vida depois da venda"). A chamada do `cp-public` sai pela internet, então a revelação depende da decisão
+  responsável, com quem agiu no corpo (seção "Ciclo de vida depois da venda"), entre elas a revelação pelo console
+  (`/internal/tenants/:id/reveal-access`, item seguinte). A chamada do `cp-public` sai pela internet, então a revelação depende da decisão
   sobre a entrada do `cp-worker` no GUIA ("Revelação da senha e a entrada do cp-worker"); até lá, ela responde 503.
+- **Revelação pelo responsável, no console (desde 22/11/2026):** o responsável pode ver a senha uma vez para copiar
+  e mandar ao cliente, na página do cliente (`/clientes/:id`, bloco "Acesso do administrador", botão "Mostrar senha
+  inicial…", só em `waiting_customer_connection` sem revelação). É **a** revelação única, não uma cópia dela: o console
+  chama `POST /v1/admin/tenants/:id/reveal-access` `{confirmSlug}` (o subdomínio digitado, o limite das operações do
+  responsável e a auditoria `tenant.console_request` sem a senha), e o `cp-admin` chama
+  `POST <WORKER_URL>/internal/tenants/:id/reveal-access` `{confirmSlug, actor}` com o token da conta dele (só
+  `ADMIN_SA_EMAIL`, com um responsável em `actor`, ou um responsável direto; nem a cp-invoker nem o `cp-public`). No
+  `cp-worker` a transação que marca confere o subdomínio (400 `confirmation_mismatch`, nada marcado), o cliente
+  (existente, não excluído, sem revelação, em espera) e grava `access.passwordRevealedAt` com a auditoria
+  `access.revealed` de quem agiu (`owner:<e-mail>`, `via: owner`); os passos (2) a (4) são os mesmos da revelação do
+  cliente (`RevealService.deliver`), e o desfazer também. Depois dela, o cookie da página de status e o link do e-mail
+  respondem 409 `already_revealed`, e a do cliente, antes, faz o mesmo com a do responsável. A senha passa pelo
+  `cp-admin` na máscara do logger, volta ao navegador com `Cache-Control: private, no-store`, e o console a guarda só no
+  estado da tela (fora do cache das consultas), até fechar.
 - **Plano B por e-mail:** 48 h depois de o cliente entrar em `waiting_customer_connection` sem ver a senha (e antes das
   72 h em que ela vence), o `tick` do CP-11 chama `RevealEmailService.dispatchDue`, que enfileira o passo
   `access.reveal_email`; o passo cria um link de uso único (`statusTokens` do tipo `email_reveal`, 24 h), manda o

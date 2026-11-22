@@ -21,6 +21,7 @@ import {
   workerFailureMessage,
 } from './labels';
 import { useTenant } from './queries';
+import { RevealInitialAccess } from './reveal-access';
 import { TenantActionButtons } from './tenant-actions';
 import { BillingBadge, HostingBadge, TenantStateBadge } from './tenant-badges';
 
@@ -133,14 +134,19 @@ export function TenantDetailPage() {
     createdNotice((location.state as { created?: DirectTenantCreated } | null)?.created),
   );
 
-  if (tenant.isPending) return <LoadingState label="Carregando o cliente" />;
-  if (tenant.isError) {
-    return (
-      <div className="space-y-3">
-        <BackLink />
-        <ErrorState error={tenant.error} onRetry={() => void tenant.refetch()} />
-      </div>
-    );
+  // Uma releitura que falha depois de a página carregar não troca a página pela tela de erro: o React Query mantém o
+  // último dado, e a página continua montada. Isso importa para a senha inicial recém-revelada, que só existe no estado
+  // local do bloco de acesso e não pode ser pedida de novo (a revelação já foi marcada e a destruição já está na fila).
+  if (tenant.data === undefined) {
+    if (tenant.isError) {
+      return (
+        <div className="space-y-3">
+          <BackLink />
+          <ErrorState error={tenant.error} onRetry={() => void tenant.refetch()} />
+        </div>
+      );
+    }
+    return <LoadingState label="Carregando o cliente" />;
   }
   const data = tenant.data;
   const lastError = data.provisioning?.lastError;
@@ -300,11 +306,17 @@ export function TenantDetailPage() {
       <Panel title="Acesso do administrador" id="acesso">
         <p className="text-sm">
           {customer
-            ? 'Quando a VM do cliente avisa que está pronta, o administrador recebe o e-mail “ambiente pronto” com um link de uso único (24 horas) para ver a senha temporária. A senha nunca passa por este console nem pelo e-mail.'
+            ? 'Quando a VM do cliente avisa que está pronta, o administrador recebe o e-mail “ambiente pronto” com um link de uso único (24 horas) para ver a senha temporária. A senha nunca vai no e-mail.'
             : contract
-              ? 'Quando o ambiente fica pronto, o administrador recebe o e-mail “ambiente pronto” com um link de uso único (24 horas) para ver a senha temporária. A senha nunca passa por este console nem pelo e-mail.'
+              ? 'Quando o ambiente fica pronto, o administrador recebe o e-mail “ambiente pronto” com um link de uso único (24 horas) para ver a senha temporária. A senha nunca vai no e-mail.'
               : 'O cliente vê a senha temporária uma vez, na página de status do site; se não vir em 48 horas, recebe o e-mail com o link de uso único.'}
         </p>
+        {data.state === 'waiting_customer_connection' && data.access.passwordRevealedAt === undefined && (
+          <p className="text-sm">
+            Se for melhor mandar o acesso você mesmo, mostre a senha aqui. É a mesma revelação única: quem vir
+            primeiro (o cliente ou você) leva, e a outra porta deixa de funcionar.
+          </p>
+        )}
         {(!customer || data.state !== 'waiting_customer_install') && (
           <dl className="grid gap-3 sm:grid-cols-2">
             <Meta label="E-mail de acesso enviado">
@@ -312,13 +324,14 @@ export function TenantDetailPage() {
                 ? 'Ainda não'
                 : formatDateTime(data.access.revealEmailSentAt)}
             </Meta>
-            <Meta label="Senha vista pelo cliente">
+            <Meta label="Senha inicial revelada">
               {data.access.passwordRevealedAt === undefined
                 ? 'Ainda não'
                 : formatDateTime(data.access.passwordRevealedAt)}
             </Meta>
           </dl>
         )}
+        <RevealInitialAccess tenant={data} />
       </Panel>
 
       <Panel title="Ciclo de vida" id="ciclo-de-vida">

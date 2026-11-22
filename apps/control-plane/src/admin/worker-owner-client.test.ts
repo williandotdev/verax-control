@@ -56,6 +56,7 @@ describe('cliente do console para as operações do responsável no cp-worker (C
     await h.client.reactivate(TENANT, 'cliente-demo-a', OWNER);
     await h.client.installation(TENANT, OWNER);
     await h.client.enrollmentCode(TENANT, 'cliente-demo-a', OWNER);
+    await h.client.revealAccess(TENANT, 'cliente-demo-a', OWNER);
     expect(h.calls.map((c) => c.url.split('/').at(-1))).toEqual([
       'provision',
       'resume',
@@ -65,7 +66,13 @@ describe('cliente do console para as operações do responsável no cp-worker (C
       'reactivate',
       'installation',
       'enrollment-code',
+      'reveal-access',
     ]);
+    // A revelação da senha inicial leva o subdomínio digitado e quem agiu, como as outras operações.
+    expect(JSON.parse(h.calls[8]?.init.body as string)).toEqual({
+      confirmSlug: 'cliente-demo-a',
+      actor: OWNER,
+    });
     // A leitura da instalação no cliente leva só quem agiu.
     expect(JSON.parse(h.calls[6]?.init.body as string)).toEqual({ actor: OWNER });
     expect(JSON.parse(h.calls[7]?.init.body as string)).toEqual({

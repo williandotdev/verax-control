@@ -6185,3 +6185,41 @@ note?, confirmSlug}` → `{amendmentId, state, hosting, hostingChanged, nodeLimi
   console (vitest dos clientes), `eslint` e `typecheck`.
 - **Manual:** num contrato direto de teste ainda não instalado, mudar para o SIEM Cloud na Verax e conferir o "Iniciar
   provisionamento".
+
+## Senha inicial mostrada uma vez no console do responsável
+
+- **O que mudou:** no detalhe do cliente (`/clientes/:id`, bloco "Acesso do administrador"), o botão **Mostrar senha
+  inicial…** (só em `waiting_customer_connection` e sem `access.passwordRevealedAt`) mostra uma vez o painel, o login,
+  a senha temporária e a validade, cada um com um botão de copiar, e **Copiar mensagem para o cliente** (o texto pronto
+  com o aviso da troca de senha e do MFA no primeiro acesso). A confirmação pede o subdomínio e avisa: "A senha aparece
+  uma única vez. Depois ela é apagada do cofre e o link que o cliente recebeu por e-mail deixa de funcionar." Decisão do
+  responsável pelo produto: **mostra uma vez e destrói**. É a revelação única (a mesma da página de status e do link do
+  e-mail): marca `access.passwordRevealedAt`, enfileira `secrets.destroy_bootstrap` antes de responder, e depois dela a
+  revelação do cliente responde `already_revealed` (e vice-versa). Auditoria `access.revealed` com `owner:<e-mail>` e
+  `via: owner`; a senha nunca vai ao log nem à auditoria.
+- **Rotas:** `POST /v1/admin/tenants/:id/reveal-access` `{confirmSlug}` (cp-admin; 200
+  `{panelUrl, adminEmail, password, passwordExpiresAt}`, `Cache-Control: private, no-store`) →
+  `POST /internal/tenants/:id/reveal-access` `{confirmSlug, actor?}` (cp-worker; só `owner` e `console`, `actor` por
+  `ownerActorOf`). Erros: 400 `confirmation_mismatch` (nada marcado), 409 `already_revealed`, 409
+  `reveal_not_available`, 410 `password_expired` (a marcação desfeita; renovação no runbook de onboarding, §7), 503
+  `reveal_unavailable`, 429 `rate_limited` (o limite das operações do responsável) e os do caminho até o worker.
+- **Arquivos:** plano de controle: `access/access-store.ts` (`claimRevealByOwner`, `RevealVia`,
+  `RevealConfirmationMismatchError`; o `revertReveal` só mexe na credencial na revelação pelo link), `access/reveal.service.ts`
+  (`revealForOwner`; o comum em `deliver`, com `via` nos logs), `internal/internal-access.controller.ts`
+  (`OwnerRevealController`), `access/access-worker.module.ts`, `admin/admin-tenants.{controller,schema,service}.ts`
+  (`revealAccess`, os códigos da revelação em `WORKER_ERRORS`), `admin/worker-owner-client.ts` (`revealAccess`,
+  operação `reveal-access`). Console: `features/tenants/reveal-access.tsx` (novo), `tenant-detail-page.tsx`,
+  `lib/api.ts`, `lib/api-types.ts`, `mocks/fake-tenants.ts`, `test/render.ts` (devolve o `QueryClient`). Docs:
+  `ARQUITETURA.md` (revelação única), `runbooks/onboarding-cliente.md` (§7), `runbooks/console-do-responsavel.md` (§7).
+- **Decisões:** o subdomínio é conferido no cp-admin (para nem chamar o worker por engano) e de novo na transação que
+  marca, no cp-worker, antes de olhar o estado; o botão aparece pela regra do próprio console (estado e
+  `passwordRevealedAt`), sem um campo novo em `actions`. A senha fica só no `useState` do componente (nem no cache das
+  consultas nem no das mutações do React Query, que guardaria o resultado por minutos), e some ao fechar ou sair da
+  página.
+- **Testes:** plano de controle: `access-store` (contrato, memória), `reveal.service.test.ts`, `worker-owner-client.test.ts`,
+  `access-worker.test.ts` (rota, quem chama, subdomínio, depois da revelação o cookie e o link recebem 409, vencida
+  desfaz), `admin-reveal-access.test.ts` (novo: cp-admin e cp-worker por HTTP; sem senha no log e na auditoria),
+  `direct-tenant-contract.ts` (o serviço do console, o limite e as falhas) e o contrato de tipos com o console. Console:
+  `reveal-access.test.tsx` (novo) e o e2e `console.spec.ts` (axe nos dois temas).
+- **Manual:** num cliente de teste em "Esperando a conexão", mostrar a senha pelo console, conferir que o link do
+  e-mail diz "senha já revelada" e que a versão do `vx-<slug>-admin-bootstrap` foi destruída.

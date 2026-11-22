@@ -14,12 +14,7 @@ export function renderConsole(path: string, state: FakeAdminState = createFakeSt
   server.use(...adminHandlers(state));
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   const user = userEvent.setup();
-  render(
-    createElement(
-      QueryClientProvider,
-      { client: createQueryClient() },
-      createElement(RouterProvider, { router }),
-    ),
-  );
-  return { user, router, state };
+  const client = createQueryClient();
+  render(createElement(QueryClientProvider, { client }, createElement(RouterProvider, { router })));
+  return { user, router, state, client };
 }

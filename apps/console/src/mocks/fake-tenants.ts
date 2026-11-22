@@ -38,6 +38,8 @@ export interface FakeTenantsState {
   workerDown: boolean;
   /** A versão vigente do nó é de antes do instalador da VM do cliente (o manifesto sem `installer`). */
   withoutInstaller?: boolean;
+  /** A senha temporária no cofre já venceu (a revelação responde `password_expired`, sem marcar nada). */
+  bootstrapExpired?: boolean;
 }
 
 export interface FakeResponse {
@@ -815,6 +817,64 @@ function enrollmentCode(
   return { status: 200, body: { code, expiresAt, reinstall } };
 }
 
+/** Uma senha temporária FICTÍCIA, gerada a cada revelação (nada fixo no código). */
+function fakeTemporaryPassword(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return `Tmp-${[...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/**
+ * `POST .../reveal-access`: a revelação única pelo responsável, como o cp-admin e o cp-worker: o subdomínio digitado,
+ * o cliente esperando a conexão e ainda sem revelação; marca `access.passwordRevealedAt` e devolve o acesso uma vez.
+ */
+function revealAccess(
+  state: FakeTenantsState,
+  tenant: TenantDetail,
+  body: Record<string, unknown>,
+  now: Date,
+): FakeResponse {
+  if (body['confirmSlug'] !== tenant.slug) {
+    return error(400, 'O subdomínio não confere com o do cliente: nada mudou.', 'confirmation_mismatch', {
+      issues: [{ path: 'confirmSlug', message: 'Digite o subdomínio do cliente, igual, para confirmar.' }],
+    });
+  }
+  if (state.workerDown) return error(503, 'Serviço indisponível', 'worker_unavailable');
+  if (tenant.access.passwordRevealedAt !== undefined) {
+    return error(
+      409,
+      'A senha inicial já foi revelada (pelo cliente ou pelo console): ela não aparece de novo.',
+      'already_revealed',
+    );
+  }
+  if (tenant.state !== 'waiting_customer_connection') {
+    return error(
+      409,
+      'O cliente não está esperando o primeiro acesso: não há senha inicial a revelar.',
+      'reveal_not_available',
+    );
+  }
+  if (state.bootstrapExpired === true) {
+    return error(
+      410,
+      'A senha temporária já venceu: renove pelo runbook de onboarding (§7).',
+      'password_expired',
+    );
+  }
+  state.tenants.set(tenant.id, {
+    ...tenant,
+    access: { ...tenant.access, passwordRevealedAt: now.toISOString() },
+  });
+  return {
+    status: 200,
+    body: {
+      panelUrl: `https://${tenant.slug}.control.veraxsistemas.com.br`,
+      adminEmail: tenant.adminEmail,
+      password: fakeTemporaryPassword(),
+      passwordExpiresAt: new Date(now.getTime() + 2 * DAY).toISOString(),
+    },
+  };
+}
+
 /** Atende `/v1/admin/tenants...` (as partes do caminho depois de `/v1/admin/tenants`). */
 export function handleTenantsRequest(
   state: FakeTenantsState,
@@ -880,6 +940,9 @@ export function handleTenantsRequest(
   }
   if (third === 'enrollment-code' && method === 'POST') {
     return enrollmentCode(state, tenant, isRecord(body) ? body : {}, now);
+  }
+  if (third === 'reveal-access' && method === 'POST') {
+    return revealAccess(state, tenant, isRecord(body) ? body : {}, now);
   }
   if (third === 'amend' && method === 'POST') {
     return amend(state, table, tableVersion, tenant, isRecord(body) ? body : {}, now);

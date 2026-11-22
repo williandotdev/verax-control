@@ -6,6 +6,9 @@ import {
   TENANT_OPERATIONS,
 } from '../../src/admin/admin-tenants.service.js';
 import type { OwnerCallResult, WorkerOwnerClient } from '../../src/admin/worker-owner-client.js';
+import { AccessStore } from '../../src/access/access-store.js';
+import { RevealService } from '../../src/access/reveal.service.js';
+import { revealErrorToApi } from '../../src/internal/internal-access.controller.js';
 import { AuditService } from '../../src/audit/audit.service.js';
 import type { AppConfig } from '../../src/common/config/config.module.js';
 import { loadConfig } from '../../src/common/config/load-config.js';
@@ -27,7 +30,7 @@ import { releaseKeyFingerprint } from '../../src/provisioning/release-manifest.j
 import type { ProvisioningApis } from '../../src/provisioning/provisioning-settings.js';
 import { MemoryStepQueue } from '../../src/queue/memory-step-queue.js';
 import { TenantStore } from '../../src/tenants/tenant-store.js';
-import { silentLogger } from './access-fakes.js';
+import { fakeTemporaryPassword, MemoryBootstrapSecrets, silentLogger } from './access-fakes.js';
 import { tenantIn } from './access-store-contract.js';
 import { type FakeClock, MINUTE_MS } from './fake-clock.js';
 import { fictitiousPriceTable } from './pricing-fixtures.js';
@@ -97,6 +100,7 @@ class InProcessWorker implements WorkerOwnerClient {
     private readonly contracts: ContractService,
     private readonly installations: InstallationService,
     private readonly enrollments: EnrollmentService,
+    private readonly reveals: RevealService,
   ) {}
 
   private reached(operation: string, tenantId: string, actor: string): boolean {
@@ -162,6 +166,19 @@ class InProcessWorker implements WorkerOwnerClient {
       not_allowed: 409,
     } as const;
     return refused(status[outcome.reason], outcome.reason);
+  }
+
+  /** Como a rota `reveal-access` (`internal-access.controller.ts`): o erro da revelação vira o código dela. */
+  async revealAccess(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult> {
+    if (!this.reached('reveal-access', tenantId, actor)) return refused(0, 'worker_unreachable');
+    try {
+      const revealed = await this.reveals.revealForOwner(tenantId, confirmSlug, `owner:${actor}`);
+      return ok({ ...revealed, passwordExpiresAt: revealed.passwordExpiresAt.toISOString() });
+    } catch (error) {
+      const api = revealErrorToApi(error);
+      if (api instanceof ApiError && api.code !== undefined) return refused(api.getStatus(), api.code);
+      throw error;
+    }
   }
 
   async cancel(tenantId: string, confirmSlug: string, actor: string, at?: Date): Promise<OwnerCallResult> {
@@ -245,6 +262,8 @@ export function describeDirectTenantContract(
     let releases: Map<string, Buffer>;
     let releaseKey: TestReleaseKey;
     let workerConfig: AppConfig;
+    /** O cofre da senha inicial do cp-worker (o `admin-bootstrap` de cada cliente). */
+    let bootstrap: MemoryBootstrapSecrets;
 
     async function auditActions(): Promise<{ actor: string; action: string; tenantId?: string }[]> {
       const docs = await h.documents.query(COLLECTIONS.auditLog, { orderBy: { field: 'at' } });
@@ -295,12 +314,26 @@ export function describeDirectTenantContract(
           return releaseKey.keys;
         },
       } as unknown as ProvisioningApis;
+      bootstrap = new MemoryBootstrapSecrets();
+      const revealConfig = loadConfig({
+        ROLE: 'worker',
+        NODE_ENV: 'test',
+        NODES_PROJECT_ID: 'projeto-dos-nos-demo',
+      });
       worker = new InProcessWorker(
         new ProvisioningStartService(tenants, queue, h.clock, silentLogger()),
         new ProvisioningResumeService(tenants, queue, h.clock, silentLogger()),
         new ContractService(tenants, audit, queue, h.clock, silentLogger()),
         new InstallationService(tenants, apis, workerConfig, silentLogger()),
         new EnrollmentService(tenants, audit, apis, queue, workerConfig, h.clock, silentLogger()),
+        new RevealService(
+          new AccessStore(h.documents, h.clock, audit),
+          bootstrap,
+          queue,
+          revealConfig,
+          h.clock,
+          silentLogger(),
+        ),
       );
       limits = {
         creations: new TokenBucketLimiter(DIRECT_TENANT_CREATIONS, h.clock),
@@ -1174,6 +1207,145 @@ export function describeDirectTenantContract(
       expect(queue.tasks.filter((task) => task.queue === 'provisioning')).toEqual([
         expect.objectContaining({ step: 'preflight', tenantId: verax.id }),
       ]);
+    });
+
+    /** Um cliente esperando a conexão, com a senha temporária no cofre (vence em `hours`). */
+    async function waitingForAccess(
+      slug: string,
+      hours = 72,
+    ): Promise<{ id: string; slug: string; password: string }> {
+      const tenant = await tenantIn(tenants, slug, 'waiting_customer_connection');
+      const password = fakeTemporaryPassword();
+      bootstrap.put(tenant.slug, {
+        email: tenant.adminEmail ?? '',
+        password,
+        expiresAt: new Date(h.clock.now().getTime() + hours * 60 * MINUTE_MS),
+      });
+      return { id: tenant.id, slug: tenant.slug, password };
+    }
+
+    it('senha inicial pelo console: uma vez, com o painel, o login e o prazo; a auditoria sem a senha', async () => {
+      const tenant = await waitingForAccess('cliente-acesso-a');
+
+      const revealed = await service.revealAccess(tenant.id, { confirmSlug: tenant.slug }, OWNER);
+
+      expect(revealed).toEqual({
+        panelUrl: 'https://cliente-acesso-a.control.veraxsistemas.com.br',
+        adminEmail: (await tenants.require(tenant.id)).adminEmail,
+        password: tenant.password,
+        passwordExpiresAt: new Date(h.clock.now().getTime() + 72 * 60 * MINUTE_MS).toISOString(),
+      });
+      expect(worker.calls).toEqual([{ operation: 'reveal-access', tenantId: tenant.id, actor: OWNER.email }]);
+      expect((await tenants.require(tenant.id)).access?.passwordRevealedAt).toEqual(h.clock.now());
+      expect(queue.tasks.map((task) => [task.queue, task.step, task.tenantId])).toEqual([
+        ['lifecycle', 'secrets.destroy_bootstrap', tenant.id],
+      ]);
+      expect(await auditActions()).toEqual(
+        expect.arrayContaining([
+          { actor: `owner:${OWNER.email}`, action: 'access.revealed', tenantId: tenant.id },
+          { actor: `owner:${OWNER.email}`, action: 'tenant.console_request', tenantId: tenant.id },
+        ]),
+      );
+      const records = await h.documents.query(COLLECTIONS.auditLog, {});
+      const consoleRequest = records.find((doc) => doc.data['action'] === 'tenant.console_request');
+      expect(consoleRequest?.data['details']).toEqual({ operation: 'reveal-access', outcome: 'ok' });
+      const everything = JSON.stringify([
+        ...records.map((doc) => doc.data),
+        ...(await h.documents.query(COLLECTIONS.tenants, {})).map((doc) => doc.data),
+      ]);
+      expect(everything).not.toContain(tenant.password);
+
+      // A segunda vez: já revelada, nada lido de novo.
+      const reads = bootstrap.reads;
+      await expectApiError(
+        service.revealAccess(tenant.id, { confirmSlug: tenant.slug }, OWNER),
+        409,
+        'already_revealed',
+      );
+      expect(bootstrap.reads).toBe(reads);
+    });
+
+    it('senha inicial pelo console: subdomínio errado não chega ao worker; fora da espera, vencida, cofre ou worker fora', async () => {
+      const tenant = await waitingForAccess('cliente-acesso-b', 1);
+      await expectApiError(
+        service.revealAccess(tenant.id, { confirmSlug: 'outro' }, OWNER),
+        400,
+        'confirmation_mismatch',
+      );
+      await expectApiError(service.revealAccess(tenant.id, {}, OWNER), 400, 'invalid_request');
+      await expectApiError(
+        service.revealAccess(tenant.id, { confirmSlug: tenant.slug, extra: 1 }, OWNER),
+        400,
+        'invalid_request',
+      );
+      await expectApiError(
+        service.revealAccess(newUlid(), { confirmSlug: 'x' }, OWNER),
+        404,
+        'tenant_not_found',
+      );
+      expect(worker.calls).toEqual([]);
+      expect((await tenants.require(tenant.id)).access).toBeUndefined();
+      const refusedAudit = (await h.documents.query(COLLECTIONS.auditLog, {})).find(
+        (doc) => doc.data['action'] === 'tenant.console_request_refused',
+      );
+      expect(refusedAudit?.data['details']).toMatchObject({
+        operation: 'reveal-access',
+        code: 'confirmation_mismatch',
+      });
+
+      worker.down = true;
+      await expectApiError(
+        service.revealAccess(tenant.id, { confirmSlug: tenant.slug }, OWNER),
+        503,
+        'worker_unavailable',
+      );
+      worker.down = false;
+      await expectApiError(
+        build(null).revealAccess(tenant.id, { confirmSlug: tenant.slug }, OWNER),
+        503,
+        'worker_unconfigured',
+      );
+
+      // Vencida: nada mostrado, a marcação desfeita (o responsável renova pelo runbook).
+      h.clock.advance(2 * 60 * MINUTE_MS);
+      await expectApiError(
+        service.revealAccess(tenant.id, { confirmSlug: tenant.slug }, OWNER),
+        410,
+        'password_expired',
+      );
+      expect((await tenants.require(tenant.id)).access?.passwordRevealedAt).toBeUndefined();
+
+      // O cofre fora: 503 com o código da revelação, nada marcado.
+      const other = await waitingForAccess('cliente-acesso-c');
+      bootstrap.failNextRead(new Error('UNAVAILABLE'));
+      await expectApiError(
+        service.revealAccess(other.id, { confirmSlug: other.slug }, OWNER),
+        503,
+        'reveal_unavailable',
+      );
+      expect((await tenants.require(other.id)).access?.passwordRevealedAt).toBeUndefined();
+
+      const provisioning = await tenantIn(tenants, 'cliente-acesso-d', 'provisioning');
+      await expectApiError(
+        service.revealAccess(provisioning.id, { confirmSlug: provisioning.slug }, OWNER),
+        409,
+        'reveal_not_available',
+      );
+      expect(queue.tasks).toEqual([]);
+    });
+
+    it('senha inicial pelo console: o limite das operações do responsável vale também aqui', async () => {
+      const first = await waitingForAccess('cliente-acesso-e');
+      const second = await waitingForAccess('cliente-acesso-f');
+      limits.operations = new TokenBucketLimiter({ capacity: 1, windowMs: 60 * MINUTE_MS }, h.clock);
+      service = build(worker);
+      await service.revealAccess(first.id, { confirmSlug: first.slug }, OWNER);
+      await expectApiError(
+        service.revealAccess(second.id, { confirmSlug: second.slug }, OWNER),
+        429,
+        'rate_limited',
+      );
+      expect((await tenants.require(second.id)).access).toBeUndefined();
     });
 
     it('instalação no cliente: só para o ambiente no cliente; versão ausente, assinatura de outra chave e worker fora', async () => {

@@ -4,6 +4,7 @@ import {
   AlreadyRevealedError,
   REVEAL_EMAIL_AFTER_MS,
   REVEAL_EMAIL_UNTIL_MS,
+  RevealConfirmationMismatchError,
   RevealNotAvailableError,
   StatusAccessNotFoundError,
 } from '../../src/access/access-store.js';
@@ -213,6 +214,91 @@ export function describeAccessStoreContract(name: string, factory: () => Promise
       await expect(h.access.claimReveal(link.value, 'email_reveal')).rejects.toBeInstanceOf(
         StatusAccessNotFoundError,
       );
+    });
+
+    it('a revelação pelo responsável é a mesma revelação única: o cookie e o link do e-mail perdem depois dela', async () => {
+      const waiting = await tenantIn(h.tenants, 'cliente-demo-a', 'waiting_customer_connection');
+      const cookie = await h.access.mint(waiting.id, 'cookie', 'system');
+      const link = await h.access.mint(waiting.id, 'email_reveal', 'system');
+      const actor = 'owner:responsavel@exemplo.example';
+
+      const claim = await h.access.claimRevealByOwner(waiting.id, waiting.slug, actor, {
+        requestId: 'req-demo-00005',
+      });
+      expect(claim).toMatchObject({ kind: 'owner', revealedAt: h.clock.now() });
+      expect(claim.tokenId).toBeUndefined();
+      expect((await h.tenants.require(waiting.id)).access?.passwordRevealedAt).toEqual(h.clock.now());
+      expect((await h.audit.listForTenant(waiting.id)).at(-1)).toMatchObject({
+        actor,
+        action: 'access.revealed',
+        details: { via: 'owner' },
+        requestId: 'req-demo-00005',
+      });
+
+      await expect(h.access.claimReveal(cookie.value, 'cookie')).rejects.toBeInstanceOf(AlreadyRevealedError);
+      await expect(h.access.claimReveal(link.value, 'email_reveal')).rejects.toBeInstanceOf(
+        AlreadyRevealedError,
+      );
+      await expect(h.access.claimRevealByOwner(waiting.id, waiting.slug, actor)).rejects.toBeInstanceOf(
+        AlreadyRevealedError,
+      );
+      // O link do e-mail não foi gasto pela revelação do responsável (perde pelo cliente, não pela credencial).
+      expect(await h.access.resolve(link.value, 'email_reveal')).toBeDefined();
+      const revealed = (await h.audit.listForTenant(waiting.id)).filter(
+        (record) => record.action === 'access.revealed',
+      );
+      expect(revealed).toHaveLength(1);
+    });
+
+    it('a revelação pelo responsável: subdomínio errado, cliente fora da espera ou inexistente não marcam nada', async () => {
+      const waiting = await tenantIn(h.tenants, 'cliente-demo-a', 'waiting_customer_connection');
+      const actor = 'owner:responsavel@exemplo.example';
+
+      await expect(h.access.claimRevealByOwner(waiting.id, 'cliente-demo-b', actor)).rejects.toBeInstanceOf(
+        RevealConfirmationMismatchError,
+      );
+      expect((await h.tenants.require(waiting.id)).access).toBeUndefined();
+
+      const provisioning = await tenantIn(h.tenants, 'cliente-demo-b', 'provisioning');
+      await expect(
+        h.access.claimRevealByOwner(provisioning.id, provisioning.slug, actor),
+      ).rejects.toBeInstanceOf(RevealNotAvailableError);
+      expect((await h.tenants.require(provisioning.id)).access).toBeUndefined();
+
+      const deleted = await tenantIn(h.tenants, 'cliente-demo-c', 'deleted');
+      await expect(h.access.claimRevealByOwner(deleted.id, deleted.slug, actor)).rejects.toBeInstanceOf(
+        StatusAccessNotFoundError,
+      );
+      await expect(
+        h.access.claimRevealByOwner('01JBTESTE0000000000000TEN1', 'cliente-demo-x', actor),
+      ).rejects.toBeInstanceOf(StatusAccessNotFoundError);
+      await expect(h.access.claimRevealByOwner('../x', 'x', actor)).rejects.toBeInstanceOf(
+        StatusAccessNotFoundError,
+      );
+      expect(
+        (await h.audit.listForTenant(waiting.id)).filter((record) => record.action === 'access.revealed'),
+      ).toEqual([]);
+    });
+
+    it('desfazer a revelação do responsável devolve o cliente à espera sem mexer em credencial', async () => {
+      const waiting = await tenantIn(h.tenants, 'cliente-demo-a', 'waiting_customer_connection');
+      const cookie = await h.access.mint(waiting.id, 'cookie', 'system');
+      const claim = await h.access.claimRevealByOwner(
+        waiting.id,
+        waiting.slug,
+        'owner:responsavel@exemplo.example',
+      );
+
+      h.clock.advance(MINUTE_MS);
+      expect(await h.access.revertReveal(claim, 'password_expired')).toBe(true);
+      expect((await h.tenants.require(waiting.id)).access?.passwordRevealedAt).toBeUndefined();
+      expect((await h.audit.listForTenant(waiting.id)).at(-1)).toMatchObject({
+        actor: 'system',
+        action: 'access.reveal_reverted',
+        details: { reason: 'password_expired', via: 'owner' },
+      });
+      // O cliente pode revelar de novo pela página de status.
+      await expect(h.access.claimReveal(cookie.value, 'cookie')).resolves.toMatchObject({ kind: 'cookie' });
     });
 
     it('plano B: o cliente entra no prazo às 48 h de espera, sai com o e-mail, a revelação ou as 72 h', async () => {

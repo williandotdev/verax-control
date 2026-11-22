@@ -16,7 +16,7 @@ import {
   type IdTokenKeySource,
   IdentityTokenVerifier,
 } from '../internal/identity-token.js';
-import { InternalAccessController } from '../internal/internal-access.controller.js';
+import { InternalAccessController, OwnerRevealController } from '../internal/internal-access.controller.js';
 import { InternalStepsController } from '../internal/internal-steps.controller.js';
 import { STEP_HANDLERS, type StepHandler } from '../internal/step-handler.js';
 import { WorkerCallerGuard } from '../internal/worker-caller.js';
@@ -77,7 +77,8 @@ export interface AccessWorkerModuleOptions {
  * atualização da frota: as rotas do responsável (`/internal/fleet/...`) e a volta do motor (`fleet.tick`). Desde
  * 18/11/2026, o registro da VM do cliente: o código de instalação do responsável
  * (`POST /internal/tenants/:id/enrollment-code`) e o `claim`/`report` da VM, repassados pelo cp-public
- * (`/internal/node-enrollment/*`).
+ * (`/internal/node-enrollment/*`). Desde 22/11/2026, a revelação única também pelo responsável
+ * (`POST /internal/tenants/:id/reveal-access`), que copia o acesso no console e manda ao cliente.
  */
 @Module({})
 export class AccessWorkerModule {
@@ -87,6 +88,7 @@ export class AccessWorkerModule {
       imports: [AuditModule, TenantsModule, AccessModule, ProvisioningModule.forRoot(options.provisioning)],
       controllers: [
         InternalAccessController,
+        OwnerRevealController,
         InternalStepsController,
         ProvisioningResumeController,
         ProvisioningStartController,

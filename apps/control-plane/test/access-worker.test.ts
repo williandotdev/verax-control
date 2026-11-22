@@ -27,6 +27,8 @@ const WORKER_URL = 'https://cp-worker-123456789012.southamerica-east1.run.app';
 const INVOKER = 'cp-invoker@projeto-exemplo.iam.gserviceaccount.com';
 const PUBLIC_SA = 'cp-public@projeto-exemplo.iam.gserviceaccount.com';
 const OWNER = 'responsavel@exemplo.example';
+const ADMIN_SA = 'cp-admin@projeto-exemplo.iam.gserviceaccount.com';
+const STRANGER = 'outra-pessoa@exemplo.example';
 const START = new Date('2026-11-04T12:00:00.000Z');
 const HOUR_MS = 60 * MINUTE_MS;
 
@@ -69,6 +71,7 @@ describe('cp-worker: revelação única, destruição e plano B (CP-05)', () => 
         SCHEDULER_SA_EMAIL: INVOKER,
         OWNER_PRINCIPALS: OWNER,
         PUBLIC_SA_EMAIL: PUBLIC_SA,
+        ADMIN_SA_EMAIL: ADMIN_SA,
         NODES_PROJECT_ID: 'projeto-dos-nos-demo',
         SITE_SUCCESS_URL: 'https://veraxsistemas.com.br/checkout/sucesso?cs={CHECKOUT_SESSION_ID}',
       },
@@ -114,6 +117,13 @@ describe('cp-worker: revelação única, destruição e plano B (CP-05)', () => 
   function reveal(body: unknown, caller = PUBLIC_SA): request.Test {
     return request(app.getHttpServer())
       .post('/internal/access/reveal')
+      .set('Authorization', bearer(caller))
+      .send(body as object);
+  }
+
+  function ownerReveal(tenantId: string, body: unknown, caller = OWNER): request.Test {
+    return request(app.getHttpServer())
+      .post(`/internal/tenants/${tenantId}/reveal-access`)
       .set('Authorization', bearer(caller))
       .send(body as object);
   }
@@ -355,6 +365,125 @@ describe('cp-worker: revelação única, destruição e plano B (CP-05)', () => 
         code: 'reveal_not_available',
       });
       expect(secrets.reads).toBeGreaterThan(0);
+    });
+  });
+
+  describe('revelação pelo responsável (o console copia e manda ao cliente)', () => {
+    it('só o responsável, ou o console com um responsável em actor; nem as tasks nem o cp-public', async () => {
+      const { tenant } = await waitingTenant();
+      const body = { confirmSlug: tenant.slug };
+
+      for (const caller of [INVOKER, PUBLIC_SA, 'outra@projeto-exemplo.iam.gserviceaccount.com']) {
+        await ownerReveal(tenant.id, body, caller).expect(403);
+      }
+      // O console sem dizer quem agiu, ou dizendo alguém que não é responsável.
+      expect((await ownerReveal(tenant.id, body, ADMIN_SA).expect(403)).body).toMatchObject({
+        code: 'actor_not_owner',
+      });
+      await ownerReveal(tenant.id, { ...body, actor: STRANGER }, ADMIN_SA).expect(403);
+      await request(app.getHttpServer())
+        .post(`/internal/tenants/${tenant.id}/reveal-access`)
+        .send(body)
+        .expect(401);
+
+      expect((await tenants.require(tenant.id)).access).toBeUndefined();
+      expect(queue.tasks).toEqual([]);
+    });
+
+    it('pedido malformado → 400; id que não é ULID ou cliente inexistente → 404; nada marcado', async () => {
+      const { tenant } = await waitingTenant();
+      await ownerReveal(tenant.id, {}).expect(400);
+      await ownerReveal(tenant.id, { confirmSlug: tenant.slug, extra: 1 }).expect(400);
+      await ownerReveal(tenant.id, { confirmSlug: tenant.slug, actor: 'nao-e-email' }, ADMIN_SA).expect(400);
+      await ownerReveal('nao-e-ulid', { confirmSlug: tenant.slug }).expect(404);
+      expect(
+        (await ownerReveal('01JBTESTE0000000000000TEN1', { confirmSlug: 'x' }).expect(404)).body,
+      ).toMatchObject({ code: 'not_found' });
+      expect((await tenants.require(tenant.id)).access).toBeUndefined();
+    });
+
+    it('subdomínio que não confere → 400 confirmation_mismatch, sem marcar nem ler', async () => {
+      const { tenant } = await waitingTenant();
+      const reads = secrets.reads;
+      const refused = await ownerReveal(tenant.id, { confirmSlug: `${tenant.slug}-x` }).expect(400);
+      expect(refused.body).toMatchObject({ code: 'confirmation_mismatch' });
+      expect((await tenants.require(tenant.id)).access).toBeUndefined();
+      expect(secrets.reads).toBe(reads);
+      expect(queue.tasks).toEqual([]);
+    });
+
+    it('pelo console: marca, enfileira a destruição e devolve o acesso; depois, o cliente e o e-mail recebem já revelada', async () => {
+      const { tenant, password, cookie } = await waitingTenant();
+      const link = (await access.mint(tenant.id, 'email_reveal', 'system')).value;
+      secretsSeen.add(link);
+
+      const response = await ownerReveal(
+        tenant.id,
+        { confirmSlug: tenant.slug, actor: OWNER },
+        ADMIN_SA,
+      ).expect(200);
+
+      expect(response.body).toEqual({
+        panelUrl: `https://${tenant.slug}.control.veraxsistemas.com.br`,
+        adminEmail: tenant.adminEmail,
+        password,
+        passwordExpiresAt: new Date(START.getTime() + 72 * HOUR_MS).toISOString(),
+      });
+      expect(response.headers['cache-control']).toBe('private, no-store');
+      expect((await tenants.require(tenant.id)).access?.passwordRevealedAt).toEqual(START);
+      expect(queue.inQueue('lifecycle')).toEqual([
+        expect.objectContaining({ step: DESTROY_BOOTSTRAP_STEP, tenantId: tenant.id, runId: tenant.id }),
+      ]);
+      const revealed = (await audit.listForTenant(tenant.id)).filter(
+        (record) => record.action === 'access.revealed',
+      );
+      expect(revealed).toEqual([
+        expect.objectContaining({ actor: `owner:${OWNER}`, details: { via: 'owner' } }),
+      ]);
+
+      // A revelação única já aconteceu: a página de status, o link do e-mail e o próprio responsável recebem 409.
+      expect((await reveal({ kind: 'cookie', token: cookie }).expect(409)).body).toMatchObject({
+        code: 'already_revealed',
+      });
+      expect((await reveal({ kind: 'email_reveal', token: link }).expect(409)).body).toMatchObject({
+        code: 'already_revealed',
+      });
+      expect((await ownerReveal(tenant.id, { confirmSlug: tenant.slug }).expect(409)).body).toMatchObject({
+        code: 'already_revealed',
+      });
+      expect(
+        capture.entries().filter((entry) => entry['event'] === 'access_revealed' && entry['via'] === 'owner'),
+      ).toHaveLength(1);
+
+      // E a destruição acontece pela task, como na revelação do cliente.
+      await step(DESTROY_BOOTSTRAP_STEP, tenant.id).expect(200);
+      expect(secrets.liveVersions(tenant.slug)).toBe(0);
+    });
+
+    it('o responsável direto age como ele mesmo; senha vencida → 410 e a marcação desfeita; fora da espera → 409', async () => {
+      const expired = await waitingTenant();
+      clock.advance(73 * HOUR_MS);
+      expect(
+        (await ownerReveal(expired.tenant.id, { confirmSlug: expired.tenant.slug }).expect(410)).body,
+      ).toMatchObject({ code: 'password_expired' });
+      expect((await tenants.require(expired.tenant.id)).access?.passwordRevealedAt).toBeUndefined();
+      expect((await audit.listForTenant(expired.tenant.id)).at(-1)).toMatchObject({
+        action: 'access.reveal_reverted',
+        details: { reason: 'password_expired', via: 'owner' },
+      });
+      clock.set(START);
+
+      const direct = await waitingTenant();
+      await ownerReveal(direct.tenant.id, { confirmSlug: direct.tenant.slug }).expect(200);
+      expect(
+        (await audit.listForTenant(direct.tenant.id)).find((record) => record.action === 'access.revealed'),
+      ).toMatchObject({ actor: `owner:${OWNER}` });
+
+      slugSequence += 1;
+      const provisioning = await tenantIn(tenants, `cliente-demo-w${slugSequence}`, 'provisioning');
+      expect(
+        (await ownerReveal(provisioning.id, { confirmSlug: provisioning.slug }).expect(409)).body,
+      ).toMatchObject({ code: 'reveal_not_available' });
     });
   });
 
