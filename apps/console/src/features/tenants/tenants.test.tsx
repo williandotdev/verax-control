@@ -469,7 +469,9 @@ describe('clientes', () => {
     // Cada destino pela célula exata (o texto da tabela), e a linha dela.
     const rowOf = (hosts: string) => within(egress).getByRole('cell', { name: hosts }).closest('tr');
     expect(rowOf('*.argotunnel.com, *.cftunnel.com')).toHaveTextContent('443 e 7844');
-    expect(rowOf('conta.veraxsistemas.com.br')).toHaveTextContent('O registro da VM na Verax');
+    expect(rowOf('conta.veraxsistemas.com.br')).toHaveTextContent(
+      'O registro da VM e a sincronização com a Verax',
+    );
     expect(rowOf('ghcr.io, pkg-containers.githubusercontent.com')).toHaveTextContent('As imagens do Verax');
     expect(rowOf('registry-1.docker.io, auth.docker.io, *.docker.com')).toHaveTextContent('Docker');
     expect(within(egress).getByRole('row', { name: /NTP/ })).toHaveTextContent('123');
