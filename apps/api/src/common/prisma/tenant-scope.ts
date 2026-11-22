@@ -36,6 +36,9 @@ export const TENANT_SCOPED_MODELS = [
   'cellTenantState',
   'tenantCloudIdentity',
   'cellTenantBootstrap',
+  // Nó dedicado: o resultado de cada item do console que a sincronização com o plano de controle trouxe. Só o worker
+  // grava (`SYSTEM_WRITTEN_MODELS`).
+  'controlPlaneSyncItem',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 
@@ -47,9 +50,10 @@ const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
  * `node.conf` ou do plano de controle), o estado do expurgo dele e, na célula (CE-05), o que o canal do plano de controle
  * gravou e a conta de serviço do cliente (`TenantCloudIdentity`, de onde sai o token que lê a AWS dele). O volume por dia
  * (CE-09) também: é a base da cobrança da franquia, e só os coletores e a tarefa `aws-volume` o gravam
- * (`usage/usage-meter.ts`, `usage/aws-volume.ts`). No escopo do cliente, só a leitura passa; a gravação é recusada mesmo
- * que um service a tente, e quem grava usa o cliente base, fora do escopo (`tenants/tenant-host.ts`,
- * `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`).
+ * (`usage/usage-meter.ts`, `usage/aws-volume.ts`). E, no nó dedicado, o resultado de cada item da sincronização com o
+ * plano de controle (`ControlPlaneSyncItem`, só a tarefa `control-plane-sync`). No escopo do cliente, só a leitura passa;
+ * a gravação é recusada mesmo que um service a tente, e quem grava usa o cliente base, fora do escopo
+ * (`tenants/tenant-host.ts`, `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`, `control-plane-sync/`).
  */
 export const SYSTEM_WRITTEN_MODELS = [
   'tenantHost',
@@ -60,6 +64,7 @@ export const SYSTEM_WRITTEN_MODELS = [
   'cellTenantBootstrap',
   'ingestUsageDay',
   'awsVolumeObject',
+  'controlPlaneSyncItem',
 ] as const;
 const SYSTEM_WRITTEN = new Set<string>(SYSTEM_WRITTEN_MODELS);
 const READ_OPERATIONS = new Set([

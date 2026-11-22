@@ -1,8 +1,11 @@
 import type { AuditActor } from '@verax/shared';
 
-/** Quem agiu: pessoa (com a marca da equipe da Verax), sistema ou alguém que não chegou a se identificar. */
+/**
+ * Quem agiu: pessoa (com a marca da equipe da Verax), sistema (com o nome, quando é o que o nó aplicou do console da
+ * Verax: "Verax (administrativo)") ou alguém que não chegou a se identificar.
+ */
 export function AuditActorName({ actor }: { actor: AuditActor }) {
-  if (actor.type === 'system') return <span>Sistema</span>;
+  if (actor.type === 'system') return <span>{actor.name ?? 'Sistema'}</span>;
   if (actor.type === 'anonymous') return <span className="text-muted-foreground">Sem identificação</span>;
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">

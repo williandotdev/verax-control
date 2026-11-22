@@ -442,6 +442,137 @@ describe('contas cloud (T3.3)', () => {
       });
     });
   });
+
+  describe('conta cadastrada pela Verax no console (sincronização com o plano de controle)', () => {
+    /** Como a tarefa `control-plane-sync` do worker grava a conta do console. */
+    const consoleAccount = (tenantId = tenantA) =>
+      prisma.cloudAccount.create({
+        data: {
+          tenantId,
+          provider: 'cloudflare',
+          accountId: cloudflareAccount(),
+          regions: [],
+          zones: [zone()],
+          origin: 'control_plane',
+          controlPlaneRevision: 1,
+        },
+      });
+
+    it('a conta mostra quem cadastrou (managedBy)', async () => {
+      const verax = await consoleAccount();
+      const panel = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      expect(panel.managedBy).toBe('panel');
+      const seen = cloudAccountSchema.parse(
+        (await call(readerA).get(`/v1/cloud-accounts/${verax.id}`).expect(200)).body,
+      );
+      expect(seen.managedBy).toBe('verax');
+    });
+
+    it('o painel não altera, desativa nem reativa a conta do console: 409 CONSOLE_MANAGED, sem mudar nada', async () => {
+      const verax = await consoleAccount();
+      for (const body of [{ zones: [zone()] }, { status: 'inactive' }]) {
+        const refused = await call(adminA).patch(`/v1/cloud-accounts/${verax.id}`, body).expect(409);
+        expect(refused.body).toMatchObject({ code: 'CONSOLE_MANAGED' });
+        expect((refused.body as { message: string }).message).toBe(
+          'Cadastrada pela Verax: peça a alteração à Verax.',
+        );
+        expect(await entryOf(refused)).toMatchObject({
+          action: 'cloud_account.update',
+          resourceId: verax.id,
+          outcome: 'failure',
+          tenantId: tenantA,
+        });
+      }
+      const removed = await call(adminA).delete(`/v1/cloud-accounts/${verax.id}`).expect(409);
+      expect(removed.body).toMatchObject({ code: 'CONSOLE_MANAGED' });
+      expect(await entryOf(removed)).toMatchObject({
+        action: 'cloud_account.deactivate',
+        outcome: 'failure',
+      });
+      expect(await prisma.cloudAccount.findUniqueOrThrow({ where: { id: verax.id } })).toMatchObject({
+        status: 'active',
+        zones: verax.zones,
+        updatedAt: verax.updatedAt,
+      });
+    });
+
+    it('a credencial continua com o cliente (o DELETE responde como em qualquer conta)', async () => {
+      const verax = await consoleAccount();
+      const response = await call(adminA).delete(`/v1/cloud-accounts/${verax.id}/credential`).expect(404);
+      expect((response.body as { code?: string }).code).not.toBe('CONSOLE_MANAGED');
+    });
+
+    it('o "Verificar" da conta AWS do console continua com o cliente', async () => {
+      const verax = await prisma.cloudAccount.create({
+        data: {
+          tenantId: tenantA,
+          accountId: accountId(),
+          regions: ['us-east-1'],
+          origin: 'control_plane',
+          controlPlaneRevision: 2,
+        },
+      });
+      await call(adminA).post(`/v1/cloud-accounts/${verax.id}/aws/verify`, {}).expect(202);
+    });
+
+    it('o cliente B não altera a conta do console de A (404, não 409)', async () => {
+      const verax = await consoleAccount();
+      await call(adminB)
+        .patch(`/v1/cloud-accounts/${verax.id}`, { zones: [zone()] })
+        .expect(404);
+    });
+
+    it('a trilha do cliente mostra o que o nó aplicou do console como "Verax (administrativo)"', async () => {
+      const verax = await consoleAccount();
+      await prisma.auditLog.create({
+        data: {
+          actorType: 'system',
+          actorId: 'verax-control-plane',
+          tenantId: tenantA,
+          action: 'cloud_account.create',
+          outcome: 'success',
+          resourceType: 'cloud_account',
+          resourceId: verax.id,
+        },
+      });
+      const trail = await call(adminA).get('/v1/audit?resourceType=cloud_account').expect(200);
+      const entry = (trail.body as { items: { resourceId: string; actor: unknown }[] }).items.find(
+        (item) => item.resourceId === verax.id,
+      );
+      expect(entry?.actor).toEqual({
+        type: 'system',
+        id: null,
+        name: 'Verax (administrativo)',
+        verax: false,
+      });
+    });
+
+    it('a linha do console exige a revisão, e a do painel não aceita uma (CHECK do banco)', async () => {
+      await expect(
+        prisma.cloudAccount.create({
+          data: {
+            tenantId: tenantA,
+            provider: 'cloudflare',
+            accountId: cloudflareAccount(),
+            origin: 'control_plane',
+          },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.cloudAccount.create({
+          data: {
+            tenantId: tenantA,
+            provider: 'cloudflare',
+            accountId: cloudflareAccount(),
+            controlPlaneRevision: 1,
+          },
+        }),
+      ).rejects.toThrow();
+    });
+  });
+
   describe('conexão (fase 2)', () => {
     it('a API devolve a conexão: aguardando no cadastro, depois o que o coletor gravou', async () => {
       const created = cloudAccountSchema.parse(

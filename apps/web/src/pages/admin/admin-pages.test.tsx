@@ -783,6 +783,61 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     );
   });
 
+  it('conta cadastrada pela Verax: o selo na tabela e no detalhe; a fonte e o monitoramento desligados, a credencial não', async () => {
+    const accounts = [...demoAdminStore().accounts.values()].flat();
+    const cloudflare = accounts.find((account) => account.accountId === DEMO_ACCOUNTS.alfaCloudflare);
+    const aws = accounts.find((account) => account.id === DEMO_AWS_ALFA_ID);
+    if (!cloudflare || !aws) throw new Error('as contas da demonstração sumiram');
+    const managed = [
+      { ...cloudflare, managedBy: 'verax' as const },
+      { ...aws, managedBy: 'verax' as const },
+    ];
+    renderAt('/cadastros/contas', undefined, undefined, [
+      http.get(`${API_URL}/v1/cloud-accounts`, () =>
+        HttpResponse.json({ items: managed, page: 1, pageSize: 20, total: 2 }),
+      ),
+    ]);
+    const rows = await rowsOf('Contas cloud do cliente');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(row).toHaveTextContent('Cadastrada pela Verax');
+
+    await userEvent.click(
+      within(rows[0] as HTMLElement).getByRole('button', {
+        name: (name) => name.includes(DEMO_ACCOUNTS.alfaCloudflare),
+      }),
+    );
+    const sheet = await screen.findByRole('dialog', {
+      name: `Conta do Cloudflare ${DEMO_ACCOUNTS.alfaCloudflare}`,
+    });
+    expect(
+      within(sheet).getByText(/peça à Verax para alterar a fonte ou o monitoramento/),
+    ).toBeInTheDocument();
+    expect(within(sheet).getByLabelText('Zonas monitoradas')).toBeDisabled();
+    expect(within(sheet).getByRole('button', { name: 'Salvar zonas' })).toBeDisabled();
+    expect(within(sheet).getByRole('button', { name: 'Desativar monitoramento' })).toBeDisabled();
+    // A credencial continua com o cliente: trocar e remover o token seguem disponíveis.
+    expect(within(sheet).getByRole('button', { name: /Trocar/ })).toBeEnabled();
+  });
+
+  it('conta cadastrada pela Verax na AWS: os buckets só leitura; o "Verificar" continua', async () => {
+    const accounts = [...demoAdminStore().accounts.values()].flat();
+    const aws = accounts.find((account) => account.id === DEMO_AWS_ALFA_ID);
+    if (!aws) throw new Error('a conta AWS da demonstração sumiu');
+    renderAt('/cadastros/contas', undefined, undefined, [
+      http.get(`${API_URL}/v1/cloud-accounts`, () =>
+        HttpResponse.json({ items: [{ ...aws, managedBy: 'verax' }], page: 1, pageSize: 20, total: 1 }),
+      ),
+    ]);
+    const [row] = await rowsOf('Contas cloud do cliente');
+    await userEvent.click(
+      within(row as HTMLElement).getByRole('button', { name: (name) => name.includes(aws.accountId) }),
+    );
+    const sheet = await screen.findByRole('dialog', { name: (name) => name.includes(aws.accountId) });
+    expect(within(sheet).getByText('A Verax altera os buckets desta conta.')).toBeInTheDocument();
+    expect(within(sheet).queryByRole('button', { name: /Salvar buckets/ })).not.toBeInTheDocument();
+    expect(within(sheet).getByRole('button', { name: /Verificar/ })).toBeEnabled();
+  });
+
   it('Cloudflare: zonas na tabela; o token guardado aparece só pelo fim do ID; as zonas mudam no detalhe', async () => {
     renderAt('/cadastros/contas');
     const row = (await rowsOf('Contas cloud do cliente')).find((candidate) =>

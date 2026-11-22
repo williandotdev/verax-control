@@ -15,7 +15,9 @@
 # gcloud) e as recusas (célula, agentes, imagens fora do GHCR, NODE_PLATFORM desconhecido); o start.sh up com os
 # segredos do cofre local (o token do túnel, a senha do e-mail e a chave do cofre de credenciais, que chega ao worker só
 # pelo arquivo do tmpfs), com NODE_PLATFORM=vm na API e no worker (as chaves de leitura da AWS e da GCP), sem o estado
-# nos guest attributes, sem o tópico do sink e sem o ID da conta de serviço; a fonte gcp só com o cofre; o cofre sem o token (sobe sem o túnel; o
+# nos guest attributes, sem o tópico do sink e sem o ID da conta de serviço, com a sincronização com o plano de controle
+# (a chave do nó numa pasta só do worker, fora da do cofre; sem ela, sobe sem a sincronização); a fonte gcp só com o
+# cofre; o cofre sem o token (sobe sem o túnel; o
 # `tunnel` liga depois), com um arquivo aberto para outros, com quebra de linha ou com uma chave que não é RSA; o
 # primeiro acesso com as entradas dos arquivos do instalador (a senha do administrador num arquivo só de root, a da
 # conta de suporte descartada); a guarda do metadata da VM própria (todos os contêineres, IPv4 e IPv6, antes do Docker
@@ -279,9 +281,29 @@ nothing_forbidden
   fail "o arquivo das chaves do worker não é a chave do cofre local"
 ! grep -q -e 'PRIVATE KEY' -e BEGIN -e "$(base64 -w0 <"$root/etc/verax/vault/credentials-key")" \
   "$root/run/verax/worker.env" "$root/run/verax/api.env" || fail "chave privada no ambiente"
-for key_name in NODE_STATUS VERAX_NODE_COMMIT GCP_SINK_TOPIC_PREFIX NODE_SA_UNIQUE_ID; do
+for key_name in NODE_STATUS GCP_SINK_TOPIC_PREFIX NODE_SA_UNIQUE_ID; do
   ! grep -q "^$key_name=" "$root/run/verax/api.env" "$root/run/verax/worker.env" || fail "$key_name no ambiente"
 done
+# Sincronização com o plano de controle: o worker recebe o commit instalado, o interruptor e o caminho da chave do nó
+# (nunca a chave), e a API nada disso. A chave do nó do cofre local vai para a pasta própria de /run/verax (0440, de
+# root e do grupo do worker), que só o worker monta (compose.yaml), fora da pasta do cofre de credenciais, que o job
+# aws-sessions também monta.
+node_key=$(<"$root/etc/verax/vault/node-key")
+[[ $(value_of worker.env VERAX_NODE_COMMIT) == "$(printf 'a%.0s' {1..40})" ]] || fail "o commit não foi para o worker"
+[[ $(value_of worker.env CONTROL_PLANE_SYNC) == true ]] || fail "a sincronização não foi ligada"
+[[ $(value_of worker.env CONTROL_PLANE_NODE_KEY_FILE) == /run/cp/node-key ]] || fail "o caminho da chave do nó"
+! grep -q -e VERAX_NODE_COMMIT -e CONTROL_PLANE_ "$root/run/verax/api.env" || fail "a API recebeu a sincronização"
+! grep -q CONTROL_PLANE_ORIGIN "$root/run/verax/worker.env" || fail "a origem sem a linha no node.conf"
+[[ $(cat "$root/run/verax/cp/node-key") == "$node_key" ]] || fail "a chave do nó não chegou à pasta do worker"
+[[ $(stat -c %a "$root/run/verax/cp/node-key") == 440 ]] || fail "a chave do nó fora do 0440"
+grep -q "^chown 0:1000 $root/run/verax/cp/\\.node-key\\.[A-Za-z0-9]*\$" "$state/chown.log" ||
+  fail "a chave do nó não passou ao grupo do worker antes de entrar no lugar: $(cat "$state/chown.log")"
+[[ $(grep -rlF -- "$node_key" "$root/run") == "$root/run/verax/cp/node-key" ]] ||
+  fail "a chave do nó está fora da pasta própria: $(grep -rlF -- "$node_key" "$root/run")"
+grep -qxF '      - /run/verax/cp:/run/cp:ro' < <(awk '/^  worker:$/,/^$/' "$root/opt/verax/compose.yaml") ||
+  fail "o compose.yaml não monta a pasta da chave do nó no worker"
+[[ $(grep -c '/run/verax/cp' "$root/opt/verax/compose.yaml") == 1 ]] || fail "outro contêiner monta a pasta da chave do nó"
+! grep -q '/run/verax/cp' "$root/opt/verax/compose.vault.yaml" || fail "o compose.vault.yaml monta a chave do nó"
 [[ $(value_of worker.env SYNC_SOURCES) == wazuh,cloudflare ]] || fail "fontes do worker"
 # A API aceita as chaves de leitura da AWS e da GCP e o worker lê com elas.
 [[ $(value_of api.env NODE_PLATFORM) == vm && $(value_of worker.env NODE_PLATFORM) == vm ]] || fail "NODE_PLATFORM"
@@ -297,6 +319,27 @@ grep -qx -- '-A VERAX-IMDS -j DROP' <<<"$guard" || fail "sem o DROP da guarda: $
 grep -qx 'iptables -I DOCKER-USER 1 -d 169.254.169.254 -j VERAX-IMDS' <<<"$guard" || fail "sem o salto do IPv4: $guard"
 grep -qx 'ip6tables -I DOCKER-USER 1 -d fd00:ec2::254 -j VERAX-IMDS' <<<"$guard" || fail "sem o salto do IPv6: $guard"
 nothing_forbidden
+
+# A parada tira a chave do nó da memória, como as chaves do cofre.
+run start down || fail "start.sh down falhou: $(cat "$state/out")"
+[[ ! -e $root/run/verax/cp/node-key ]] || fail "a chave do nó sobreviveu à parada"
+
+scenario='sem a chave do nó no cofre local: sobe sem a sincronização com o plano de controle, com o aviso'
+new_node
+run install || fail "install.sh falhou: $(cat "$state/out")"
+rm "$root/etc/verax/vault/node-key"
+run start up || fail "start.sh up falhou: $(cat "$state/out")"
+grep -q 'não tem a chave do nó' "$state/out" || fail "sem o aviso: $(cat "$state/out")"
+! grep -q CONTROL_PLANE_ "$root/run/verax/worker.env" || fail "a sincronização ligou sem a chave do nó"
+[[ $(value_of worker.env VERAX_NODE_COMMIT) == "$(printf 'a%.0s' {1..40})" ]] || fail "o commit saiu do worker"
+[[ -d $root/run/verax/cp && -z $(ls -A "$root/run/verax/cp") ]] || fail "a pasta da chave do nó não existe vazia"
+scenario='a chave do nó aberta para outros no cofre local: recusada, sem copiar'
+new_node
+run install || fail "install.sh falhou: $(cat "$state/out")"
+chmod 0644 "$root/etc/verax/vault/node-key"
+run start up || fail "start.sh up falhou: $(cat "$state/out")"
+grep -q 'não tem a chave do nó' "$state/out" || fail "sem o aviso: $(cat "$state/out")"
+[[ ! -e $root/run/verax/cp/node-key ]] || fail "copiou a chave aberta para outros"
 
 scenario='o ID da conta de serviço do Google não vale no modo vm'
 new_node NODE_SA_UNIQUE_ID=123456789012345678901

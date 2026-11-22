@@ -145,6 +145,8 @@ model Tenant {
   cellState                CellTenantState?
   cloudIdentity            TenantCloudIdentity?
   cellBootstrap            CellTenantBootstrap?
+  /// Nó dedicado: o resultado de cada item que a sincronização com o plano de controle trouxe do console.
+  controlPlaneSyncItems    ControlPlaneSyncItem[]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -306,61 +308,66 @@ enum CloudAccountConnection {
 /// com o token que o Google assina para a conta de serviço dele; na GCP, o nó lê com a identidade dele, sem chave. Só
 /// o token do Cloudflare fica cifrado à parte, em `CloudCredential` (cofre do nó). Cada conta pertence a um só cliente.
 model CloudAccount {
-  id                 String                 @id @default(uuid(7)) @db.Uuid
-  tenantId           String                 @db.Uuid
-  tenant             Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  provider           CloudProvider          @default(aws)
+  id                   String                 @id @default(uuid(7)) @db.Uuid
+  tenantId             String                 @db.Uuid
+  tenant               Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  provider             CloudProvider          @default(aws)
   /// 12 dígitos (AWS), ID do projeto (GCP, até 30) ou 32 hexadecimais (Cloudflare).
-  accountId          String                 @db.VarChar(32)
+  accountId            String                 @db.VarChar(32)
   /// AWS: regiões monitoradas.
-  regions            String[]
+  regions              String[]
   /// Obsoleto (o ExternalId do conector antigo): a API não lê nem grava desde o PR-V3', e a migration dele apagou os
   /// valores. A coluna fica só para a versão anterior da API, numa volta de versão, encontrar o que ela lê; sai numa
   /// migration de contração.
-  externalId         String?                @db.VarChar(128)
+  externalId           String?                @db.VarChar(128)
   /// AWS: buckets de onde o Wazuh lê os logs desta conta (T5.2 vincula cada alerta pelo bucket de origem).
-  cloudtrailBucket   String?                @db.VarChar(63)
-  guarddutyBucket    String?                @db.VarChar(63)
-  wafBucket          String?                @db.VarChar(63)
+  cloudtrailBucket     String?                @db.VarChar(63)
+  guarddutyBucket      String?                @db.VarChar(63)
+  wafBucket            String?                @db.VarChar(63)
   /// GCP: assinatura do Pub/Sub que o nó lê, pelo nome completo (`projects/<projeto>/subscriptions/<id>`).
-  pubsubSubscription String?                @db.VarChar(320)
+  pubsubSubscription   String?                @db.VarChar(320)
   /// GCP, projeto de cliente: identidade de escrita do sink que o cliente criou no projeto dele, colada no painel
   /// (`serviceAccount:service-<número>@gcp-sa-logging.iam.gserviceaccount.com`). Não é segredo: é a quem o Terraform
   /// do nó deixa publicar no tópico do projeto.
-  sinkWriterIdentity String?                @db.VarChar(128)
+  sinkWriterIdentity   String?                @db.VarChar(128)
   /// Cloudflare: zonas (domínios) monitoradas.
-  zones              String[]               @default([])
+  zones                String[]               @default([])
   /// Horário do alerta mais recente desta conta, gravado pelo sync (T5.3).
-  lastEventAt        DateTime?              @db.Timestamptz(3)
+  lastEventAt          DateTime?              @db.Timestamptz(3)
   /// Estado da coleta, gravado pelo sync da conta (ver `CloudAccountConnection`).
-  connection         CloudAccountConnection @default(waiting)
+  connection           CloudAccountConnection @default(waiting)
   /// Tipo do último erro de coleta (o nome da classe do erro). Nunca a mensagem, que pode carregar dado ou segredo.
-  connectionError    String?                @db.VarChar(64)
+  connectionError      String?                @db.VarChar(64)
   /// AWS: aviso da coleta pelo Wazuh do nó (`aws_token_stale` ou `wazuh_apply_failed`, PR-V4'), à parte da conexão:
   /// só a tarefa `wazuh-config` do worker o grava, e a conferência da conexão (`aws-check`) só grava `connectionError`.
   /// Só conta AWS, e só os códigos da coleta (CHECK da migration).
-  collectionError    String?                @db.VarChar(64)
+  collectionError      String?                @db.VarChar(64)
   /// Última leitura bem-sucedida da fonte desta conta, com ou sem evento. Só vale como sinal de vida na Torre nos
   /// provedores coletados por API (Cloudflare); na AWS e na GCP, o sinal é o evento.
-  lastCollectedAt    DateTime?              @db.Timestamptz(3)
+  lastCollectedAt      DateTime?              @db.Timestamptz(3)
   /// AWS: "Verificar" pedido no painel e ainda não respondido pela tarefa `aws-check` do worker, que confere a entrada
   /// no papel e a leitura dos buckets e grava a conexão (`src/aws/aws-check.ts`). Null sem pedido pendente. A
   /// migration confere por CHECK que só conta AWS tem o pedido.
-  checkRequestedAt   DateTime?              @db.Timestamptz(3)
+  checkRequestedAt     DateTime?              @db.Timestamptz(3)
   /// AWS: dia a partir do qual o Wazuh lê os logs dos buckets (`only_logs_after`): o da primeira verificação
   /// bem-sucedida, menos um dia. Gravado uma vez só, pelo worker; sem ele, o Wazuh leria todo o histórico do bucket.
   /// Só conta AWS (CHECK da migration).
-  ingestFrom         DateTime?              @db.Date
+  ingestFrom           DateTime?              @db.Date
   /// AWS: o momento da primeira verificação bem-sucedida (CE-09), gravado uma vez só, junto com `ingestFrom`: o volume
   /// medido na origem (tarefa `aws-volume`) só conta objetos criados a partir dele, e o histórico anterior nunca é
   /// cobrado. Só conta AWS (CHECK da migration).
-  meteredFrom        DateTime?              @db.Timestamptz(3)
-  status             CloudAccountStatus     @default(active)
-  createdAt          DateTime               @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime               @updatedAt @db.Timestamptz(3)
-  cursors            CollectorCursor[]
-  volumeObjects      AwsVolumeObject[]
-  credential         CloudCredential?
+  meteredFrom          DateTime?              @db.Timestamptz(3)
+  status               CloudAccountStatus     @default(active)
+  /// Quem cadastrou: o cliente no painel ou a Verax pelo console (a sincronização com o plano de controle, tarefa
+  /// `control-plane-sync` do worker). A do console não muda pelo painel (409 `CONSOLE_MANAGED`).
+  origin               ManagedOrigin          @default(panel)
+  /// A última revisão do console aplicada no cadastro; só na conta do console (CHECK da migration).
+  controlPlaneRevision Int?
+  createdAt            DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime               @updatedAt @db.Timestamptz(3)
+  cursors              CollectorCursor[]
+  volumeObjects        AwsVolumeObject[]
+  credential           CloudCredential?
 
   @@unique([provider, accountId])
   /// Alvo da chave estrangeira composta da `CloudCredential`: a credencial é sempre do mesmo cliente da conta.
@@ -934,34 +941,99 @@ enum CloudCredentialKind {
 /// conta ou outro cliente não abre. O segredo nunca sai pela API nem vai para a auditoria (só `keyIdSuffix`). A
 /// migration confere por CHECK o formato do envelope, a versão e o sufixo.
 model CloudCredential {
-  cloudAccountId   String              @id @db.Uuid
+  cloudAccountId       String              @id @db.Uuid
   /// Chave estrangeira composta (conta e cliente): o banco recusa a credencial de um cliente na conta de outro.
-  cloudAccount     CloudAccount        @relation(fields: [cloudAccountId, tenantId], references: [id, tenantId], onDelete: Cascade)
-  tenantId         String              @db.Uuid
-  tenant           Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  kind             CloudCredentialKind
+  cloudAccount         CloudAccount        @relation(fields: [cloudAccountId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  tenantId             String              @db.Uuid
+  tenant               Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  kind                 CloudCredentialKind
   /// `v<keyVersion>:<base64>`: o envelope do cofre, com a versão da chave do nó que cifrou (híbrido, com AES-256-GCM,
   /// quando o segredo passa do que o RSA cifra de uma vez: a chave da conta de serviço da GCP).
-  ciphertext       String              @db.VarChar(8192)
+  ciphertext           String              @db.VarChar(8192)
   /// Versão da chave do nó (a versão do segredo `credentials-key` no Secret Manager). A tarefa `credential-rekey` do
   /// worker recifra as linhas de versões antigas com a corrente.
-  keyVersion       Int
+  keyVersion           Int
   /// Os 4 últimos caracteres do ID do token: o que o painel e a auditoria mostram.
-  keyIdSuffix      String              @db.VarChar(4)
+  keyIdSuffix          String              @db.VarChar(4)
   /// Criação do token na origem, quando ela informa: a idade conta daqui.
-  issuedAt         DateTime?           @db.Timestamptz(3)
+  issuedAt             DateTime?           @db.Timestamptz(3)
   /// Validade do token do Cloudflare, quando ele tem uma.
-  expiresAt        DateTime?           @db.Timestamptz(3)
+  expiresAt            DateTime?           @db.Timestamptz(3)
   /// Última validação bem-sucedida na fonte (`tokens/verify`).
-  verifiedAt       DateTime            @db.Timestamptz(3)
+  verifiedAt           DateTime            @db.Timestamptz(3)
   /// Quando saiu o aviso de troca da chave (rotação).
-  rotationNoticeAt DateTime?           @db.Timestamptz(3)
-  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime            @updatedAt @db.Timestamptz(3)
+  rotationNoticeAt     DateTime?           @db.Timestamptz(3)
+  /// Quem guardou a credencial vigente: o cliente, colada no painel, ou a Verax, colada no console e cifrada para o
+  /// cofre do nó (a sincronização com o plano de controle). Vale a mais recente: a colada no painel fica até o console
+  /// mandar uma revisão nova.
+  origin               ManagedOrigin       @default(panel)
+  /// A revisão do console da credencial vigente; null na colada no painel.
+  controlPlaneRevision Int?
+  createdAt            DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime            @updatedAt @db.Timestamptz(3)
 
   /// Exigido pelo Prisma na relação um para um com chave composta (o `cloudAccountId` sozinho já é único).
   @@unique([cloudAccountId, tenantId])
   @@index([tenantId])
+}
+
+/// Quem cadastrou uma conta cloud ou guardou a credencial dela: o cliente no painel ou a Verax pelo console (a
+/// sincronização do nó com o plano de controle).
+enum ManagedOrigin {
+  panel
+  control_plane
+}
+
+/// O que a sincronização com o plano de controle acompanha item a item: a fonte de log, a credencial dela e (depois) o
+/// usuário pedido pela Verax.
+enum ControlPlaneItemKind {
+  log_source
+  log_source_credential
+  user
+}
+
+/// Sincronização com o plano de controle (nó dedicado): o resultado da última revisão de cada item do console que o
+/// worker processou, para contar de volta (`outcome` e `code` do contrato, `packages/shared/src/node-sync.ts`) e para não
+/// tentar de novo uma revisão que falhou, a não ser quando a falha passa sozinha (`nextAttemptAt`: a vaga do plano a
+/// cada hora, a origem fora do ar com espera crescente). `itemId` é o id do item no console (a fonte de log é o id da
+/// conta no banco do nó). Só o worker grava (`SYSTEM_WRITTEN_MODELS`); nenhuma rota lê.
+model ControlPlaneSyncItem {
+  kind          ControlPlaneItemKind
+  itemId        String               @db.VarChar(36)
+  tenantId      String               @db.Uuid
+  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  revision      Int
+  outcome       String               @db.VarChar(16)
+  code          String?              @db.VarChar(64)
+  /// Tentativas seguidas da mesma revisão que falharam (a espera crescente da origem fora do ar).
+  attempts      Int                  @default(0)
+  /// A próxima tentativa da mesma revisão; null quando só uma revisão nova tenta de novo.
+  nextAttemptAt DateTime?            @db.Timestamptz(3)
+  /// Fonte de log: o SHA-256 do último relato desta fonte que o plano de controle aceitou (200) e quando. O pedido tem
+  /// limite de tamanho (`NODE_SYNC_REQUEST_MAX_BYTES`): vão antes os relatos que mudaram desde o último aceito e, entre
+  /// os outros, os mandados há mais tempo, para os que ficam de fora irem na chamada seguinte.
+  reportedHash  String?              @db.Char(64)
+  reportedAt    DateTime?            @db.Timestamptz(3)
+  updatedAt     DateTime             @updatedAt @db.Timestamptz(3)
+
+  @@id([kind, itemId])
+  @@index([tenantId])
+}
+
+/// Sincronização com o plano de controle: uma linha só (`id = node`). `sequence` cresce a cada chamada (o plano de
+/// controle recusa a repetida); `generation`, a última geração do estado desejado recebida. A próxima chamada e as
+/// falhas seguidas guardam a espera entre uma partida e outra do worker. Só o worker grava.
+model ControlPlaneSync {
+  id            String    @id @default("node") @db.VarChar(16)
+  sequence      BigInt    @default(0)
+  generation    Int?
+  lastAttemptAt DateTime? @db.Timestamptz(3)
+  lastSuccessAt DateTime? @db.Timestamptz(3)
+  lastErrorCode String?   @db.VarChar(64)
+  /// Chamadas seguidas que falharam (a espera crescente com o plano de controle fora do ar).
+  failures      Int       @default(0)
+  /// A próxima chamada (o `pollAfterSeconds` da resposta ou a espera depois de uma falha).
+  nextAttemptAt DateTime? @db.Timestamptz(3)
 }
 
 /// Estado do agente do Wazuh, como o manager do nó informa.
