@@ -1,8 +1,10 @@
 import { screen, waitFor, within } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 import type { TenantDetail } from '@/lib/api-types';
 import { formatDateTime } from '@/lib/format';
 import { createFakeState, type FakeAdminState } from '@/mocks/fake-admin-api';
+import { server } from '@/mocks/server';
 import { renderConsole } from '@/test/render';
 
 const CUSTOMER_ID = '01JC0000000000000000000E01';
@@ -104,6 +106,39 @@ describe('mostrar a senha inicial', () => {
     ).not.toBeInTheDocument();
     expect(within(panel).queryByRole('button', { name: 'Mostrar senha inicial…' })).not.toBeInTheDocument();
     expect(screen.queryByText(password)).not.toBeInTheDocument();
+  });
+
+  it('a releitura do cliente falha depois da revelação: o acesso continua na tela', async () => {
+    const state = waitingState();
+    const { user, client } = renderConsole(`/clientes/${CUSTOMER_ID}`, state);
+    const panel = await accessPanel();
+    await user.click(await within(panel).findByRole('button', { name: 'Mostrar senha inicial…' }));
+    await user.type(within(panel).getByLabelText(/Digite o subdomínio/), 'cliente-demo-e');
+    // Daqui em diante o detalhe do cliente não carrega mais (a releitura que a revelação dispara falha).
+    server.use(
+      http.get('*/v1/admin/tenants/:tenantId', () =>
+        HttpResponse.json({ error: 'Recurso não encontrado', code: 'not_found' }, { status: 404 }),
+      ),
+    );
+    await user.click(within(panel).getByRole('button', { name: 'Confirmar: mostrar a senha' }));
+
+    const revealed = await within(panel).findByRole('region', { name: 'Acesso para enviar ao cliente' });
+    const password = revealedValue(revealed, 'Senha temporária');
+    await waitFor(() =>
+      expect(
+        client
+          .getQueryCache()
+          .getAll()
+          .some((query) => query.state.status === 'error'),
+      ).toBe(true),
+    );
+    expect(screen.getByRole('region', { name: 'Acesso para enviar ao cliente' })).toBeInTheDocument();
+    expect(
+      revealedValue(
+        screen.getByRole('region', { name: 'Acesso para enviar ao cliente' }),
+        'Senha temporária',
+      ),
+    ).toBe(password);
   });
 
   it('o botão só aparece na espera do primeiro acesso e sem revelação', async () => {

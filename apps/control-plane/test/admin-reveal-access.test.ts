@@ -1,7 +1,7 @@
 import type { AddressInfo } from 'node:net';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccessStore } from '../src/access/access-store.js';
 import { DESTROY_BOOTSTRAP_STEP } from '../src/access/reveal.service.js';
 import type { AccessRevealed } from '../src/admin/admin-tenants.schema.js';
@@ -188,6 +188,22 @@ describe('cp-admin e cp-worker: a senha inicial mostrada uma vez no console', ()
         details: { operation: 'reveal-access', outcome: 'already_revealed', status: 409 },
       }),
     ]);
+  });
+
+  it('o registro do pedido no cp-admin falha: a senha chega mesmo assim (a revelação já está gravada no worker)', async () => {
+    const { tenant, password } = await waitingTenant();
+    const adminAudit = admin.get(AuditService, { strict: false });
+    const write = vi.spyOn(adminAudit, 'write').mockRejectedValueOnce(new Error('firestore indisponível'));
+    try {
+      const response = await revealAccess(tenant.id, { confirmSlug: tenant.slug }).expect(200);
+      expect((response.body as AccessRevealed).password).toBe(password);
+      expect(write).toHaveBeenCalledTimes(1);
+    } finally {
+      write.mockRestore();
+    }
+    expect((await tenants.require(tenant.id)).access?.passwordRevealedAt).toEqual(START);
+    expect(capture.text).toContain('admin_console_audit_failed');
+    expect(capture.text).not.toContain(password);
   });
 
   it('o subdomínio digitado errado não chega ao worker: 400 confirmation_mismatch, nada marcado', async () => {

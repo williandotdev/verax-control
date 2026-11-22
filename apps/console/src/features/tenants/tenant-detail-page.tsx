@@ -134,14 +134,19 @@ export function TenantDetailPage() {
     createdNotice((location.state as { created?: DirectTenantCreated } | null)?.created),
   );
 
-  if (tenant.isPending) return <LoadingState label="Carregando o cliente" />;
-  if (tenant.isError) {
-    return (
-      <div className="space-y-3">
-        <BackLink />
-        <ErrorState error={tenant.error} onRetry={() => void tenant.refetch()} />
-      </div>
-    );
+  // Uma releitura que falha depois de a página carregar não troca a página pela tela de erro: o React Query mantém o
+  // último dado, e a página continua montada. Isso importa para a senha inicial recém-revelada, que só existe no estado
+  // local do bloco de acesso e não pode ser pedida de novo (a revelação já foi marcada e a destruição já está na fila).
+  if (tenant.data === undefined) {
+    if (tenant.isError) {
+      return (
+        <div className="space-y-3">
+          <BackLink />
+          <ErrorState error={tenant.error} onRetry={() => void tenant.refetch()} />
+        </div>
+      );
+    }
+    return <LoadingState label="Carregando o cliente" />;
   }
   const data = tenant.data;
   const lastError = data.provisioning?.lastError;

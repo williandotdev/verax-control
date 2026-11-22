@@ -841,14 +841,24 @@ export class AdminTenantsService {
         : result;
       throw workerError(await this.recordFailure('reveal-access', tenant, owner, failed));
     }
-    await this.audit.write({
-      actor: `owner:${owner.email}`,
-      action: 'tenant.console_request',
-      tenantId: tenant.id,
-      // Nunca a senha nem o login: só que a revelação aconteceu (o worker gravou `access.revealed`).
-      details: { operation: 'reveal-access', outcome: 'ok' },
-      requestId: owner.requestId,
-    });
+    try {
+      await this.audit.write({
+        actor: `owner:${owner.email}`,
+        action: 'tenant.console_request',
+        tenantId: tenant.id,
+        // Nunca a senha nem o login: só que a revelação aconteceu (o worker gravou `access.revealed`).
+        details: { operation: 'reveal-access', outcome: 'ok' },
+        requestId: owner.requestId,
+      });
+    } catch (error) {
+      // O registro que vale já está gravado: o worker marcou a revelação e gravou `access.revealed` na mesma transação,
+      // e a destruição da senha já está na fila. Falhar aqui jogaria fora a única entrega da senha (nem o responsável
+      // nem o cliente conseguem pedir de novo), então só fica o erro no log, sem a senha.
+      this.logger.error(
+        { event: 'admin_console_audit_failed', tenantId: tenant.id, operation: 'reveal-access', err: error },
+        'o registro do pedido do console falhou; a senha segue para o responsável',
+      );
+    }
     this.logger.info(
       { event: 'admin_tenant_operation', tenantId: tenant.id, operation: 'reveal-access' },
       'senha inicial revelada pelo console',
