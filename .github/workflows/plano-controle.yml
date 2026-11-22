@@ -32,6 +32,7 @@ on:
       # O contrato do canal da célula (CE-06) entra na imagem do plano de controle.
       - 'packages/shared/**'
       - 'packages/vault-envelope/**'
+      - 'infra/cloudformation/verax-control-reader.yaml'
       - 'apps/console/**'
       - 'scripts/scan-bundle.mjs'
       - 'package.json'
