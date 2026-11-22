@@ -190,6 +190,10 @@ describe('canal da célula, lado do nó (CE-05)', () => {
       .filter((report) => report.kind !== 'cell.status' && report.tenantId === controlPlaneId);
   }
 
+  function dayOf(report: CellReport): string {
+    return 'day' in report && typeof report.day === 'string' ? report.day : '';
+  }
+
   async function nodeTenantOf(controlPlaneId: string): Promise<string> {
     return (await prisma.cellTenantState.findUniqueOrThrow({ where: { controlPlaneId } })).tenantId;
   }
@@ -717,8 +721,14 @@ describe('canal da célula, lado do nó (CE-05)', () => {
           { tenantId, day: new Date('2026-11-11T00:00:00Z'), source: 'aws', bytes: 1_000n, events: 2n },
         ],
       });
+      // Os relatos do mesmo dia nascem no mesmo milissegundo, e o id não dá a ordem entre eles: o canal não promete
+      // ordem, então o teste compara pelo dia (e, no mesmo dia, pela ordem de gravação).
       const usageOf = async () =>
-        (await reportsOf(controlPlaneId)).filter((report) => report.kind === 'usage.daily');
+        (await reportsOf(controlPlaneId))
+          .filter((report) => report.kind === 'usage.daily')
+          .map((report, index) => ({ report, index }))
+          .sort((a, b) => dayOf(a.report).localeCompare(dayOf(b.report)) || a.index - b.index)
+          .map(({ report }) => report);
 
       await new CellUsageReports(prisma, outbox, () => noon).runOnce();
       expect(await usageOf()).toMatchObject([
