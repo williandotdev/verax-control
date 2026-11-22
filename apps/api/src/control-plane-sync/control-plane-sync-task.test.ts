@@ -26,6 +26,7 @@ const sync = {
   origin: 'https://conta.exemplo.com.br',
   url: 'https://conta.exemplo.com.br/v1/node-sync',
   commit: 'c'.repeat(40),
+  users: true,
 };
 
 describe('tarefa control-plane-sync no agendador do worker', () => {

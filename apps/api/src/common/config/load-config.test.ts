@@ -805,11 +805,25 @@ describe('configuração do worker do sync (T5.3)', () => {
         url: 'https://conta.veraxsistemas.com.br/v1/node-sync',
         commit,
         credential: { kind: 'gcp_identity' },
+        users: true,
       });
       expect(
         loadWorkerConfig({ ...gcp, CONTROL_PLANE_ORIGIN: 'https://conta.exemplo.com.br' }).controlPlaneSync
           ?.url,
       ).toBe('https://conta.exemplo.com.br/v1/node-sync');
+    });
+
+    it('os usuários pedidos no console: ligados por padrão; CONTROL_PLANE_USERS=false é o interruptor do cliente', () => {
+      expect(loadWorkerConfig({ ...gcp, CONTROL_PLANE_USERS: 'true' }).controlPlaneSync?.users).toBe(true);
+      expect(loadWorkerConfig({ ...gcp, CONTROL_PLANE_USERS: 'false' }).controlPlaneSync?.users).toBe(false);
+      expect(loadWorkerConfig({ ...gcp, CONTROL_PLANE_USERS: 'false' })).not.toHaveProperty(
+        'CONTROL_PLANE_USERS',
+      );
+      expect(() => loadWorkerConfig({ ...gcp, CONTROL_PLANE_USERS: 'nao' })).toThrow(
+        'CONTROL_PLANE_USERS: use true ou false',
+      );
+      // Sem a sincronização, a linha não liga nada.
+      expect(loadWorkerConfig({ ...workerEnv, CONTROL_PLANE_USERS: 'false' }).controlPlaneSync).toBeNull();
     });
 
     it('a origem é só https, sem caminho', () => {

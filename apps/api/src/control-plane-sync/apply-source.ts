@@ -8,6 +8,7 @@ import {
   type NodeSyncDesiredCredential,
   type NodeSyncDesiredSource,
   type NodeSyncSourceCode,
+  type NodeSyncUserCode,
   sameLogBucketNames,
 } from '@verax/shared';
 import {
@@ -99,7 +100,7 @@ const audit = new AuditService();
 type Tx = Prisma.TransactionClient;
 
 /** O registro da trilha, sempre do sistema com o ator do console (a trilha do cliente mostra "Verax (administrativo)"). */
-function auditEntry(tenantId: string, entry: Omit<AuditEntry, 'actor' | 'outcome'>): AuditEntry {
+export function auditEntry(tenantId: string, entry: Omit<AuditEntry, 'actor' | 'outcome'>): AuditEntry {
   return {
     actor: { type: 'system', id: CONTROL_PLANE_AUDIT_ACTOR_ID, tenantId },
     outcome: 'success',
@@ -108,15 +109,15 @@ function auditEntry(tenantId: string, entry: Omit<AuditEntry, 'actor' | 'outcome
 }
 
 /** O resultado de um item, para contar de volta e para saber se tenta de novo. */
-async function recordItem(
+export async function recordItem(
   db: Tx,
   item: {
     kind: ControlPlaneItemKind;
     itemId: string;
     tenantId: string;
     revision: number;
-    outcome: 'applied' | 'failed' | 'removed';
-    code?: NodeSyncSourceCode | null;
+    outcome: 'applied' | 'failed' | 'removed' | 'created';
+    code?: NodeSyncSourceCode | NodeSyncUserCode | null;
     attempts?: number;
     nextAttemptAt?: Date | null;
   },

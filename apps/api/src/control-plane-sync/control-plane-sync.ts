@@ -3,10 +3,12 @@ import {
   NODE_SYNC_INTERVAL_SECONDS,
   NODE_SYNC_JITTER_SECONDS,
   NODE_SYNC_MAX_SOURCES,
+  NODE_SYNC_MAX_USERS,
   NODE_SYNC_POLL_MIN_SECONDS,
   NODE_SYNC_PROTOCOL,
   NODE_SYNC_REQUEST_MAX_BYTES,
   NODE_SYNC_SOURCE_CODES,
+  NODE_SYNC_USER_CODES,
   type NodePlatform,
   type NodeSyncCapability,
   type NodeSyncCredentialReport,
@@ -14,6 +16,8 @@ import {
   type NodeSyncResponse,
   type NodeSyncSourceCode,
   type NodeSyncSourceReport,
+  type NodeSyncUserCode,
+  type NodeSyncUserReport,
   type NodeSyncVaultKey,
 } from '@verax/shared';
 import { publicKeyFingerprint } from '@verax/vault-envelope';
@@ -25,6 +29,7 @@ import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { VaultKeyring } from '../credentials/credential-keys.js';
 import type { TenantPlans } from '../plan/tenant-plan.js';
 import { applySource, type SyncLogger } from './apply-source.js';
+import { applyUser } from './apply-user.js';
 import type { SourceCredentialChecks } from './credential-checks.js';
 import { clockSkewExceeded, type NodeSyncResult, postNodeSync } from './node-sync-client.js';
 
@@ -38,9 +43,13 @@ export const CONTROL_PLANE_SYNC_TICK_MS = 15_000;
 export const CONTROL_PLANE_SYNC_BUDGET_MS = 60_000;
 /** Depois de aplicar alguma coisa, mais uma chamada na mesma execução, para contar logo; nunca mais de duas. */
 export const MAX_ROUND_TRIPS = 2;
-/** O que este nó sabe aplicar. Os usuários (`users`) entram depois. */
+/**
+ * O que este nó sabe aplicar: as fontes de log e os usuários do cliente. Os usuários vão anunciados mesmo com
+ * `CONTROL_PLANE_USERS=false`: o nó recusa cada pedido com `users_disabled`, e o console mostra o motivo.
+ */
 export const CONTROL_PLANE_SYNC_CAPABILITIES = [
   'log_sources',
+  'users',
 ] as const satisfies readonly NodeSyncCapability[];
 
 /** As esperas depois de uma falha: o nó não reconhecido (1 h), o cliente não apto (6 h) e as que passam sozinhas. */
@@ -56,59 +65,70 @@ const SYNC_ROW_ID = 'node';
 const MAX_INT = 2_147_483_647;
 const KEY_ID_SUFFIX = /^[A-Za-z0-9_-]{4}$/;
 
-/** Um relato de fonte que pode ir no pedido, com o que o nó guarda do último aceito pelo plano de controle. */
-export interface ReportCandidate {
-  report: NodeSyncSourceReport;
+type AnyReport = NodeSyncSourceReport | NodeSyncUserReport;
+
+/**
+ * Um relato (de fonte ou de pedido de usuário) que pode ir no pedido, com o que o nó guarda do último aceito pelo
+ * plano de controle.
+ */
+export interface ReportCandidate<R extends AnyReport = NodeSyncSourceReport> {
+  report: R;
   /** SHA-256 do JSON do relato. */
   hash: string;
   /** O tamanho do JSON do relato, em bytes. */
   bytes: number;
-  /** Há o item `log_source` onde guardar o último relato aceito. */
+  /** Há o item (`log_source` ou `user`) onde guardar o último relato aceito. */
   tracked: boolean;
   reportedHash: string | null;
   reportedAt: Date | null;
 }
 
+type ReportKind = 'log_source' | 'user';
+
 /** O pedido montado e os relatos que foram nele (para marcar como aceitos depois do 200). */
 interface BuiltRequest {
   request: NodeSyncRequest;
-  reported: { id: string; hash: string; changed: boolean }[];
+  reported: { kind: ReportKind; id: string; hash: string; changed: boolean }[];
   /** Relatos que ficaram de fora pelo limite de tamanho (vão primeiro nas chamadas seguintes). */
   omitted: number;
 }
 
 const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
 
+/** O id do item do relato: o da fonte ou o do pedido de usuário. */
+const reportId = (report: AnyReport): string => ('requestId' in report ? report.requestId : report.id);
+
 /**
  * Os relatos que cabem no pedido: o corpo inteiro até `maxBytes` (o limite da rota no `cp-public`, que responde 413
- * acima dele) e no máximo `NODE_SYNC_MAX_SOURCES`. Vão antes os que mudaram desde o último aceito e, dentro de cada
+ * acima dele) e no máximo `maxItems` (`NODE_SYNC_MAX_SOURCES` ou `NODE_SYNC_MAX_USERS`). Vão antes os que mudaram desde o último aceito e, dentro de cada
  * grupo, os aceitos há mais tempo (o nunca aceito primeiro): os que ficam de fora numa chamada vão na seguinte, em vez
  * de ficar sempre o mesmo pedaço de fora. Deixar um relato de fora é seguro: o plano de controle só atualiza o relato
  * das fontes que vieram no pedido, e trata a que não veio como pendente.
  */
-export function selectReports(
-  candidates: readonly ReportCandidate[],
+export function selectReports<R extends AnyReport>(
+  candidates: readonly ReportCandidate<R>[],
   baseBytes: number,
   maxBytes: number,
-): { selected: ReportCandidate[]; omitted: number } {
-  const changed = (candidate: ReportCandidate) => candidate.hash !== candidate.reportedHash;
+  maxItems: number = NODE_SYNC_MAX_SOURCES,
+): { selected: ReportCandidate<R>[]; omitted: number } {
+  const changed = (candidate: ReportCandidate<R>) => candidate.hash !== candidate.reportedHash;
   const ordered = [...candidates].sort(
     (a, b) =>
       Number(changed(b)) - Number(changed(a)) ||
       (a.reportedAt?.getTime() ?? -1) - (b.reportedAt?.getTime() ?? -1) ||
-      a.report.id.localeCompare(b.report.id),
+      reportId(a.report).localeCompare(reportId(b.report)),
   );
-  const selected: ReportCandidate[] = [];
+  const selected: ReportCandidate<R>[] = [];
   let total = baseBytes;
   for (const candidate of ordered) {
-    if (selected.length >= NODE_SYNC_MAX_SOURCES) break;
+    if (selected.length >= maxItems) break;
     // A vírgula entre os itens: o primeiro não tem.
     const cost = candidate.bytes + (selected.length === 0 ? 0 : 1);
     if (total + cost > maxBytes) continue;
     selected.push(candidate);
     total += cost;
   }
-  selected.sort((a, b) => a.report.id.localeCompare(b.report.id));
+  selected.sort((a, b) => reportId(a.report).localeCompare(reportId(b.report)));
   return { selected, omitted: candidates.length - selected.length };
 }
 
@@ -128,6 +148,9 @@ export interface ControlPlaneSyncReport {
   /** Fontes que mudaram o nó (conta ou credencial). */
   changed: number;
   failed: number;
+  /** Pedidos de usuário com resultado nesta execução: a conta criada, ou a recusa (o código vai no relato). */
+  usersCreated: number;
+  usersFailed: number;
   /** O código da falha da chamada, quando houve. */
   error: string | null;
 }
@@ -172,6 +195,31 @@ function isSourceCode(code: string | null): code is NodeSyncSourceCode {
   return code !== null && (NODE_SYNC_SOURCE_CODES as readonly string[]).includes(code);
 }
 
+function isUserCode(code: string | null): code is NodeSyncUserCode {
+  return code !== null && (NODE_SYNC_USER_CODES as readonly string[]).includes(code);
+}
+
+/**
+ * O relato com a impressão digital e o tamanho do JSON dele (o limite do pedido usa o tamanho; a marca do último aceito,
+ * a impressão digital). A impressão digital só serve para saber se o relato mudou: quem chama passa o texto dela (o
+ * JSON do relato de fonte; no de usuário, os campos um a um, com os booleanos como 0 ou 1).
+ */
+function candidateOf<R extends AnyReport>(
+  report: R,
+  item: { reportedHash: string | null; reportedAt: Date | null } | undefined,
+  fingerprint: string,
+): ReportCandidate<R> {
+  const json = JSON.stringify(report);
+  return {
+    report,
+    hash: createHash('sha256').update(fingerprint).digest('hex'),
+    bytes: Buffer.byteLength(json, 'utf8'),
+    tracked: item !== undefined,
+    reportedHash: item?.reportedHash ?? null,
+    reportedAt: item?.reportedAt ?? null,
+  };
+}
+
 /**
  * Sincronização do nó dedicado com o plano de controle (a tarefa `control-plane-sync` do worker; o contrato está em
  * `packages/shared/src/node-sync.ts`, e o desenho em `docs/ARQUITETURA.md`, "Sincronização com o plano de controle").
@@ -181,12 +229,13 @@ function isSourceCode(code: string | null): code is NodeSyncSourceCode {
  *    adiada pelo orçamento, para outra réplica não chamar junto);
  * 2. acha o cliente do nó: um só (o nó dedicado); com mais de um, informa `tenant_ambiguous` e não aplica nada;
  * 3. monta o pedido (o commit, a plataforma, a chave pública do cofre e a impressão digital dela, o ID da conta de
- *    serviço, os IPs de saída, o audience da AWS e o que aconteceu com cada fonte do console: as contas `control_plane`
- *    e os itens de `ControlPlaneSyncItem`) e chama `POST /v1/node-sync` com o token do Google (nó da GCP) ou a chave
+ *    serviço, os IPs de saída, o audience da AWS, o que aconteceu com cada fonte do console (as contas `control_plane`
+ *    e os itens de `ControlPlaneSyncItem`) e com cada pedido de usuário (as contas com `controlPlaneRequestId`, com a
+ *    situação de agora, e os pedidos recusados)) e chama `POST /v1/node-sync` com o token do Google (nó da GCP) ou a chave
  *    do nó (VM própria), sem seguir redirecionamento, em até 20 s, lendo no máximo 1 MB da resposta e conferindo-a
  *    pelo contrato estrito;
- * 4. aplica cada fonte numa transação própria (`apply-source.ts`); se algo mudou, chama mais uma vez para contar logo
- *    (no máximo duas chamadas);
+ * 4. aplica cada fonte numa transação própria (`apply-source.ts`) e depois cada usuário pedido (`apply-user.ts`); se
+ *    algo mudou (ou um pedido de usuário teve resultado), chama mais uma vez para contar logo (no máximo duas chamadas);
  * 5. marca a próxima chamada: o `pollAfterSeconds` da resposta (5 min ±30 s por padrão) ou, depois de uma falha, 1 h
  *    (nó não reconhecido), 6 h (cliente não apto), o `Retry-After` (429) ou 1, 2, 4... minutos até 30 (o plano de
  *    controle fora do ar, a resposta fora do contrato).
@@ -208,7 +257,15 @@ export class ControlPlaneSync {
   }
 
   async runOnce(signal: AbortSignal): Promise<ControlPlaneSyncReport> {
-    const report: ControlPlaneSyncReport = { due: false, roundTrips: 0, changed: 0, failed: 0, error: null };
+    const report: ControlPlaneSyncReport = {
+      due: false,
+      roundTrips: 0,
+      changed: 0,
+      failed: 0,
+      usersCreated: 0,
+      usersFailed: 0,
+      error: null,
+    };
     if (this.nextAt !== null && this.now() < this.nextAt) return report;
     let sequence = await this.claim(true);
     if (sequence === null) return report;
@@ -228,7 +285,11 @@ export class ControlPlaneSync {
         const built = await this.request(sequence, tenant);
         if (built.omitted > 0) {
           this.options.logger.warn(
-            { reported: built.request.sources.length, omitted: built.omitted },
+            {
+              reported: built.request.sources.length,
+              reportedUsers: built.request.users.length,
+              omitted: built.omitted,
+            },
             'sincronização com o plano de controle: relatos de fora pelo limite do pedido; vão nas chamadas seguintes',
           );
         }
@@ -276,8 +337,32 @@ export class ControlPlaneSync {
             if (outcome.failed) report.failed += 1;
           }
         }
+        // Os usuários depois das fontes, cada pedido numa transação própria (`apply-user.ts`).
+        let decided = 0;
+        if (tenant.kind === 'single') {
+          for (const user of result.response.users ?? []) {
+            signal.throwIfAborted();
+            const outcome = await applyUser(
+              {
+                prisma: this.prisma,
+                tenantId: tenant.id,
+                keyring: this.options.keyring,
+                plans: this.options.plans,
+                enabled: this.options.config.users,
+                logger: this.options.logger,
+                now: this.now,
+              },
+              user,
+            );
+            if (outcome === 'created') report.usersCreated += 1;
+            if (outcome === 'failed') report.usersFailed += 1;
+            if (outcome !== 'unchanged') decided += 1;
+          }
+        }
         report.changed += changed;
-        if (changed === 0 || report.roundTrips >= MAX_ROUND_TRIPS) break;
+        // Uma conta criada ou um pedido recusado também pedem a segunda chamada: o console mostra o resultado logo, e o
+        // plano de controle apaga o envelope.
+        if ((changed === 0 && decided === 0) || report.roundTrips >= MAX_ROUND_TRIPS) break;
         sequence = await this.claim(false);
         if (sequence === null) return report;
       }
@@ -389,46 +474,127 @@ export class ControlPlaneSync {
       users: [],
     };
     if (tenant.kind !== 'single') return { request: base, reported: [], omitted: 0 };
-    const candidates = await this.sourceReports(tenant.id);
-    const { selected, omitted } = selectReports(
-      candidates,
+    const maxBytes = this.options.requestMaxBytes ?? NODE_SYNC_REQUEST_MAX_BYTES;
+    // Os relatos dos usuários vão primeiro, com a mesma régua e o teto deles: são pequenos (perto de 150 bytes; os
+    // `NODE_SYNC_MAX_USERS`, cerca de 30 KiB, um oitavo do limite) e são o que faz o plano de controle mostrar o
+    // resultado e apagar o envelope. As fontes ficam com o que sobra do limite.
+    const users = selectReports(
+      await this.userReports(tenant.id),
       jsonBytes(base),
-      this.options.requestMaxBytes ?? NODE_SYNC_REQUEST_MAX_BYTES,
+      maxBytes,
+      NODE_SYNC_MAX_USERS,
     );
-    return {
-      request: { ...base, sources: selected.map((candidate) => candidate.report) },
-      reported: selected
+    const withUsers: NodeSyncRequest = {
+      ...base,
+      users: users.selected.map((candidate) => candidate.report),
+    };
+    const sources = selectReports(await this.sourceReports(tenant.id), jsonBytes(withUsers), maxBytes);
+    const tracked = <R extends AnyReport>(kind: ReportKind, selected: ReportCandidate<R>[]) =>
+      selected
         .filter((candidate) => candidate.tracked)
         .map((candidate) => ({
-          id: candidate.report.id,
+          kind,
+          id: reportId(candidate.report),
           hash: candidate.hash,
           changed: candidate.hash !== candidate.reportedHash,
-        })),
-      omitted,
+        }));
+    return {
+      request: { ...withUsers, sources: sources.selected.map((candidate) => candidate.report) },
+      reported: [...tracked('log_source', sources.selected), ...tracked('user', users.selected)],
+      omitted: sources.omitted + users.omitted,
     };
   }
 
   /**
    * Os relatos que o plano de controle aceitou (200): o hash e o instante nos que mudaram, um a um; só o instante nos
-   * outros, de uma vez. Só o item da fonte do cliente do nó.
+   * outros, de uma vez por tipo. Só o item (da fonte ou do pedido de usuário) do cliente do nó.
    */
   private async markReported(tenantId: string, reported: BuiltRequest['reported']): Promise<void> {
     if (reported.length === 0) return;
     const now = this.now();
     const changed = reported.filter((item) => item.changed);
-    const unchanged = reported.filter((item) => !item.changed).map((item) => item.id);
+    const unchanged = (kind: ReportKind) =>
+      reported.filter((item) => item.kind === kind && !item.changed).map((item) => item.id);
     await this.prisma.$transaction([
-      this.prisma.controlPlaneSyncItem.updateMany({
-        where: { kind: 'log_source', tenantId, itemId: { in: unchanged }, reportedHash: { not: null } },
-        data: { reportedAt: now },
-      }),
+      ...(['log_source', 'user'] as const).map((kind) =>
+        this.prisma.controlPlaneSyncItem.updateMany({
+          where: { kind, tenantId, itemId: { in: unchanged(kind) }, reportedHash: { not: null } },
+          data: { reportedAt: now },
+        }),
+      ),
       ...changed.map((item) =>
         this.prisma.controlPlaneSyncItem.updateMany({
-          where: { kind: 'log_source', tenantId, itemId: item.id },
+          where: { kind: item.kind, tenantId, itemId: item.id },
           data: { reportedHash: item.hash, reportedAt: now },
         }),
       ),
     ]);
+  }
+
+  /**
+   * O que aconteceu com cada pedido de usuário do console: a conta criada, com a situação de agora (ativa ou não, o
+   * MFA, ainda na senha temporária), também nas chamadas seguintes; e o pedido recusado, com o código. Só o cliente do
+   * nó; a senha nunca entra.
+   */
+  private async userReports(tenantId: string): Promise<ReportCandidate<NodeSyncUserReport>[]> {
+    const db = scopeToTenant(this.prisma, tenantId);
+    const [users, items] = await Promise.all([
+      db.user.findMany({
+        where: { controlPlaneRequestId: { not: null } },
+        select: {
+          controlPlaneRequestId: true,
+          status: true,
+          twoFactorEnabled: true,
+          mustChangePassword: true,
+        },
+      }),
+      db.controlPlaneSyncItem.findMany({ where: { kind: 'user' } }),
+    ]);
+    const itemsById = new Map(items.map((item) => [item.itemId, item]));
+    const usersById = new Map(
+      users.flatMap((user) =>
+        user.controlPlaneRequestId === null ? [] : [[user.controlPlaneRequestId, user] as const],
+      ),
+    );
+    const reports: ReportCandidate<NodeSyncUserReport>[] = [];
+    for (const requestId of [...new Set([...itemsById.keys(), ...usersById.keys()])].sort()) {
+      const item = itemsById.get(requestId);
+      const user = usersById.get(requestId);
+      let report: NodeSyncUserReport;
+      let fingerprint: string;
+      if (user !== undefined) {
+        report = {
+          requestId,
+          outcome: 'created',
+          code: null,
+          user: {
+            status: user.status,
+            mfaEnabled: user.twoFactorEnabled,
+            mustChangePassword: user.mustChangePassword,
+          },
+        };
+        fingerprint = [
+          'created',
+          requestId,
+          user.status,
+          user.twoFactorEnabled ? 1 : 0,
+          user.mustChangePassword ? 1 : 0,
+        ].join('|');
+      } else if (item?.outcome === 'failed') {
+        report = {
+          requestId,
+          outcome: 'failed',
+          code: isUserCode(item.code) ? item.code : 'internal_error',
+          user: null,
+        };
+        fingerprint = ['failed', requestId, report.code].join('|');
+      } else {
+        // O item diz criada, mas a conta não está mais no cliente: não há situação para contar.
+        continue;
+      }
+      reports.push(candidateOf(report, item, fingerprint));
+    }
+    return reports;
   }
 
   /**
@@ -529,15 +695,7 @@ export class ControlPlaneSync {
                 checkRequestedAt: account.checkRequestedAt,
               },
       };
-      const json = JSON.stringify(sourceReport);
-      reports.push({
-        report: sourceReport,
-        hash: createHash('sha256').update(json).digest('hex'),
-        bytes: Buffer.byteLength(json, 'utf8'),
-        tracked: item !== undefined,
-        reportedHash: item?.reportedHash ?? null,
-        reportedAt: item?.reportedAt ?? null,
-      });
+      reports.push(candidateOf(sourceReport, item, JSON.stringify(sourceReport)));
     }
     return reports;
   }

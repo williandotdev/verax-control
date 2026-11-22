@@ -937,6 +937,31 @@ for bad in http://conta.exemplo.com.br https://conta.exemplo.com.br/v1 'https://
   ! grep -q CONTROL_PLANE_ORIGIN "$root/run/verax/worker.env" || fail "a origem fora do formato entrou"
   grep -qx "CONTROL_PLANE_SYNC='true'" "$root/run/verax/worker.env" || fail "a sincronização caiu com a origem ruim"
 done
+# Os usuários pedidos no console: sem a linha (o worker.env inteiro, acima) ou com true, nada vai para o worker.env (o
+# padrão do worker é ligado); com false, o interruptor do cliente; outro valor também desliga, com o aviso. Nunca na API,
+# e nunca fora do modo cliente.
+new_root "modo cliente: CONTROL_PLANE_USERS=true no node.conf" render-usuarios-true CUSTOMER_MODE=true \
+  NODE_SA_UNIQUE_ID=123456789012345678901 CONTROL_PLANE_USERS=true
+start render || fail "o render falhou: $(cat "$root/out")"
+! grep -q CONTROL_PLANE_USERS "$root/run/verax/worker.env" || fail "CONTROL_PLANE_USERS=true foi para o worker.env"
+new_root "modo cliente: CONTROL_PLANE_USERS=false no node.conf" render-usuarios-false CUSTOMER_MODE=true \
+  NODE_SA_UNIQUE_ID=123456789012345678901 CONTROL_PLANE_USERS=false
+start render || fail "o render falhou: $(cat "$root/out")"
+grep -qx "CONTROL_PLANE_USERS='false'" "$root/run/verax/worker.env" || fail "sem o interruptor dos usuários"
+grep -qx "CONTROL_PLANE_SYNC='true'" "$root/run/verax/worker.env" || fail "a sincronização caiu com os usuários desligados"
+! grep -q CONTROL_PLANE_USERS "$root/run/verax/api.env" || fail "a API recebeu o interruptor dos usuários"
+! grep -q 'CONTROL_PLANE_USERS fora do formato' "$root/out" || fail "aviso com o valor certo: $(cat "$root/out")"
+for bad in FALSE nao 'false # comentário' ''; do
+  new_root "modo cliente: CONTROL_PLANE_USERS fora do formato ($bad)" render-usuarios-ruim CUSTOMER_MODE=true \
+    NODE_SA_UNIQUE_ID=123456789012345678901 "CONTROL_PLANE_USERS=\"$bad\""
+  start render || fail "o render falhou: $(cat "$root/out")"
+  grep -q 'CONTROL_PLANE_USERS fora do formato' "$root/out" || fail "sem o aviso: $(cat "$root/out")"
+  grep -qx "CONTROL_PLANE_USERS='false'" "$root/run/verax/worker.env" || fail "o valor fora do formato não desligou"
+done
+new_root "nó da Verax: CONTROL_PLANE_USERS no node.conf não liga nada" render-usuarios-verax \
+  CONTROL_PLANE_USERS=false
+start render || fail "o render falhou: $(cat "$root/out")"
+! grep -q CONTROL_PLANE_ "$root/run/verax/worker.env" || fail "o nó da Verax ganhou variável da sincronização"
 for bad in CUSTOMER_MODE=sim versao-fora-do-formato sem-images-env; do
   new_root "modo cliente: o render recusa ($bad)" "render-recusa-${bad%%=*}" CUSTOMER_MODE=true
   case $bad in

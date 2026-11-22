@@ -2119,15 +2119,18 @@ e não muda nada.
   (`WritePacer`, 500 ms entre um começo e o seguinte), então nenhuma janela de 1 s tem mais de 3. São 4 gravações a
   cada 5 min, menos de 1 por minuto.
 
-### Sincronização com o plano de controle: o lado do nó (fontes de log do console)
+### Sincronização com o plano de controle: o lado do nó (fontes de log e usuários do console)
 
-O responsável cadastra as fontes de log do cliente (AWS e Cloudflare; projetos da GCP só na VM própria) no console, e o
-nó dedicado as aplica. O contrato está em `packages/shared/src/node-sync.ts` (estrito dos dois lados); o envelope da
-credencial, em `packages/vault-envelope`. Aqui, só o lado do nó (`apps/api/src/control-plane-sync/`).
+O responsável cadastra as fontes de log do cliente (AWS e Cloudflare; projetos da GCP só na VM própria) e pede usuários
+do cliente no console, e o nó dedicado os aplica. O contrato está em `packages/shared/src/node-sync.ts` (estrito dos
+dois lados); os envelopes da credencial e da senha, em `packages/vault-envelope`. Aqui, só o lado do nó
+(`apps/api/src/control-plane-sync/`).
 
 - **Quem liga:** o `start.sh`, no modo cliente (`CUSTOMER_MODE=true`), nas duas plataformas, nunca na célula (que tem o
   canal dela): `CONTROL_PLANE_SYNC=true` e `VERAX_NODE_COMMIT` no `worker.env`; `CONTROL_PLANE_ORIGIN` do `node.conf`
-  quando está no formato (sem a linha, `https://conta.veraxsistemas.com.br`). A configuração do worker recusa a
+  quando está no formato (sem a linha, `https://conta.veraxsistemas.com.br`); `CONTROL_PLANE_USERS=false` só quando o
+  `node.conf` traz a linha com `false` (o interruptor do cliente para os usuários pedidos no console; outro valor que não
+  `true` também desliga, com o aviso; sem a linha, o worker os cria). A configuração do worker recusa a
   sincronização com `NODE_MODE=cell`, sem o `NODE_SA_UNIQUE_ID` num nó da GCP, sem a chave na VM própria e sem o commit;
   o `start.sh` deixa a sincronização de fora, com o aviso, quando falta a identidade, para o worker subir.
 - **Identidade do nó:** num nó da GCP, o token do Google da conta de serviço do nó, pedido ao metadata com o audience da
@@ -2146,12 +2149,17 @@ credencial, em `packages/vault-envelope`. Aqui, só o lado do nó (`apps/api/src
   `tenant_ambiguous` e nada é aplicado), a chave pública corrente do cofre (o PEM do SPKI em base64, a versão e a
   impressão digital SHA-256 do DER), o ID da conta de serviço (GCP), os IPs de saída, o audience da AWS e o que aconteceu
   com cada fonte do console (as contas `origin = control_plane` e os itens de `ControlPlaneSyncItem`: a revisão, o
-  resultado, o código da falha, a credencial vigente, só metadados, e a situação da conta). Capacidade anunciada: só
-  `log_sources` (os usuários entram depois). Sem seguir redirecionamento, em até 20 s, lendo no máximo 1 MB da resposta,
-  conferida pelo contrato estrito. O corpo inteiro cabe em `NODE_SYNC_REQUEST_MAX_BYTES` (256 KiB, o limite da rota no
-  `cp-public`): vão antes os relatos que mudaram desde o último aceito (o SHA-256 dele fica no `ControlPlaneSyncItem`)
-  e, entre os outros, os aceitos há mais tempo, para os que ficam de fora irem nas chamadas seguintes. Deixar um relato
-  de fora é seguro: o plano de controle só atualiza o relato das fontes que vieram no pedido.
+  resultado, o código da falha, a credencial vigente, só metadados, e a situação da conta) e com cada pedido de usuário
+  (a conta criada, com a situação de agora, em todas as chamadas: ativa, convidada ou desativada, o MFA e se ainda está
+  na senha temporária; ou a recusa, com o código). Capacidades anunciadas: `log_sources` e `users` (também com
+  `CONTROL_PLANE_USERS=false`, para o console mostrar o motivo de cada recusa). Sem seguir redirecionamento, em até
+  20 s, lendo no máximo 1 MB da resposta, conferida pelo contrato estrito. O corpo inteiro cabe em
+  `NODE_SYNC_REQUEST_MAX_BYTES` (256 KiB, o limite da rota no `cp-public`): vão antes os relatos que mudaram desde o
+  último aceito (o SHA-256 dele fica no `ControlPlaneSyncItem`) e, entre os outros, os aceitos há mais tempo, para os
+  que ficam de fora irem nas chamadas seguintes. Os relatos dos usuários entram primeiro, com a mesma régua e o teto
+  de `NODE_SYNC_MAX_USERS` (200 relatos de perto de 150 bytes, cerca de 30 KiB): são pequenos e são o que faz o plano
+  de controle mostrar o resultado e apagar o envelope; as fontes ficam com o resto do limite. Deixar um relato de fora
+  é seguro: o plano de controle só atualiza o relato dos itens que vieram no pedido.
 - **Credencial colada no painel numa conta do console:** o `PUT` da credencial grava `origin = panel` e a revisão do
   console vazia; o nó conta de volta `revision: null`, e a revisão já aplicada do console não volta, só uma mais nova.
 - **Cada fonte numa transação** (`apply-source.ts`), no escopo do cliente do nó:
@@ -2169,20 +2177,46 @@ credencial, em `packages/vault-envelope`. Aqui, só o lado do nó (`apps/api/src
     (`credential_rejected_<motivo>`; a origem fora do ar, `source_unavailable`, tentada de novo em 1, 2, 4... min até 30)
     e gravada com o envelope exatamente como veio, sem recifrar.
 
-  Uma revisão que falhou só é tentada de novo com outra revisão (menos as duas falhas que passam sozinhas). Se algo
-  mudou, o nó chama mais uma vez na mesma execução, para contar logo (no máximo duas chamadas).
+  Uma revisão que falhou só é tentada de novo com outra revisão (menos as duas falhas que passam sozinhas).
+
+- **Cada usuário pedido** (`apply-user.ts`), depois das fontes, cada um na sua vez. O resultado de um pedido é final e
+  fica em `ControlPlaneSyncItem` (`kind = user`, o ULID do pedido): o plano de controle apaga o envelope com qualquer
+  relato, um pedido recusado não é tentado de novo (o console faz outro pedido), e o mesmo pedido que chegar de novo só
+  é contado outra vez. Na ordem:
+  - a conta com este `User.controlPlaneRequestId` já existe no cliente: `created` (o mesmo pedido nunca cria duas
+    contas; a de outro cliente do banco não é contada nem tocada);
+  - o prazo do pedido passou (`notAfter`; no próprio instante a senha já nasceria vencida): `expired`;
+    `CONTROL_PLANE_USERS=false`: `users_disabled`; o nó sem o cofre: `vault_disabled`; o envelope que não abre com a
+    amarração `{cliente do nó, pedido, e-mail}` (`openUserPassword`): `envelope_unreadable`;
+  - a senha entra na máscara do logger assim que o envelope abre e vira o hash (scrypt do Better Auth) fora da
+    transação; numa transação: a vaga do plano sob o lock das vagas (`lockPlanSeats`/`assertWithinPlan('users')`;
+    `plan_limit_reached`, `tenant_plan_missing`), o e-mail livre na plataforma inteira (`email_taken`) e a conta, pelos
+    mesmos auxiliares do painel (`insertUser` e `writeTemporaryPassword` em `apps/api/src/auth/`): o papel do pedido, o
+    cliente do nó, o e-mail em minúsculas, `controlPlaneRequestId`, a senha do pedido como senha temporária com a
+    validade `notAfter` (troca de senha e MFA no primeiro acesso, como a conta criada no painel) e a trilha
+    `user.create`. Nenhum e-mail sai para o cliente (D8). No fim, a senha sai da máscara; ela nunca volta ao plano de
+    controle, nem vai para o log ou para a trilha.
+
+  Os IDs da conta e da conta de senha são os do Better Auth sem a instância (o worker não sobe a autenticação):
+  `defaultAuthIds`, o mesmo sorteio do gerador padrão da biblioteca (32 caracteres de `a-z`, `A-Z` e `0-9`, pelo
+  `generateRandomString` de `better-auth/crypto`), já que a configuração não define outro gerador; o teste
+  `user-provisioning.test.ts` falha se ela passar a definir.
+
+  Se algo mudou numa fonte, ou um pedido de usuário teve resultado, o nó chama mais uma vez na mesma execução, para
+  contar logo (no máximo duas chamadas).
 
 - **Trilha:** toda mudança entra na trilha do cliente como sistema, com o ator fixo `verax-control-plane`, que a tela
   Auditoria mostra como **"Verax (administrativo)"** (o e-mail de quem cadastrou no console fica só na auditoria do plano
-  de controle), com a origem no estado novo.
+  de controle), com a origem no estado novo (na conta criada, `origin: 'control_plane'` e o id do pedido; nunca a
+  senha).
 - **Painel:** a conta do console sai com `managedBy: 'verax'` e o selo "Cadastrada pela Verax"; alterar a fonte ou o
   monitoramento dela pelo painel dá 409 `CONSOLE_MANAGED` ("Cadastrada pela Verax: peça a alteração à Verax"). A
   credencial (colar e remover) e o "Verificar" da AWS continuam com o cliente.
 - **Falhas da chamada:** 401, log de erro `control_plane_unauthenticated` e nova tentativa em 1 h; 404 (cliente não
   apto), 6 h; 409 `stale_sequence`, a sequência avança e a chamada é repetida na mesma execução; 429, o `Retry-After`;
   400 com o relógio do nó fora dos 10 min aceitos, log de erro `clock_skew`; 5xx, rede ou resposta fora do contrato,
-  1, 2, 4... min até 30; sem o token do metadata, a próxima chamada no intervalo de sempre. No log, só ids de fonte,
-  contagens e códigos.
+  1, 2, 4... min até 30; sem o token do metadata, a próxima chamada no intervalo de sempre. No log, só ids de fonte e de
+  pedido, contagens e códigos (nunca o e-mail, o nome ou a senha do usuário pedido).
 - **Atualização dos nós instalados:** o `update.sh` (nós da GCP) e o `verax-install.sh --atualizar` (VM própria) rodam o
   `install.sh` do pacote novo, que reinstala o `bin/start.sh` e o `compose.yaml` em `/opt/verax`: a sincronização liga
   na primeira partida depois da atualização, sem mudar o `node.conf`.

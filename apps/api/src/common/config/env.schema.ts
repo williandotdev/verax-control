@@ -921,6 +921,7 @@ const workerEnvObjectSchema = z
         TENANT_BOOTSTRAP_DIR,
         TENANT_BOOTSTRAP_STATUS_DIR,
         CONTROL_PLANE_SYNC,
+        CONTROL_PLANE_USERS,
         CONTROL_PLANE_ORIGIN,
         CONTROL_PLANE_NODE_KEY_FILE,
         ...env
@@ -962,6 +963,7 @@ const workerEnvObjectSchema = z
       const controlPlaneSync = controlPlaneSyncConfigOf(
         {
           CONTROL_PLANE_SYNC,
+          CONTROL_PLANE_USERS,
           CONTROL_PLANE_ORIGIN,
           CONTROL_PLANE_NODE_KEY_FILE,
           NODE_MODE: env.NODE_MODE,

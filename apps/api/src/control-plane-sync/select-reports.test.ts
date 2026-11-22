@@ -1,4 +1,9 @@
-import { NODE_SYNC_MAX_SOURCES, type NodeSyncSourceReport } from '@verax/shared';
+import {
+  NODE_SYNC_MAX_SOURCES,
+  NODE_SYNC_MAX_USERS,
+  type NodeSyncSourceReport,
+  type NodeSyncUserReport,
+} from '@verax/shared';
 import { describe, expect, it } from 'vitest';
 import { type ReportCandidate, selectReports } from './control-plane-sync.js';
 
@@ -65,5 +70,31 @@ describe('relatos no limite de tamanho do pedido', () => {
     const { selected, omitted } = selectReports(all, 0, 10_000_000);
     expect(selected).toHaveLength(NODE_SYNC_MAX_SOURCES);
     expect(omitted).toBe(20);
+  });
+});
+
+describe('relatos dos pedidos de usuário no limite do pedido', () => {
+  const requestId = (n: number) => `01JD${n.toString().padStart(22, '0')}`;
+  const user = (n: number, reportedAt: Date | null = null): ReportCandidate<NodeSyncUserReport> => ({
+    report: { requestId: requestId(n), outcome: 'failed', code: 'expired', user: null },
+    hash: `u${n}`,
+    bytes: 90,
+    tracked: true,
+    reportedHash: reportedAt === null ? null : `u${n}`,
+    reportedAt,
+  });
+
+  it('a mesma régua, pelo id do pedido: os nunca aceitos e os aceitos há mais tempo primeiro; em ordem de id', () => {
+    const all = [user(3, at(1)), user(1, at(5)), user(2)];
+    const { selected, omitted } = selectReports(all, 0, 2 * 90 + 1, NODE_SYNC_MAX_USERS);
+    expect(selected.map((item) => item.report.requestId)).toEqual([requestId(2), requestId(3)]);
+    expect(omitted).toBe(1);
+  });
+
+  it(`no máximo ${NODE_SYNC_MAX_USERS} relatos de usuário, mesmo cabendo`, () => {
+    const all = Array.from({ length: NODE_SYNC_MAX_USERS + 5 }, (_, n) => user(n));
+    const { selected, omitted } = selectReports(all, 0, 10_000_000, NODE_SYNC_MAX_USERS);
+    expect(selected).toHaveLength(NODE_SYNC_MAX_USERS);
+    expect(omitted).toBe(5);
   });
 });
