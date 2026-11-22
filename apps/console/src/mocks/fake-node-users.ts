@@ -25,24 +25,16 @@ const VALIDITY = 72 * HOUR;
 const SYNC_DELAY = 2 * MINUTE;
 const OWNER = 'owner:responsavel@verax.example';
 const ROLES: readonly TenantRole[] = ['admin_cliente', 'analista_cliente', 'leitura'];
-/** O mesmo alfabeto da geradora do plano de controle (sem 0/O, 1/l/I). */
-const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 /** Um e-mail que já existe no painel do cliente de exemplo: o "nó" recusa com `email_taken`. */
 const TAKEN_EMAIL_PREFIX = 'ja-existe@';
 
-/** A senha temporária sorteada no formato da geradora (quatro grupos de cinco). */
+/**
+ * Uma senha temporária de exemplo no formato da geradora (quatro grupos de cinco), com os caracteres hexadecimais de um
+ * UUID aleatório: é só o mock (a senha de verdade sai do cp-admin), então não precisa do alfabeto da geradora.
+ */
 function fakeUserPassword(): string {
-  // Sorteio sem viés: cada letra fica com a mesma faixa de bytes (`span` valores), e os bytes que sobram no fim são
-  // descartados.
-  const span = Math.floor(256 / ALPHABET.length);
-  const limit = span * ALPHABET.length;
-  const chars: string[] = [];
-  while (chars.length < 20) {
-    for (const byte of crypto.getRandomValues(new Uint8Array(32))) {
-      if (byte < limit && chars.length < 20) chars.push(ALPHABET.charAt(Math.floor(byte / span)));
-    }
-  }
-  return [0, 5, 10, 15].map((start) => chars.slice(start, start + 5).join('')).join('-');
+  const hex = crypto.randomUUID().replaceAll('-', '');
+  return [0, 5, 10, 15].map((start) => hex.slice(start, start + 5)).join('-');
 }
 
 /** Um ULID de exemplo (só o formato: o tempo e a parte aleatória). */

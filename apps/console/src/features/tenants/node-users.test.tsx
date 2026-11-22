@@ -99,7 +99,7 @@ describe('usuários do cliente', () => {
       name: 'Acesso do novo usuário para enviar ao cliente',
     });
     const password = accessValue(access, 'Senha temporária');
-    expect(password).toMatch(/^[A-Za-z2-9]{5}-[A-Za-z2-9]{5}-[A-Za-z2-9]{5}-[A-Za-z2-9]{5}$/);
+    expect(password).toMatch(/^[0-9a-f]{5}-[0-9a-f]{5}-[0-9a-f]{5}-[0-9a-f]{5}$/);
     expect(accessValue(access, 'Painel')).toBe('https://contrato-ativo.control.veraxsistemas.com.br');
     expect(accessValue(access, 'Login')).toBe('nova.pessoa@cliente-demo-z.example');
     const expiry = formatDateTime(new Date(START.getTime() + 72 * 60 * MINUTE).toISOString());
