@@ -200,6 +200,9 @@ type ApplyResult =
   | { ok: false; reason: 'stale_sequence' }
   | { ok: false; reason: 'too_soon'; retryAfterSeconds: number };
 
+type CredentialOf<K extends NodeSyncCredential['kind']> = Extract<NodeSyncCredential, { kind: K }>;
+type Refuse = (reason: 'unauthenticated' | 'not_found', detail: string, tenantId?: string) => Resolution;
+
 type Resolution = { ok: true; tenant: TenantRecord } | { ok: false; reason: 'unauthenticated' | 'not_found' };
 
 /**
@@ -283,59 +286,86 @@ export class NodeSyncService {
     return { ok: true, response: result.response };
   }
 
-  /** O cliente da credencial, conferida aqui; nada do corpo escolhe o cliente (só a plataforma é cruzada). */
-  private async resolve(
+  /**
+   * O cliente da credencial, conferida aqui; nada do corpo escolhe o cliente (só a plataforma é cruzada). Cada tipo de
+   * credencial tem o seu caminho, e os dois autenticam por inteiro: o token do Google do nó gerenciado (assinatura,
+   * audiência, conta de serviço, projeto e VM) e a chave do registro da VM do cliente (o hash guardado no registro). O
+   * tipo só escolhe qual dos dois roda; nenhum deles é dispensado por ele.
+   */
+  private resolve(
     credential: NodeSyncCredential,
     request: NodeSyncRequest,
     requestId: string | undefined,
   ): Promise<Resolution> {
-    const refuse = (
-      reason: 'unauthenticated' | 'not_found',
-      detail: string,
-      tenantId?: string,
-    ): Resolution => {
+    const refuse = this.refuser(credential.kind, requestId);
+    const resolvers: { [K in NodeSyncCredential['kind']]: (value: CredentialOf<K>) => Promise<Resolution> } =
+      {
+        gcp_identity: (value) => this.resolveManaged(value.token, request, refuse, requestId),
+        node_key: (value) => this.resolveCustomer(value.nodeKey, request, refuse),
+      };
+    return (resolvers[credential.kind] as (value: NodeSyncCredential) => Promise<Resolution>)(credential);
+  }
+
+  /** A recusa com o motivo no log (nunca a credencial), no formato de `Resolution`. */
+  private refuser(authKind: NodeSyncCredential['kind'], requestId: string | undefined): Refuse {
+    return (reason, detail, tenantId) => {
       this.logger.warn(
-        { event: 'node_sync_refused', reason: detail, authKind: credential.kind, tenantId, requestId },
+        { event: 'node_sync_refused', reason: detail, authKind, tenantId, requestId },
         'sincronização do nó recusada',
       );
       return { ok: false, reason };
     };
-    if (credential.kind === 'gcp_identity') {
-      const verification = await this.verifier.verify(credential.token);
-      if (!verification.ok) return refuse('unauthenticated', `token_${verification.reason}`);
-      const identity = verification.identity;
-      if (request.node.platform !== 'gcp') return refuse('unauthenticated', 'platform_mismatch');
-      if (request.node.serviceAccountId !== identity.serviceAccountId) {
-        return refuse('unauthenticated', 'service_account_mismatch');
-      }
-      const candidates = await this.tenants.findByServiceAccountUniqueId(identity.serviceAccountId);
-      if (candidates.length > 1) {
-        // A conta de serviço é de um nó só: dois clientes com ela é um erro de dados, nunca um a escolher.
-        this.logger.error(
-          {
-            event: 'node_sync_identity_ambiguous',
-            tenantIds: candidates.map((candidate) => candidate.id),
-            requestId,
-          },
-          'dois clientes com a mesma conta de serviço do nó',
-        );
-        return { ok: false, reason: 'not_found' };
-      }
-      const tenant = candidates[0];
-      if (tenant === undefined) return refuse('not_found', 'unknown_service_account');
-      if (hostingOf(tenant) !== 'verax') return refuse('unauthenticated', 'hosting_mismatch', tenant.id);
-      if (
-        tenant.resources?.nodesProject !== identity.projectId ||
-        tenant.resources.instanceName !== identity.instanceName
-      ) {
-        return refuse('unauthenticated', 'instance_mismatch', tenant.id);
-      }
-      if (tenant.placement !== undefined || !NODE_SYNC_ACTIVE_STATES.has(tenant.state)) {
-        return refuse('not_found', 'tenant_not_eligible', tenant.id);
-      }
-      return { ok: true, tenant };
+  }
+
+  /** O nó gerenciado na GCP: o token do Google confere a assinatura, e a conta de serviço, o projeto e a VM dele. */
+  private async resolveManaged(
+    token: string,
+    request: NodeSyncRequest,
+    refuse: Refuse,
+    requestId: string | undefined,
+  ): Promise<Resolution> {
+    const verification = await this.verifier.verify(token);
+    if (!verification.ok) return refuse('unauthenticated', `token_${verification.reason}`);
+    const identity = verification.identity;
+    if (request.node.platform !== 'gcp') return refuse('unauthenticated', 'platform_mismatch');
+    if (request.node.serviceAccountId !== identity.serviceAccountId) {
+      return refuse('unauthenticated', 'service_account_mismatch');
     }
-    const nodeKeyHash = enrollmentHash(credential.nodeKey);
+    const candidates = await this.tenants.findByServiceAccountUniqueId(identity.serviceAccountId);
+    if (candidates.length > 1) {
+      // A conta de serviço é de um nó só: dois clientes com ela é um erro de dados, nunca um a escolher.
+      this.logger.error(
+        {
+          event: 'node_sync_identity_ambiguous',
+          tenantIds: candidates.map((candidate) => candidate.id),
+          requestId,
+        },
+        'dois clientes com a mesma conta de serviço do nó',
+      );
+      return { ok: false, reason: 'not_found' };
+    }
+    const tenant = candidates[0];
+    if (tenant === undefined) return refuse('not_found', 'unknown_service_account');
+    if (hostingOf(tenant) !== 'verax') return refuse('unauthenticated', 'hosting_mismatch', tenant.id);
+    if (
+      tenant.resources?.nodesProject !== identity.projectId ||
+      tenant.resources.instanceName !== identity.instanceName
+    ) {
+      return refuse('unauthenticated', 'instance_mismatch', tenant.id);
+    }
+    if (tenant.placement !== undefined || !NODE_SYNC_ACTIVE_STATES.has(tenant.state)) {
+      return refuse('not_found', 'tenant_not_eligible', tenant.id);
+    }
+    return { ok: true, tenant };
+  }
+
+  /** A VM do cliente: a chave do registro (o hash dela guardado no registro do cliente). */
+  private async resolveCustomer(
+    nodeKey: string,
+    request: NodeSyncRequest,
+    refuse: Refuse,
+  ): Promise<Resolution> {
+    const nodeKeyHash = enrollmentHash(nodeKey);
     const tenant = await this.tenants.findByNodeKeyHash(nodeKeyHash);
     if (tenant === undefined || !sameHash(tenant.enrollment?.nodeKeyHash, nodeKeyHash)) {
       return refuse('unauthenticated', 'unknown_node_key');
