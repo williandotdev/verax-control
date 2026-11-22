@@ -214,6 +214,7 @@ describe('cp-admin: fontes de log do nó do cliente', () => {
     const key = options.vault === undefined ? vault : options.vault;
     const state = nodeSyncStateSchema.parse({
       lastSeenAt: options.lastSeenAt ?? clock.now(),
+      lastSentAt: options.lastSeenAt ?? clock.now(),
       sequence: 1,
       authKind: platform === 'gcp' ? 'gcp_identity' : 'node_key',
       platform,
