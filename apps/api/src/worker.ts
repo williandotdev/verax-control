@@ -26,6 +26,7 @@ import {
   CellUsageReports,
 } from './cell/cell-usage-reports.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
+import { controlPlaneSyncTask } from './control-plane-sync/control-plane-sync-task.js';
 import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
@@ -199,6 +200,10 @@ async function awsConnectionSetup(
  *
  * No nó de cliente (`NODE_STATUS=true`, do modo cliente do node.conf), entra a tarefa `node-status`, que a cada 5 min
  * publica o estado do nó nos guest attributes da VM para o plano de controle.
+ *
+ * No nó dedicado de cliente (`CONTROL_PLANE_SYNC=true`, do modo cliente do node.conf, nas duas plataformas), entra a
+ * tarefa `control-plane-sync`, que a cada 5 min conta ao plano de controle o que o nó aplicou e traz as fontes de log
+ * que a Verax cadastrou no console (`control-plane-sync/`).
  *
  * A tarefa `retention` (PR-19) é o expurgo diário do histórico no banco do nó, pelo prazo do plano de cada cliente
  * (CE-02: no nó dedicado, o `PLAN` e o `PLAN_HISTORY_DAYS`; na célula, o `TenantPlan`): confere a cada 15 min e roda
@@ -472,6 +477,10 @@ async function main(): Promise<void> {
         run: (signal) => reporter.runOnce(signal),
       });
     }
+    // Sincronização com o plano de controle (nó dedicado de cliente): as fontes de log do console. Na GCP, o worker é o
+    // único contêiner que alcança o metadata (o token do nó); na VM própria, a chave do nó vem do tmpfs.
+    const controlPlane = await controlPlaneSyncTask(config, { prisma, plans, logger });
+    if (controlPlane !== null) tasks.push(controlPlane);
   } catch (error) {
     // Só nomes de variáveis e o problema; nenhum valor é impresso.
     console.error((error as Error).message);
@@ -497,6 +506,8 @@ async function main(): Promise<void> {
       mailTransport: config.MAIL_TRANSPORT,
       // Só a versão corrente da chave do cofre (null sem o cofre), nunca a chave.
       vaultKeyVersion: config.credentialsKeyring?.current ?? null,
+      // Só a origem do plano de controle (null com a sincronização desligada), nunca a chave do nó.
+      controlPlaneOrigin: config.controlPlaneSync?.origin ?? null,
     },
     'worker iniciado',
   );

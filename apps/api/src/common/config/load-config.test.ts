@@ -766,6 +766,110 @@ describe('configuração do worker do sync (T5.3)', () => {
     }
   });
 
+  describe('sincronização com o plano de controle (CONTROL_PLANE_SYNC)', () => {
+    const commit = 'b'.repeat(40);
+    const nodeKey = 'Kz_9-'.repeat(8) + 'abc';
+    const serviceAccount = '123456789012345678901';
+    let dir: string;
+    let keyFile: string;
+
+    beforeAll(() => {
+      dir = mkdtempSync(join(tmpdir(), 'verax-cp-'));
+      keyFile = join(dir, 'node-key').replaceAll('\\', '/');
+      writeFileSync(keyFile, `${nodeKey}\n`);
+    });
+
+    afterAll(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    /** O caminho absoluto do arquivo como a variável o aceita (no Windows, o teste usa o caminho com `/`). */
+    const keyPath = () => (keyFile.startsWith('/') ? keyFile : `/${keyFile.replace(/^[A-Za-z]:\//, '')}`);
+    const gcp = {
+      ...workerEnv,
+      CONTROL_PLANE_SYNC: 'true',
+      VERAX_NODE_COMMIT: commit,
+      NODE_SA_UNIQUE_ID: serviceAccount,
+    };
+
+    it('sem a linha (o nó da Verax, o ambiente local), desligada', () => {
+      const config = loadWorkerConfig(workerEnv);
+      expect(config.controlPlaneSync).toBeNull();
+      expect(config).not.toHaveProperty('CONTROL_PLANE_SYNC');
+      expect(loadWorkerConfig({ ...workerEnv, CONTROL_PLANE_SYNC: 'false' }).controlPlaneSync).toBeNull();
+    });
+
+    it('no nó da GCP: o token do Google, com a origem padrão e a rota como audience', () => {
+      expect(loadWorkerConfig(gcp).controlPlaneSync).toEqual({
+        origin: 'https://conta.veraxsistemas.com.br',
+        url: 'https://conta.veraxsistemas.com.br/v1/node-sync',
+        commit,
+        credential: { kind: 'gcp_identity' },
+      });
+      expect(
+        loadWorkerConfig({ ...gcp, CONTROL_PLANE_ORIGIN: 'https://conta.exemplo.com.br' }).controlPlaneSync
+          ?.url,
+      ).toBe('https://conta.exemplo.com.br/v1/node-sync');
+    });
+
+    it('a origem é só https, sem caminho', () => {
+      for (const origin of [
+        'http://conta.exemplo.com.br',
+        'https://conta.exemplo.com.br/v1',
+        'https://x.com:8443',
+      ]) {
+        expect(() => loadWorkerConfig({ ...gcp, CONTROL_PLANE_ORIGIN: origin }), origin).toThrow(
+          'CONTROL_PLANE_ORIGIN: deve ser só a origem https',
+        );
+      }
+    });
+
+    it('as recusas: na célula, sem o ID da conta de serviço na GCP, sem o commit, interruptor inválido', () => {
+      expect(() => loadWorkerConfig({ ...gcp, NODE_MODE: 'cell', PLAN: undefined })).toThrow(
+        'CONTROL_PLANE_SYNC: não existe com NODE_MODE=cell',
+      );
+      expect(() => loadWorkerConfig({ ...gcp, NODE_SA_UNIQUE_ID: undefined })).toThrow(
+        'NODE_SA_UNIQUE_ID: obrigatória e não definida',
+      );
+      expect(() => loadWorkerConfig({ ...gcp, VERAX_NODE_COMMIT: undefined })).toThrow(
+        'VERAX_NODE_COMMIT: obrigatória e não definida',
+      );
+      expect(() => loadWorkerConfig({ ...gcp, CONTROL_PLANE_SYNC: 'sim' })).toThrow(
+        'CONTROL_PLANE_SYNC: use true ou false',
+      );
+      // O arquivo da chave do nó só existe na VM própria.
+      expect(() => loadWorkerConfig({ ...gcp, CONTROL_PLANE_NODE_KEY_FILE: '/run/cp/node-key' })).toThrow(
+        'CONTROL_PLANE_NODE_KEY_FILE: só existe com NODE_PLATFORM=vm',
+      );
+    });
+
+    it('na VM própria: a chave do nó lida do arquivo, que não vira JSON nem aparece ao inspecionar', () => {
+      const vm = {
+        ...workerEnv,
+        NODE_PLATFORM: 'vm',
+        CONTROL_PLANE_SYNC: 'true',
+        VERAX_NODE_COMMIT: commit,
+        CONTROL_PLANE_NODE_KEY_FILE: keyPath(),
+      };
+      // O caminho absoluto do Windows não começa com `/`: o teste só confere a leitura onde ele existe assim.
+      if (keyFile.startsWith('/')) {
+        const config = loadWorkerConfig(vm);
+        const credential = config.controlPlaneSync?.credential;
+        expect(credential?.kind).toBe('node_key');
+        expect(credential?.kind === 'node_key' && credential.key.value()).toBe(nodeKey);
+        expect(JSON.stringify(config)).not.toContain(nodeKey);
+        expect(inspect(config, { depth: 10 })).not.toContain(nodeKey);
+        expect(config).not.toHaveProperty('CONTROL_PLANE_NODE_KEY_FILE');
+      }
+      expect(() => loadWorkerConfig({ ...vm, CONTROL_PLANE_NODE_KEY_FILE: undefined })).toThrow(
+        'CONTROL_PLANE_NODE_KEY_FILE: obrigatória e não definida',
+      );
+      expect(() =>
+        loadWorkerConfig({ ...vm, CONTROL_PLANE_NODE_KEY_FILE: '/caminho/que/nao/existe' }),
+      ).toThrow('CONTROL_PLANE_NODE_KEY_FILE: não foi possível ler o arquivo da chave do nó');
+    });
+  });
+
   describe('estado do nó nos guest attributes (fase 3, CP-10)', () => {
     const commit = 'a'.repeat(40);
 
