@@ -77,6 +77,17 @@ async function useRole(page: Page, role: string, theme: 'light' | 'dark' = 'ligh
   await skipDemoTour(page);
 }
 
+/** O padrão gravado para um parâmetro no arquivo da pilha: a linha `Default:` do bloco dele. */
+function parameterDefault(template: string, parameter: string): string | undefined {
+  const lines = template.split('\n').map((line) => line.trimEnd());
+  const block = lines.slice(lines.indexOf(`  ${parameter}:`) + 1);
+  const end = block.findIndex((line) => line.startsWith('  ') && !line.startsWith('   '));
+  return block
+    .slice(0, end === -1 ? block.length : end)
+    .find((line) => line.startsWith('    Default: '))
+    ?.slice('    Default: '.length);
+}
+
 test.describe('onboarding self-service da AWS (modo mock)', () => {
   for (const theme of ['light', 'dark'] as const) {
     test(`do cadastro à coleta (${theme === 'light' ? 'claro' : 'escuro'}): conectar, descobrir, autorizar e acompanhar, sem violação de acessibilidade`, async ({
@@ -226,6 +237,62 @@ test.describe('onboarding self-service da AWS (modo mock)', () => {
       );
     });
   }
+
+  test('a escolha do "Conectar com AWS" fica gravada: o arquivo sai com ela, a pilha lida bate e a tela reaberta a traz de volta', async ({
+    page,
+    context,
+  }) => {
+    test.setTimeout(120_000);
+    await context.route('https://console.aws.amazon.com/**', (route) =>
+      route.fulfill({ status: 200, contentType: 'text/html', body: '<title>CloudFormation</title>' }),
+    );
+    await useRole(page, 'admin_verax');
+    await page.goto('/cadastros/contas');
+    await page.getByRole('button', { name: 'Cadastrar conta' }).click();
+    const create = page.getByRole('dialog', { name: 'Cadastrar conta' });
+    await create.getByLabel('ID da conta AWS').fill('246813579135');
+    await create.getByRole('button', { name: 'Cadastrar conta' }).click();
+    await expect(create.getByText(/Conta AWS 246813579135 cadastrada/)).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: /246813579135/ }).click();
+    const sheet = page.getByRole('dialog', { name: 'Conta AWS 246813579135' });
+
+    // O cliente desliga uma das três autorizações antes de conectar.
+    const connect = sheet.getByRole('region', { name: 'Conectar a conta 246813579135' });
+    await connect
+      .getByRole('group', { name: 'O que você autoriza' })
+      .getByRole('checkbox', { name: 'Grupos do CloudWatch Logs marcados' })
+      .uncheck();
+    const [download, popup] = await Promise.all([
+      page.waitForEvent('download'),
+      context.waitForEvent('page'),
+      connect.getByRole('button', { name: 'Conectar com AWS' }).click(),
+    ]);
+    await popup.close();
+    // O arquivo sai com a escolha: só a leitura dos grupos de logs desligada.
+    const file = readFileSync(await download.path(), 'utf8');
+    expect(parameterDefault(file, 'ReadTaggedLogGroups')).toBe("'false'");
+    expect(parameterDefault(file, 'ReadAwsServiceLogs')).toBe("'true'");
+    expect(parameterDefault(file, 'ReadSecurityFindings')).toBe("'true'");
+
+    // A pilha "fica pronta" como o cliente escolheu: a tela mostra a autorização desligada, sem acusar diferença.
+    const status = sheet.getByRole('region', { name: 'Situação da conexão' }).getByRole('status');
+    await expect(status).toContainText('Aguardando autorização de fontes', { timeout: STEP_TIMEOUT });
+    const stack = sheet.getByRole('region', { name: 'Pilha na AWS' });
+    await expect(stack).toContainText('Grupos do CloudWatch Logs marcados: desligada');
+    await expect(stack).toContainText('Achados de segurança: ligada');
+    await expect(stack.getByText(/não está como você escolheu aqui/)).toHaveCount(0);
+
+    // Fechada e aberta de novo, a tela volta com a escolha gravada, e não com as três ligadas.
+    await page.keyboard.press('Escape');
+    await expect(sheet).toHaveCount(0);
+    await page.getByRole('button', { name: /246813579135/ }).click();
+    await expect(
+      stack.getByRole('checkbox', { name: 'Grupos do CloudWatch Logs marcados' }),
+    ).not.toBeChecked();
+    await expect(stack.getByRole('checkbox', { name: 'Achados de segurança' })).toBeChecked();
+    await expect(stack.getByRole('checkbox', { name: 'Logs de serviços da AWS no S3' })).toBeChecked();
+  });
 
   test('a conta conectada no celular: as tabelas rolam por dentro, sem rolagem horizontal da página', async ({
     page,
