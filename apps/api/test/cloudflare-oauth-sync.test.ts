@@ -42,9 +42,12 @@ import { fakeCloudflare, FakeCloudflareServer, DEFAULT_ZONE_LIMITS } from './sup
 import { FakeCloudflareOAuthServer, type FakeGrant, oauthToken } from './support/fake-cloudflare-oauth.js';
 import { LogCapture } from './support/log-capture.js';
 
-/** Versões da chave do nó neste arquivo: fora das de outros arquivos (2, 3, 900 a 902). */
-const KEY_VERSION = 903;
-const NEXT_KEY_VERSION = 904;
+/**
+ * Versões da chave do nó só deste arquivo (os outros usam 1 a 3, 9 e de 900 a 910): os arquivos rodam em paralelo no
+ * mesmo banco, e a limpeza de um nunca pode alcançar as linhas de outro.
+ */
+const KEY_VERSION = 920;
+const NEXT_KEY_VERSION = 921;
 const NOW = new Date('2026-11-04T12:20:00.000Z');
 const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
 const iso = (minutes: number) => at(minutes).toISOString();
@@ -72,6 +75,8 @@ describe('coletor do Cloudflare por OAuth (banco real, Cloudflare e OAuth falsos
   let publicKey: VaultPublicKey;
   let otherPublicKey: VaultPublicKey;
   let run = 0;
+  /** Todos os clientes criados aqui: a limpeza é só deles. */
+  const tenants: string[] = [];
 
   const tokensClient = (timeoutMs = 400) => new PublicClientTokens({ tokenUrl: oauth.tokenUrl, timeoutMs });
 
@@ -234,18 +239,15 @@ describe('coletor do Cloudflare por OAuth (banco real, Cloudflare e OAuth falsos
     cloudflare.graphqlScript.length = 0;
     tenantA = await createTenant(app, 'Cliente Demo A (Cloudflare OAuth)');
     tenantB = await createTenant(app, 'Cliente Demo B (Cloudflare OAuth)');
+    tenants.push(tenantA, tenantB);
   });
 
   afterAll(async () => {
     vi.restoreAllMocks();
-    await prisma.cloudCredential.deleteMany({ where: { keyVersion: KEY_VERSION } });
-    await prisma.cloudAccount.updateMany({
-      where: { cloudflareGrant: { keyVersion: { in: [KEY_VERSION, NEXT_KEY_VERSION] } } },
-      data: { cloudflareGrantId: null },
-    });
-    await prisma.cloudflareGrant.deleteMany({
-      where: { keyVersion: { in: [KEY_VERSION, NEXT_KEY_VERSION] } },
-    });
+    const own = { tenantId: { in: tenants } };
+    await prisma.cloudCredential.deleteMany({ where: own });
+    await prisma.cloudAccount.updateMany({ where: own, data: { cloudflareGrantId: null } });
+    await prisma.cloudflareGrant.deleteMany({ where: own });
     await app.close();
     await cloudflare.stop();
     await oauth.stop();
