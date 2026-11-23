@@ -1,0 +1,49 @@
+<ossec_config>
+  <!-- Gerado por scripts/render-manager-config.py a partir das contas conectadas. -->
+  <wodle name="aws-s3">
+    <disabled>no</disabled>
+    <interval>5m</interval>
+    <run_on_start>yes</run_on_start>
+    <skip_on_error>yes</skip_on_error>
+    <bucket type="cloudtrail">
+      <name>trilha-da-organizacao</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <aws_account_id>111122223333</aws_account_id>
+      <only_logs_after>2026-DEC-01</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+    </bucket>
+    <bucket type="guardduty">
+      <name>guardduty-da-organizacao</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <only_logs_after>2026-OCT-15</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+    </bucket>
+    <bucket type="waf">
+      <name>aws-waf-logs-da-organizacao</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <only_logs_after>2026-OCT-15</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+      <discard_regex field="action">ALLOW</discard_regex>
+    </bucket>
+    <bucket type="cloudtrail">
+      <name>trilha-da-organizacao</name>
+      <aws_profile>verax-444455556666</aws_profile>
+      <aws_account_id>444455556666</aws_account_id>
+      <only_logs_after>2026-OCT-15</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+    </bucket>
+    <bucket type="cloudtrail">
+      <name>guardduty-777788889999</name>
+      <aws_profile>verax-777788889999</aws_profile>
+      <aws_account_id>777788889999</aws_account_id>
+      <only_logs_after>2026-NOV-10</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+    </bucket>
+    <bucket type="guardduty">
+      <name>guardduty-777788889999</name>
+      <aws_profile>verax-777788889999</aws_profile>
+      <only_logs_after>2026-NOV-10</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+    </bucket>
+  </wodle>
+</ossec_config>

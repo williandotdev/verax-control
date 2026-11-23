@@ -1,4 +1,5 @@
-"""Testes do gerador de configuração do manager (scripts/render-manager-config.py, T4.4 a T4.6 e fase 2, PR-V4').
+"""Testes do gerador de configuração do manager (scripts/render-manager-config.py, T4.4 a T4.6, fase 2, PR-V4', e o
+onboarding self-service da AWS: a lista das fontes autorizadas, no formato 2).
 
 Só biblioteca padrão: rodam no CI (iac.yml) e localmente com `python3 -m unittest discover -s infra/wazuh/tests`.
 Os IDs de conta são os de exemplo da documentação da AWS; os IPs, os de documentação (RFC 5737).
@@ -716,6 +717,463 @@ class AgentsTest(unittest.TestCase):
                 with AgentsRun(ENROLLMENT, config_dir=broken) as run:
                     self.assertEqual(run.code, 1)
                     self.assertFalse(run.config_dir.exists())
+
+
+FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
+GOLDEN = FIXTURES / "golden"
+
+
+def fixture(name):
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def golden(name):
+    return (GOLDEN / name).read_bytes().decode("utf-8")
+
+
+def account_v2(account="111122223333", region="sa-east-1", s3=(), log_groups=()):
+    return {"accountId": account, "region": region, "s3": list(s3), "logGroups": list(log_groups)}
+
+
+def listed(*accounts):
+    """A lista de agora (formato 2), como o CLI `wazuh-sources` a imprime."""
+    return {"version": 2, "accounts": list(accounts)}
+
+
+def legacy(kind, bucket, after="2026-NOV-01"):
+    return {"type": kind, "bucket": bucket, "onlyLogsAfter": after, "legacy": True}
+
+
+def trail(bucket="trilha-111122223333", regions=("sa-east-1",), after="2026-NOV-20", **extra):
+    return {"type": "cloudtrail", "bucket": bucket, "onlyLogsAfter": after, "regions": list(regions), **extra}
+
+
+def flow(bucket="fluxo-111122223333", regions=("sa-east-1",), after="2026-NOV-20", traffic="rejected", **extra):
+    entry = {"type": "vpcflow", "bucket": bucket, "onlyLogsAfter": after, "regions": list(regions), "traffic": traffic}
+    return {**entry, **extra}
+
+
+def findings(bucket="achados-111122223333", regions=("sa-east-1",), after="2026-NOV-20", **extra):
+    return {"type": "guardduty", "bucket": bucket, "onlyLogsAfter": after, "regions": list(regions), **extra}
+
+
+def web_acl(name="painel", scope="sa-east-1", bucket="aws-waf-logs-painel", after="2026-NOV-20", **extra):
+    return {"type": "waf", "bucket": bucket, "onlyLogsAfter": after, "webAcl": name, "scope": scope, **extra}
+
+
+def groups(*names, region="sa-east-1", after="2026-NOV-20"):
+    return {"region": region, "names": list(names), "onlyLogsAfter": after}
+
+
+def blocks(conf, tag):
+    """Os blocos <bucket> ou <service> do módulo, cada um como {etiqueta: valor} (mais `type` e o `discard`)."""
+    found = []
+    for kind, body in re.findall(rf'<{tag} type="(\w+)">(.*?)</{tag}>', conf, re.S):
+        block = {"type": kind}
+        for name, attributes, value in re.findall(r"<(\w+)((?: [^>]*)?)>([^<]*)</\1>", body):
+            block[name] = f"{attributes.strip()} {value}".strip() if attributes else value
+        found.append(block)
+    return found
+
+
+class GoldenLegacyTest(unittest.TestCase):
+    """As contas só com os buckets do cadastro anterior: a configuração é, byte a byte, a que o gerador anterior escrevia.
+
+    Os arquivos de `fixtures/golden/legacy-*` saíram do gerador de antes do onboarding self-service (o commit f74bb0ac),
+    com as listas do formato anterior (`aws-sources.example.json` e `aws-sources.shared.v1.json`). As listas
+    `*.v2.json` são as que a API imprime agora para as mesmas contas (o teste `wazuh-sources` da API confere isso).
+    """
+
+    CASES = (("example", "aws-sources.example.json"), ("shared", "aws-sources.shared.v1.json"))
+
+    def test_the_legacy_accounts_render_exactly_as_before_in_both_formats(self):
+        for name, previous in self.CASES:
+            with self.subTest(name), Run(fixture(previous)) as before, Run(fixture(f"aws-sources.{name}.v2.json")) as now:
+                self.assertEqual((before.code, now.code), (0, 0), now.stderr)
+                wodle = golden(f"legacy-{name}.wodle.xml")
+                self.assertEqual(before.ossec_conf, BASE_CONF + wodle)
+                self.assertEqual(now.ossec_conf, BASE_CONF + wodle)
+                profiles = golden(f"legacy-{name}.aws-config")
+                self.assertEqual((before.aws_config, now.aws_config), (profiles, profiles))
+                # O mesmo hash: trocar o formato da lista não reinicia o manager.
+                self.assertEqual(before.stdout, now.stdout)
+
+    def test_the_new_format_of_a_legacy_account_is_the_previous_one_field_by_field(self):
+        for name, previous in self.CASES:
+            with self.subTest(name):
+                expected = []
+                for account in sorted(json.loads(fixture(previous)), key=lambda item: item["accountId"]):
+                    s3 = [
+                        legacy(kind, account[field], account["onlyLogsAfter"])
+                        for field, kind in render.V1_BUCKET_FIELDS
+                        if field in account
+                    ]
+                    expected.append(account_v2(account["accountId"], account["region"], s3))
+                self.assertEqual(json.loads(fixture(f"aws-sources.{name}.v2.json")), listed(*expected))
+
+
+class SourceListTest(unittest.TestCase):
+    """As fontes descobertas (onboarding self-service): cada tipo com os elementos dele, e nada que apague na origem."""
+
+    def test_the_sample_with_every_element_renders_as_the_golden_file(self):
+        with Run(fixture("aws-sources.sample.v2.json")) as run:
+            self.assertEqual(run.code, 0, run.stderr)
+            self.assertEqual(run.ossec_conf, BASE_CONF + golden("sample.wodle.xml"))
+            ElementTree.fromstring(run.ossec_conf.split(BASE_CONF, 1)[1])
+            self.assertIn("2 conta(s) AWS", run.stderr)
+            self.assertEqual(
+                [section.removeprefix("profile ") for section in self.sections(run.aws_config)],
+                ["verax-111122223333", "verax-444455556666"],
+            )
+
+    @staticmethod
+    def sections(aws_config):
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(aws_config)
+        return parser.sections()
+
+    def test_nothing_is_ever_removed_at_the_origin(self):
+        with Run(fixture("aws-sources.sample.v2.json")) as run:
+            conf = run.ossec_conf
+            buckets, services = blocks(conf, "bucket"), blocks(conf, "service")
+            self.assertEqual((len(buckets), len(services)), (9, 4))
+            # Em toda entrada, sem exceção, e sempre escrito (o padrão do módulo não é o que garante).
+            self.assertEqual([block.get("remove_from_bucket") for block in buckets], ["no"] * 9)
+            self.assertEqual([block.get("remove_log_streams") for block in services], ["no"] * 4)
+            for forbidden in ("<remove_from_bucket>yes", "<remove_log_streams>yes", "<access_key>", "<secret_key>",
+                              "<iam_role_arn>", "<external_id>", "<sts_endpoint>", "<service_endpoint>"):
+                self.assertNotIn(forbidden, conf)
+
+    def test_an_account_trail_reads_only_its_folder_and_regions(self):
+        with Run(listed(account_v2(s3=[trail(regions=("us-east-1", "sa-east-1"))]))) as run:
+            self.assertEqual(
+                blocks(run.ossec_conf, "bucket"),
+                [{
+                    "type": "cloudtrail",
+                    "name": "trilha-111122223333",
+                    "aws_profile": "verax-111122223333",
+                    "aws_account_id": "111122223333",
+                    "regions": "sa-east-1,us-east-1",
+                    "only_logs_after": "2026-NOV-20",
+                    "remove_from_bucket": "no",
+                }],
+            )
+
+    def test_an_organization_trail_carries_the_organization_id(self):
+        with Run(listed(account_v2(s3=[trail(bucket="trilha-da-organizacao", organizationId="o-exemplo1234")]))) as run:
+            [block] = blocks(run.ossec_conf, "bucket")
+            self.assertEqual(block["aws_organization_id"], "o-exemplo1234")
+            self.assertEqual((block["aws_account_id"], block["regions"]), ("111122223333", "sa-east-1"))
+            self.assertNotIn("path", block)
+
+    def test_flow_logs_drop_the_accepted_traffic_unless_the_source_asks_for_all(self):
+        entries = [flow(), flow(bucket="fluxo-completo", traffic="all")]
+        with Run(listed(account_v2(s3=entries))) as run:
+            rejected, everything = blocks(run.ossec_conf, "bucket")
+            self.assertEqual((rejected["type"], everything["type"]), ("vpcflow", "vpcflow"))
+            self.assertEqual(rejected["discard_regex"], 'field="action" ACCEPT')
+            self.assertNotIn("discard_regex", everything)
+            for block in (rejected, everything):
+                self.assertEqual((block["aws_account_id"], block["regions"]), ("111122223333", "sa-east-1"))
+
+    def test_a_web_acl_is_read_by_its_exact_path_and_keeps_dropping_allowed_requests(self):
+        entries = [web_acl(), web_acl("loja_2", scope="cloudfront"), web_acl("api", prefix="central/waf")]
+        with Run(listed(account_v2(s3=entries))) as run:
+            found = blocks(run.ossec_conf, "bucket")
+            self.assertEqual(
+                [block["path"] for block in found],
+                [
+                    # O caminho do log nativo do WAF no S3, derivado do código do módulo (não conferido com objetos de
+                    # verdade): este teste fixa o que o gerador escreve.
+                    "AWSLogs/111122223333/WAFLogs/cloudfront/loja_2/",
+                    "AWSLogs/111122223333/WAFLogs/sa-east-1/painel/",
+                    "central/waf/AWSLogs/111122223333/WAFLogs/sa-east-1/api/",
+                ],
+            )
+            for block in found:
+                self.assertEqual(block["discard_regex"], 'field="action" ALLOW')
+                # O tipo `waf` do módulo ignora a conta e as regiões: tudo está no caminho.
+                self.assertNotIn("aws_account_id", block)
+                self.assertNotIn("regions", block)
+
+    def test_a_guardduty_export_and_a_custom_prefix(self):
+        entries = [findings(), trail(bucket="trilha-central", prefix="contas/producao")]
+        with Run(listed(account_v2(s3=entries))) as run:
+            first, second = blocks(run.ossec_conf, "bucket")
+            self.assertEqual((first["type"], first["path"]), ("cloudtrail", "contas/producao/"))
+            self.assertEqual((second["type"], second["aws_account_id"], second["regions"]),
+                             ("guardduty", "111122223333", "sa-east-1"))
+            self.assertNotIn("path", second)
+
+    def test_log_groups_per_account_region_and_start_date(self):
+        account = account_v2(log_groups=[
+            groups("/aws/lambda/b", "/aws/lambda/a"),
+            groups("/aws/rds/instance/banco/postgresql", after="2026-NOV-25"),
+            groups("/aws/route53/exemplo.com.br", region="us-east-1"),
+        ])
+        other = account_v2("444455556666", "us-east-1", log_groups=[groups("/aws/eks/producao/cluster")])
+        with Run(listed(other, account)) as run:
+            self.assertEqual(run.code, 0, run.stderr)
+            self.assertEqual(
+                [
+                    (block["aws_profile"], block["regions"], block["only_logs_after"], block["aws_log_groups"])
+                    for block in blocks(run.ossec_conf, "service")
+                ],
+                [
+                    ("verax-111122223333", "sa-east-1", "2026-NOV-20", "/aws/lambda/a,/aws/lambda/b"),
+                    ("verax-111122223333", "sa-east-1", "2026-NOV-25", "/aws/rds/instance/banco/postgresql"),
+                    ("verax-111122223333", "us-east-1", "2026-NOV-20", "/aws/route53/exemplo.com.br"),
+                    ("verax-444455556666", "sa-east-1", "2026-NOV-20", "/aws/eks/producao/cluster"),
+                ],
+            )
+            for block in blocks(run.ossec_conf, "service"):
+                self.assertEqual(block["type"], "cloudwatchlogs")
+                # Uma linha de log que se diz evento do módulo não vira alerta de bucket.
+                self.assertEqual(block["discard_regex"], 'field="integration" ^aws$')
+            # Só com grupos de logs, a conta também tem o profile dela.
+            self.assertIn("[profile verax-444455556666]", run.aws_config)
+
+    def test_long_log_group_lists_are_split_below_the_xml_limit_of_the_manager(self):
+        names = [f"/aws/lambda/{'g' * 480}-{index:02d}" for index in range(render.MAX_LOG_GROUPS)]
+        with Run(listed(account_v2(log_groups=[groups(*names)]))) as run:
+            self.assertEqual(run.code, 0, run.stderr)
+            services = blocks(run.ossec_conf, "service")
+            self.assertGreater(len(services), 1)
+            read = []
+            for block in services:
+                self.assertLessEqual(len(block["aws_log_groups"]), render.MAX_LOG_GROUPS_TEXT)
+                read += block["aws_log_groups"].split(",")
+            self.assertEqual(read, sorted(names))
+            # O leitor de XML do Wazuh recusa o arquivo inteiro com um elemento de 20480 caracteres ou mais.
+            self.assertLess(max(len(text) for text in re.findall(r">([^<]*)<", run.ossec_conf)), 20480)
+
+    def test_the_order_of_the_list_does_not_change_the_config(self):
+        entries = [trail(), flow(), findings(), web_acl(), legacy("cloudtrail", "trilha-antiga")]
+        first = listed(account_v2(s3=entries, log_groups=[groups("/aws/a"), groups("/aws/b", after="2026-NOV-21")]),
+                       account_v2("444455556666", "us-east-1", s3=[trail(bucket="outra-trilha")]))
+        second = listed(account_v2("444455556666", "us-east-1", s3=[trail(bucket="outra-trilha")]),
+                        account_v2(s3=entries[::-1],
+                                   log_groups=[groups("/aws/b", after="2026-NOV-21"), groups("/aws/a")]))
+        with Run(first) as one, Run(second) as two:
+            self.assertEqual(one.code, 0, one.stderr)
+            self.assertEqual(one.ossec_conf, two.ossec_conf)
+            self.assertEqual(one.stdout, two.stdout)
+
+    def test_a_new_source_changes_the_hash_and_a_repeated_read_does_not(self):
+        with Run(listed(account_v2(s3=[flow()]))) as first:
+            with Run(listed(account_v2(s3=[flow(), trail()]))) as added:
+                self.assertNotEqual(first.stdout, added.stdout)
+            # Outro flow log da mesma região no mesmo bucket é a mesma leitura: o manager nem reinicia.
+            with Run(listed(account_v2(s3=[flow(), flow()]))) as repeated:
+                self.assertEqual(first.stdout, repeated.stdout)
+
+
+class ReadDedupeTest(unittest.TestCase):
+    """A mesma leitura vinda de duas fontes sai uma vez só: nenhum evento entra duas vezes."""
+
+    def test_identical_reads_are_merged_from_the_earliest_date(self):
+        entries = [
+            flow(regions=("sa-east-1",), after="2026-NOV-22"),
+            flow(regions=("sa-east-1", "us-east-1"), after="2026-NOV-20"),
+            flow(regions=("us-east-1",), after="2026-NOV-25", traffic="all"),
+        ]
+        with Run(listed(account_v2(s3=entries))) as run:
+            found = blocks(run.ossec_conf, "bucket")
+            self.assertEqual(
+                [(block["regions"], block["only_logs_after"], "discard_regex" in block) for block in found],
+                # us-east-1: a data mais antiga das duas fontes e, como uma pede tudo, sem o descarte.
+                [("us-east-1", "2026-NOV-20", False), ("sa-east-1", "2026-NOV-20", True)],
+            )
+
+    def test_regions_with_the_same_date_share_one_block(self):
+        entries = [trail(regions=("sa-east-1",)), trail(regions=("us-east-1", "eu-west-1"))]
+        with Run(listed(account_v2(s3=entries))) as run:
+            [block] = blocks(run.ossec_conf, "bucket")
+            self.assertEqual(block["regions"], "eu-west-1,sa-east-1,us-east-1")
+
+    def test_the_same_bucket_in_two_accounts_is_read_per_account_folder(self):
+        shared = {"bucket": "trilha-da-organizacao", "organizationId": "o-exemplo1234"}
+        with Run(listed(account_v2(s3=[trail(**shared)]),
+                        account_v2("444455556666", "us-east-1", s3=[trail(**shared)]))) as run:
+            self.assertEqual(
+                [(block["aws_profile"], block["aws_account_id"]) for block in blocks(run.ossec_conf, "bucket")],
+                [("verax-111122223333", "111122223333"), ("verax-444455556666", "444455556666")],
+            )
+
+    def test_a_read_already_done_by_the_legacy_bucket_is_not_repeated(self):
+        entries = [
+            legacy("cloudtrail", "trilha-antiga"),
+            legacy("guardduty", "achados-antigos"),
+            # A mesma pasta da conta que o cadastro anterior já lê, e o bucket que ele lê inteiro.
+            trail(bucket="trilha-antiga"),
+            findings(bucket="achados-antigos"),
+            # Com prefixo ou com a organização, é outra pasta: sai.
+            trail(bucket="trilha-antiga", organizationId="o-exemplo1234"),
+            findings(bucket="achados-antigos", prefix="exportados"),
+        ]
+        # O bucket do GuardDuty do cadastro anterior de uma conta também cobre a pasta de outra conta nele.
+        member = account_v2("444455556666", "us-east-1", s3=[findings(bucket="achados-antigos"), trail("trilha-antiga")])
+        with Run(listed(account_v2(s3=entries), member)) as run:
+            self.assertEqual(run.code, 0, run.stderr)
+            self.assertEqual(
+                [(block["type"], block["name"], block["aws_profile"], block.get("aws_organization_id"),
+                  block.get("path"), block.get("regions")) for block in blocks(run.ossec_conf, "bucket")],
+                [
+                    ("cloudtrail", "trilha-antiga", "verax-111122223333", None, None, None),
+                    ("guardduty", "achados-antigos", "verax-111122223333", None, None, None),
+                    ("cloudtrail", "trilha-antiga", "verax-111122223333", "o-exemplo1234", None, "sa-east-1"),
+                    ("guardduty", "achados-antigos", "verax-111122223333", None, "exportados/", "sa-east-1"),
+                    # A outra conta lê a pasta dela na trilha (o cadastro anterior só lê a da primeira).
+                    ("cloudtrail", "trilha-antiga", "verax-444455556666", None, None, "sa-east-1"),
+                ],
+            )
+
+    def test_the_same_web_acl_twice_is_one_read(self):
+        with Run(listed(account_v2(s3=[web_acl(after="2026-NOV-25"), web_acl(after="2026-NOV-21")]))) as run:
+            [block] = blocks(run.ossec_conf, "bucket")
+            self.assertEqual(block["only_logs_after"], "2026-NOV-21")
+
+
+class InvalidSourceListTest(unittest.TestCase):
+    """Qualquer valor fora da lista fechada do tipo dele recusa a lista inteira, e nada é escrito."""
+
+    @staticmethod
+    def with_entry(entry):
+        return listed(account_v2(s3=[entry]))
+
+    @staticmethod
+    def with_groups(*entries):
+        return listed(account_v2(log_groups=entries))
+
+    def cases(self):
+        many_groups = [f"/aws/lambda/funcao-{index}" for index in range(render.MAX_LOG_GROUPS + 1)]
+        many_entries = [trail(bucket=f"trilha-{index:03d}") for index in range(render.MAX_S3_ENTRIES + 1)]
+        return {
+            "versão desconhecida": {"version": 3, "accounts": []},
+            "versão como texto": {"version": "2", "accounts": []},
+            "versão booleana": {"version": True, "accounts": []},
+            "sem a versão": {"accounts": []},
+            "campo a mais na raiz": {"version": 2, "accounts": [], "roleArn": "arn:aws:iam::111122223333:role/Admin"},
+            "contas que não são lista": {"version": 2, "accounts": {}},
+            "conta sem fonte": listed(account_v2()),
+            "conta repetida": listed(account_v2(s3=[trail()]), account_v2(s3=[flow()])),
+            "campo a mais na conta": listed({**account_v2(s3=[trail()]), "profile": "default"}),
+            "contas demais": listed(*[account_v2(f"{n:012d}", s3=[trail()]) for n in range(101)]),
+            "tipo de bucket desconhecido": self.with_entry(trail(type="custom")),
+            "tipo que o módulo tem e a Verax não coleta": self.with_entry(trail(type="server_access")),
+            "sem as regiões": self.with_entry({"type": "cloudtrail", "bucket": "trilha", "onlyLogsAfter": "2026-NOV-20"}),
+            "regiões vazias": self.with_entry(trail(regions=())),
+            "regiões como texto": self.with_entry({**trail(), "regions": "sa-east-1"}),
+            "região repetida": self.with_entry(trail(regions=("sa-east-1", "sa-east-1"))),
+            "região que o módulo não aceita": self.with_entry(trail(regions=("sa-east-1", "ap-southeast-6"))),
+            "região de outra partição": self.with_entry(trail(regions=("cn-north-1",))),
+            "XML numa região": self.with_entry(trail(regions=("sa-east-1</regions><remove_from_bucket>yes",))),
+            "vírgula numa região": self.with_entry(trail(regions=("sa-east-1,us-east-1",))),
+            "organização fora do formato": self.with_entry(trail(organizationId="o-ABC")),
+            "XML na organização": self.with_entry(trail(organizationId="o-exemplo1234</aws_organization_id><x>")),
+            "organização nos flow logs": self.with_entry(flow(organizationId="o-exemplo1234")),
+            "prefixo com barra no começo": self.with_entry(trail(prefix="/central")),
+            "prefixo com barra no fim": self.with_entry(trail(prefix="central/")),
+            "prefixo que sobe de pasta": self.with_entry(trail(prefix="central/../outra")),
+            "prefixo com XML": self.with_entry(trail(prefix="central</path><remove_from_bucket>yes")),
+            "prefixo com espaço": self.with_entry(trail(prefix="minha pasta")),
+            "prefixo longo demais": self.with_entry(trail(prefix="/".join(["p" * 64] * 5))),
+            "apagar o que leu": self.with_entry(trail(removeFromBucket="yes")),
+            "escolher o papel": self.with_entry(trail(iamRoleArn="arn:aws:iam::111122223333:role/Admin")),
+            "flow logs sem o tráfego": self.with_entry({k: v for k, v in flow().items() if k != "traffic"}),
+            "tráfego desconhecido": self.with_entry(flow(traffic="accepted")),
+            "tráfego na trilha": self.with_entry(trail(traffic="all")),
+            "WAF sem a Web ACL": self.with_entry({k: v for k, v in web_acl().items() if k != "webAcl"}),
+            "Web ACL com barra (outro caminho)": self.with_entry(web_acl("painel/../../outro")),
+            "Web ACL com XML": self.with_entry(web_acl("painel</path><remove_from_bucket>yes")),
+            "Web ACL com espaço": self.with_entry(web_acl("meu painel")),
+            "escopo que não é região": self.with_entry(web_acl(scope="global")),
+            "escopo com barra": self.with_entry(web_acl(scope="sa-east-1/outro")),
+            "WAF com regiões": self.with_entry(web_acl(regions=["sa-east-1"])),
+            "bucket do WAF sem o prefixo": self.with_entry(web_acl(bucket="logs-do-waf")),
+            "bucket com XML": self.with_entry(trail(bucket="x</name><name>outro")),
+            "bucket com quebra de linha no fim": self.with_entry(trail(bucket="trilha\n")),
+            "data fora do formato": self.with_entry(trail(after="2026-11-20")),
+            "data com quebra de linha no fim": self.with_entry(trail(after="2026-NOV-20\n")),
+            "legacy falso": self.with_entry({**legacy("cloudtrail", "trilha"), "legacy": False}),
+            "legacy como texto": self.with_entry({**legacy("cloudtrail", "trilha"), "legacy": "true"}),
+            "legacy num tipo que o cadastro não tem": self.with_entry(legacy("vpcflow", "fluxo")),
+            "legacy com regiões": self.with_entry({**legacy("cloudtrail", "trilha"), "regions": ["sa-east-1"]}),
+            "dois buckets do cadastro do mesmo tipo": listed(
+                account_v2(s3=[legacy("cloudtrail", "trilha-a"), legacy("cloudtrail", "trilha-b")])
+            ),
+            "entradas de bucket demais": listed(account_v2(s3=many_entries)),
+            "entrada que não é objeto": listed(account_v2(s3=["trilha"])),
+            "s3 que não é lista": listed({**account_v2(), "s3": {"type": "cloudtrail"}}),
+            "grupo com vírgula (dois grupos num nome)": self.with_groups(groups("/aws/a,/aws/b")),
+            "grupo com cerquilha (o módulo recusa o argumento)": self.with_groups(groups("/aws/lambda/fila#1")),
+            "grupo com XML": self.with_groups(groups("/aws/a</aws_log_groups><remove_log_streams>yes")),
+            "grupo com espaço": self.with_groups(groups("meu grupo")),
+            "grupo com quebra de linha": self.with_groups(groups("/aws/a\n/aws/b")),
+            "grupo vazio": self.with_groups(groups("")),
+            "grupo longo demais": self.with_groups(groups("/" + "g" * 512)),
+            "sem grupo nenhum": self.with_groups(groups()),
+            "grupo repetido na conta": self.with_groups(groups("/aws/a"), groups("/aws/a", after="2026-NOV-25")),
+            "grupos demais": self.with_groups(groups(*many_groups)),
+            "região dos grupos que o módulo não aceita": self.with_groups(groups("/aws/a", region="ap-southeast-6")),
+            "apagar os streams": self.with_groups({**groups("/aws/a"), "removeLogStreams": "yes"}),
+            "o mesmo grupo e região em duas contas": listed(
+                account_v2(log_groups=[groups("/aws/lambda/cobranca")]),
+                account_v2("444455556666", "us-east-1", log_groups=[groups("/aws/lambda/cobranca")]),
+            ),
+        }
+
+    def test_invalid_lists_fail_without_writing(self):
+        for label, sources in self.cases().items():
+            with self.subTest(label), Run(sources) as run:
+                self.assertEqual(run.code, 1)
+                self.assertIn("ERRO", run.stderr)
+                self.assertEqual(run.stdout, "")
+                self.assertFalse(run.config_dir.exists())
+                self.assertFalse(run.aws_dir.exists())
+
+    def test_a_refused_list_leaves_the_current_config_as_it_is(self):
+        with tempfile.TemporaryDirectory() as root:
+            with Run(listed(account_v2(s3=[trail()])), root=root) as first:
+                conf, profiles = first.ossec_conf, first.aws_config
+            bad = listed(account_v2(s3=[trail()]), account_v2("444455556666", "us-east-1", s3=[web_acl("a b")]))
+            with Run(bad, root=root) as second:
+                self.assertEqual(second.code, 1)
+                # Um valor recusado numa conta recusa a lista inteira: a outra conta também fica como estava.
+                self.assertEqual((second.ossec_conf, second.aws_config), (conf, profiles))
+                self.assertFalse((second.config_dir / ".prev").exists())
+
+    def test_the_same_group_name_in_another_region_or_at_the_limit_is_accepted(self):
+        names = [f"/aws/lambda/funcao-{index}" for index in range(render.MAX_LOG_GROUPS)]
+        ok = listed(
+            account_v2(log_groups=[groups(*names)]),
+            account_v2("444455556666", "us-east-1", log_groups=[groups("/aws/lambda/funcao-0", region="us-east-1")]),
+        )
+        with Run(ok) as run:
+            self.assertEqual(run.code, 0, run.stderr)
+        entries = [trail(bucket=f"trilha-{index:03d}") for index in range(render.MAX_S3_ENTRIES)]
+        with Run(listed(account_v2(s3=entries))) as run:
+            self.assertEqual(run.code, 0, run.stderr)
+            self.assertEqual(len(blocks(run.ossec_conf, "bucket")), render.MAX_S3_ENTRIES)
+
+    def test_every_value_that_reaches_the_config_comes_from_a_closed_alphabet(self):
+        """O que sai no ossec.conf, fora das etiquetas fixas, só tem os caracteres das listas fechadas de cada campo."""
+        with Run(fixture("aws-sources.sample.v2.json")) as run:
+            wodle = run.ossec_conf.split(BASE_CONF, 1)[1]
+            values = re.findall(r"<(?:name|aws_profile|path|aws_organization_id|aws_account_id|regions|only_logs_after"
+                                r"|aws_log_groups)>([^<]*)<", wodle)
+            self.assertGreater(len(values), 40)
+            for value in values:
+                self.assertRegex(value, r"\A[A-Za-z0-9._/,-]+\Z")
+
+    def test_the_regions_are_the_ones_of_the_module_in_the_image(self):
+        # A lista de `aws_tools.ALL_REGIONS` do Wazuh 4.14.9: o scripts/test-aws-sources.sh confere com a imagem.
+        self.assertEqual(len(render.WODLE_REGIONS), 35)
+        self.assertEqual(len(set(render.WODLE_REGIONS)), 35)
+        for region in render.WODLE_REGIONS:
+            self.assertRegex(region, render.REGION)
+            # O formato que o próprio módulo confere antes da lista dele.
+            self.assertRegex(region, r"^([a-z]{2}(-gov)?)-([a-z]+)-\d$")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,12 @@
 # 3. guarda de versão: toda regra de frequência dos arquivos da AWS do Wazuh está tratada aqui ou é de uma fonte que
 #    a Verax não coleta. Uma versão nova com outra correlação derruba o teste até ela ser avaliada.
 #
+# Flow logs da VPC (onboarding self-service; o tipo `vpcflow` do módulo, sem regra local):
+# 3a. cada registro chega com `aws.source: vpc` (é por ele que o sync dos alertas reconhece a fonte) e casa só com a
+#     regra do Wazuh da ação dele (80401 no aceito, 80402 no rejeitado), as duas abaixo do corte dos alertas do nó
+#     (`log_alert_level` do ossec.conf): um registro sozinho nunca vira alerta, e uma rajada deles também não, porque
+#     o Wazuh não traz correlação para os flow logs. Uma versão nova que mude isso derruba o teste.
+#
 # Papel de leitura (verax_reader_rules.xml, que o render-manager-config.py gera do modelo com o IP de saída do nó; fase
 # 2, PR-V4'), com os eventos como o módulo aws-s3 os entrega:
 # 4. a leitura do próprio nó e a entrada dele no papel, vindas do IP do nó: nível 0 (100200 e 100201), também quando o
@@ -86,6 +92,11 @@ delete_objects() { # <conta>
 waf_block() { # <conta>
   printf '{"integration":"aws","aws":{"log_info":{"aws_account_alias":"","log_file":"waf/2026/11/01/w.gz","s3bucket":"aws-waf-logs-%s"},"timestamp":1793527200000,"formatVersion":1,"webaclId":"arn:aws:wafv2:sa-east-1:%s:regional/webacl/painel/0000","terminatingRuleId":"AWS-AWSManagedRulesCommonRuleSet","terminatingRuleType":"MANAGED_RULE_GROUP","action":"BLOCK","httpSourceName":"ALB","httpRequest":{"clientIp":"%s","country":"BR","headers":{"Host":"app.exemplo"},"uri":"/login","args":"","httpVersion":"HTTP/1.1","httpMethod":"POST","requestId":"1-0000"},"source":"waf"}}\n' \
     "$1" "$1" "$ATTACKER_IP"
+}
+
+vpc_flow() { # <conta> <ACCEPT|REJECT>
+  printf '{"integration":"aws","aws":{"log_info":{"aws_account_alias":"","log_file":"AWSLogs/%s/vpcflowlogs/sa-east-1/2026/11/01/f.log.gz","s3bucket":"fluxo-%s"},"version":"2","account_id":"%s","interface_id":"eni-0123456789abcdef0","srcaddr":"%s","dstaddr":"10.0.0.10","srcport":"44321","dstport":"22","protocol":"6","packets":"1","bytes":"40","start":"2026-11-01T10:00:00Z","end":"2026-11-01T10:01:00Z","action":"%s","log_status":"OK","source":"vpc","aws_account_id":"%s"}}\n' \
+    "$1" "$1" "$1" "$ATTACKER_IP" "$2" "$1"
 }
 
 repeat() { # <n> <gerador> <conta>
@@ -169,6 +180,21 @@ expect "4 + 4 em Web ACLs de contas diferentes: sem correlação" "" "$(fired 80
 expect "cada evento é um bloqueio (80442)" 8 "$(awk '$1 == 80442' <<<"$out" | wc -l | tr -d ' ')"
 out=$({ repeat 4 waf_block $ACCOUNT_A; repeat 4 waf_block $ACCOUNT_B; repeat 4 waf_block $ACCOUNT_A; } | logtest)
 expect "8 na mesma Web ACL: correlação na conta A" "$ACCOUNT_A" "$(fired 80443 "$out")"
+
+echo "== Flow logs da VPC (80401 e 80402): cada registro abaixo do corte dos alertas, e nenhuma correlação"
+vpc_rejected() { vpc_flow "$1" REJECT; }
+vpc_accepted() { vpc_flow "$1" ACCEPT; }
+out=$({ repeat 40 vpc_rejected $ACCOUNT_A; repeat 2 vpc_accepted $ACCOUNT_A; } | logtest)
+expect "o registro rejeitado casa com a 80402, com a conta da pasta lida" 40 \
+  "$(awk -v account=$ACCOUNT_A '$1 == 80402 && $2 == account' <<<"$out" | wc -l | tr -d ' ')"
+expect "o registro aceito casa com a 80401" 2 "$(awk '$1 == 80401' <<<"$out" | wc -l | tr -d ' ')"
+expect "40 rejeitados do mesmo IP não disparam mais nada" "80401 80402" \
+  "$(awk '{ print $1 }' <<<"$out" | sort -u | paste -sd' ' -)"
+alert_level=$(grep -oE '<log_alert_level>[0-9]+' config/manager/ossec.conf | grep -oE '[0-9]+')
+flow_levels=$(docker exec "$NAME" sh -c "grep -E '<rule id=\"8040[12]\"' /var/ossec/ruleset/rules/0350-amazon_rules.xml" |
+  grep -oE 'level="[0-9]+"' | grep -oE '[0-9]+' | sort -n | paste -sd' ' -)
+expect "as duas regras dos flow logs são dos níveis 3 e 4" "3 4" "$flow_levels"
+expect "e ficam abaixo do corte dos alertas do nó (log_alert_level)" 5 "$alert_level"
 
 echo "== Guarda de versão: correlações nos arquivos da AWS do Wazuh"
 found=$(docker exec "$NAME" sh -c "cd /var/ossec/ruleset/rules && cat ${AWS_RULE_FILES[*]}" |
