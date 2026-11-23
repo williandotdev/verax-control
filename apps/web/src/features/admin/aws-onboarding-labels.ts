@@ -307,6 +307,8 @@ export const AWS_CHECK_CODE_TEXTS: Readonly<Record<(typeof AWS_ONBOARDING_CHECK_
     'A etiqueta verax-control:template do papel não traz um número de versão. Atualize a pilha com o arquivo desta tela, em "Pilha na AWS", para as etiquetas serem gravadas de novo.',
   awaiting_collector: 'Aguardando o coletor iniciar a leitura das fontes autorizadas.',
   no_data: 'Ainda sem medida.',
+  sync_delayed:
+    'Uma fonte de achados está há mais de 2 horas sem uma leitura que dê certo. Fonte de achados não fica parada por não ter achado: o que atrasou foi a leitura. Veja qual em "Fontes autorizadas".',
 };
 
 function isCheckCode(code: string): code is (typeof AWS_ONBOARDING_CHECK_CODES)[number] {
@@ -464,8 +466,49 @@ export const AWS_SOURCE_STATE_CODE_TEXTS: Readonly<Record<(typeof AWS_SOURCE_STA
   {
     awaiting_collector: 'A autorização está gravada, e o coletor ainda não começou a ler.',
     not_collectable_yet: 'O Verax já encontra este tipo de fonte, mas ainda não o coleta.',
-    not_found: 'A última descoberta não achou mais esta fonte na conta.',
+    not_found:
+      'O Verax não achou mais esta fonte na conta (foi apagada ou trocada). Se ela voltar, clique em Tentar de novo; senão, retire a autorização.',
+    not_enabled:
+      'O serviço foi desligado na conta depois da autorização. Se você o ligar de novo na AWS, clique em Tentar de novo; senão, retire a autorização.',
+    no_findings_yet: 'A leitura deu certo, e o serviço ainda não trouxe nenhum achado.',
+    throttled:
+      'A AWS está limitando as chamadas a este serviço. O Verax tenta de novo sozinho, com intervalos maiores: não é preciso fazer nada.',
   };
+
+/**
+ * Por que a leitura de uma fonte autorizada está falhando (`ingestion_error`): o limite de requisições (`throttled`) ou
+ * o nome do erro que a AWS deu. O coletor só marca a falha depois de três leituras seguidas com erro, e continua
+ * tentando sozinho. Os nomes que não estão aqui aparecem como "Tipo do erro", nunca como mensagem da AWS.
+ */
+const INTERNAL_ERROR =
+  'O serviço da AWS respondeu com um erro interno nas últimas leituras. O Verax continua tentando sozinho; se durar horas, confira o estado do serviço na AWS.';
+const UNAVAILABLE =
+  'O serviço da AWS estava indisponível nas últimas leituras. O Verax continua tentando sozinho; se durar horas, confira o estado do serviço na AWS.';
+const INGESTION_ERROR_TEXTS: Readonly<Record<string, string>> = {
+  TimeoutError:
+    'A AWS não respondeu a tempo nas últimas leituras. O Verax continua tentando sozinho; se durar horas, confira o estado do serviço na AWS.',
+  Unknown:
+    'A leitura falhou por um erro que a AWS não identificou. O Verax continua tentando sozinho; se durar horas, fale com a Verax.',
+  InternalServerException: INTERNAL_ERROR,
+  InternalServerError: INTERNAL_ERROR,
+  InternalFailure: INTERNAL_ERROR,
+  InternalException: INTERNAL_ERROR,
+  InternalError: INTERNAL_ERROR,
+  ServiceUnavailableException: UNAVAILABLE,
+  ServiceUnavailable: UNAVAILABLE,
+};
+
+/** O que dizer da falha de leitura de uma fonte, pelo código; o que a tela não conhece vira "Tipo do erro". */
+export function awsIngestionErrorText(code: string | null): string {
+  if (code === null)
+    return 'A leitura desta fonte falhou nas últimas tentativas. O Verax continua tentando sozinho.';
+  if (code === 'throttled') return AWS_SOURCE_STATE_CODE_TEXTS.throttled;
+  if (Object.hasOwn(INGESTION_ERROR_TEXTS, code)) return INGESTION_ERROR_TEXTS[code] ?? '';
+  return `A leitura desta fonte falhou nas últimas tentativas. O Verax continua tentando sozinho. Tipo do erro: ${code}.`;
+}
+
+/** Os códigos de falha de leitura com texto próprio (para o teste dos textos). */
+export const AWS_INGESTION_ERROR_CODES = ['throttled', ...Object.keys(INGESTION_ERROR_TEXTS)];
 
 function isSourceStateCode(code: string): code is (typeof AWS_SOURCE_STATE_CODES)[number] {
   return (AWS_SOURCE_STATE_CODES as readonly string[]).includes(code);
@@ -524,6 +567,15 @@ export function awsSourceHealthText(source: AwsSource): { label: string; tone: T
   const code = source.stateCode;
   switch (source.state) {
     case 'collecting': {
+      // O coletor de achados diz quando a fonte nunca trouxe um achado (`no_findings_yet`).
+      if (code === 'no_findings_yet') {
+        return {
+          label: 'Sincronizada, sem achados novos',
+          tone: 'ok',
+          detail: AWS_SOURCE_STATE_CODE_TEXTS.no_findings_yet,
+        };
+      }
+      // Sem o código (a fonte que já trouxe achados antes): pelo volume do dia, só nas fontes de achados.
       const { eventsLast24h, lastEventAt } = source.health;
       const quiet = eventsLast24h === 0 || (eventsLast24h === null && lastEventAt === null);
       return isFindingSource(source) && quiet
@@ -536,19 +588,23 @@ export function awsSourceHealthText(source: AwsSource): { label: string; tone: T
         detail: `Falta permissão: ${awsPermissionDetailText(source.permissionDetail ?? code)}.`,
       };
     case 'ingestion_error':
-      return { ...base, detail: code === null ? null : `Tipo do erro: ${code}.` };
+      return { ...base, detail: awsIngestionErrorText(code) };
     case 'stalled':
       return {
         ...base,
         detail: 'Esta fonte entrega eventos o tempo todo, e parou de entregar há mais de 2 horas.',
       };
     case 'source_missing':
+      // O serviço desligado e a fonte que sumiu têm o texto deles; os outros motivos são os da descoberta (o log
+      // sem destino, o destino ou o formato que o Verax não lê).
+      if (code === 'not_enabled' || code === 'not_found' || code === null) {
+        return { ...base, detail: AWS_SOURCE_STATE_CODE_TEXTS[code ?? 'not_found'] };
+      }
       return {
         ...base,
-        detail:
-          code !== null && isAvailability(code)
-            ? `${AWS_SOURCE_AVAILABILITY_TEXTS[code]}. Rode a descoberta de novo depois de corrigir na AWS.`
-            : AWS_SOURCE_STATE_CODE_TEXTS.not_found,
+        detail: isAvailability(code)
+          ? `${AWS_SOURCE_AVAILABILITY_TEXTS[code]}. Depois de corrigir na AWS, clique em Tentar de novo.`
+          : `${AWS_SOURCE_STATE_CODE_TEXTS.not_found} Tipo do erro: ${code}.`,
       };
     default:
       return {
@@ -711,6 +767,8 @@ export const AWS_ONBOARDING_ERROR_TEXTS: Readonly<Record<AwsOnboardingErrorCode,
     'A conta não está conectada agora. Conecte a conta (ou espere a verificação terminar) antes de pedir a descoberta ou conferir uma fonte.',
   DISCOVERY_RATE_LIMITED:
     'A descoberta acabou de rodar. Só é possível pedir outra a cada 5 minutos: tente de novo daqui a pouco.',
+  SOURCE_RETRY_RATE_LIMITED:
+    'Esta fonte acabou de ser conferida. Só é possível pedir outra conferência da mesma fonte 30 segundos depois: espere um instante e tente de novo.',
   DISCOVERY_UNAVAILABLE: 'A descoberta das fontes ainda não está disponível neste ambiente.',
 };
 
@@ -837,18 +895,22 @@ export function awsCheckText(check: AwsOnboardingCheck): { text: string; action:
         action: null,
       };
     }
+    // A falha de leitura de uma fonte: o limite de requisições ou o erro da AWS, com o que o Verax faz a respeito.
     return {
       text:
         code === null || code === 'ingestion_error'
           ? `${base} Veja qual em "Fontes autorizadas".`
-          : `${base} Veja qual em "Fontes autorizadas". Tipo do erro: ${code}.`,
+          : `${awsIngestionErrorText(code)} Veja qual fonte em "Fontes autorizadas".`,
       action: null,
     };
   }
 
   if (id === 'lag' && status === 'failed') {
     return {
-      text: 'Uma fonte autorizada está com mais de 2 horas de atraso. Veja qual em "Fontes autorizadas".',
+      text:
+        code === 'sync_delayed'
+          ? AWS_CHECK_CODE_TEXTS.sync_delayed
+          : 'Uma fonte autorizada está com mais de 2 horas de atraso. Veja qual em "Fontes autorizadas".',
       action: null,
     };
   }

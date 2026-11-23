@@ -16,7 +16,10 @@ import { skipDemoTour } from './demo-tour';
 const READER_TEMPLATE = fileURLToPath(
   new URL('../../../infra/cloudformation/verax-control-reader.yaml', import.meta.url),
 );
-/** A conta AWS conectada da demonstração (`account(1, ...)` em mocks/admin.ts): parcialmente operacional. */
+/**
+ * A conta AWS conectada da demonstração (`account(1, ...)` em mocks/admin.ts): com erro de permissão numa fonte de
+ * achados, e as outras fontes de achados cada uma numa situação.
+ */
 const AWS_ACCOUNT = '018f2c1e-0000-7000-8000-0000000c0001';
 const AWS_DIALOG = 'Conta AWS 111122223333';
 const CONSOLE_URL = 'https://console.aws.amazon.com/cloudformation/home?region=sa-east-1#/stacks/create';
@@ -210,16 +213,48 @@ test.describe('onboarding self-service da AWS (modo mock)', () => {
     expect(await violations(page)).toEqual([]);
   });
 
+  test('as fontes de achados da conta conectada (escuro): cada situação com o texto dela, e o "Tentar de novo" espera os 30 s', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    await useRole(page, 'admin_verax', 'dark');
+    await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    const sheet = page.getByRole('dialog', { name: AWS_DIALOG });
+    await expect(
+      sheet.getByRole('region', { name: 'Situação da conexão' }).getByRole('status'),
+    ).toContainText('Erro de permissão');
+    const monitor = sheet.getByRole('region', { name: 'Fontes autorizadas' });
+    // Sem achado nenhum, limitada pela AWS, sem a permissão de leitura e desligada na conta.
+    await expect(monitor).toContainText('Sincronizada, sem achados novos');
+    await expect(monitor).toContainText('A leitura deu certo, e o serviço ainda não trouxe nenhum achado.');
+    await expect(monitor).toContainText('Falta permissão: a AWS negou a ação access-analyzer:ListFindings.');
+    await expect(monitor).toContainText('O serviço foi desligado na conta depois da autorização.');
+    const throttled = monitor.getByRole('row').filter({ hasText: 'A AWS está limitando as chamadas' });
+    await expect(throttled).toHaveCount(1);
+    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+    expect(await violations(page)).toEqual([]);
+
+    // O clique pede a leitura da fonte agora; respondido, o botão espera o intervalo da mesma fonte.
+    await throttled.getByRole('button', { name: /^Tentar de novo: Security Hub/ }).click();
+    const waiting = throttled.getByRole('button', { name: /^Tentar de novo em \d+ s: Security Hub/ });
+    await expect(waiting).toBeVisible({ timeout: 20_000 });
+    await expect(waiting).toBeDisabled();
+    // A espera é só daquela fonte.
+    await expect(monitor.getByRole('button', { name: /^Tentar de novo: / }).first()).toBeEnabled();
+    expect(await violations(page)).toEqual([]);
+  });
+
   test('quem só lê acompanha a conta, sem conectar, autorizar nem revogar', async ({ page }) => {
     await useRole(page, 'leitura');
     await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
     const sheet = page.getByRole('dialog', { name: AWS_DIALOG });
     await expect(
       sheet.getByRole('region', { name: 'Situação da conexão' }).getByRole('status'),
-    ).toContainText('Parcialmente operacional');
+    ).toContainText('Erro de permissão');
     await expect(sheet.getByRole('region', { name: 'Fontes autorizadas' })).toBeVisible();
     await expect(
-      sheet.getByRole('button', { name: /Verificar|Conectar|Autorizar|Revogar|Descobrir/ }),
+      sheet.getByRole('button', { name: /Verificar|Conectar|Autorizar|Revogar|Descobrir|Tentar/ }),
     ).toHaveCount(0);
     await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
     expect(await violations(page)).toEqual([]);

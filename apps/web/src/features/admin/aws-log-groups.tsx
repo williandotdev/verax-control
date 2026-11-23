@@ -2,6 +2,7 @@ import { type AwsOnboarding, type AwsSource, type CloudAccount } from '@verax/sh
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
+import type { SourceRetry } from '@/features/admin/aws-hooks';
 import { AWS_LOG_GROUP_CATEGORY_LABELS } from '@/features/admin/aws-onboarding-labels';
 import { PermissionFix, RetryButton, SourceNotes, SourceRegion } from '@/features/admin/aws-source-parts';
 import { awsSourceGroup, isAuthorizableSource, matchesLogGroupSearch } from '@/features/admin/aws-sources';
@@ -52,8 +53,7 @@ export function AwsLogGroupList({
   picked,
   onToggle,
   canAuthorize,
-  onRetry,
-  retryingId,
+  retry,
 }: {
   account: CloudAccount;
   onboarding: AwsOnboarding;
@@ -61,8 +61,7 @@ export function AwsLogGroupList({
   picked: ReadonlySet<string>;
   onToggle: (sourceId: string) => void;
   canAuthorize: boolean;
-  onRetry: (sourceId: string) => void;
-  retryingId: string | null;
+  retry: SourceRetry;
 }) {
   const [search, setSearch] = useState('');
   const [onlyTagged, setOnlyTagged] = useState(false);
@@ -188,15 +187,7 @@ export function AwsLogGroupList({
                         source={source}
                         account={account}
                         onboarding={onboarding}
-                        retry={
-                          canAuthorize ? (
-                            <RetryButton
-                              source={source}
-                              onRetry={onRetry}
-                              pending={retryingId === source.id}
-                            />
-                          ) : undefined
-                        }
+                        retry={canAuthorize ? <RetryButton source={source} retry={retry} /> : undefined}
                       />
                     </details>
                   )}

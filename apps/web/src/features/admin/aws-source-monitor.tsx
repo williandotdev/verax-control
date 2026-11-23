@@ -1,7 +1,8 @@
 import { type AwsOnboarding, type AwsSource, type CloudAccount } from '@verax/shared';
 import { Fragment } from 'react';
 import { ConfirmButton } from '@/features/admin/admin-ui';
-import { useAwsRetrySource, useAwsRevokeSource } from '@/features/admin/aws-onboarding-api';
+import type { SourceRetry } from '@/features/admin/aws-hooks';
+import { useAwsRevokeSource } from '@/features/admin/aws-onboarding-api';
 import {
   AWS_SOURCE_KIND_TEXTS,
   awsOnboardingErrorText,
@@ -11,6 +12,7 @@ import {
 import {
   PermissionFix,
   RetryButton,
+  RetryError,
   SensitiveTag,
   SourceLocation,
   SourceRegion,
@@ -23,8 +25,16 @@ import { formatDay, formatDuration, formatRelative } from '@/lib/format';
 
 const numberFormat = new Intl.NumberFormat('pt-BR');
 
-/** Os estados em que conferir a permissão de novo pode destravar a fonte. */
-const RETRYABLE_STATES: readonly AwsSource['state'][] = ['permission_error', 'ingestion_error', 'stalled'];
+/**
+ * Os estados em que ler a fonte de novo na AWS pode destravá-la: a permissão corrigida, a leitura que voltou a dar
+ * certo, a fonte parada e a que sumiu (religada ou recriada; a conferência dela pede uma descoberta da conta).
+ */
+const RETRYABLE_STATES: readonly AwsSource['state'][] = [
+  'permission_error',
+  'ingestion_error',
+  'stalled',
+  'source_missing',
+];
 
 function When({ at, never }: { at: string | null; never: string }) {
   return at === null ? <span className="text-muted-foreground">{never}</span> : <>{formatRelative(at)}</>;
@@ -66,17 +76,16 @@ export function AwsSourceMonitor({
   account,
   onboarding,
   canWrite,
+  retry,
 }: {
   account: CloudAccount;
   onboarding: AwsOnboarding;
   canWrite: boolean;
+  retry: SourceRetry;
 }) {
   const revoke = useAwsRevokeSource(account.id);
-  const retry = useAwsRetrySource(account.id);
   const { authorized } = groupAwsSources(onboarding.sources);
   const active = account.status === 'active';
-  const retryingId = retry.isPending ? (retry.variables ?? null) : null;
-  const error = revoke.error ?? retry.error;
   if (authorized.length === 0) return null;
 
   return (
@@ -85,9 +94,10 @@ export function AwsSourceMonitor({
         O que o Verax coleta desta conta, com a situação de cada fonte. A coleta de cada uma começou no dia da
         autorização.
       </p>
-      {error ? (
+      <RetryError retry={retry} sources={authorized} />
+      {revoke.error ? (
         <p role="alert" className="text-sm text-critical-text">
-          {awsOnboardingErrorText(error)}
+          {awsOnboardingErrorText(revoke.error)}
         </p>
       ) : null}
       <div className="overflow-x-auto rounded-lg border">
@@ -181,12 +191,7 @@ export function AwsSourceMonitor({
                       ) : canWrite ? (
                         <>
                           {retryable && active && (
-                            <RetryButton
-                              source={source}
-                              onRetry={(id) => retry.mutate(id)}
-                              pending={retryingId === source.id}
-                              label="Tentar de novo"
-                            />
+                            <RetryButton source={source} retry={retry} label="Tentar de novo" />
                           )}
                           <ConfirmButton
                             label="Revogar"
@@ -206,7 +211,12 @@ export function AwsSourceMonitor({
                   {source.state === 'permission_error' && !legacy && (
                     <tr>
                       <td colSpan={8} className="px-3 pb-3">
-                        <PermissionFix source={source} account={account} onboarding={onboarding} />
+                        <PermissionFix
+                          source={source}
+                          account={account}
+                          onboarding={onboarding}
+                          again="Tentar de novo"
+                        />
                       </td>
                     </tr>
                   )}

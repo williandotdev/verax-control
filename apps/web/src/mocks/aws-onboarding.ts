@@ -10,6 +10,7 @@ import {
   AWS_SOURCE_KIND_INFO,
   AWS_SOURCE_LEGACY_RESOURCE,
   AWS_SOURCE_NONE_RESOURCE,
+  AWS_SOURCE_RETRY_INTERVAL_MS,
   type AwsCredentialMode,
   type AwsDiscoveryError,
   type AwsDiscoveryRun,
@@ -30,6 +31,7 @@ import {
   awsSourcesAuthorizeSchema,
   type AwsSourceState,
   type CloudAccount,
+  isAwsSourceActiveState,
   isAwsTemplateOutdated,
   LOG_SOURCES,
   type LogSource,
@@ -49,8 +51,9 @@ import { DEMO_ACCOUNTS, DEMO_AWS_CHECK_DELAY_MS } from './fixtures';
  * `apps/api/src/aws/onboarding/onboarding-state.ts`, e toda resposta passa pelo schema do contrato.
  *
  * As contas da demonstração cobrem os estados que não aparecem no caminho feliz:
- * - a de produção da Alfa: parcialmente operacional, com a autorização dos grupos de logs desligada na pilha, a
- *   descoberta parcial e fontes em quase todos os estados;
+ * - a de produção da Alfa: com erro de permissão numa fonte de achados (a ação do IAM que falta), outra com a leitura
+ *   limitada pela AWS (`throttled`), uma sincronizada sem achado nenhum (`no_findings_yet`) e outra com achados; mais a
+ *   autorização dos grupos de logs desligada na pilha, a descoberta parcial e fontes em quase todos os estados;
  * - a de homologação da Alfa: desconectada (a AWS recusa a entrada no papel);
  * - a da Beta: coletando, com a pilha do modelo anterior (o bloco "Atualize a pilha");
  * - uma conta nova: do "Conectar com AWS" até coletar tudo. Os IDs de `DEMO_AWS_SCENARIO_ACCOUNTS`, cadastrados na
@@ -107,6 +110,8 @@ export interface AwsFake {
   troubled: string | null;
   /** Quando a descoberta pedida pela conferência da conexão entra na fila; null sem pedido a caminho. */
   discoveryDueAt: number | null;
+  /** Quando foi o último "Verificar de novo" de cada fonte: a API aceita um a cada 30 s por fonte. */
+  probeRequests: Map<string, number>;
 }
 
 export type AwsOnboardingStore = Map<string, AwsFake>;
@@ -186,11 +191,21 @@ function sourceRow(found: Discovered, now: number): AwsSource {
 const isAuthorized = (source: AwsSource): boolean =>
   source.authorization.authorizedAt !== null && source.authorization.revokedAt === null;
 
+/**
+ * As fontes de achados da demonstração que ainda não trouxeram achado nenhum: sincronizadas, sem evento (o código
+ * `no_findings_yet` do coletor de achados). O GuardDuty tem achados.
+ */
+const isQuietFindingSource = (source: Pick<AwsSource, 'kind'>): boolean =>
+  source.kind === 'access_analyzer' || source.kind === 'security_hub' || source.kind === 'inspector';
+
+/** O código de uma fonte coletando: `no_findings_yet` na de achados que nunca trouxe um; nas outras, nenhum. */
+const collectingCode = (source: Pick<AwsSource, 'kind'>): string | null =>
+  isQuietFindingSource(source) ? 'no_findings_yet' : null;
+
 /** A saúde de uma fonte coletando, na demonstração: lida há pouco, com o volume do dia. */
 function collectingHealth(source: AwsSource, now: number): AwsSource['health'] {
   const api = source.method === 'api';
-  // O Access Analyzer e o Security Hub da demonstração não têm achado novo: sincronizados, sem evento.
-  const quiet = source.kind === 'access_analyzer' || source.kind === 'security_hub';
+  const quiet = isQuietFindingSource(source);
   return {
     lastSyncAt: iso(now - 40_000),
     lastEventAt: quiet ? null : iso(now - (api ? 50 * 60_000 : 3 * 60_000)),
@@ -898,9 +913,11 @@ function answerProbes(fake: AwsFake, now: number): void {
 }
 
 /**
- * Os coletores da demonstração: a fonte autorizada passa por "configurando", "ainda sem eventos" e "coletando" (as de
- * achados, lidas pela API, mais cedo). Nos cenários de erro, a primeira fonte autorizada pela tela para em erro de
- * permissão ou em falha de ingestão.
+ * Os coletores da demonstração: a fonte lida de bucket ou do CloudWatch passa por "configurando", "ainda sem eventos"
+ * e "coletando"; a de achados, lida pela API, vai direto para "coletando" na primeira leitura que dá certo (com
+ * `no_findings_yet` enquanto não traz achado), como o coletor de achados faz. Nos cenários de erro, a primeira fonte
+ * autorizada pela tela para em erro de permissão (a ação do IAM que faltou, numa fonte de achados) ou em falha de
+ * ingestão (o limite de requisições da AWS).
  */
 function runCollectors(account: CloudAccount, fake: AwsFake, now: number): void {
   if (!entersRole(account)) return;
@@ -923,13 +940,14 @@ function runCollectors(account: CloudAccount, fake: AwsFake, now: number): void 
       now - Math.max(since, source.state === 'authorized' ? Date.parse(source.stateSince) : since);
     if (source.id === fake.troubled && elapsed >= DEMO_AWS_COLLECTOR_MS.configuring) {
       if (fake.scenario === 'permission_error') {
-        Object.assign(source, { permission: 'missing', permissionDetail: 'kms_denied' });
-        setState(source, 'permission_error', 'kms_denied', now);
+        const detail = FINDINGS_ACTION[source.kind] ?? 'kms_denied';
+        Object.assign(source, { permission: 'missing', permissionDetail: detail });
+        setState(source, 'permission_error', detail, now);
         fake.frozen.add(source.id);
         continue;
       }
       if (fake.scenario === 'ingestion_failure') {
-        setState(source, 'ingestion_error', 'parse_error', now);
+        setState(source, 'ingestion_error', source.method === 'api' ? 'throttled' : 'TimeoutError', now);
         fake.frozen.add(source.id);
         continue;
       }
@@ -937,9 +955,12 @@ function runCollectors(account: CloudAccount, fake: AwsFake, now: number): void 
     const collectingAt =
       source.method === 'api' ? DEMO_AWS_COLLECTOR_MS.api : DEMO_AWS_COLLECTOR_MS.collecting;
     if (elapsed >= collectingAt) {
-      setState(source, 'collecting', null, now);
+      setState(source, 'collecting', collectingCode(source), now);
       source.health = collectingHealth(source, now);
-    } else if (elapsed >= DEMO_AWS_COLLECTOR_MS.waitingEvents && source.method !== 'api') {
+    } else if (source.method === 'api') {
+      // A fonte de achados não tem passo intermediário: espera o coletor até a primeira leitura.
+      continue;
+    } else if (elapsed >= DEMO_AWS_COLLECTOR_MS.waitingEvents) {
       setState(source, 'waiting_events', null, now);
       source.health = { ...NO_HEALTH, lastSyncAt: iso(now) };
     } else if (elapsed >= DEMO_AWS_COLLECTOR_MS.configuring) {
@@ -947,6 +968,14 @@ function runCollectors(account: CloudAccount, fake: AwsFake, now: number): void 
     }
   }
 }
+
+/** A ação do IAM que a leitura dos achados de cada serviço usa: o motivo de um erro de permissão do coletor. */
+const FINDINGS_ACTION: Partial<Record<AwsSourceKind, string>> = {
+  guardduty: 'guardduty:ListFindings',
+  security_hub: 'securityhub:GetFindings',
+  inspector: 'inspector2:ListFindings',
+  access_analyzer: 'access-analyzer:ListFindings',
+};
 
 /** Um passo do "worker" da demonstração para uma conta AWS: tudo o que o tempo já deixou acontecer. */
 export function advanceAwsAccount(
@@ -988,6 +1017,7 @@ function emptyFake(accountId: string): AwsFake {
     discoveryErrors: [],
     troubled: null,
     discoveryDueAt: null,
+    probeRequests: new Map(),
   };
 }
 
@@ -1053,8 +1083,9 @@ function pin(
 }
 
 /**
- * O estado inicial das contas AWS da demonstração (`demoAdminStore`): a produção da Alfa, parcialmente operacional; a
- * homologação, desconectada; a da Beta, coletando com a pilha do modelo anterior.
+ * O estado inicial das contas AWS da demonstração (`demoAdminStore`): a produção da Alfa, com erro de permissão numa
+ * fonte de achados (e as outras, cada uma numa situação); a homologação, desconectada; a da Beta, coletando com a pilha
+ * do modelo anterior.
  */
 export function demoAwsOnboardingStore(
   accounts: readonly CloudAccount[],
@@ -1094,14 +1125,65 @@ export function demoAwsOnboardingStore(
       fake.frozen.add(source.id);
     }
     if (beta) continue;
+    // As fontes de achados, uma em cada situação: o GuardDuty com achados; o Security Hub da região principal lido
+    // sem erro e ainda sem achado nenhum; o da outra região com a leitura limitada pela AWS há 3 horas; o Access
+    // Analyzer sem a permissão de ler os achados (a ação do IAM que a AWS negou); e o Inspector, desligado na conta
+    // depois de autorizado.
     pin(fake, at, (source) => source.kind === 'guardduty', 'collecting');
     pin(
       fake,
       at,
       (source) => source.kind === 'security_hub' && source.permission === 'granted',
       'collecting',
+      { stateCode: 'no_findings_yet' },
     );
-    pin(fake, at, (source) => source.kind === 'access_analyzer', 'configuring', {}, 0);
+    pin(
+      fake,
+      at,
+      (source) => source.kind === 'security_hub' && source.permission !== 'granted',
+      'ingestion_error',
+      {
+        stateCode: 'throttled',
+        permission: 'granted',
+        permissionDetail: null,
+        permissionCheckedAt: iso(at - 3 * DAY),
+        health: {
+          lastSyncAt: iso(at - 3 * HOUR),
+          lastEventAt: iso(at - 2 * DAY),
+          lastIngestedAt: iso(at - 2 * DAY + 60_000),
+          lagSeconds: 3 * 3_600,
+          eventsLast24h: 0,
+          bytesLast24h: 0,
+        },
+      },
+    );
+    pin(
+      fake,
+      at,
+      (source) => source.kind === 'access_analyzer' && source.permission === 'granted',
+      'permission_error',
+      {
+        stateCode: 'access-analyzer:ListFindings',
+        permission: 'missing',
+        permissionDetail: 'access-analyzer:ListFindings',
+        health: { ...NO_HEALTH, lastSyncAt: iso(at - 26 * HOUR), lagSeconds: 26 * 3_600 },
+      },
+    );
+    const disabled = sourceRow(
+      {
+        kind: 'inspector',
+        region: account.regions[0] ?? 'sa-east-1',
+        resourceId: 'account',
+        name: 'Inspector',
+        loggingState: 'disabled',
+      },
+      at - 30 * DAY,
+    );
+    fake.sources.push(disabled);
+    pin(fake, at, (source) => source === disabled, 'source_missing', {
+      stateCode: 'not_enabled',
+      missingSince: iso(at - DAY),
+    });
     // Os flow logs pararam de chegar há 3 horas.
     pin(fake, at, (source) => source.kind === 'vpc_flow_logs' && source.state === 'available', 'stalled', {
       health: {
@@ -1264,6 +1346,9 @@ function deriveOnboarding(
     const lags = authorized.flatMap((source) =>
       source.health.lagSeconds === null ? [] : [source.health.lagSeconds],
     );
+    const late = authorized.filter(
+      (source) => source.health.lagSeconds !== null && source.health.lagSeconds > AWS_LAG_LIMIT_SECONDS,
+    );
     checks.push(
       bucketError
         ? check('permission', 'failed', connectionCode)
@@ -1283,12 +1368,18 @@ function deriveOnboarding(
           ? check('events', 'ok')
           : check('events', 'pending', awaitingCollector ? 'awaiting_collector' : 'waiting_events'),
       oldest !== null ? check('last_sync', 'ok', null, oldest) : check('last_sync', 'pending', 'no_data'),
-      authorized.some((source) => source.state === 'stalled') ||
-        lags.some((lag) => lag > AWS_LAG_LIMIT_SECONDS)
+      // A fonte contínua sem eventos está parada; a de achados com a leitura atrasada só está sem ser lida.
+      authorized.some((source) => source.state === 'stalled')
         ? check('lag', 'failed', 'stalled')
-        : lags.length === authorized.length
-          ? check('lag', 'ok')
-          : check('lag', 'pending', 'no_data'),
+        : late.length > 0
+          ? check(
+              'lag',
+              'failed',
+              late.every((source) => source.method === 'api') ? 'sync_delayed' : 'stalled',
+            )
+          : lags.length === authorized.length
+            ? check('lag', 'ok')
+            : check('lag', 'pending', 'no_data'),
     );
   }
 
@@ -1334,14 +1425,26 @@ function deriveOnboarding(
 /** A ordem das fontes na resposta, como a da API: tipo, região, nome e ID. */
 const SOURCE_ORDER = ['kind', 'region', 'name', 'id'] as const;
 
+/**
+ * O atraso de uma fonte lida por API (achados), como a API o calcula na leitura: o tempo desde a última leitura sem
+ * erro, enquanto a fonte está na coleta. Nas outras, o que o coletor delas gravou.
+ */
+function withApiLag(source: AwsSource, now: number): AwsSource {
+  const { lastSyncAt } = source.health;
+  if (source.method !== 'api' || !isAwsSourceActiveState(source.state) || lastSyncAt === null) return source;
+  const lagSeconds = Math.max(0, Math.floor((now - Date.parse(lastSyncAt)) / 1000));
+  return { ...source, health: { ...source.health, lagSeconds } };
+}
+
 /** O estado da conta como a API o devolve (`GET …/aws/onboarding`), conferido pelo schema do contrato. */
 export function awsOnboardingView(
   account: CloudAccount,
   fake: AwsFake,
   credentialMode: AwsCredentialMode = 'role',
+  now: number = Date.now(),
 ): AwsOnboarding {
   const sources = fake.sources
-    .map((source) => withLegacyPermission(source, account))
+    .map((source) => withApiLag(withLegacyPermission(source, account), now))
     .sort((a, b) => {
       for (const field of SOURCE_ORDER) {
         const order = a[field].localeCompare(b[field]);
@@ -1568,18 +1671,32 @@ export function createAwsOnboardingHandlers({ store, findAccount, credentialMode
       return view(found.account);
     }),
 
-    // "Verificar de novo" numa fonte: grava o pedido; quem confere é o "worker" da demonstração.
+    // "Verificar de novo" numa fonte: grava o pedido; quem confere é o "worker" da demonstração. Como a API: o pedido
+    // ainda sem resposta não é renovado, e o seguinte para a mesma fonte só vale 30 s depois do anterior (429).
     http.post(url('/v1/cloud-accounts/:id/aws/sources/:sourceId/retry'), ({ params, request }) => {
       const found = load(params['id'], request);
       if (!found.ok) return found.error;
       const { account } = found;
       const refused = inactive(account, 'Reative o monitoramento antes de conferir uma fonte.');
       if (refused) return refused;
-      const row = awsFakeOf(store, account).sources.find((source) => source.id === params['sourceId']);
+      const fake = awsFakeOf(store, account);
+      const row = fake.sources.find((source) => source.id === params['sourceId']);
       if (row === undefined) return problem(404, 'Fonte não encontrada');
       const blocked = legacy(row) ?? notConnected(account);
       if (blocked) return blocked;
-      row.probeRequestedAt ??= new Date().toISOString();
+      const now = Date.now();
+      const last = fake.probeRequests.get(row.id);
+      if (row.probeRequestedAt === null) {
+        if (last !== undefined && now - last < AWS_SOURCE_RETRY_INTERVAL_MS) {
+          return refusal(
+            429,
+            'Esta fonte acabou de ser conferida. Tente de novo em alguns segundos.',
+            'SOURCE_RETRY_RATE_LIMITED',
+          );
+        }
+        row.probeRequestedAt = iso(now);
+        fake.probeRequests.set(row.id, now);
+      }
       return view(account, 202);
     }),
   ];

@@ -7,7 +7,8 @@ import {
 import { type ReactNode, useId, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { AwsLogGroupList } from '@/features/admin/aws-log-groups';
-import { useAwsAuthorizeSources, useAwsRetrySource } from '@/features/admin/aws-onboarding-api';
+import type { SourceRetry } from '@/features/admin/aws-hooks';
+import { useAwsAuthorizeSources } from '@/features/admin/aws-onboarding-api';
 import {
   AWS_SOURCE_AVAILABILITY_TEXTS,
   AWS_SOURCE_KIND_TEXTS,
@@ -18,6 +19,7 @@ import {
 import {
   PermissionFix,
   RetryButton,
+  RetryError,
   SensitiveTag,
   SourceLocation,
   SourceNotes,
@@ -186,22 +188,22 @@ export function AwsSourceGroups({
   account,
   onboarding,
   canWrite,
+  retry,
 }: {
   account: CloudAccount;
   onboarding: AwsOnboarding;
   canWrite: boolean;
+  retry: SourceRetry;
 }) {
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const [confirming, setConfirming] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const authorize = useAwsAuthorizeSources(account.id);
-  const retry = useAwsRetrySource(account.id);
   const { sources } = onboarding;
   const { groups, logGroups } = useMemo(() => groupAwsSources(sources), [sources]);
   const canAuthorize = canWrite && account.status === 'active';
   // Só o que ainda pode ser autorizado conta como escolhido: a fonte que mudou numa releitura sai da escolha.
   const selected = sources.filter((source) => picked.has(source.id) && isAuthorizableSource(source));
-  const retryingId = retry.isPending ? (retry.variables ?? null) : null;
 
   const toggle = (sourceId: string) => {
     const next = new Set(picked);
@@ -235,9 +237,7 @@ export function AwsSourceGroups({
     );
   };
   const retryButton = (source: AwsSource) =>
-    canAuthorize ? (
-      <RetryButton source={source} onRetry={(id) => retry.mutate(id)} pending={retryingId === source.id} />
-    ) : undefined;
+    canAuthorize ? <RetryButton source={source} retry={retry} /> : undefined;
 
   const total = Object.values(groups).reduce((sum, list) => sum + list.length, 0) + logGroups.length;
   const tooMany = selected.length > AWS_AUTHORIZE_MAX_SOURCES;
@@ -316,8 +316,7 @@ export function AwsSourceGroups({
           picked={picked}
           onToggle={toggle}
           canAuthorize={canAuthorize}
-          onRetry={(id) => retry.mutate(id)}
-          retryingId={retryingId}
+          retry={retry}
         />
       </SourceGroup>
 
@@ -356,11 +355,7 @@ export function AwsSourceGroups({
       {!canWrite && total > 0 && (
         <p className="text-sm text-muted-foreground">Quem administra as contas autoriza as fontes.</p>
       )}
-      {retry.error ? (
-        <p role="alert" className="text-sm text-critical-text">
-          {awsOnboardingErrorText(retry.error)}
-        </p>
-      ) : null}
+      <RetryError retry={retry} sources={[...groups.needs_permission, ...logGroups]} />
 
       <SourceGroup
         title="Já lidas pelo cadastro manual"
@@ -402,7 +397,7 @@ export function AwsSourceGroups({
       <SourceGroup
         title="Não habilitadas na AWS"
         count={groups.not_enabled.length}
-        description="Ligar um destes serviços tem custo na AWS, e a decisão é sua: o Verax nunca liga nada na sua conta. Se você ligar, a fonte aparece aqui na próxima descoberta."
+        description='Ligar um destes serviços tem custo na AWS, e a decisão é sua: o Verax nunca liga nada na sua conta. Se você ligar um deles, clique em Descobrir de novo, em "O que encontramos": a fonte passa a aparecer entre as disponíveis.'
       >
         <SourceList label="Fontes não habilitadas na AWS">
           {groups.not_enabled.map((source) => (

@@ -8,7 +8,7 @@ import {
   CONSOLE_MANAGED_CODE,
 } from '@verax/shared';
 import { setupServer } from 'msw/node';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import { demoMe } from '@/mocks/fixtures';
 import { createHandlers } from '@/mocks/handlers';
@@ -21,13 +21,14 @@ import {
   sourceFixture,
 } from '@/test/aws-onboarding-fixtures';
 import { type OnboardingApi, onboardingApi, refusal, renderAwsSection } from '@/test/aws-onboarding-harness';
-import { AWS_ONBOARDING_ERROR_TEXTS } from './aws-onboarding-labels';
+import { AWS_ONBOARDING_ERROR_TEXTS, AWS_SOURCE_STATE_CODE_TEXTS } from './aws-onboarding-labels';
 
 const server = setupServer();
 beforeAll(() => server.listen());
 afterEach(() => {
   server.resetHandlers();
   api.resetCsrf();
+  vi.useRealTimers();
 });
 afterAll(() => server.close());
 
@@ -454,11 +455,13 @@ describe('grupos do CloudWatch Logs', () => {
     await waitFor(() =>
       expect(fake.calls).toEqual([{ route: 'retry', sourceId: source.id, body: undefined }]),
     );
-    // O pedido gravado e ainda não respondido: o botão diz que está conferindo.
-    expect(await within(groups).findByRole('button', { name: /^Verificar de novo: / })).toHaveTextContent(
-      'Conferindo…',
-    );
-    expect(within(groups).getByRole('button', { name: /^Verificar de novo: / })).toBeDisabled();
+    // O pedido gravado e ainda não respondido: o botão diz que está conferindo, no texto e no nome.
+    const checking = await within(groups).findByRole('button', {
+      name: 'Conferindo…: Grupo do CloudWatch Logs /aws/lambda/loja-checkout',
+    });
+    expect(checking).toHaveTextContent('Conferindo…');
+    expect(checking).toBeDisabled();
+    expect(within(groups).queryByRole('button', { name: /^Verificar de novo/ })).not.toBeInTheDocument();
   });
 
   it('a autorização dos grupos desligada na pilha: o aviso antes da lista, e nenhum grupo pode ser marcado', async () => {
@@ -585,7 +588,24 @@ describe('fontes autorizadas: a saúde de cada uma, revogar e tentar de novo', (
       }),
       authorizedSourceFixture('access_analyzer', 'ingestion_error', {
         name: 'analisador',
-        stateCode: 'parse_error',
+        stateCode: 'throttled',
+      }),
+      authorizedSourceFixture('access_analyzer', 'collecting', {
+        name: 'sem-achados',
+        stateCode: 'no_findings_yet',
+        health: {
+          lastSyncAt: minutesAgo(2),
+          lastEventAt: null,
+          lastIngestedAt: null,
+          lagSeconds: 120,
+          eventsLast24h: null,
+          bytesLast24h: null,
+        },
+      }),
+      authorizedSourceFixture('inspector', 'source_missing', {
+        name: 'desligado',
+        region: 'us-east-1',
+        stateCode: 'not_enabled',
       }),
       authorizedSourceFixture('guardduty_export', 'source_missing', {
         name: 'export',
@@ -631,7 +651,7 @@ describe('fontes autorizadas: a saúde de cada uma, revogar e tentar de novo', (
       '—',
     ]);
     expect(cells(rowOf(monitor, /Security Hub/))[1]).toBe('Aguardando o coletor iniciar');
-    expect(cells(rowOf(monitor, /Inspector/))[1]).toBe('Configurando o coletor');
+    expect(cells(rowOf(monitor, /Inspector · Inspector/))[1]).toBe('Configurando o coletor');
     expect(cells(rowOf(monitor, /fl-0a1b/)).slice(1, 6)).toEqual([
       'ParadaEsta fonte entrega eventos o tempo todo, e parou de entregar há mais de 2 horas.',
       'há 3 horas',
@@ -639,14 +659,38 @@ describe('fontes autorizadas: a saúde de cada uma, revogar e tentar de novo', (
       '3 h',
       '1 evento',
     ]);
-    expect(cells(rowOf(monitor, /analisador/))[1]).toBe('Falha de ingestãoTipo do erro: parse_error.');
+    // O código do coletor de achados: a leitura deu certo e o serviço ainda não trouxe achado (sem depender do volume).
+    expect(cells(rowOf(monitor, /sem-achados/)).slice(1, 6)).toEqual([
+      `Sincronizada, sem achados novos${AWS_SOURCE_STATE_CODE_TEXTS.no_findings_yet}`,
+      'nenhum ainda',
+      'há 2 minutos',
+      '2 min',
+      '—',
+    ]);
+    // A AWS limitando as chamadas: o que o Verax faz a respeito, sem código cru.
+    expect(cells(rowOf(monitor, /analisador/))[1]).toBe(
+      'Falha de ingestãoA AWS está limitando as chamadas a este serviço. O Verax tenta de novo sozinho, com intervalos maiores: não é preciso fazer nada.',
+    );
     expect(cells(rowOf(monitor, /GuardDuty \(export/))[1]).toBe(
-      'Não encontrada na contaA última descoberta não achou mais esta fonte na conta.',
+      'Não encontrada na contaO Verax não achou mais esta fonte na conta (foi apagada ou trocada). Se ela voltar, clique em Tentar de novo; senão, retire a autorização.',
+    );
+    expect(cells(rowOf(monitor, /desligado/))[1]).toBe(
+      'Não encontrada na contaO serviço foi desligado na conta depois da autorização. Se você o ligar de novo na AWS, clique em Tentar de novo; senão, retire a autorização.',
     );
     expect(monitor).toHaveTextContent('Coleta desde 20/11/2026');
-    // "Tentar de novo" só onde conferir de novo pode destravar.
-    expect(within(monitor).getAllByRole('button', { name: /^Tentar de novo: / })).toHaveLength(2);
-    expect(within(monitor).getAllByRole('button', { name: /^Revogar: / })).toHaveLength(8);
+    // "Tentar de novo" só onde ler a fonte de novo pode destravar: a falha de leitura, a parada e as que sumiram.
+    expect(
+      within(monitor)
+        .getAllByRole('button', { name: /^Tentar de novo: / })
+        .map((button) => button.getAttribute('aria-label'))
+        .sort(),
+    ).toEqual([
+      'Tentar de novo: GuardDuty (export para o S3) export',
+      'Tentar de novo: IAM Access Analyzer analisador',
+      'Tentar de novo: Inspector desligado',
+      'Tentar de novo: VPC Flow Logs fl-0a1b',
+    ]);
+    expect(within(monitor).getAllByRole('button', { name: /^Revogar: / })).toHaveLength(10);
   });
 
   it('revogar pede a confirmação; confirmada, a fonte volta para as disponíveis com a data da retirada', async () => {
@@ -702,6 +746,8 @@ describe('fontes autorizadas: a saúde de cada uma, revogar e tentar de novo', (
       'Erro de permissãoFalta permissão: a chave KMS do bucket não decifra os logs para o Verax.',
     );
     expect(monitor).toHaveTextContent('inclua esta declaração na política dela');
+    // A correção cita o botão da própria linha.
+    expect(monitor).toHaveTextContent('Depois, clique em Tentar de novo.');
     await user.click(
       within(monitor).getByRole('button', { name: 'Tentar de novo: WAF (log da Web ACL) loja-acl' }),
     );
@@ -709,6 +755,78 @@ describe('fontes autorizadas: a saúde de cada uma, revogar e tentar de novo', (
     expect(await within(monitor).findByRole('alert')).toHaveTextContent(
       AWS_ONBOARDING_ERROR_TEXTS.ACCOUNT_NOT_CONNECTED,
     );
+    // A API não gravou pedido nenhum: o botão não fica esperando os 30 s.
+    expect(
+      await within(monitor).findByRole('button', { name: 'Tentar de novo: WAF (log da Web ACL) loja-acl' }),
+    ).toBeEnabled();
+  });
+
+  it('depois do clique, o botão fica desligado pelos segundos que faltam dos 30 s da mesma fonte', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const user = userEvent.setup();
+    const waf = authorizedSourceFixture('waf', 'permission_error', {
+      name: 'loja-acl',
+      permission: 'missing',
+      permissionDetail: 'kms_denied',
+      stateCode: 'kms_denied',
+      details: { bucket: 'aws-waf-logs-loja' },
+    });
+    const trail = authorizedSourceFixture('cloudtrail', 'stalled', { name: 'management-events' });
+    // A conferência já respondeu (a chave KMS continua negando): a fonte volta sem pedido pendente.
+    const { fake } = open([waf, trail]);
+    const monitor = await monitorRegion();
+    await user.click(
+      within(monitor).getByRole('button', { name: 'Tentar de novo: WAF (log da Web ACL) loja-acl' }),
+    );
+    await waitFor(() => expect(fake.calls).toHaveLength(1));
+    const waiting = await within(monitor).findByRole('button', {
+      name: 'Tentar de novo em 30 s: WAF (log da Web ACL) loja-acl',
+    });
+    expect(waiting).toBeDisabled();
+    expect(waiting).toHaveTextContent('Tentar de novo em 30 s');
+    // A espera é da fonte: a outra continua podendo ser conferida.
+    expect(
+      within(monitor).getByRole('button', { name: 'Tentar de novo: CloudTrail (trilha) management-events' }),
+    ).toBeEnabled();
+    // A contagem anda com o relógio, e o botão volta sozinho quando os 30 s passam.
+    vi.setSystemTime(Date.now() + 12_000);
+    expect(
+      await within(monitor).findByRole(
+        'button',
+        { name: 'Tentar de novo em 18 s: WAF (log da Web ACL) loja-acl' },
+        { timeout: 3_000 },
+      ),
+    ).toBeDisabled();
+    vi.setSystemTime(Date.now() + 18_000);
+    expect(
+      await within(monitor).findByRole(
+        'button',
+        { name: 'Tentar de novo: WAF (log da Web ACL) loja-acl' },
+        { timeout: 3_000 },
+      ),
+    ).toBeEnabled();
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it('a recusa do intervalo (429) tem o texto dela, e o botão segue esperando', async () => {
+    const user = userEvent.setup();
+    const hub = authorizedSourceFixture('security_hub', 'ingestion_error', {
+      name: 'Security Hub',
+      stateCode: 'throttled',
+    });
+    const { fake } = open([hub]);
+    fake.on('retry', () => refusal(429, 'SOURCE_RETRY_RATE_LIMITED'));
+    const monitor = await monitorRegion();
+    await user.click(
+      within(monitor).getByRole('button', { name: 'Tentar de novo: Security Hub Security Hub' }),
+    );
+    expect(await within(monitor).findByRole('alert')).toHaveTextContent(
+      AWS_ONBOARDING_ERROR_TEXTS.SOURCE_RETRY_RATE_LIMITED,
+    );
+    expect(AWS_ONBOARDING_ERROR_TEXTS.SOURCE_RETRY_RATE_LIMITED).toMatch(/30 segundos depois/);
+    expect(
+      within(monitor).getByRole('button', { name: /^Tentar de novo em \d+ s: Security Hub Security Hub$/ }),
+    ).toBeDisabled();
   });
 
   it.each([

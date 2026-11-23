@@ -390,7 +390,8 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       `arn:aws:iam::${DEMO_ACCOUNTS.alfaProducao}:role/verax/verax-control-reader`,
     );
     const status = await within(sheet).findByRole('region', { name: 'Situação da conexão' });
-    expect(within(status).getByRole('status')).toHaveTextContent('Parcialmente operacional');
+    // Uma fonte de achados da demonstração perdeu a permissão de leitura: a conta diz isso antes de tudo.
+    expect(within(status).getByRole('status')).toHaveTextContent('Erro de permissão');
     // A conta conectada não oferece o "Conectar com AWS" de novo.
     expect(within(sheet).queryByRole('button', { name: 'Conectar com AWS' })).not.toBeInTheDocument();
     // A pilha: a autorização dos grupos de logs está desligada na demonstração, e o comando leva os valores do nó.
@@ -416,6 +417,11 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     // As fontes dos buckets do cadastro estão no acompanhamento, como cadastradas manualmente.
     const monitor = within(sheet).getByRole('region', { name: 'Fontes autorizadas' });
     expect(within(monitor).getAllByText('Cadastrada manualmente')).toHaveLength(3);
+    // As fontes de achados, uma em cada situação: sem achado nenhum, limitada pela AWS, sem permissão e desligada.
+    expect(monitor).toHaveTextContent('A leitura deu certo, e o serviço ainda não trouxe nenhum achado.');
+    expect(monitor).toHaveTextContent('A AWS está limitando as chamadas a este serviço.');
+    expect(monitor).toHaveTextContent('Falta permissão: a AWS negou a ação access-analyzer:ListFindings.');
+    expect(monitor).toHaveTextContent('O serviço foi desligado na conta depois da autorização.');
     expect(within(sheet).getByRole('region', { name: 'Fontes de log' })).toHaveTextContent(
       'A leitura de grupos de logs está desligada na pilha.',
     );

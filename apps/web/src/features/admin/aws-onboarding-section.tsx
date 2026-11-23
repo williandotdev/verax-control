@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { ALL_AWS_AUTHORIZATIONS, type AwsAuthorizationChoice } from '@/features/admin/aws-connect';
 import { AwsConnectPanel, AwsWaitingPanel } from '@/features/admin/aws-connect-panel';
 import { AwsDiscoveryResults } from '@/features/admin/aws-discovery-results';
+import { useSourceRetry } from '@/features/admin/aws-hooks';
 import { AwsKeySteps } from '@/features/admin/aws-key-steps';
 import { useAwsOnboarding, useAwsVerify } from '@/features/admin/aws-onboarding-api';
 import { awsOnboardingErrorText } from '@/features/admin/aws-onboarding-labels';
@@ -109,6 +110,8 @@ function ReconnectPanel({ account, canWrite }: { account: CloudAccount; canWrite
 export function AwsOnboardingSection({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
   const query = useAwsOnboarding(account.id);
   const [choice, setChoice] = useState<AwsAuthorizationChoice>(ALL_AWS_AUTHORIZATIONS);
+  // Um pedido de conferência para a conta inteira: a fonte muda de lista quando a resposta chega.
+  const retry = useSourceRetry(account.id);
   useAccountListRefresh(query.data);
   const { refetch } = query;
   useOnboardingRefresh(
@@ -191,8 +194,8 @@ export function AwsOnboardingSection({ account, canWrite }: { account: CloudAcco
       )}
       {(discovered || onboarding.sources.length > 0) && (
         <>
-          <AwsSourceMonitor account={account} onboarding={onboarding} canWrite={canWrite} />
-          <AwsSourceGroups account={account} onboarding={onboarding} canWrite={canWrite} />
+          <AwsSourceMonitor account={account} onboarding={onboarding} canWrite={canWrite} retry={retry} />
+          <AwsSourceGroups account={account} onboarding={onboarding} canWrite={canWrite} retry={retry} />
         </>
       )}
 

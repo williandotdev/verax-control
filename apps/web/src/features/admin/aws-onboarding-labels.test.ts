@@ -38,6 +38,7 @@ import {
   AWS_DISCOVERY_SERVICE_LABELS,
   AWS_DISCOVERY_STATUS_LABELS,
   AWS_INFRASTRUCTURE_LABELS,
+  AWS_INGESTION_ERROR_CODES,
   AWS_LOG_GROUP_CATEGORY_LABELS,
   AWS_ONBOARDING_ERROR_TEXTS,
   AWS_ONBOARDING_STATE_STEP,
@@ -56,6 +57,7 @@ import {
   awsCheckLabel,
   awsCheckText,
   awsDiscoveryErrorHint,
+  awsIngestionErrorText,
   awsOnboardingErrorText,
   awsOnboardingStateText,
   awsPermissionDetailText,
@@ -205,12 +207,43 @@ describe('textos do onboarding da AWS: todo código do contrato tem o texto dele
       /Aguardando o coletor/,
     );
     expect(awsCheckText(check('events', 'failed', 'stalled')).text).toMatch(/parou de entregar/);
+    // A falha de leitura: o limite de requisições e os erros conhecidos têm o texto deles; o resto, o tipo do erro.
+    expect(awsCheckText(check('events', 'failed', 'throttled')).text).toMatch(
+      /A AWS está limitando as chamadas a este serviço\. O Verax tenta de novo sozinho.*Veja qual fonte/,
+    );
+    expect(awsCheckText(check('events', 'failed', 'TimeoutError')).text).toMatch(/não respondeu a tempo/);
     expect(awsCheckText(check('events', 'failed', 'parse_error')).text).toMatch(
-      /Tipo do erro: parse_error\.$/,
+      /Tipo do erro: parse_error\. Veja qual fonte em "Fontes autorizadas"\.$/,
     );
     expect(awsCheckText(check('last_sync', 'pending', 'no_data')).text).toMatch(/Ainda não há leitura/);
     expect(awsCheckText(check('lag', 'failed', 'stalled')).text).toMatch(/mais de 2 horas de atraso/);
+    // A fonte de achados atrasada não está "parada": o que atrasou foi a leitura.
+    expect(awsCheckText(check('lag', 'failed', 'sync_delayed')).text).toMatch(
+      /fonte de achados está há mais de 2 horas sem uma leitura que dê certo/,
+    );
+    expect(awsCheckText(check('lag', 'failed', 'sync_delayed')).text).not.toMatch(/Tipo do erro/);
     expect(awsCheckText(check('lag', 'pending', 'no_data')).text).toMatch(/Ainda não há medida/);
+    // A autorização desligada na pilha também chega como motivo da permissão de uma fonte autorizada.
+    expect(awsCheckText(check('permission', 'failed', 'capability_off')).text).toMatch(
+      /a autorização deste tipo de fonte está desligada na pilha/,
+    );
+  });
+
+  it('falha de leitura de uma fonte: o limite de requisições, os erros conhecidos e o tipo do erro como reserva', () => {
+    for (const code of AWS_INGESTION_ERROR_CODES) {
+      const text = awsIngestionErrorText(code);
+      expect(text, code).toMatch(/sozinho/);
+      expect(text, code).not.toMatch(/Tipo do erro/);
+    }
+    expect(AWS_INGESTION_ERROR_CODES).toEqual(
+      expect.arrayContaining(['throttled', 'TimeoutError', 'Unknown', 'InternalServerException']),
+    );
+    expect(awsIngestionErrorText('throttled')).toBe(AWS_SOURCE_STATE_CODE_TEXTS.throttled);
+    expect(awsIngestionErrorText('throttled')).toMatch(/não é preciso fazer nada/);
+    expect(awsIngestionErrorText('ErroNovoDaAws')).toMatch(/Tipo do erro: ErroNovoDaAws\.$/);
+    // Um nome de propriedade de objeto não vira texto estranho.
+    expect(awsIngestionErrorText('toString')).toMatch(/Tipo do erro: toString\.$/);
+    expect(awsIngestionErrorText(null)).toMatch(/falhou nas últimas tentativas/);
   });
 
   it('descoberta: serviços, resultados e o motivo do que ficou de fora', () => {
@@ -280,6 +313,19 @@ describe('textos do onboarding da AWS: todo código do contrato tem o texto dele
     expect(awsSourceHealthText({ ...quiet, health: { ...quiet.health, eventsLast24h: 4 } }).label).toBe(
       'Coletando',
     );
+    // O código do coletor de achados diz isso sem depender do volume: a fonte nunca trouxe um achado.
+    expect(
+      awsSourceHealthText(
+        authorizedSourceFixture('security_hub', 'collecting', {
+          stateCode: 'no_findings_yet',
+          health: { ...quiet.health, eventsLast24h: null },
+        }),
+      ),
+    ).toEqual({
+      label: 'Sincronizada, sem achados novos',
+      tone: 'ok',
+      detail: AWS_SOURCE_STATE_CODE_TEXTS.no_findings_yet,
+    });
     // Uma trilha coletando sem evento medido continua "coletando": só as de achados têm a frase própria.
     expect(awsSourceHealthText({ ...quiet, kind: 'cloudtrail' }).label).toBe('Coletando');
     expect(awsSourceHealthText(authorizedSourceFixture('vpc_flow_logs', 'stalled')).detail).toMatch(
@@ -296,16 +342,49 @@ describe('textos do onboarding da AWS: todo código do contrato tem o texto dele
     expect(
       awsSourceHealthText(authorizedSourceFixture('waf', 'ingestion_error', { stateCode: 'parse_error' }))
         .detail,
-    ).toBe('Tipo do erro: parse_error.');
+    ).toMatch(/Tipo do erro: parse_error\.$/);
+    expect(
+      awsSourceHealthText(
+        authorizedSourceFixture('security_hub', 'ingestion_error', { stateCode: 'throttled' }),
+      ).detail,
+    ).toBe(AWS_SOURCE_STATE_CODE_TEXTS.throttled);
     expect(
       awsSourceHealthText(authorizedSourceFixture('waf', 'source_missing', { stateCode: 'not_found' }))
         .detail,
     ).toBe(AWS_SOURCE_STATE_CODE_TEXTS.not_found);
+    expect(awsSourceHealthText(authorizedSourceFixture('waf', 'source_missing')).detail).toBe(
+      AWS_SOURCE_STATE_CODE_TEXTS.not_found,
+    );
+    // O serviço desligado depois da autorização: religar e tentar de novo, ou retirar a autorização.
+    expect(
+      awsSourceHealthText(
+        authorizedSourceFixture('inspector', 'source_missing', { stateCode: 'not_enabled' }),
+      ).detail,
+    ).toMatch(/foi desligado na conta depois da autorização.*Tentar de novo/);
     expect(
       awsSourceHealthText(
         authorizedSourceFixture('waf', 'source_missing', { stateCode: 'unsupported_destination' }),
       ).detail,
-    ).toMatch(/Firehose/);
+    ).toMatch(/Firehose.*Depois de corrigir na AWS, clique em Tentar de novo\.$/);
+    // A autorização desligada na pilha, vista pelo coletor: o motivo da permissão.
+    expect(
+      awsSourceHealthText(
+        authorizedSourceFixture('guardduty', 'permission_error', {
+          stateCode: 'capability_off',
+          permission: 'missing',
+          permissionDetail: 'capability_off',
+        }),
+      ).detail,
+    ).toBe('Falta permissão: a autorização deste tipo de fonte está desligada na pilha.');
+    expect(
+      awsSourceHealthText(
+        authorizedSourceFixture('inspector', 'permission_error', {
+          stateCode: 'inspector2:ListFindings',
+          permission: 'missing',
+          permissionDetail: 'inspector2:ListFindings',
+        }),
+      ).detail,
+    ).toBe('Falta permissão: a AWS negou a ação inspector2:ListFindings.');
     expect(awsSourceHealthText(sourceFixture('config')).detail).toBe(
       AWS_SOURCE_STATE_CODE_TEXTS.not_collectable_yet,
     );
@@ -335,8 +414,9 @@ describe('textos do onboarding da AWS: todo código do contrato tem o texto dele
     for (const code of AWS_ONBOARDING_ERROR_CODES) {
       expect(awsOnboardingErrorText(refusal(409, code)), code).toBe(AWS_ONBOARDING_ERROR_TEXTS[code]);
     }
-    // O 429 da descoberta explica os 5 minutos, em vez de "muitas tentativas".
+    // O 429 da descoberta explica os 5 minutos, em vez de "muitas tentativas"; o da conferência de uma fonte, os 30 s.
     expect(awsOnboardingErrorText(refusal(429, 'DISCOVERY_RATE_LIMITED'))).toMatch(/a cada 5 minutos/);
+    expect(awsOnboardingErrorText(refusal(429, 'SOURCE_RETRY_RATE_LIMITED'))).toMatch(/30 segundos depois/);
     expect(awsOnboardingErrorText(refusal(429))).toBe('Muitas tentativas. Aguarde alguns minutos.');
     expect(awsOnboardingErrorText(refusal(409, CONSOLE_MANAGED_CODE))).toMatch(/cadastrada pela Verax/);
     // Sem código conhecido, a mensagem de sempre; um nome de propriedade de objeto não vira código.

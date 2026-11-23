@@ -17,11 +17,13 @@ import {
   logGroupArnOf,
   logGroupResourceArn,
 } from '@/features/admin/aws-connect';
+import type { SourceRetry } from '@/features/admin/aws-hooks';
 import {
   AWS_AUTHORIZATION_TEXTS,
   AWS_SOURCE_KIND_TEXTS,
   AWS_SOURCE_LOGGING_STATE_LABELS,
   AWS_SOURCE_NOTE_TEXTS,
+  awsOnboardingErrorText,
   awsPermissionDetailText,
   awsSourceName,
 } from '@/features/admin/aws-onboarding-labels';
@@ -114,12 +116,15 @@ export function PermissionFix({
   account,
   onboarding,
   retry,
+  again = 'Verificar de novo',
 }: {
   source: AwsSource;
   account: CloudAccount;
   onboarding: AwsOnboarding;
   /** O "Verificar de novo" da fonte; ausente para quem só lê. */
   retry?: ReactNode;
+  /** O nome do botão que pede a leitura da fonte de novo, como a lista o mostra (o texto da correção o cita). */
+  again?: string;
 }) {
   const detail = source.permissionDetail;
   const keyMode = onboarding.credentialMode === 'access_key';
@@ -138,7 +143,11 @@ export function PermissionFix({
   );
   let fix: ReactNode;
   if (detail === null) {
-    fix = <p>A permissão desta fonte ainda não foi conferida. Clique em Verificar de novo.</p>;
+    fix = (
+      <p>
+        A permissão desta fonte ainda não foi conferida. Clique em {again}: o Verax lê a fonte na AWS na hora.
+      </p>
+    );
   } else if (!isPermissionCode(detail)) {
     fix = (
       <p>
@@ -147,7 +156,8 @@ export function PermissionFix({
         <a href="#aws-pilha" className="underline">
           {keyMode ? 'Usuário de leitura na AWS' : 'Pilha na AWS'}
         </a>
-        ; se já está atual, uma política da organização (SCP) pode estar negando essa ação.
+        ; se já está atual, uma política da organização (SCP) pode estar negando essa ação. Depois de
+        corrigir, clique em {again}.
       </p>
     );
   } else if (detail === 'capability_off') {
@@ -161,7 +171,7 @@ export function PermissionFix({
         <a href="#aws-pilha" className="underline">
           {keyMode ? 'Atualize as políticas do usuário de leitura' : 'Atualize a pilha'}
         </a>
-        .
+        . Depois de atualizar, clique em {again}: o Verax lê de novo o que foi autorizado, na hora.
       </p>
     );
   } else if (detail === 'tag_missing') {
@@ -176,7 +186,7 @@ export function PermissionFix({
           command={awsLogGroupTagCommand(tagCommandArn(source, account.accountId))}
           label={`Copiar o comando da etiqueta do grupo ${source.name}`}
         />
-        <p>Depois, clique em Verificar de novo.</p>
+        <p>Depois, clique em {again}: o Verax lê a etiqueta do grupo na hora.</p>
       </>
     );
   } else if (detail === 'kms_denied') {
@@ -199,8 +209,7 @@ export function PermissionFix({
           label="Copiar a declaração para a política da chave KMS"
         />
         <p>
-          Ela só deixa decifrar os arquivos que o Verax já pode ler, e só pelo S3. Depois, clique em Verificar
-          de novo.
+          Ela só deixa decifrar os arquivos que o Verax já pode ler, e só pelo S3. Depois, clique em {again}.
         </p>
       </>
     );
@@ -229,18 +238,18 @@ export function PermissionFix({
         <code className="break-all font-mono">
           {awsReaderPrincipalArn(account.accountId, onboarding.credentialMode)}
         </code>
-        . Depois, clique em Verificar de novo.
+        . Depois, clique em {again}.
       </p>
     );
   } else if (detail === 'bucket_missing') {
     fix = (
       <p>
-        {bucketName('O')} não existe mais. Confira na AWS para onde este log é gravado e rode a descoberta de
-        novo.
+        {bucketName('O')} não existe mais. Confira na AWS para onde este log é gravado e, depois de corrigir o
+        destino, clique em {again}.
       </p>
     );
   } else {
-    fix = <p>A AWS não respondeu à conferência da permissão. Clique em Verificar de novo.</p>;
+    fix = <p>A AWS não respondeu à conferência da permissão. Clique em {again}.</p>;
   }
   return (
     <div className="space-y-1.5 text-xs">
@@ -251,31 +260,45 @@ export function PermissionFix({
   );
 }
 
-/** O botão "Verificar de novo" de uma fonte: pede à API a conferência da permissão dela. */
+/**
+ * O botão "Verificar de novo" de uma fonte: pede à API que leia a fonte de novo na AWS, agora (a etiqueta posta no
+ * grupo, a autorização ligada na pilha, o destino corrigido). Com o pedido ainda sem resposta, diz que está
+ * conferindo; depois, fica desligado pelos segundos que faltam do intervalo de 30 s por fonte, com a contagem no rótulo.
+ */
 export function RetryButton({
   source,
-  onRetry,
-  pending,
+  retry,
   label = 'Verificar de novo',
 }: {
   source: AwsSource;
-  onRetry: (sourceId: string) => void;
-  /** O pedido desta fonte está indo para a API agora. */
-  pending: boolean;
+  retry: SourceRetry;
   label?: string;
 }) {
   // O pedido gravado e ainda não respondido pelo servidor: repetir não muda nada.
   const requested = source.probeRequestedAt !== null;
+  const seconds = retry.secondsLeft(source.id);
+  const text = requested ? 'Conferindo…' : seconds > 0 ? `${label} em ${seconds} s` : label;
   return (
     <Button
       type="button"
       variant="secondary"
       size="sm"
-      disabled={pending || requested}
-      onClick={() => onRetry(source.id)}
-      aria-label={`${label}: ${AWS_SOURCE_KIND_TEXTS[source.kind].label} ${awsSourceName(source)}`.trim()}
+      disabled={retry.pendingId === source.id || requested || seconds > 0}
+      onClick={() => retry.retry(source.id)}
+      aria-label={`${text}: ${AWS_SOURCE_KIND_TEXTS[source.kind].label} ${awsSourceName(source)}`.trim()}
     >
-      {requested ? 'Conferindo…' : label}
+      {text}
     </Button>
+  );
+}
+
+/** A recusa do último "Verificar de novo", quando é de uma das fontes desta lista. */
+export function RetryError({ retry, sources }: { retry: SourceRetry; sources: readonly AwsSource[] }) {
+  const failed = retry.error;
+  if (failed === null || !sources.some((source) => source.id === failed.sourceId)) return null;
+  return (
+    <p role="alert" className="text-sm text-critical-text">
+      {awsOnboardingErrorText(failed.error)}
+    </p>
   );
 }

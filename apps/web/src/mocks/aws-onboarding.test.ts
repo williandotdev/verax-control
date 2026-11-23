@@ -3,6 +3,7 @@ import {
   AWS_SOURCE_AVAILABILITIES,
   AWS_SOURCE_KINDS,
   AWS_SOURCE_PERMISSION_CODES,
+  AWS_SOURCE_RETRY_INTERVAL_MS,
   AWS_SOURCE_STATES,
   type AwsOnboarding,
   awsOnboardingSchema,
@@ -80,10 +81,10 @@ async function connectAndDiscover(id: string): Promise<AwsOnboarding> {
 }
 
 describe('contas da demonstração', () => {
-  it('a produção da Alfa: parcialmente operacional, com a descoberta parcial e a leitura dos grupos desligada', async () => {
+  it('a produção da Alfa: erro de permissão numa fonte, com a descoberta parcial e a leitura dos grupos desligada', async () => {
     start();
     const alfa = await view(ALFA);
-    expect(alfa.state).toBe('partial');
+    expect(alfa.state).toBe('permission_error');
     expect(alfa.credentialMode).toBe('role');
     expect(alfa.template).toMatchObject({
       version: 2,
@@ -92,12 +93,14 @@ describe('contas da demonstração', () => {
     });
     expect(alfa.checks.map((check) => check.id)).toEqual([...AWS_ONBOARDING_CHECK_IDS]);
     expect(checkOf(alfa, 'discovery')).toMatchObject({ status: 'ok', code: 'partial' });
-    expect(checkOf(alfa, 'events')).toMatchObject({ status: 'failed', code: 'stalled' });
-    expect(checkOf(alfa, 'lag')).toMatchObject({ status: 'failed', code: 'stalled' });
-    expect(checkOf(alfa, 'collector_config')).toMatchObject({
-      status: 'pending',
-      code: 'awaiting_collector',
+    // A permissão que falta é a ação do IAM que a AWS negou; a falha de leitura, o limite de requisições.
+    expect(checkOf(alfa, 'permission')).toMatchObject({
+      status: 'failed',
+      code: 'access-analyzer:ListFindings',
     });
+    expect(checkOf(alfa, 'events')).toMatchObject({ status: 'failed', code: 'throttled' });
+    expect(checkOf(alfa, 'lag')).toMatchObject({ status: 'failed', code: 'stalled' });
+    expect(checkOf(alfa, 'collector_config')).toMatchObject({ status: 'ok' });
     expect(alfa.discovery.run).toMatchObject({ status: 'partial' });
     expect(
       alfa.discovery.run?.errors.map((error) => `${error.service}|${error.region}|${error.code}`),
@@ -116,6 +119,74 @@ describe('contas da demonstração', () => {
     const groups = alfa.sources.filter((source) => source.kind === 'cloudwatch_log_group');
     expect(groups.length).toBeGreaterThan(30);
     expect(groups.every((source) => source.permissionDetail === 'capability_off')).toBe(true);
+  });
+
+  it('as fontes de achados da Alfa: com achados, sem achado nenhum, limitada pela AWS, sem permissão e desligada', async () => {
+    start();
+    const alfa = await view(ALFA);
+    const authorized = alfa.sources.filter(
+      (source) => source.method === 'api' && source.authorization.authorizedAt !== null,
+    );
+    const of = (kind: string, state: string) =>
+      authorized.find((source) => source.kind === kind && source.state === state);
+    // Com achados: coletando, sem código, com o volume do dia.
+    expect(of('guardduty', 'collecting')).toMatchObject({ stateCode: null, health: { eventsLast24h: 3 } });
+    // A leitura dá certo e o serviço ainda não trouxe achado: o código do coletor de achados.
+    expect(of('security_hub', 'collecting')).toMatchObject({
+      stateCode: 'no_findings_yet',
+      health: { lastEventAt: null, eventsLast24h: 0 },
+    });
+    // A leitura limitada pela AWS: o atraso é o tempo desde a última leitura que deu certo, contado na hora.
+    expect(of('security_hub', 'ingestion_error')).toMatchObject({
+      stateCode: 'throttled',
+      permission: 'granted',
+      health: { lagSeconds: 3 * 3_600 },
+    });
+    pass(60_000);
+    expect(
+      (await view(ALFA)).sources.find((source) => source.state === 'ingestion_error')?.health.lagSeconds,
+    ).toBe(3 * 3_600 + 60);
+    // A ação do IAM que a AWS negou: o motivo é a própria ação, não um dos códigos.
+    expect(of('access_analyzer', 'permission_error')).toMatchObject({
+      stateCode: 'access-analyzer:ListFindings',
+      permission: 'missing',
+      permissionDetail: 'access-analyzer:ListFindings',
+    });
+    // O serviço desligado na conta depois da autorização.
+    expect(of('inspector', 'source_missing')).toMatchObject({
+      stateCode: 'not_enabled',
+      missingSince: expect.any(String) as string,
+    });
+  });
+
+  it('sem a fonte parada, o atraso que sobra é o da leitura das fontes de achados (sync_delayed)', async () => {
+    start();
+    const alfa = await view(ALFA);
+    const stalled = alfa.sources.find((source) => source.state === 'stalled');
+    if (!stalled) throw new Error('a demonstração não tem fonte parada');
+    const revoked = await write(ALFA, `sources/${stalled.id}/revoke`);
+    expect(checkOf(revoked, 'lag')).toMatchObject({ status: 'failed', code: 'sync_delayed' });
+    expect(checkOf(revoked, 'events')).toMatchObject({ status: 'failed', code: 'throttled' });
+  });
+
+  it('numa conta nova, o Security Hub vai direto para a coleta, sincronizado e ainda sem achado', async () => {
+    start();
+    const { id } = await create('135792468024');
+    const discovered = await connectAndDiscover(id);
+    const hub = discovered.sources.find(
+      (source) => source.kind === 'security_hub' && source.state === 'available',
+    );
+    if (!hub) throw new Error('a descoberta da demonstração não achou o Security Hub');
+    await write(id, 'sources/authorize', { sourceIds: [hub.id] });
+    pass(DEMO_AWS_COLLECTOR_MS.api);
+    const collecting = await view(id);
+    expect(collecting.state).toBe('collecting');
+    expect(collecting.sources.find((source) => source.id === hub.id)).toMatchObject({
+      state: 'collecting',
+      stateCode: 'no_findings_yet',
+      health: { lastEventAt: null, eventsLast24h: 0 },
+    });
+    expect(checkOf(collecting, 'lag')).toMatchObject({ status: 'ok' });
   });
 
   it('a homologação: desconectada; a Beta: coletando, com a pilha do modelo anterior', async () => {
@@ -196,12 +267,25 @@ describe('uma conta nova, do "Conectar com AWS" até coletar', () => {
     });
 
     pass(DEMO_AWS_COLLECTOR_MS.configuring);
-    expect((await view(id)).sources.find((source) => source.id === trail.id)?.state).toBe('configuring');
+    const configuring = await view(id);
+    expect(configuring.sources.find((source) => source.id === trail.id)?.state).toBe('configuring');
+    // A fonte de achados não tem passo intermediário: espera o coletor até a primeira leitura.
+    expect(configuring.sources.find((source) => source.id === guardduty.id)).toMatchObject({
+      state: 'authorized',
+      stateCode: 'awaiting_collector',
+    });
     pass(DEMO_AWS_COLLECTOR_MS.waitingEvents - DEMO_AWS_COLLECTOR_MS.configuring);
-    expect((await view(id)).sources.find((source) => source.id === trail.id)?.state).toBe('waiting_events');
+    const waitingEvents = await view(id);
+    expect(waitingEvents.sources.find((source) => source.id === trail.id)?.state).toBe('waiting_events');
+    expect(waitingEvents.sources.find((source) => source.id === guardduty.id)?.state).toBe('authorized');
     // A API de achados coleta antes da trilha: só parte das fontes coletando.
     pass(DEMO_AWS_COLLECTOR_MS.api - DEMO_AWS_COLLECTOR_MS.waitingEvents);
-    expect((await view(id)).state).toBe('partial');
+    const partial = await view(id);
+    expect(partial.state).toBe('partial');
+    expect(partial.sources.find((source) => source.id === guardduty.id)).toMatchObject({
+      state: 'collecting',
+      stateCode: null,
+    });
     pass(DEMO_AWS_COLLECTOR_MS.collecting - DEMO_AWS_COLLECTOR_MS.api);
     const collecting = await view(id);
     expect(collecting.state).toBe('collecting');
@@ -242,21 +326,52 @@ describe('uma conta nova, do "Conectar com AWS" até coletar', () => {
     // Conectar de novo abre outra janela.
     expect((await write(timeout.id, 'connect')).state).toBe('awaiting_authorization');
 
-    for (const [accountId, state, sourceState] of [
-      [DEMO_AWS_SCENARIO_ACCOUNTS.permissionError, 'permission_error', 'permission_error'],
-      [DEMO_AWS_SCENARIO_ACCOUNTS.ingestionFailure, 'ingestion_failure', 'ingestion_error'],
+    // A trilha (lida do bucket) e o GuardDuty (lido pela API) param no erro do cenário, cada um com o motivo dele.
+    for (const [accountId, state, sourceState, kind, code] of [
+      [
+        DEMO_AWS_SCENARIO_ACCOUNTS.permissionError,
+        'permission_error',
+        'permission_error',
+        'cloudtrail',
+        'kms_denied',
+      ],
+      [
+        DEMO_AWS_SCENARIO_ACCOUNTS.permissionError,
+        'permission_error',
+        'permission_error',
+        'guardduty',
+        'guardduty:ListFindings',
+      ],
+      [
+        DEMO_AWS_SCENARIO_ACCOUNTS.ingestionFailure,
+        'ingestion_failure',
+        'ingestion_error',
+        'cloudtrail',
+        'TimeoutError',
+      ],
+      [
+        DEMO_AWS_SCENARIO_ACCOUNTS.ingestionFailure,
+        'ingestion_failure',
+        'ingestion_error',
+        'guardduty',
+        'throttled',
+      ],
     ] as const) {
+      start();
       const { id } = await create(accountId);
       const discovered = await connectAndDiscover(id);
-      const trail = discovered.sources.find(
-        (source) => source.kind === 'cloudtrail' && source.state === 'available',
+      const source = discovered.sources.find(
+        (candidate) => candidate.kind === kind && candidate.state === 'available',
       );
-      if (!trail) throw new Error('a descoberta da demonstração não achou a trilha');
-      await write(id, 'sources/authorize', { sourceIds: [trail.id] });
+      if (!source) throw new Error(`a descoberta da demonstração não achou a fonte ${kind}`);
+      await write(id, 'sources/authorize', { sourceIds: [source.id] });
       pass(DEMO_AWS_COLLECTOR_MS.collecting);
       const failed = await view(id);
-      expect(failed.state, accountId).toBe(state);
-      expect(failed.sources.find((source) => source.id === trail.id)?.state, accountId).toBe(sourceState);
+      expect(failed.state, `${accountId} ${kind}`).toBe(state);
+      expect(
+        failed.sources.find((candidate) => candidate.id === source.id),
+        `${accountId} ${kind}`,
+      ).toMatchObject({ state: sourceState, stateCode: code });
     }
   });
 
@@ -269,10 +384,21 @@ describe('uma conta nova, do "Conectar com AWS" até coletar', () => {
     const available = discovered.sources.filter(
       (source) => source.state === 'available' && !source.sensitive,
     );
-    await write(id, 'sources/authorize', { sourceIds: available.slice(0, 3).map((source) => source.id) });
+    // Duas fontes lidas de bucket e uma de achados: uma para no erro do cenário, e a outra de bucket passa por
+    // "configurando" e "ainda sem eventos" (a de achados vai direto para a coleta).
+    const buckets = available.filter((source) => source.method !== 'api').slice(0, 2);
+    const findings = available.find((source) => source.method === 'api');
+    if (buckets.length < 2 || !findings) throw new Error('a descoberta da demonstração não achou as fontes');
+    await write(id, 'sources/authorize', { sourceIds: [...buckets, findings].map((source) => source.id) });
     for (const source of (await view(id)).sources) seen.add(source.state);
-    pass(DEMO_AWS_COLLECTOR_MS.collecting);
-    for (const source of (await view(id)).sources) seen.add(source.state);
+    for (const step of [
+      DEMO_AWS_COLLECTOR_MS.configuring,
+      DEMO_AWS_COLLECTOR_MS.waitingEvents - DEMO_AWS_COLLECTOR_MS.configuring,
+      DEMO_AWS_COLLECTOR_MS.collecting - DEMO_AWS_COLLECTOR_MS.waitingEvents,
+    ]) {
+      pass(step);
+      for (const source of (await view(id)).sources) seen.add(source.state);
+    }
     const other = await create(DEMO_AWS_SCENARIO_ACCOUNTS.ingestionFailure);
     const again = await connectAndDiscover(other.id);
     const first = again.sources.find((source) => source.state === 'available' && !source.sensitive);
@@ -376,9 +502,44 @@ describe('recusas, como as da API', () => {
     await expect(write(HOMOLOGACAO, `sources/${untagged.id}/retry`)).rejects.toMatchObject({ status: 404 });
   });
 
+  it('"verificar de novo" na mesma fonte: um pedido a cada 30 s; o que ainda espera resposta não é recusado', async () => {
+    start();
+    const { id } = await create('135792468024');
+    const discovered = await connectAndDiscover(id);
+    const denied = discovered.sources.find((source) => source.permissionDetail === 'kms_denied');
+    const untagged = discovered.sources.find((source) => source.permissionDetail === 'tag_missing');
+    if (!denied || !untagged) throw new Error('fontes da demonstração não encontradas');
+    const retry = (sourceId: string) => write(id, `sources/${sourceId}/retry`);
+    const requestedAt = (await retry(denied.id)).sources.find(
+      (source) => source.id === denied.id,
+    )?.probeRequestedAt;
+    expect(requestedAt).toBe(new Date(Date.now()).toISOString());
+    // Repetir com o pedido ainda sem resposta não recusa nem renova o pedido.
+    pass(500);
+    expect((await retry(denied.id)).sources.find((source) => source.id === denied.id)?.probeRequestedAt).toBe(
+      requestedAt,
+    );
+    // Respondido (a chave KMS continua negando): outro pedido da mesma fonte, antes dos 30 s, é recusado.
+    pass(DEMO_AWS_PROBE_DELAY_MS);
+    expect((await view(id)).sources.find((source) => source.id === denied.id)).toMatchObject({
+      probeRequestedAt: null,
+      permissionDetail: 'kms_denied',
+    });
+    await expect(retry(denied.id)).rejects.toEqual(refusal('SOURCE_RETRY_RATE_LIMITED', 429));
+    // O intervalo é por fonte: outra fonte confere na hora.
+    expect(
+      (await retry(untagged.id)).sources.find((source) => source.id === untagged.id)?.probeRequestedAt,
+    ).not.toBeNull();
+    // Passados os 30 s do pedido anterior, vale de novo.
+    pass(AWS_SOURCE_RETRY_INTERVAL_MS - DEMO_AWS_PROBE_DELAY_MS - 500);
+    expect(
+      (await retry(denied.id)).sources.find((source) => source.id === denied.id)?.probeRequestedAt,
+    ).not.toBeNull();
+  });
+
   it('quem só lê vê o estado e não escreve; a conta de outro cliente não existe; a VM própria lê com a chave', async () => {
     start({ me: demoMe('leitura') });
-    expect((await view(ALFA)).state).toBe('partial');
+    expect((await view(ALFA)).state).toBe('permission_error');
     await expect(write(ALFA, 'connect')).rejects.toMatchObject({ status: 403 });
     await expect(view(BETA)).rejects.toMatchObject({ status: 404 });
     start({ me: demoMe('admin_cliente'), nodePlatform: 'vm' });
