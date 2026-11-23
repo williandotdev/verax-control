@@ -13,6 +13,10 @@ nó, o template do papel de leitura, o cofre, o token do Cloudflare colado no pa
 As seções dessas partes levam a marca _(fase 2, a construir)_, e o que já existe está marcado como feito em "Ordem de
 execução". O painel já conecta a AWS pelo papel sem chave (PR-V3'): o ExternalId saiu do cadastro.
 
+A revisão de 22/11/2026 faz do cliente quem conecta a AWS: o "Conectar com AWS" do painel, a descoberta das fontes de
+log da conta e a autorização de cada uma, com o CloudWatch Logs, os VPC Flow Logs e os achados do Security Hub, do
+Inspector e do Access Analyzer entre as fontes (seção "Onboarding AWS self-service").
+
 A revisão de 10/11/2026 põe o plano **Plataforma** numa **célula compartilhada**: um nó `standard` em São Paulo que
 atende vários clientes, cobrados só pelo volume de logs em GB/dia. Dedicado e vCISO continuam com um nó por cliente, e
 o SOC da própria Verax vira o primeiro cliente da célula. O desenho e o que já existe estão na seção "Célula
@@ -64,19 +68,25 @@ GCP da Verax, projeto dos nós de clientes, southamerica-east1 — um nó por cl
   bucket: backup do banco
         │ leitura pela API, a partir do IP do NAT
         ├─► AWS do cliente: papel verax-control-reader, sem chave (token do Google de 1 h, só do IP do NAT)
-        │     buckets S3 (CloudTrail, export do GuardDuty, WAF) e configuração (Ativos e Postura)
+        │     as fontes de log que o cliente autorizou (buckets S3, grupos do CloudWatch Logs e as APIs de
+        │     achados) e a configuração da conta (descoberta, Ativos e Postura)
         └─► Cloudflare do cliente: auditoria e eventos de segurança (token no cofre)
 GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem papel para a Verax no projeto do cliente)
 ```
 
-- **Fontes de log da AWS**, lidas pelo módulo `aws-s3` do Wazuh, só de buckets S3 que o cliente já tem:
-  - CloudTrail;
-  - findings do GuardDuty exportados (o export exige SSE-KMS);
-  - log do WAF, opcional por conta. Só BLOCK e COUNT são indexados (ALLOW é descartado), por causa do volume.
+- **Fontes de log da AWS**, só de onde os logs já estão, descobertas pelo nó e autorizadas pelo cliente uma a uma
+  (seção "Onboarding AWS self-service"):
+  - pelo módulo `aws-s3` do Wazuh, dos buckets S3: CloudTrail, VPC Flow Logs (só o tráfego rejeitado), log do WAF
+    (só BLOCK e COUNT; ALLOW é descartado, por causa do volume) e os findings do GuardDuty exportados (o export exige
+    SSE-KMS);
+  - pelo mesmo módulo, os grupos do CloudWatch Logs que o cliente marcar com a tag `verax-control = leitura`;
+  - pelo worker, sem o Wazuh, os achados do GuardDuty, do Security Hub, do Inspector e do Access Analyzer, pela API
+    de cada serviço.
 
-  O CloudWatch Logs, o Security Hub e o Inspector ficam fora da v1. O módulo guarda o marcador do último objeto lido
-  e retoma dele depois de uma parada. As leituras registradas no CloudTrail não são descartadas, porque alimentam as
-  detecções de reconhecimento; as da própria Verax, vindas do IP do nó, recebem uma regra de nível 0.
+  O módulo guarda o marcador do último objeto lido e retoma dele depois de uma parada. As leituras registradas no
+  CloudTrail não são descartadas, porque alimentam as detecções de reconhecimento; as da própria Verax, vindas do IP
+  do nó, recebem uma regra de nível 0. Os buckets digitados no cadastro da conta (CloudTrail, GuardDuty e WAF)
+  continuam valendo, para o que fica fora do padrão `AWSLogs/`.
 
 - **Configuração da AWS (Ativos e Postura):** o worker lê pelo mesmo papel, só pelas ações de leitura da política:
   o inventário de Ativos e as 18 checagens de postura nativas, numa coleta só, uma vez por dia por conta (PR-14' e
@@ -370,8 +380,8 @@ meta-teste `cell-cannot-sign.test.ts`), nem fazer o console mandar um código pa
 
 ## Contas monitoradas por provedor
 
-_(fase 2: o token do Cloudflare entra pelo painel (PR-11'); o template do papel da AWS está feito (PR-V2'), e o
-"Conectar AWS" do painel também (PR-V3'); a leitura pelo nó e a conferência real vêm nos PRs V4' e V5')_
+_(fase 2, feito no código: o token do Cloudflare entra pelo painel (PR-11'); o papel de leitura da AWS, a coleta pelo
+nó e a conferência da conexão (PR-V2' a PR-V5'); e o onboarding self-service da AWS, da revisão de 22/11/2026)_
 
 O cadastro de contas (Contas cloud) aceita três provedores. **A GCP e a AWS não guardam credencial:** na GCP, o sink
 do cliente publica no tópico do nó; na AWS, o nó entra no papel de leitura do cliente com a própria identidade no
@@ -382,12 +392,13 @@ leitura colada no painel e cifrada no mesmo cofre (seção "Cofre de credenciais
 
 | Provedor   | Identificador                            | Origem dos logs                                                                                                                   | Como o nó lê                                                                                                      |
 | ---------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| AWS        | ID da conta (12 dígitos)                 | Buckets S3 (CloudTrail, GuardDuty e WAF)                                                                                          | Papel `verax-control-reader`, sem chave: o nó entra com o token da conta de serviço dele, só a partir do IP do nó |
+| AWS        | ID da conta (12 dígitos)                 | As fontes que o nó descobre e o cliente autoriza: buckets S3, grupos do CloudWatch Logs e as APIs de achados                      | Papel `verax-control-reader`, sem chave: o nó entra com o token da conta de serviço dele, só a partir do IP do nó |
 | GCP        | ID do projeto                            | Assinatura do Pub/Sub, no projeto do nó, ligada ao sink que o cliente cria (a identidade do sink fica no cadastro; não é segredo) | Identidade da VM do nó, sem chave                                                                                 |
 | Cloudflare | ID da conta (32 caracteres hexadecimais) | Zonas (domínios) monitoradas                                                                                                      | Token só de leitura, no cofre                                                                                     |
 
-Cada origem de log (bucket, assinatura, identidade do sink ou zona) pertence a um só cliente, como já valia para os
-buckets: é o que permite atribuir cada alerta ao cliente certo. A identidade do sink, além disso, é de um projeto só,
+Cada origem de log (bucket do cadastro, assinatura, identidade do sink ou zona) pertence a um só cliente, como já
+valia para os buckets: é o que permite atribuir cada alerta ao cliente certo. Nas fontes da AWS que o nó descobre, o
+dono sai da conta (seção "Onboarding AWS self-service", "Isolamento entre clientes"). A identidade do sink, além disso, é de um projeto só,
 mesmo dentro do cliente: em outro projeto, daria a ele a publicação no tópico do primeiro.
 
 ### Regras de detecção: faixas de ID e títulos
@@ -520,8 +531,11 @@ token do Cloudflare. Os nós da GCP continuam sem chave.
 
 ## Por que papel sem chave
 
-_(fase 2: o template está feito, no PR-V2'; o "Conectar AWS" do painel, no PR-V3'; a coleta pelo Wazuh do nó, no
-PR-V4'; a conferência real da conexão vem no PR-V5', depois do teste prático na conta AWS de teste)_
+_(fase 2, feito no código: o template, no PR-V2'; o "Conectar AWS" do painel, no PR-V3'; a coleta pelo Wazuh do nó, no
+PR-V4'; a conferência da conexão, no PR-V5'. O template está no modelo 2 desde a revisão de 22/11/2026, e o caminho
+do cliente passou a ser o "Conectar com AWS" (seção "Onboarding AWS self-service"); o que está aqui é a base que não
+mudou: por que o papel não tem chave, a confiança, o token, a conferência da conexão e os riscos. O teste prático na
+conta AWS de teste ainda não foi feito: o roteiro é o `docs/runbooks/homologacao-onboarding-aws.md`)_
 
 **Decisão de 04/11/2026**, tomada pelo responsável pelo produto depois da proposta de conectar a AWS sem chave. Ela
 substitui a decisão do mesmo dia de ler com um usuário IAM com chave (PR-V2).
@@ -540,7 +554,7 @@ substitui a decisão do mesmo dia de ler com um usuário IAM com chave (PR-V2).
 **O template** (`infra/cloudformation/verax-control-reader.yaml`, feito; o passo a passo do cliente está no README da
 pasta) cria o papel `/verax/verax-control-reader` e duas políticas gerenciadas. Nome e caminho são fixos
 (`CAPABILITY_NAMED_IAM`): a saída `RoleArn` é sempre `arn:aws:iam::<conta>:role/verax/verax-control-reader`, que o
-painel deriva do ID da conta. Nenhuma saída é segredo. O template tem cerca de 32 KB, abaixo dos 51.200 bytes que o
+painel deriva do ID da conta. Nenhuma saída é segredo. O template tem cerca de 46 KB, abaixo dos 51.200 bytes que o
 CloudFormation aceita sem bucket.
 
 - **Confiança:** só `Federated: accounts.google.com` e só `sts:AssumeRoleWithWebIdentity`, com quatro condições
@@ -554,11 +568,16 @@ CloudFormation aceita sem bucket.
   A política é escrita à mão: o assistente "Web identity → Google" do console grava o audience em
   `accounts.google.com:aud` e faz um papel que nunca aceita o nó. A sessão dura até 1 hora.
 
-- `VeraxControlReader` (Allow, que também é o permissions boundary do papel): lê só os buckets e as chaves KMS
-  informados (`kms:Decrypt` só pelo S3), confere as fontes, simula as permissões do próprio papel e lê a configuração
-  para Ativos e Postura.
-- `VeraxControlGuardrails` (Deny): tudo o que vier de fora do IP do NAT do nó (também com uma sessão já emitida),
-  qualquer alteração de logs e qualquer ampliação do próprio acesso, inclusive mexer na confiança do papel.
+- `VeraxControlReader` (Allow, que também é o permissions boundary do papel): a descoberta, que vale sempre (a
+  configuração da conta, para achar as fontes de log e para Ativos e Postura, as tags e a simulação das permissões
+  do próprio papel), e as três autorizações que o cliente liga ou desliga na pilha: os logs que a AWS grava no S3 em
+  `AWSLogs/<conta>/` (`kms:Decrypt` só pelo S3), os achados de segurança e os grupos do CloudWatch Logs com a tag de
+  leitura. Os buckets e as chaves KMS informados à mão ficam para o que está fora desse padrão. O detalhe está na
+  seção "Onboarding AWS self-service", "O template v2 e as três autorizações".
+- `VeraxControlGuardrails` (Deny): tudo o que vier de fora do IP do NAT do nó (também com uma sessão já emitida; só
+  não a chamada que um serviço da AWS faz em nome do papel, como o S3 pedindo ao KMS para decifrar), qualquer
+  alteração de logs e das outras fontes, e qualquer ampliação do próprio acesso, inclusive mexer na confiança e nas
+  tags do papel.
 - **Confused deputy, sem ExternalId:** a regra é **uma identidade do Google por cliente, nunca dividida entre dois**.
   A confiança do cliente B fixa o `sub` da identidade de B; se o cliente A cadastrar a conta AWS de B, a entrada
   chega com o `sub` de A e é recusada (`trust_denied`), sem que nada da conta de B chegue ao Wazuh. O `sub` não é
@@ -586,19 +605,24 @@ CloudFormation aceita sem bucket.
 `AWS_WEB_IDENTITY_AUDIENCE` do `node.conf` a troca num nó (o painel mostra o valor do nó, e o `aws-token.sh` do host o
 pede ao Google). Mudá-la exige atualizar a pilha de todos os clientes do nó.
 
-**Ciclo da conexão:**
+**Ciclo da conexão.** O caminho do cliente é o "Conectar com AWS" (seção "Onboarding AWS self-service"): o painel
+baixa o template já preenchido, e o nó valida a conexão sozinho. Os passos abaixo são a base dele, e o passo 1 é o
+caminho manual, que continua valendo (a pilha criada pela CLI, ou com o template sem preencher):
 
-1. **Conectar (PR-V3', feito):** o admin cadastra a conta (ID e buckets). O detalhe da conta em Contas cloud mostra
-   o ARN do papel (derivado do ID, nunca digitado), o link "Baixar o template" e os três valores da pilha, com cópia:
-   o ID único da conta de serviço do nó (`NODE_SA_UNIQUE_ID`), o IP de saída (`NODE_EGRESS_IPS`) e o audience. Os
-   dois primeiros vêm do `node.conf`, que o `start.sh` passa à API só quando têm a linha; sem eles, a tela os pede à
-   Verax. Mostra também os ARNs dos buckets cadastrados (`LogBucketArns`), o link do console do CloudFormation e o
-   comando da CLI. Nenhum valor é segredo, e quem só lê vê o mesmo, sem o botão.
+1. **Conectar à mão (PR-V3', feito):** o admin cadastra a conta (o ID e a região; os buckets, só os de fora do padrão
+   `AWSLogs/`). Em "Alternativa manual", o detalhe da conta em Contas cloud mostra o link "Baixar o template" e os
+   valores da pilha, com cópia: o ID único da conta de serviço do nó (`NODE_SA_UNIQUE_ID`), o IP de saída
+   (`NODE_EGRESS_IPS`), o audience e as três autorizações. Os dois primeiros vêm do `node.conf`, que o `start.sh`
+   passa à API só quando têm a linha; sem eles, a tela os pede à Verax. Mostra também os ARNs dos buckets cadastrados
+   (`LogBucketArns`), o link do console do CloudFormation e o comando da CLI. Nenhum valor é segredo, e quem só lê vê
+   o mesmo, sem o botão.
    - **O template é servido pelo painel:** o arquivo do repositório entra no build como recurso (`?url` do Vite),
      copiado byte a byte para `assets/` com o hash do conteúdo no nome, e é baixado da mesma origem, com o nome
-     `verax-control-reader.yaml`. É o template revisado no commit do painel, sem nada preenchido; o e2e confere byte a
-     byte. Um link para o GitHub dependeria de saber o commit no navegador (o painel só aceita `VITE_API_URL`), não
-     baixaria o arquivo (o atributo `download` não vale para outra origem) e dependeria do GitHub no ar.
+     `verax-control-reader.yaml`. É o template revisado no commit do painel; o link da alternativa manual o baixa sem
+     nada preenchido (o e2e confere byte a byte), e o "Conectar com AWS" lê o mesmo arquivo para montar o
+     preenchido. Um link para o GitHub dependeria de saber o commit no navegador (o painel só aceita `VITE_API_URL`),
+     não baixaria o arquivo (o atributo `download` não vale para outra origem) e dependeria do GitHub no ar. Uma
+     mudança só no template publica a demonstração de novo (o filtro de caminhos do workflow `Painel`).
    - **"Verificar"** (`POST /v1/cloud-accounts/:id/aws/verify`, `cloud_accounts:write`, 202): grava o pedido
      (`checkRequestedAt`) e volta a conexão para `waiting`, sem erro; um pedido pendente não é renovado. A API não
      alcança o metadata e não assume o papel. A tarefa `aws-check` do worker (a cada 30 s) confere cada pedido pela
@@ -612,8 +636,8 @@ pede ao Google). Mudá-la exige atualizar a pilha de todos os clientes do nó.
    - **Início da coleta (`ingestFrom`):** na primeira verificação bem-sucedida, o dia anterior, gravado uma vez só. É
      o `only_logs_after` que o gerador da configuração do Wazuh usa (PR-V4'), para o nó não ler o histórico inteiro do
      bucket.
-   - **Buckets de log no painel:** no máximo um por fonte (CloudTrail, GuardDuty e WAF), no cadastro e no detalhe da
-     conta (`cloud_accounts:write`; quem só lê vê a lista). Outra lista de nomes volta a conexão para `waiting` e
+   - **Buckets de log no painel** ("Avançado: buckets fora do padrão"): no máximo um por fonte (CloudTrail, GuardDuty
+     e WAF), no cadastro e no detalhe da conta (`cloud_accounts:write`; quem só lê vê a lista). Outra lista de nomes volta a conexão para `waiting` e
      descarta um "Verificar" pendente, sem chamar a AWS: o cliente atualiza o `LogBucketArns` da pilha e pede a
      verificação. Trocar só a fonte de um bucket não muda nada disso, e o `ingestFrom` fica (um bucket incluído
      depois herda o dia da conta).
@@ -745,55 +769,91 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
      o OP-01, o mesmo andamento é o sinal de vida das contas AWS conectadas e o último dado da fonte na Torre (seção
      "Torre: semáforo, saúde da coleta e pulso da operação").
 5. **Desconectar:** o painel para a coleta e mostra os passos no console: "Revoke active sessions" no papel (corta as
-   sessões já emitidas, de até 1 hora) e apagar a pilha. Não há chave para apagar.
+   sessões já emitidas, de até 1 hora) e apagar a pilha. Não há chave para apagar. Para tirar só uma parte do acesso,
+   o cliente desliga uma autorização na pilha, tira a tag de um grupo de logs ou desautoriza uma fonte no painel
+   (seção "Onboarding AWS self-service").
 
 **Riscos residuais e mitigação:**
 
-| Risco                                                                                                                                    | Mitigação                                                                                                                                                                                                                                                                                                             |
-| ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Token do Google vazado: vale até 1 hora e não pode ser revogado                                                                          | Só entra do IP do NAT do nó (`aws:SourceIp` na confiança) e só no papel deste cliente; a sessão emitida também fica presa ao IP (Deny); regra de nível 12 para entrada de outro IP                                                                                                                                    |
-| Root no nó lê o token e as sessões em claro (tmpfs e memória do worker e do manager)                                                     | Valem 1 hora; nó dedicado a um cliente; sem porta aberta; acesso só pelo IAP com OS Login auditado; metadata só para o worker; o alcance é leitura de logs e configuração. Na célula, o alcance são os tokens de todos os clientes dela (o raio de impacto da seção "Célula compartilhada (Plataforma)")              |
-| Página da memória com segredo em claro (chave privada do cofre, token, sessões) vai para o swap, no disco do snapshot                    | Swap cifrado com chave aleatória a cada boot, nos dois perfis; no `standard`, `vm.swappiness=1` e o heap do indexer travado na memória                                                                                                                                                                                |
-| O ambiente de um contêiner fica gravado em `/var/lib/docker`, no disco e no snapshot                                                     | Chaves privadas do cofre só por arquivo do tmpfs montado só leitura no worker, nunca por variável (teste e CI conferem); o token da AWS fica num tmpfs do host                                                                                                                                                        |
-| Execução remota de código na API, exposta pelo túnel                                                                                     | A API não alcança o metadata e não emite token; cofre assimétrico para o Cloudflare                                                                                                                                                                                                                                   |
-| O manager processa log não confiável e lê o token                                                                                        | Sem acesso ao Postgres nem ao metadata; `cap_drop`; rede de saída só dele; imagem fixada pelo digest; nó dedicado; o token vale 1 hora e só do IP do nó. Na célula, um log forjado por um cliente que explore o manager alcança os tokens dos outros: risco residual aceito e documentado (raio de impacto da célula) |
-| Quem emite ID token da conta de serviço do nó entra no papel (operador com `serviceAccountUser`; no plano de controle, o `cp-terraform`) | Precisa também sair pelo IP do NAT do nó; alertas em `SetIamPolicy` na conta de serviço, em `GenerateIdToken` e em VM criada com a conta de um nó (CP-12); nunca `serviceAccountOpenIdTokenCreator` no Terraform                                                                                                      |
-| A conta de serviço do nó é apagada ou recriada, e o ID único muda                                                                        | `account_id` e `project` só do `name_prefix` e do `project_id`, com teste de que as mudanças de rotina não a recriam; o executor do plano de controle (CP-07) recusa recriá-la ou apagá-la fora da exclusão; restauração em até 30 dias com o mesmo ID; depois disso, cada cliente atualiza a pilha                   |
-| Google ou o metadata fora do ar (`IDPCommunicationError`, renovação do token falha)                                                      | O token tem 50 min de folga; o wodle retoma do marcador e não perde log; aviso de token sem renovar                                                                                                                                                                                                                   |
-| A web identity pelo profile não funcionar no contêiner do manager                                                                        | O CI confere na imagem, sem rede, que o boto3 do manager usa o provedor de web identity e troca o token no STS da região com o papel certo; o teste prático na conta de teste confirma de ponta a ponta; plano B: o host troca o token por uma sessão e grava um `credentials` temporário de 1 hora                   |
-| Um bucket cadastrado depois do início da coleta é lido desde o `ingestFrom` da conta (histórico de semanas ou meses)                     | Aceito por ora: a leitura vai para o medidor de uso; um início por bucket fica para depois                                                                                                                                                                                                                            |
-| O worker grava na pasta dos sinais, no tmpfs do host                                                                                     | Só sinal sem segredo; o bit t impede que ele troque os arquivos do host, que nunca leem o que ele grava (a geração só dispara o `.path`, com limite de partidas)                                                                                                                                                      |
-| O `GetCallerIdentity` não pode ser negado e revela a conta e o ARN da sessão                                                             | Impacto baixo; documentado                                                                                                                                                                                                                                                                                            |
-| O IP do NAT muda e a coleta para                                                                                                         | IP reservado com `prevent_destroy`; erro `source_ip_denied` com instrução no painel                                                                                                                                                                                                                                   |
-| O cliente amplia o papel (anexa política, tira o boundary)                                                                               | `SimulatePrincipalPolicy` todo dia, com o IP do nó e uma amostra de escrita, IAM, KMS e leitura fora da política: aviso na conta, sem parar a coleta. Permissão a mais fora da amostra não é detectada                                                                                                                |
-| O cliente cria o papel pelo assistente do console e põe o audience no `aud`                                                              | Template e Terraform prontos; o README avisa; a mensagem de papel recusado explica                                                                                                                                                                                                                                    |
-| RCP de perímetro de dados do cliente nega a federação do Google                                                                          | O cliente inclui `accounts.google.com` na RCP ou marca o papel como exceção (decisão dele); texto pronto no onboarding                                                                                                                                                                                                |
-| STS de sa-east-1 desligado pelo cliente                                                                                                  | O worker cai para us-east-1; no Wazuh, o erro instrui a religar                                                                                                                                                                                                                                                       |
-| Objeção de conformidade: o Access Analyzer mostra o papel com acesso externo federado                                                    | Esperado e explicado no onboarding: papel com credencial temporária é o que a AWS recomenda; o CloudTrail registra cada entrada com o `sub` do nó                                                                                                                                                                     |
-| Ruído no CloudTrail e no medidor (cerca de 1.700 entradas por dia por conta, estimativa)                                                 | Medir no teste prático; se pesar, intervalo de 10 min ou descontar do medidor                                                                                                                                                                                                                                         |
-| Bucket de organização legível inteiro                                                                                                    | Prefixo opcional na pilha (`LogObjectPrefix`); nó dedicado ao mesmo cliente. Na célula, o papel só aceita a identidade do próprio cliente, e o prefixo continua valendo                                                                                                                                               |
-| Na célula, o cliente A cadastra a conta AWS de B _(a construir, CE-11 e CE-12)_                                                          | Uma conta de serviço por cliente (`vxt-<slug>`); a identidade vem de `TenantCloudIdentity`, gravada só pelo plano de controle; o `sub` de cada token é conferido; a confiança de B recusa o `sub` de A (`trust_denied`) e a conta nunca chega ao Wazuh                                                                |
-| Na célula, o cliente A cadastra o ID da conta de B antes dele (409 para B, negação de serviço)                                           | Mensagem genérica no 409; depois (CE-23), a unicidade só entre contas verificadas: a verificada vence e as duplicadas não verificadas são desativadas                                                                                                                                                                 |
-| Na saída do cliente, o papel segue na conta dele                                                                                         | Roteiro: "Revoke active sessions" e apagar a pilha; sem o papel, o nó não entra                                                                                                                                                                                                                                       |
+| Risco                                                                                                                                      | Mitigação                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Token do Google vazado: vale até 1 hora e não pode ser revogado                                                                            | Só entra do IP do NAT do nó (`aws:SourceIp` na confiança) e só no papel deste cliente; a sessão emitida também fica presa ao IP (Deny); regra de nível 12 para entrada de outro IP                                                                                                                                    |
+| Root no nó lê o token e as sessões em claro (tmpfs e memória do worker e do manager)                                                       | Valem 1 hora; nó dedicado a um cliente; sem porta aberta; acesso só pelo IAP com OS Login auditado; metadata só para o worker; o alcance é leitura de logs e configuração. Na célula, o alcance são os tokens de todos os clientes dela (o raio de impacto da seção "Célula compartilhada (Plataforma)")              |
+| Página da memória com segredo em claro (chave privada do cofre, token, sessões) vai para o swap, no disco do snapshot                      | Swap cifrado com chave aleatória a cada boot, nos dois perfis; no `standard`, `vm.swappiness=1` e o heap do indexer travado na memória                                                                                                                                                                                |
+| O ambiente de um contêiner fica gravado em `/var/lib/docker`, no disco e no snapshot                                                       | Chaves privadas do cofre só por arquivo do tmpfs montado só leitura no worker, nunca por variável (teste e CI conferem); o token da AWS fica num tmpfs do host                                                                                                                                                        |
+| Execução remota de código na API, exposta pelo túnel                                                                                       | A API não alcança o metadata e não emite token; cofre assimétrico para o Cloudflare                                                                                                                                                                                                                                   |
+| O manager processa log não confiável e lê o token                                                                                          | Sem acesso ao Postgres nem ao metadata; `cap_drop`; rede de saída só dele; imagem fixada pelo digest; nó dedicado; o token vale 1 hora e só do IP do nó. Na célula, um log forjado por um cliente que explore o manager alcança os tokens dos outros: risco residual aceito e documentado (raio de impacto da célula) |
+| Quem emite ID token da conta de serviço do nó entra no papel (operador com `serviceAccountUser`; no plano de controle, o `cp-terraform`)   | Precisa também sair pelo IP do NAT do nó; alertas em `SetIamPolicy` na conta de serviço, em `GenerateIdToken` e em VM criada com a conta de um nó (CP-12); nunca `serviceAccountOpenIdTokenCreator` no Terraform                                                                                                      |
+| A conta de serviço do nó é apagada ou recriada, e o ID único muda                                                                          | `account_id` e `project` só do `name_prefix` e do `project_id`, com teste de que as mudanças de rotina não a recriam; o executor do plano de controle (CP-07) recusa recriá-la ou apagá-la fora da exclusão; restauração em até 30 dias com o mesmo ID; depois disso, cada cliente atualiza a pilha                   |
+| Google ou o metadata fora do ar (`IDPCommunicationError`, renovação do token falha)                                                        | O token tem 50 min de folga; o wodle retoma do marcador e não perde log; aviso de token sem renovar                                                                                                                                                                                                                   |
+| A web identity pelo profile não funcionar no contêiner do manager                                                                          | O CI confere na imagem, sem rede, que o boto3 do manager usa o provedor de web identity e troca o token no STS da região com o papel certo; o roteiro de homologação na conta AWS de teste confirma de ponta a ponta; plano B: o host troca o token por uma sessão e grava um `credentials` temporário de 1 hora      |
+| Um bucket do cadastro (fora do padrão) incluído depois do início da coleta é lido desde o `ingestFrom` da conta (semanas ou meses)         | Aceito por ora: a leitura vai para o medidor de uso. As fontes autorizadas no onboarding self-service não têm esse risco: cada uma começa no dia da própria autorização                                                                                                                                               |
+| O worker grava na pasta dos sinais, no tmpfs do host                                                                                       | Só sinal sem segredo; o bit t impede que ele troque os arquivos do host, que nunca leem o que ele grava (a geração só dispara o `.path`, com limite de partidas)                                                                                                                                                      |
+| O `GetCallerIdentity` não pode ser negado e revela a conta e o ARN da sessão                                                               | Impacto baixo; documentado                                                                                                                                                                                                                                                                                            |
+| O IP do NAT muda e a coleta para                                                                                                           | IP reservado com `prevent_destroy`; erro `trust_denied`, que manda conferir o IP de saída                                                                                                                                                                                                                             |
+| O cliente amplia o papel (anexa política, tira o boundary)                                                                                 | `SimulatePrincipalPolicy` todo dia, com o IP do nó e uma amostra de escrita, IAM, KMS e leitura fora da política: aviso na conta, sem parar a coleta. Permissão a mais fora da amostra não é detectada                                                                                                                |
+| O cliente cria o papel pelo assistente do console e põe o audience no `aud`                                                                | Template e Terraform prontos; o README avisa; a mensagem de papel recusado explica                                                                                                                                                                                                                                    |
+| RCP de perímetro de dados do cliente nega a federação do Google                                                                            | O cliente inclui `accounts.google.com` na RCP ou marca o papel como exceção (decisão dele); texto pronto no onboarding                                                                                                                                                                                                |
+| STS de sa-east-1 desligado pelo cliente                                                                                                    | O worker cai para us-east-1; no Wazuh, o erro instrui a religar                                                                                                                                                                                                                                                       |
+| Objeção de conformidade: o Access Analyzer mostra o papel com acesso externo federado                                                      | Esperado e explicado no onboarding: papel com credencial temporária é o que a AWS recomenda; o CloudTrail registra cada entrada com o `sub` do nó                                                                                                                                                                     |
+| Ruído no CloudTrail e no medidor (cerca de 1.700 entradas por dia por conta, estimativa de antes da descoberta e dos coletores de achados) | Medir no roteiro de homologação; se pesar, intervalo de 10 min ou descontar do medidor                                                                                                                                                                                                                                |
+| Bucket de organização legível inteiro                                                                                                      | Prefixo opcional na pilha (`LogObjectPrefix`); nó dedicado ao mesmo cliente. Na célula, o papel só aceita a identidade do próprio cliente, e o prefixo continua valendo                                                                                                                                               |
+| Na célula, o cliente A cadastra a conta AWS de B _(a construir, CE-11 e CE-12)_                                                            | Uma conta de serviço por cliente (`vxt-<slug>`); a identidade vem de `TenantCloudIdentity`, gravada só pelo plano de controle; o `sub` de cada token é conferido; a confiança de B recusa o `sub` de A (`trust_denied`) e a conta nunca chega ao Wazuh                                                                |
+| Na célula, o cliente A cadastra o ID da conta de B antes dele (409 para B, negação de serviço)                                             | Mensagem genérica no 409; depois (CE-23), a unicidade só entre contas verificadas: a verificada vence e as duplicadas não verificadas são desativadas                                                                                                                                                                 |
+| Na saída do cliente, o papel segue na conta dele                                                                                           | Roteiro: "Revoke active sessions" e apagar a pilha; sem o papel, o nó não entra                                                                                                                                                                                                                                       |
 
 ## Onboarding AWS self-service
 
-_(em construção, em vários PRs. Feito no código: o template v2 do papel, com a descoberta e as três autorizações do
-cliente (PR-T); o contrato, o modelo de dados, o "Conectar" com validação automática, a descoberta e as rotas de
-autorização (PR-B); a coleta dos achados pelas APIs do GuardDuty, do Security Hub, do Inspector e do Access Analyzer
-(PR-C2); a coleta das fontes de bucket e do CloudWatch Logs pelo Wazuh do nó, com a saúde de cada fonte (PR-C1); e a
-tela em Contas cloud, do "Conectar com AWS" à saúde de cada fonte (PR-U). Nada da coleta pelo Wazuh foi exercitado
-numa conta AWS de verdade: o que foi conferido é o que a imagem do Wazuh aceita e grava, sem rede.)_
+_(decisões do responsável de 22/11/2026. Feito no código, na branch de integração `integracao/aws-onboarding`: o
+template v2 do papel (PR #169), o backend do nó (#170), os coletores de achados pelas APIs (#171), a tela em Contas
+cloud (#172), a coleta pelo Wazuh (#173) e o acabamento (a escolha gravada, a descoberta disponível, as fontes de cada
+conferência e o número de sequência do sinal `applied`). **Nada disto foi exercitado numa conta AWS de verdade:** o que
+foi conferido, e onde, está na tabela do fim desta seção; o roteiro para conferir o resto numa conta AWS de teste é o
+`docs/runbooks/homologacao-onboarding-aws.md`, e o que o operador faz no dia a dia, o
+`docs/runbooks/onboarding-cliente.md`.)_
 
 O cliente conecta a conta AWS sozinho: clica em "Conectar com AWS", cria a pilha do papel de leitura no CloudFormation
 e, a partir daí, o nó valida a conexão, descobre as fontes de log da conta e mostra o que pode ser coletado. O cliente
-não digita bucket, ARN, região, detector nem grupo de logs: escolhe e autoriza. Decisões do responsável (22/11/2026):
-sem bucket nem conta AWS da Verax no caminho; nenhum log descartado por plano (o volume é controlado pela data de
-início, pelos tetos de quantidade e pela desautorização a qualquer momento); nós dedicados primeiro (na célula, a coleta
-da AWS ainda não existe, e a descoberta fica desligada); na VM própria do cliente, a conta continua lida com a chave do
-usuário IAM de leitura, e o resto é igual.
+não digita bucket, ARN, região, detector nem grupo de logs: escolhe e autoriza. O papel de leitura sem chave e o que
+protege a entrada nele continuam os da seção "Por que papel sem chave"; esta seção cobre o que veio depois.
 
-**Regras de segurança:**
+**Decisões do responsável (22/11/2026):**
+
+- **Sem bucket nem conta AWS da Verax no caminho, e sem link de criação rápida.** O botão baixa o template com os
+  valores do nó já gravados e abre o console do CloudFormation; o cliente envia o arquivo, revisa e confirma. O
+  template sem preencher e o comando da CLI ficam como alternativa manual.
+- **Logs no S3:** o papel lê, em qualquer bucket, só os objetos em `AWSLogs/<conta>/` (e, na trilha de organização,
+  `AWSLogs/o-…/<conta>/`). O cliente não digita bucket.
+- **CloudWatch Logs:** o papel lê só os grupos que o cliente marcar com a tag `verax-control = leitura`. A descoberta
+  lista todos (só metadados), e a escolha no painel é grupo a grupo.
+- **Nós dedicados primeiro.** Na célula compartilhada, a coleta da AWS ainda não existe (CE-11 e CE-12), e a
+  descoberta fica desligada; o código novo não supõe um cliente por nó (toda linha tem `tenantId`, e as credenciais
+  passam por `AwsReaderCredentials`).
+- **VM própria do cliente:** a conta continua lida com a chave do usuário IAM de leitura (decisão de 18/11/2026). Só
+  o "Conectar" muda (os passos são os da chave); a descoberta, as fontes e os coletores são os mesmos.
+- **Resposta automática:** nenhuma permissão agora. Fica para um papel separado, com autorização própria.
+- **Nenhum log é descartado por plano.** O volume é controlado pela data de início (a da autorização, sem histórico),
+  pelos tetos de quantidade, pelos avisos de volume antes de autorizar e pela desautorização a qualquer momento.
+
+### O fluxo, de ponta a ponta
+
+1. **Conectar.** Em Contas cloud, o cliente cadastra a conta (o ID e a região principal), marca o que autoriza e
+   clica em "Conectar com AWS": o painel baixa o template preenchido, abre o CloudFormation em outra aba e avisa a API
+   (`POST …/aws/connect`), que guarda a escolha e o pedido.
+2. **Validação.** A tarefa `aws-check` do worker tenta entrar no papel por até 60 min, sem ninguém clicar em
+   "Verificar". Na primeira entrada, confere a identidade e lê as tags do papel: a versão do template e as
+   autorizações que a pilha concedeu de fato.
+3. **Descoberta.** A tarefa `aws-discovery` lê a configuração da conta, região por região, só com chamadas de leitura,
+   e grava uma linha por fonte de log (`AwsSource`), com a permissão de cada uma sondada. Uma leitura recusada não
+   para as outras: a descoberta termina parcial.
+4. **Autorização.** O cliente escolhe as fontes que quer coletar. Nada é lido antes disso, e a coleta de cada fonte
+   começa no dia da autorização.
+5. **Coletores.** As fontes de bucket e do CloudWatch Logs entram na configuração do manager do Wazuh do nó; as de
+   achados (GuardDuty, Security Hub, Inspector e Access Analyzer) são lidas pelo worker, pela API de cada serviço.
+6. **Saúde.** Cada fonte tem o estado e os horários da própria coleta, e o estado da conta é derivado deles a cada
+   leitura: nunca um "tudo certo" com um passo essencial pendente.
+
+### Regras de segurança
 
 - **A Verax nunca cria nem altera nada na conta do cliente.** A descoberta só faz chamadas `Describe*`, `Get*`, `List*`
   e `BatchGet*`. Além da política do papel (só leitura, com as negações explícitas), os clientes da AWS da descoberta
@@ -805,85 +865,199 @@ usuário IAM de leitura, e o resto é igual.
   (o papel sem chave ou, na VM própria, a chave do cofre), a mesma sessão da conferência da conexão e do inventário.
 - **Só nomes e configuração.** A descoberta não lê conteúdo de log. A sondagem de um bucket lê o nome de um objeto e 1
   byte dele (para provar a chave KMS), e nada é guardado. Dos erros da AWS, só o nome (nunca a mensagem).
-- **Isolamento por cliente:** `AwsDiscoveryRun` e `AwsSource` têm `tenantId`, entram no escopo do cliente e têm chave
-  estrangeira composta com a conta (o banco recusa a linha de um cliente na conta de outro). O painel só alcança a conta
-  e as fontes do cliente da sessão (o resto é 404).
+- **Isolamento por cliente:** o painel só alcança a conta e as fontes do cliente da sessão (o resto é 404), e o banco
+  recusa a linha de um cliente na conta de outro. Os argumentos, ponto a ponto, estão em "Isolamento entre clientes".
 - **Fontes sensíveis:** um grupo do CloudWatch Logs pode trazer dado de aplicação. Só é lido com a tag
   `verax-control = leitura` (posta pelo cliente) e só é autorizado citado um a um na confirmação
   (`sensitiveSourceIds`): não existe "autorizar tudo" para eles.
-- **Toda escrita é auditada** na trilha do cliente, com quem, quando e o quê: `cloud_account.aws_connect`,
-  `aws_discovery_request`, `aws_source_authorized`, `aws_source_revoked` e `aws_source_retry` (pelo usuário);
-  `aws_check`, `aws_template` e `aws_discovery` (pelo sistema). Na conta que a Verax cadastrou pelo console, o
+- **Toda escrita é auditada** na trilha do cliente, com quem, quando e o quê: `cloud_account.aws_connect` e
+  `aws_verify` (com a escolha das autorizações, antes e depois), `aws_discovery_request`, `aws_source_authorized`,
+  `aws_source_revoked` e `aws_source_retry` (pelo usuário); `aws_check`, `aws_template`, `aws_discovery` e
+  `aws_source_collection` (pelo sistema). Na conta que a Verax cadastrou pelo console, o
   cadastro continua do console (409 `CONSOLE_MANAGED`), e conectar, descobrir e autorizar são do cliente.
 
-**Conectar e validar (`POST /v1/cloud-accounts/:id/aws/connect`, tarefa `aws-check`):** o "Conectar" grava o
-`awsConnectRequestedAt` e o pedido de verificação com o mesmo horário. Nesse pedido, a tarefa `aws-check` tem uma janela
-de 60 min em que a entrada recusada e o token recusado só dizem que o papel ainda não existe (a pilha está sendo criada;
-o nó não enxerga a pilha, só sabe que ainda não entrou): o pedido fica pendente, com tentativas a 20 s, 40 s e depois a
-cada 60 s. Fechada a janela sem o papel, o erro gravado é `authorization_timeout` ("tentar de novo" abre outra janela).
-Um erro que não é a falta do papel (outra conta, um bucket negado) é gravado na hora; o "Verificar" comum segue com a
-janela de 10 min. Depois de uma conferência sem erro, no pedido e uma vez por dia, a tarefa lê as tags do papel
-(`iam:GetRole` no próprio papel; na VM própria, `iam:GetUser` no usuário de leitura): a versão do template e as
-capacidades (`discovery`, `service-logs`, `findings`, `log-groups`). Sem tags, é o template v1, só com a descoberta.
-Na primeira entrada, no "Conectar" e quando as tags mudam, ela pede a descoberta da conta.
+### O template v2 e as três autorizações
 
-**Descoberta (tarefa `aws-discovery` do worker, `apps/api/src/aws/discovery/`):** a cada 30 s, sob concessão no banco,
-executa os pedidos pendentes (do "Conectar", do painel e um por dia por conta, pelo `CollectorCursor` do fluxo
-`aws_discovery`). No máximo uma execução pendente ou em curso por conta; a manual, no máximo uma a cada 5 min. Toda
-execução começa lendo as tags do papel (`aws/reader-tags.ts`), e são elas que valem até o fim, não as gravadas na
-conta: quem atualizou a pilha e pediu a descoberta vê as fontes liberadas na hora. As tags vão para a conta junto com o
-resultado (a mudança entra na trilha, `aws_template`). A leitura recusada é o template v1; se a recusa for de uma
+O arquivo é o mesmo, `infra/cloudformation/verax-control-reader.yaml` (o passo a passo do cliente, com cada permissão
+explicada, está no README da pasta). O nome, o caminho e a confiança do papel não mudaram, e uma pilha do modelo 1
+atualizada com ele continua lendo o que lia. O que mudou:
+
+- **Uma parte que vale sempre, a descoberta**, e três **autorizações** que o cliente liga ou desliga na pilha
+  (`true` ou `false`; o padrão é `true`). Com uma autorização desligada, a permissão dela nem entra na política.
+
+  | Capacidade (`verax-control:capabilities`) | Parâmetro              | O que o papel passa a ler                                                                                                                                                                                                                                                                                   |
+  | ----------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `discovery`                               | (vale sempre)          | Só configuração e nomes (`Describe*`, `Get*`, `List*`): trilhas, flow logs, Web ACLs e o logging delas, detectores e exports do GuardDuty, o estado do Security Hub, do Inspector e do Access Analyzer, grupos de logs (nome, tamanho, tags), Config, load balancers, RDS, e o que Ativos e Postura já liam |
+  | `service-logs`                            | `ReadAwsServiceLogs`   | `s3:GetObject` só em `AWSLogs/<conta>/` e `AWSLogs/o-*/<conta>/`, em qualquer bucket; `s3:ListBucket` nessas pastas e no primeiro nível do bucket (só nomes: é o que o módulo do Wazuh lista para achar a pasta); `kms:Decrypt` só pelo S3                                                                  |
+  | `findings`                                | `ReadSecurityFindings` | Os achados do GuardDuty, do Security Hub, do Inspector e do Access Analyzer, pela API de cada um. Não liga serviço e não altera achado                                                                                                                                                                      |
+  | `log-groups`                              | `ReadTaggedLogGroups`  | `logs:DescribeLogStreams`, `logs:GetLogEvents` e `logs:FilterLogEvents` só nos grupos com a tag `verax-control = leitura` (condição `aws:ResourceTag`). O papel não consegue pôr a tag                                                                                                                      |
+
+- **Buckets adicionais** (`LogBucketArns`, `LogKmsKeyArns` e `LogObjectPrefix`): os parâmetros do modelo 1 ficam só
+  para as exceções, o que a AWS não grava em `AWSLogs/<conta>/` (um prefixo antes de `AWSLogs/`, flow logs com
+  partições do Hive, entregas do Firehose, um bucket central). No painel, são os "buckets fora do padrão".
+- **Tags do papel:** `verax-control:template = 2` e `verax-control:capabilities` (a lista separada por espaço, porque
+  o IAM não aceita vírgula no valor de uma tag; sempre com `discovery`). Não dão permissão: informam. O nó as lê com
+  `iam:GetRole` no próprio papel (a declaração `AutoInspecao`, a mesma da simulação das próprias permissões), e o
+  papel não pode trocá-las (`NuncaTrocarAsPropriasEtiquetas`). Sem tags, o papel é do modelo 1.
+- **Negações:** a do IP de saída do nó (`SoDoNoDaVerax`) ganhou `Bool aws:ViaAWSService = false`: a chamada direta
+  continua presa ao IP do nó, e só não é barrada a que um serviço da AWS faz em nome do papel (o S3 pedindo ao KMS
+  para decifrar um objeto com SSE-KMS). `NuncaAlterarOutrasFontes` nega a escrita em flow logs, Config, WAF, load
+  balancers, RDS, Security Hub, Inspector e Access Analyzer, além do que já era negado em logs e no próprio acesso.
+- **Tamanho:** o template tem cerca de 46 KB, abaixo dos 51.200 bytes que o CloudFormation aceita sem bucket; o
+  preenchimento confere o tamanho do arquivo que gera.
+
+**O arquivo preenchido (`prefillReaderTemplate`, em `packages/shared/src/aws-reader.ts`).** Uma função pura, que roda
+no navegador: grava como `Default` de sete parâmetros os valores do nó (`NodeServiceAccountId`, `NodeEgressIps` e
+`Audience`), as três autorizações escolhidas e, na conta que tem buckets do cadastro, `LogBucketArns`. Cada valor
+passa pelos validadores de sempre antes de ser escrito (um valor fora do formato recusa o arquivo inteiro, e a tela
+diz o que pedir à Verax), e nenhuma outra linha muda: um teste compara a saída com o arquivo do repositório linha a
+linha. O arquivo sai com o nome `verax-control-reader-<conta>.yaml` e não tem segredo.
+
+**A escolha do cliente fica gravada (`CloudAccount.awsChosenCapabilities`).** O "Conectar com AWS" manda as
+autorizações marcadas (`{capabilities}`, só as três; a descoberta vale sempre), e o "Verificar de novo" depois de
+"Atualize a pilha" manda as marcadas naquele bloco. A API só as guarda: é o que a tela devolve depois de recarregada
+(as mesmas caixas, o mesmo arquivo em "Baixar o arquivo de novo") e o que ela compara com as tags do papel. **Não é
+permissão:** o que o papel pode ler é sempre o que as tags dele dizem. Quando as tags lidas depois do "Conectar" não
+são a escolha, a tela avisa, primeiro o que a pilha concede a mais ("Concede mais do que a sua escolha"), depois o
+que está desligado, e abre o bloco de atualização já com a escolha do cliente. No console do CloudFormation, uma
+atualização mantém o valor anterior de cada parâmetro: é o caso que o aviso pega. Sem escolha gravada (a conta de
+antes disto, a conectada sem o painel), a tela parte das tags; sem tags do modelo atual, das três do padrão.
+
+**Na VM própria do cliente** não há pilha: o usuário IAM de leitura tem as mesmas duas políticas, com a mesma
+divisão por autorização (`packages/shared/src/read-keys.ts`; um teste confere as ações contra o
+`verax-control-reader.policy.json`), e as mesmas duas tags, lidas com `iam:GetUser`. A escolha gravada vale igual
+(as políticas mostradas saem com ela).
+
+### Modelo de dados
+
+Tudo de acréscimo (seis migrations, `20261124120000_aws_onboarding` a `20261124170000_cloudwatch_ownership_applied_seq`):
+nenhuma coluna existente muda, e os buckets do cadastro continuam valendo como antes.
+
+| Onde                       | O quê                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CloudAccount`             | `awsConnectRequestedAt` (o "Conectar"; com o mesmo horário do `checkRequestedAt`, é a janela de 60 min), `awsChosenCapabilities` (a escolha do cliente), `awsTemplateVersion`, `awsCapabilities` e `awsCapabilitiesCheckedAt` (as tags do papel e quando foram lidas) e `awsDiscoveredRegions`. Só na conta AWS (CHECK)                                |
+| `AwsDiscoveryRun`          | Uma linha por execução da descoberta: o gatilho (`connect`, `manual` ou `scheduled`), o estado (`pending`, `running`, `succeeded`, `partial` ou `failed`), as regiões lidas, o que ficou de fora (`serviço × região × código`, até 200) e o retrato da infraestrutura em números                                                                       |
+| `AwsSource`                | Uma linha por conta, tipo, região (ou `global`) e recurso: o que a descoberta sabe dela (`details`: só nomes e configuração), a disponibilidade, a permissão da última sondagem, as notas, a autorização (quem, quando, a revogação), `collectFrom`, o estado com o motivo e a saúde da coleta. Única por `[cloudAccountId, kind, region, resourceId]` |
+| `CloudWatchAlertOwnership` | Uma linha por nó, do sistema (sem `tenantId` e sem chave estrangeira): a prova do dono dos alertas do CloudWatch Logs, com o último número de sequência do sinal `applied` (`appliedSeq`)                                                                                                                                                              |
+| `CollectorCursor`          | O agendamento da descoberta diária (fluxo `aws_discovery`) e o cursor de cada fonte de achados (`aws_findings_guardduty`, `aws_findings_security_hub`, `aws_findings_inspector` e `aws_findings_aa_<resumo>`)                                                                                                                                          |
+
+`AwsDiscoveryRun` e `AwsSource` têm `tenantId`, entram no escopo do cliente e têm chave estrangeira composta com a
+conta: o banco recusa a linha de um cliente na conta de outro. Os CHECKs repetem os valores do contrato
+(`packages/shared/src/aws-onboarding.ts`), e um teste confere que os dois continuam iguais. Os buckets do cadastro
+anterior (`cloudtrailBucket`, `guarddutyBucket` e `wafBucket`) viraram linhas `origin = legacy`, já autorizadas, com a
+coleta a partir do `ingestFrom` da conta; quem mantém esse espelho é `aws/onboarding/legacy-sources.ts`, a cada mudança
+dos buckets.
+
+### Conectar e validar
+
+`POST /v1/cloud-accounts/:id/aws/connect` (`cloud_accounts:write`, 202) grava o `awsConnectRequestedAt` e o pedido de
+verificação com o mesmo horário, e volta a conexão para "aguardando". O corpo é opcional e estrito
+(`awsConnectSchema`): com `capabilities`, a escolha do cliente é gravada junto, também no pedido ainda pendente e sem
+renovar a janela (o cliente mudou as caixas enquanto esperava a pilha); sem ele, a escolha gravada fica. Um "Conectar"
+ainda pendente não é renovado: clicar de novo não adia o fim da janela. O `POST …/aws/verify` de sempre aceita o mesmo
+corpo.
+
+Nesse pedido, a tarefa `aws-check` tem uma janela de 60 min em que a entrada recusada e o token recusado só dizem que
+o papel ainda não existe (a pilha está sendo criada; o nó não vê a pilha, só sabe que ainda não entrou): o pedido fica
+pendente, com tentativas a 20 s, 40 s e depois a cada 60 s. Fechada a janela sem o papel, o erro gravado é
+`authorization_timeout` ("tentar de novo" abre outra janela). Um erro que não é a falta do papel (outra conta, um
+bucket negado) é gravado na hora; o "Verificar" comum segue com a janela de 10 min.
+
+Depois de uma conferência sem erro, no pedido e uma vez por dia, a tarefa lê as tags do papel (`iam:GetRole` no
+próprio papel; na VM própria, `iam:GetUser` no usuário de leitura; `aws/reader-tags.ts`): a versão do template e as
+capacidades. Sem tags, é o template v1, só com a descoberta. Na primeira entrada, no "Conectar" e quando as tags
+mudam, ela pede a descoberta da conta. A entrada no papel, a conferência da identidade e a leitura dos buckets do
+cadastro continuam as da seção "Por que papel sem chave" (passo "Conferir").
+
+### Descoberta: cobertura e trava de só leitura
+
+Tarefa `aws-discovery` do worker (`apps/api/src/aws/discovery/`): a cada 30 s, sob concessão no banco, executa os
+pedidos pendentes (do "Conectar", do painel e um por dia por conta, pelo `CollectorCursor` do fluxo `aws_discovery`,
+com até 1 h de sorteio). No máximo uma execução pendente ou em curso por conta; a manual, no máximo uma a cada 5 min
+(429 `DISCOVERY_RATE_LIMITED`).
+
+**As tags primeiro.** Toda execução começa lendo as tags do papel, e são elas que valem até o fim, não as gravadas na
+conta: quem atualizou a pilha e pediu a descoberta vê as fontes liberadas na hora. As tags vão para a conta junto com
+o resultado (a mudança entra na trilha, `aws_template`). A leitura recusada é o template v1; se a recusa for de uma
 sessão que deixou de valer, nada mais é lido, a execução falha e a conta fica como está. Com a leitura sem resposta
-(uma falha passageira), valem as gravadas, e a falha fica no registro da execução (`iam × global × código`). Para a
-conta: as regiões habilitadas (`DescribeRegions`) e, em cada uma, com teto de chamadas simultâneas e de tempo por
-chamada, as trilhas, os flow logs, as Web ACLs e o logging delas, os detectores do GuardDuty e os exports, o Security
-Hub, o Inspector, os analisadores do Access Analyzer, os grupos do CloudWatch Logs (com a tag), o Config e os load
-balancers; e o retrato da infraestrutura (instâncias, security groups, buckets, RDS, load balancers), reusando os
-coletores do inventário. Cada leitura é isolada por serviço e região: a permissão negada, a região que recusa a sessão,
-o limite de requisições e o tempo esgotado viram um registro (`serviço × região × código`), e a execução termina
-`partial`, que é um resultado válido. Depois, a permissão de cada fonte é sondada: a listagem do prefixo exato e 1 byte
-de um objeto (S3), uma listagem de 1 item (APIs), ou a tag e uma listagem de 1 stream (grupos de logs). As regiões com
-recurso ou fonte vão para `awsDiscoveredRegions` e, na conta cadastrada pelo painel, entram nas monitoradas (que só
-ganham regiões, nunca perdem).
+(uma falha passageira), valem as gravadas, e a falha fica no registro da execução (`iam × global × código`).
 
-**Fontes (`AwsSource`):** uma linha por conta, tipo, região (ou `global`) e recurso. Tipos coletados: `cloudtrail`,
-`vpc_flow_logs`, `waf` e `guardduty_export` (S3); `guardduty`, `security_hub`, `inspector` e `access_analyzer` (API);
-`cloudwatch_log_group` (CloudWatch, sensível). Descobertos e ainda não coletados: `config` e `elb_logs`. Cada linha
-guarda se dá para ler de onde está (`availability`: disponível, serviço desligado, sem destino, destino ou formato que
-o nó não lê), a permissão da última sondagem (com a ação que faltou ou o motivo: `capability_off`, `tag_missing`,
-`kms_denied`, `bucket_denied`, `outside_awslogs_prefix`), as notas de custo e de pré-requisito, a autorização (quem,
-quando) e a saúde da coleta (gravada pelos coletores: o do Wazuh nas fontes de bucket e do CloudWatch Logs, o dos achados nas de API). Casos tratados: a trilha de organização (o ID da
-organização sai dos nomes de `AWSLogs/` no bucket), o prefixo antes de `AWSLogs/` (fora do que o papel lê, a não ser num
-bucket do cadastro), os flow logs com partições do Hive, em Parquet ou com campos fora do padrão (formato não lido), os
-que gravam no CloudWatch Logs (o grupo é oferecido), o WAF no Firehose (destino não lido) e no S3 (uma fonte por Web
-ACL). A descoberta nunca apaga nem muda em silêncio uma fonte autorizada: a que some (num escopo que a execução leu por
-inteiro) fica `source_missing`; a que perde a permissão, `permission_error`; a revogada fica revogada. Os buckets do
-cadastro anterior (`cloudtrailBucket`, `guarddutyBucket`, `wafBucket`) continuam valendo como antes e aparecem como
-linhas `origin = legacy`, autorizadas, espelhadas por `aws/onboarding/legacy-sources.ts`.
+**O que é lido.** As regiões habilitadas da conta (`ec2:DescribeRegions`, até 64) e, em cada uma, 4 regiões por vez,
+com no máximo 8 chamadas simultâneas e 15 s por chamada:
 
-**Nota dos flow logs lidos juntos (`flow_logs_read_together`):** toda fonte de flow logs que grava num bucket e dá
-para ler leva essa nota: autorizar um Flow Log lê todos os Flow Logs daquela conta e região que gravam no mesmo bucket
-(o módulo do Wazuh lê a pasta da conta e da região, e não um flow log só). O painel diz isso na linha da fonte e de
-novo na confirmação da autorização.
+| O quê                 | Chamadas                                                                                                 | O que vira                                                                                                                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Trilhas do CloudTrail | `DescribeTrails`, `GetTrailStatus`, `GetEventSelectors`                                                  | Fonte `cloudtrail`: o bucket, o prefixo, a chave KMS, se é de organização, se é de todas as regiões, se está gravando e se grava os eventos de gerenciamento                      |
+| VPC Flow Logs         | `DescribeFlowLogs` (até 500 por região)                                                                  | Fonte `vpc_flow_logs`: o destino (S3, CloudWatch Logs ou Firehose), o formato (o padrão de 14 campos, ou um formato próprio), o arquivo (texto ou Parquet) e as partições do Hive |
+| WAF                   | `ListWebACLs` (as regionais em cada região; as do CloudFront, em us-east-1), `ListLoggingConfigurations` | Uma fonte `waf` por Web ACL com log no S3; sem log, "sem destino"; no Firehose, "destino não lido"; no CloudWatch Logs, o grupo é oferecido                                       |
+| GuardDuty             | `ListDetectors`, `GetDetector`, `ListPublishingDestinations`, `DescribePublishingDestination`            | Fonte `guardduty` (a API, a recomendada) e, com export para o S3, `guardduty_export` (marcada "coberta pela API")                                                                 |
+| Security Hub          | `DescribeHub`                                                                                            | Fonte `security_hub`, ou "serviço desligado", com o aviso de custo                                                                                                                |
+| Inspector             | `BatchGetAccountStatus`                                                                                  | Fonte `inspector`, idem                                                                                                                                                           |
+| Access Analyzer       | `ListAnalyzers` (até 50 por região)                                                                      | Uma fonte `access_analyzer` por analisador                                                                                                                                        |
+| CloudWatch Logs       | `DescribeLogGroups` (até 500 por região), `ListTagsForResource`                                          | Uma fonte `cloudwatch_log_group` por grupo: o nome, o tamanho guardado, a retenção, a categoria (pelo nome) e se tem a tag de leitura. Nenhum evento                              |
+| Config                | `DescribeConfigurationRecorders`, `DescribeConfigurationRecorderStatus`, `DescribeDeliveryChannels`      | Fonte `config`, descoberta e ainda não coletada                                                                                                                                   |
+| Load balancers        | `DescribeLoadBalancers` (até 100 por região), `DescribeLoadBalancerAttributes`                           | Fonte `elb_logs` (o log de acesso), descoberta e ainda não coletada                                                                                                               |
+| Infraestrutura        | Os coletores do inventário (instâncias, security groups, usuários IAM, buckets), `DescribeVpcs` e o RDS  | Só o retrato em números da tela (`AwsDiscoveryRun.summary`); os detalhes ficam em Ativos                                                                                          |
 
-**O que o painel diz da coleta pelo Wazuh (`apps/web/src/features/admin/aws-onboarding-labels.ts`):** a API manda só
-códigos, e cada motivo que a coleta grava numa fonte de bucket ou num grupo de logs tem o texto dele, com o que fazer
-(`AWS_WAZUH_SOURCE_STATE_CODE_TEXTS`, tipado contra `AWS_WAZUH_SOURCE_STATE_CODES`: um código novo não compila sem o
-texto): a configuração ainda não aplicada (`awaiting_apply`), a fonte parada (`no_progress`), os dois avisos do
-servidor e os sete motivos de a fonte ter ficado de fora da coleta; o que a tela não conhece aparece como "Tipo do
-erro". Na linha dos flow logs, antes e depois da autorização, o painel diz que só o tráfego recusado é lido e que as
-detecções vêm das duas regras ("Regras de Flow Logs"); na dos grupos do CloudWatch Logs, que os alertas aparecem com
-pelo menos 10 minutos de atraso e só são atribuídos quando uma única conta do servidor tem grupos autorizados ("Dono
-dos alertas do CloudWatch Logs").
+**Parcial é um resultado válido.** Cada leitura é isolada por serviço e região: a permissão negada, a região que
+recusa a sessão, o limite de requisições e o tempo esgotado viram um registro (`serviço × região × código`, só o nome
+do erro, nunca a mensagem), e a execução termina `partial`. A tela mostra o que ficou de fora, e uma leitura recusada
+aparece como "não lido", nunca como zero.
 
-**Estado da fonte:** `available`, `needs_permission` ou `unavailable` antes da autorização; depois, `authorized`
+**Permissão de cada fonte, sondada.** Depois da leitura, cada fonte é sondada com a chamada mais barata que prova a
+leitura: no S3, a listagem do prefixo exato (`MaxKeys = 1`) e 1 byte de um objeto (o que prova a chave KMS); nas APIs,
+uma listagem de 1 item; no grupo de logs, a tag e uma listagem de 1 stream. O resultado fica na fonte, com a ação do
+IAM que faltou ou o motivo: `capability_off` (a autorização do tipo desligada na pilha), `tag_missing`, `kms_denied`,
+`bucket_denied`, `bucket_missing`, `outside_awslogs_prefix` ou `probe_failed`.
+
+**Regiões.** As regiões com recurso ou fonte vão para `awsDiscoveredRegions` e, na conta cadastrada pelo painel,
+entram nas monitoradas (que só ganham regiões, nunca perdem).
+
+**A trava de só leitura** (`discovery/read-only.ts`): os clientes do SDK que a descoberta, as sondagens, os coletores
+de achados e a conferência da fonte parada usam só aceitam comandos cujo nome começa com `Describe`, `Get`, `List` ou
+`BatchGet`. Qualquer outro é recusado antes de sair para a rede, com uma exceção que só leva o nome do comando. É a
+segunda linha de defesa (a primeira é a política do papel, com as negações explícitas): protege de um erro nosso, como
+um comando de escrita num coletor novo. Um teste confere cada chamada da descoberta e dos coletores contra a lista de
+ações que a política do papel concede.
+
+**O que a descoberta não cobre:** os tipos fora da tabela (logs do CloudFront e de acesso do S3, Route 53, Network
+Firewall, logs do RDS e do EKS) só aparecem quando gravam num grupo do CloudWatch Logs, como um grupo a etiquetar; e
+os tetos por região acima (o que passar deles fica de fora, com o registro `Truncated`).
+
+### Fontes e autorização
+
+Os tipos de fonte: `cloudtrail`, `vpc_flow_logs`, `waf` e `guardduty_export` (S3); `guardduty`, `security_hub`,
+`inspector` e `access_analyzer` (API); `cloudwatch_log_group` (CloudWatch Logs, sensível). Descobertos e ainda não
+coletados: `config` e `elb_logs`. Cada linha guarda se dá para ler de onde está (`availability`: disponível, serviço
+desligado, sem destino, destino ou formato que o nó não lê), a permissão da última sondagem, as notas de custo e de
+pré-requisito, a autorização (quem, quando) e a saúde da coleta (gravada pelo coletor dela).
+
+Casos tratados na descoberta: a trilha de organização (o ID da organização sai dos nomes de `AWSLogs/` no bucket), o
+prefixo antes de `AWSLogs/` (fora do que o papel lê, a não ser num bucket do cadastro), os flow logs com partições do
+Hive, em Parquet ou com campos fora do padrão (formato não lido), os que gravam no CloudWatch Logs (o grupo é
+oferecido), o WAF no Firehose (destino não lido) e no S3 (uma fonte por Web ACL).
+
+**Estados da fonte.** `available`, `needs_permission` ou `unavailable` antes da autorização; depois, `authorized`
 (aguardando o coletor), `configuring`, `waiting_events`, `collecting`, `stalled`, `permission_error` e
-`ingestion_error`; `source_missing` e `revoked`. A autorização (`POST …/aws/sources/authorize`) só vale para a fonte
-disponível, de tipo coletado, com a permissão conferida e que não repete um bucket do cadastro; a coleta começa no dia
-da autorização (sem histórico). Tudo ou nada: uma fonte recusada recusa o pedido. Tetos por conta: 50 grupos do
-CloudWatch Logs e 200 fontes de S3 autorizados.
+`ingestion_error`; `source_missing` (a fonte autorizada sumiu da conta) e `revoked`. O motivo vai em `stateCode`.
 
-**"Tentar de novo" numa fonte (`POST …/aws/sources/:sourceId/retry`):** a API só grava o pedido; quem responde é a
+**Autorizar (`POST …/aws/sources/authorize`).** Só vale para a fonte disponível, de tipo coletado, com a permissão
+conferida e que não repete um bucket do cadastro. Tudo ou nada: uma fonte recusada recusa o pedido, com o código do
+motivo. As fontes sensíveis (os grupos do CloudWatch Logs, que podem trazer dado de aplicação) só entram citadas de
+novo, uma a uma, em `sensitiveSourceIds`: não existe "autorizar tudo" para elas. A coleta começa no dia da autorização
+(`collectFrom`), sem histórico.
+
+**Desautorizar (`POST …/aws/sources/:sourceId/revoke`).** A fonte sai da coleta na execução seguinte do coletor dela,
+e a linha fica, com quem tinha autorizado. Vale também com a conta desativada: tirar uma fonte nunca é bloqueado.
+Nada é apagado na origem.
+
+**A descoberta nunca apaga nem muda em silêncio uma fonte autorizada:** a que some (num escopo que a execução leu por
+inteiro) fica `source_missing`; a que perde a permissão, `permission_error`; a revogada fica revogada. As linhas dos
+buckets do cadastro (`origin = legacy`) não mudam por estas rotas (409 `SOURCE_LEGACY`): mudam no cadastro.
+
+### "Tentar de novo" numa fonte
+
+Em `POST …/aws/sources/:sourceId/retry`, a API só grava o pedido; quem responde é a
 tarefa `aws-discovery`, na execução seguinte. O cliente pede a sondagem depois de mudar algo na conta dele, então a
 resposta sai do que a AWS diz agora, e nunca do que a última descoberta gravou: (1) as tags do papel são lidas de novo
 (`aws/reader-tags.ts`, a mesma leitura da conferência da conexão) e gravadas na conta, e a capacidade ligada numa
@@ -899,16 +1073,77 @@ pedida pelo sistema e não entra no limite de 5 min da manual; o que a contém �
 ou em curso por conta, e no máximo um "Tentar de novo" a cada 30 s por fonte (429 `SOURCE_RETRY_RATE_LIMITED`; o
 horário do último pedido fica em `lastProbeRequestAt`, que a resposta não desfaz).
 
-**Estado da conta (`GET …/aws/onboarding`):** derivado pela API a cada leitura (`aws/onboarding/onboarding-state.ts`),
-nunca guardado nem escrito à mão: `not_started`, `awaiting_authorization`, `authenticated`, `discovering`,
-`awaiting_sources`, `configuring`, `collecting`, `partial`, `permission_error`, `ingestion_failure`, `disconnected` e
-`authorization_timeout`. Junto vão as conferências, cada uma com situação, código e horário: `assume_role`, `identity`,
-`template`, `discovery` e, das fontes autorizadas, `permission`, `collector_config`, `events`, `last_sync` e `lag`. A
-regra: nunca um "tudo certo" com um passo essencial pendente. A conta só está `collecting` quando toda fonte autorizada
-está coletando; com o papel removido, fica `disconnected`, e as fontes e as autorizações continuam lá.
+### Estado da conta e conferências
 
-**Coleta pelo Wazuh (fontes de bucket e do CloudWatch Logs, `apps/api/src/aws/wazuh-sources.ts` e
-`infra/wazuh/scripts/render-manager-config.py`):** a lista que o CLI `wazuh-sources` imprime e a geração que a tarefa
+`GET …/aws/onboarding` devolve o estado da conta, derivado pela API a cada leitura (`aws/onboarding/onboarding-state.ts`,
+uma função pura), nunca guardado nem escrito à mão:
+
+| Estado                   | Quando                                                                                                    |
+| ------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `not_started`            | Ninguém pediu a conexão (ou ela recomeçou: outra lista de buckets, a conta reativada), ou a conta inativa |
+| `awaiting_authorization` | Há um pedido de verificação pendente; com a janela do "Conectar", `connect.waitingUntil` diz até quando   |
+| `authorization_timeout`  | A janela do "Conectar" fechou sem o papel                                                                 |
+| `disconnected`           | A AWS recusa a entrada no papel (removido, alterado), ou o nó não consegue conferir a conexão             |
+| `authenticated`          | Entrou no papel, e nenhuma descoberta entrou na conta ainda (ou a primeira falhou inteira)                |
+| `discovering`            | A primeira descoberta está pendente ou em curso                                                           |
+| `awaiting_sources`       | A descoberta terminou, e nenhuma fonte está autorizada                                                    |
+| `configuring`            | Há fonte autorizada, e nenhuma coleta começou ainda                                                       |
+| `collecting`             | **Toda** fonte autorizada está coletando                                                                  |
+| `partial`                | Só parte delas                                                                                            |
+| `permission_error`       | Uma fonte autorizada (ou um bucket do cadastro) não pode ser lida por falta de permissão                  |
+| `ingestion_failure`      | A coleta de uma fonte autorizada falha, ou o nó não aplica a configuração da coleta                       |
+
+A primeira regra que vale ganha: a conta inativa; o fim da janela do "Conectar"; o pedido pendente; a conexão
+recusada; a falta da primeira descoberta; nenhuma fonte autorizada; e, com fontes autorizadas, a falta de permissão
+antes da falha de ingestão, e as duas antes de "configurando", "coletando" e "parcial". Com o papel removido, a conta
+fica `disconnected`, e as fontes e as autorizações continuam lá.
+
+Junto vão nove conferências, cada uma com a situação (`ok`, `pending`, `failed` ou `skipped`), o código do motivo e o
+horário: `assume_role`, `identity`, `template` e `discovery`, e, das fontes autorizadas, `permission`,
+`collector_config`, `events`, `last_sync` e `lag`. Estas cinco citam, em `sourceIds`, as fontes que as deixam
+pendentes ou com falha (todas, não só a primeira), para o painel apontar a linha de cada uma. O campo não vem quando o
+motivo não é de uma fonte: o aviso da coleta do nó inteiro (`aws_token_stale`, `wazuh_apply_failed`) e o bucket do
+cadastro negado sem a linha dele na lista.
+
+A resposta também diz: `connect` (quando o "Conectar" foi pedido, até quando o nó espera o papel e a escolha gravada
+do cliente), `template` (a versão e as capacidades lidas das tags, e se o modelo é anterior), a descoberta mais
+recente, o retrato da infraestrutura, as fontes (até 2.000) e `discoveryAvailable`: `false` na célula compartilhada,
+onde a descoberta e o "Tentar de novo" de uma fonte responderiam 409 `DISCOVERY_UNAVAILABLE`. O schema é estrito
+(`packages/shared/src/aws-onboarding.ts`), e toda escrita do onboarding responde com o mesmo corpo, já atualizado.
+
+### O que o painel mostra
+
+A tela (Contas cloud → AWS, `apps/web/src/features/admin/aws-*.tsx`) só mostra o que a API mandou, relido sozinho
+enquanto uma mudança é esperada (a cada 5 s na espera pelo papel, na descoberta e na configuração; a cada 60 s com
+fontes coletando): ela nunca adianta um passo. A API manda só códigos, e cada código tem o texto dele, com o que fazer
+(`aws-onboarding-labels.ts`, tipado contra o contrato: um código novo não compila sem o texto); o que a tela não
+conhece aparece como "Tipo do erro".
+
+- **Antes de conectar:** o que a integração faz, as três autorizações com o que cada uma permite e não permite, o
+  botão "Conectar com AWS" e a alternativa manual, recolhida. Sem um valor do nó, não sai arquivo quebrado: a tela
+  diz o que pedir à Verax.
+- **Depois do clique:** os passos pelo estado da API, o aviso de que o Verax não vê a pilha enquanto ela é criada, o
+  tempo que falta da janela e "Baixar o arquivo de novo", com a escolha gravada.
+- **Conferências:** as nove, com o "tentar de novo" de cada uma e, nas das fontes, um link para a linha de cada fonte
+  citada em "Fontes autorizadas", que fica em destaque (um contorno e a marca "Apontada pela conferência").
+- **Pilha na AWS:** a versão do modelo e as autorizações lidas das tags, o aviso quando elas não são a escolha do
+  cliente, e "Atualize a pilha" (o arquivo preenchido, os passos e o valor de cada parâmetro).
+- **O que encontramos:** o retrato da infraestrutura e, na descoberta parcial, o que ficou de fora e por quê. Onde
+  `discoveryAvailable` é `false`, "Descobrir de novo", "Rodar a descoberta" e o "Verificar de novo" de uma fonte não
+  aparecem.
+- **Fontes de log:** as disponíveis, as que precisam de permissão (com a correção exata de cada motivo, como o
+  comando da tag do grupo de logs), as não habilitadas (com o aviso de custo: ligar é do cliente), as que gravam onde
+  o nó não lê e as ainda não coletadas. Os grupos do CloudWatch Logs têm lista própria, com busca, seleção um a um e
+  confirmação explícita. Antes de autorizar flow logs e grupos de logs, o aviso de volume.
+- **Fontes autorizadas:** o estado com o motivo, o último evento, a última leitura, o atraso, o volume das últimas
+  24 h, "Tentar de novo" e "Revogar". Na linha dos flow logs, que só o tráfego recusado é lido e que as detecções vêm
+  de duas regras; na dos grupos de logs, que os alertas aparecem com pelo menos 10 min de atraso e só são atribuídos
+  com a prova do dono.
+
+### Coleta pelo Wazuh
+
+As fontes de bucket e do CloudWatch Logs são lidas pelo manager do Wazuh do nó (`apps/api/src/aws/wazuh-sources.ts`
+e `infra/wazuh/scripts/render-manager-config.py`). A lista que o CLI `wazuh-sources` imprime e a geração que a tarefa
 `wazuh-config` grava saem das fontes com a autorização valendo e método `s3` ou `cloudwatch`. O formato é o 2
 (`{"version": 2, "accounts": [{accountId, region, s3: [...], logGroups: [...]}]}`); o gerador recusa uma versão que não
 conhece e ainda aceita a lista simples de antes (a que uma API de versão anterior imprime durante uma atualização).
@@ -945,7 +1180,9 @@ conhece e ainda aceita a lista simples de antes (a que uma API de versão anteri
   lista até voltar, e a revogada sai de vez. Uma mudança da lista só reinicia o manager quando a configuração dele
   muda.
 
-**Marcadores da leitura (sinal `progress`):** o worker não fala com o manager, e um alerta no indexer só existe para o
+### Marcadores da leitura (sinal `progress`)
+
+O worker não fala com o manager, e um alerta no indexer só existe para o
 evento que casou com uma regra. A prova de que o Wazuh leu uma fonte são os marcadores que o próprio módulo guarda em
 SQLite (`s3_cloudtrail.db`: uma tabela por tipo de bucket, uma linha por objeto lido; `aws_services.db`: os streams de
 cada grupo). A cada 5 min, o host (`infra/node/bin/wazuh-progress.sh`, pelo `verax-wazuh-progress.timer`) roda no
@@ -956,7 +1193,9 @@ dia dele; por região e grupo: o horário do último evento e os streams), com t
 host limita o tamanho (4 MiB), confere o começo e troca o arquivo `progress` de uma vez; o worker confere cada campo
 por schema e deixa de usar o sinal com mais de 20 min.
 
-**Saúde de cada fonte lida pelo Wazuh (`apps/api/src/aws/wazuh-source-health.ts`, na tarefa `wazuh-config`):**
+### Saúde de cada fonte lida pelo Wazuh
+
+Gravada pela tarefa `wazuh-config`, em `apps/api/src/aws/wazuh-source-health.ts`:
 
 - `authorized` → `configuring` (`awaiting_apply`: na lista, e o host ainda não aplicou a lista de agora) →
   `waiting_events` (aplicada, sem nada lido desde o início da coleta) → `collecting` (o módulo leu um objeto ou um
@@ -978,8 +1217,9 @@ por schema e deixa de usar o sinal com mais de 20 min.
   (`cloud_account.aws_source_collection`, ator sistema) só recebe a primeira coleta de cada fonte e a entrada e a saída
   de um erro ou de uma parada; a espera e os horários de cada leitura não. Na célula, a tarefa não grava a saúde.
 
-**Regras de Flow Logs (`infra/wazuh/config/manager/rules/verax_aws_flow_rules.xml`, faixa 100400 a 100499):** o
-Wazuh só classifica cada registro dos flow logs (80401 no aceito, nível 3; 80402 no rejeitado, nível 4), abaixo do
+### Regras de Flow Logs
+
+Em `infra/wazuh/config/manager/rules/verax_aws_flow_rules.xml`, faixa 100400 a 100499. O Wazuh só classifica cada registro dos flow logs (80401 no aceito, nível 3; 80402 no rejeitado, nível 4), abaixo do
 corte dos alertas do nó (`log_alert_level` 5), e não traz correlação para eles. As duas regras locais abaixo contam os
 registros rejeitados e são o que vira alerta e achado; as do Wazuh ficam como estão. **Os limites são estes, e é aqui
 que o responsável os ajusta** (o `infra/wazuh/scripts/test-rules.sh` confere cada número no `wazuh-logtest` da imagem
@@ -1007,7 +1247,9 @@ do nó, e quem muda um limite muda o teste, o arquivo das regras, o README do Wa
   preço de uma rajada virar um alerta só. Sem o ignore, a mesma rajada daria um alerta a cada 40 (ou 15) registros, e o
   achado continuaria um só.
 
-**Alertas das fontes novas:** os flow logs entram no sync da AWS (`aws.source = vpc`): o dono é decidido pelo bucket
+### Alertas das fontes de bucket
+
+Os flow logs entram no sync da AWS (`aws.source = vpc`): o dono é decidido pelo bucket
 autorizado e pela conta da pasta lida (o `account_id` do registro é o dono da interface, que numa VPC compartilhada é
 outra conta). O alerta é sempre de uma das duas correlações, e o evento que vem nele é só o registro que fechou a
 contagem; por isso o achado não é do registro:
@@ -1033,7 +1275,9 @@ origem conhecida). Nos alertas de bucket, o dono sai do próprio evento: o bucke
 tira o dono de um alerta (a fonte revogada vira `unknown_source`; a pasta da conta de outro cliente, `source_mismatch`),
 e nunca o entrega a outro cliente: para isso, a conta AWS citada no evento teria de estar cadastrada para ele.
 
-**Dono dos alertas do CloudWatch Logs (`apps/api/src/alerts/cloudwatch-ownership.ts`):** os eventos dos grupos de logs
+### Dono dos alertas do CloudWatch Logs
+
+Em `apps/api/src/alerts/cloudwatch-ownership.ts`. Os eventos dos grupos de logs
 têm um sync próprio (tarefa `wazuh-cloudwatch-alerts`, fora da célula; nível 7 para cima, como os agentes). O módulo
 entrega a linha crua, sem conta nem grupo: nada no evento diz de quem ele é. As autorizações do momento da leitura
 também não dizem: quando um de dois clientes tira a autorização, o manager segue coletando o grupo dele até a
@@ -1045,24 +1289,54 @@ intervalo em que o alerta pode ter sido coletado. Na dúvida, não é de ningué
    `ambiguous_source` com mais de um cliente, `no_account` com mais de uma conta do mesmo cliente, `unknown_source` sem
    nenhum;
 2. a prova, gravada pela tarefa `wazuh-config` (a única que conhece a lista planejada e lê o sinal `applied` do host)
-   numa linha do banco (`CloudWatchAlertOwnership`: o dono, a geração que o manager roda, `since` e a última
-   conferência; sem `tenantId`, só o sistema a grava, e nenhuma rota a lê). Sem a prova, `ambiguous_source`.
+   numa linha do banco (`CloudWatchAlertOwnership`: o dono, a geração que o manager roda, o último número de
+   sequência do sinal, `since` e a última conferência; sem `tenantId`, só o sistema a grava, e nenhuma rota a lê).
+   Sem a prova, `ambiguous_source`.
 
 A prova, a cada conferência (30 s):
 
 - **nasce** quando o sinal `applied` diz ok para a geração da lista planejada de agora e essa lista tem grupos de logs
   de no máximo um dono. `since` é a hora dessa conferência (ou a do sinal, se for mais tarde);
 - **continua**, com o mesmo `since`, enquanto cada conferência seguinte, a no máximo 5 min da anterior, mostra o manager
-  numa geração conferida (a do registro ou a planejada de agora) e a lista planejada com no máximo esse dono. A geração
-  aplicada atrás da planejada não a derruba (as duas são do mesmo dono). O registro sem dono (nenhuma configuração
-  aplicada teve grupo de logs) vira do primeiro dono que aparecer, sem recomeçar: antes dele não havia de quem coletar.
-  É o cliente que autoriza o primeiro grupo num nó já no ar, e os alertas da primeira leitura já são dele;
+  numa geração conferida (a do registro ou a planejada de agora), a lista planejada com no máximo esse dono e o número
+  de sequência do sinal sem salto. A geração aplicada atrás da planejada não a derruba (as duas são do mesmo dono).
+  O registro sem dono (nenhuma configuração aplicada teve grupo de logs) vira do primeiro dono que aparecer, sem
+  recomeçar: antes dele não havia de quem coletar. É o cliente que autoriza o primeiro grupo num nó já no ar, e os
+  alertas da primeira leitura já são dele;
 - **cai**, e só volta nascendo de novo, com outro `since`: no instante em que a lista **planejada** passa a ter grupos
   de mais de um dono (antes de ela chegar ao manager, e antes de a geração nova ir para o host); quando o dono
   planejado é outro (um cliente sai e outro entra depois: nada do que foi coletado para o primeiro passa para o
-  segundo); quando o sinal some (o nó reiniciou), sai do formato ou cita uma geração que a tarefa não conferiu, com ok
-  ou com erro (o host aplicou uma lista que o worker não planejou); e quando a tarefa fica mais de 5 min sem conferir
-  (o worker parado não viu o que o host aplicou; o timer do host aplica a cada 15 min).
+  segundo); quando o sinal some (o nó reiniciou), sai do formato, vem sem o número de sequência ou cita uma geração
+  que a tarefa não conferiu, com ok ou com erro (o host aplicou uma lista que o worker não planejou); quando o número
+  de sequência do sinal salta (abaixo); e quando a tarefa fica mais de 5 min sem conferir (o worker parado não viu o
+  que o host aplicou; o timer do host aplica a cada 15 min).
+
+**O número de sequência do sinal (`seq`).** O sinal `applied` só guarda a última tentativa do host. Duas trocas da
+configuração do manager entre duas conferências (uma lista que o worker nunca planejou, aplicada pelo timer do host,
+e logo depois a lista conferida) apareceriam como uma só, com a geração conferida, e a prova continuaria de pé sobre
+um intervalo em que o manager rodou outra coisa. Por isso o host conta as trocas:
+
+- **No host (`infra/node/bin/wazuh-apply.sh`):** um contador em `/var/lib/verax/wazuh-apply/seq`, no disco do nó (o
+  `/run`, onde ficam os sinais, some no reboot), só de root. Ele aumenta **antes** de cada troca do que o manager
+  roda: o reinício com a configuração nova, o reinício da volta à anterior (a tentativa que derrubou o manager conta
+  duas) e a configuração deixada para a próxima partida dele, quando ele está parado. Sem troca (a mesma
+  configuração, o CLI ou o gerador com erro, a configuração que já tinha derrubado o manager e não é tentada de
+  novo), o número fica. Antes de reiniciar, o script esquece o hash do que o manager rodava: se ele parar entre o
+  reinício e o sinal, a execução seguinte reinicia de novo e conta outra troca. Sem o arquivo (a primeira execução,
+  o contador apagado ou estragado), ele recomeça da hora do host, em segundos, acima de qualquer valor já contado
+  (as trocas são muito menos que uma por segundo). O número vai em todo sinal `applied`, com ok ou com erro.
+- **No worker:** o registro guarda o último número visto (`appliedSeq`). A prova só continua com **o mesmo número**
+  (nada foi trocado; valem as regras de antes: ok para uma geração conferida, ou erro de uma tentativa que nem chegou
+  ao manager) ou com **o número seguinte, ok e uma geração conferida** (uma troca só, para uma lista que a tarefa
+  conhece). Qualquer outro salto derruba a prova: duas trocas, a tentativa que derrubou o manager e voltou à
+  configuração anterior, o contador recomeçado. O número seguinte com erro também: o sinal de erro fala da última
+  tentativa, e não diz qual configuração a troca contada deixou no manager. Derrubada, a prova só nasce de novo com
+  a lista planejada aplicada com sucesso.
+- **Durante a atualização do nó:** o sinal que o script de uma versão anterior gravou não tem o número. Ele continua
+  valendo para os avisos da coleta (`wazuh_apply_failed`, a lista aplicada), e nunca como prova: o registro cai e só
+  nasce com um sinal que traga o número. A linha gravada antes de a coluna existir também não vale. O pacote do nó e
+  as imagens andam juntos na mesma versão, então o caso contrário (o script novo com o worker anterior, que recusa o
+  campo que não conhece) dura só o intervalo entre a instalação do pacote e o reinício dos contêineres.
 
 O sync só atribui o alerta cujo horário está **entre `since` mais 15 min e a última conferência menos 10 min**:
 
@@ -1085,14 +1359,21 @@ O sync só atribui o alerta cujo horário está **entre `since` mais 15 min e a 
   analysisd gerou o alerta; o mesmo campo que ordena e pagina a leitura do sync). `since` e a última conferência são do
   relógio do worker, e `since` nunca fica antes da hora do sinal do host. No nó, os três estão na mesma máquina; a
   margem e a espera absorvem uma diferença de minutos.
-- **O que isso custa:** depois de cada queda da prova (o nó reiniciado, o worker parado por mais de 5 min, outro
-  cliente com grupo de logs no nó), os alertas dos 15 min seguintes ao renascimento vão para a fila sem dono e não
-  voltam. O cliente único do nó dedicado, com a prova de pé desde antes do primeiro grupo, não perde nada.
-- **O que a prova supõe:** com o worker no ar, a tarefa lê o sinal ao menos uma vez entre duas trocas de configuração
-  do host (cada troca reinicia o manager e espera o healthcheck dele; a tarefa confere a cada 30 s). O sinal não tem
-  um número de sequência: duas trocas entre duas conferências não seriam vistas.
+- **O que isso custa:** depois de cada queda da prova (o nó reiniciado, que apaga os sinais; o worker parado por
+  mais de 5 min; outro cliente com grupo de logs no nó; uma aplicação que derrubou o manager e voltou; duas
+  aplicações seguidas sem a tarefa ver), os alertas dos 15 min seguintes ao renascimento vão para a fila sem dono e
+  não voltam; e, enquanto uma lista nova não for aplicada com sucesso depois de uma aplicação que falhou, nenhum
+  alerta de grupo de logs é atribuído. O cliente único do nó dedicado, com a prova de pé desde antes do primeiro
+  grupo, não perde nada com as próprias autorizações e revogações: cada uma é uma troca só, para uma geração
+  conferida.
+- **O que a prova ainda supõe:** o host grava o sinal no fim de cada execução do `wazuh-apply.sh`. A execução
+  interrompida depois de reiniciar o manager e antes de gravar o sinal (o processo morto no meio, o Docker recusando
+  o reinício) deixa o sinal anterior no lugar até a execução seguinte (pelo timer, em até 15 min), que conta outra
+  troca: o salto aparece então, e a prova cai. Nesse intervalo a tarefa ainda vê o sinal antigo, e um alerta dos
+  primeiros minutos pode ser atribuído antes de o salto aparecer. É preciso, ao mesmo tempo, a interrupção e uma
+  lista que o worker não planejou.
 
-**Limites conhecidos da coleta pelo Wazuh:**
+### Limites conhecidos da coleta pelo Wazuh
 
 - **Flow logs: só duas detecções, e no máximo um alerta de cada uma por leitura** (o ignore da regra não separa os
   endereços; ver "Regras de Flow Logs"). Dois endereços que passem do limite na mesma leitura dão um alerta só; o
@@ -1117,7 +1398,9 @@ O sync só atribui o alerta cujo horário está **entre `since` mais 15 min e a 
 - **O marcador só aparece quando o módulo termina a leitura do bucket:** numa primeira leitura longa, a fonte fica em
   "aguardando eventos" até o fim dela.
 
-**Achados pela API (tarefa `aws-findings` do worker, `apps/api/src/aws/findings/`):** as fontes lidas por API
+### Achados pela API
+
+Tarefa `aws-findings` do worker, em `apps/api/src/aws/findings/`. As fontes lidas por API
 (`guardduty`, `security_hub`, `inspector` e `access_analyzer`) são coletadas pelo worker, sem o Wazuh, pela mesma
 sessão de leitura da conferência e da descoberta (`AwsReaderCredentials`) e pelos mesmos clientes com a trava de só
 leitura. A tarefa roda a cada 5 min, sob concessão no banco (`SyncState('aws-findings')`, um worker por vez), só no nó
@@ -1217,10 +1500,99 @@ revogada sai na execução seguinte. Uma fonte com falha nunca para as outras.
   (permissão, serviço desligado) recua 15 min, dobrando, até 6 h, porque cada tentativa é uma linha de acesso negado no
   CloudTrail do cliente; a fonte que a descoberta devolve à coleta é lida na execução seguinte, sem esperar o recuo.
   No máximo 4 chamadas ao mesmo tempo por conta, e 200 detalhes do Access Analyzer por fonte e por execução.
-- **Fica de fora, por enquanto:** o Security Hub v2 (achados em OCSF, `GetFindingsV2`); o cruzamento dos achados do
-  Access Analyzer e do export do GuardDuty com os do Security Hub; o fechamento automático no painel do que foi
-  resolvido na origem; e as contas-membro de um administrador delegado que não estão cadastradas para o cliente (os
-  achados delas vão para a fila sem dono).
+- **Fica de fora, por enquanto:** está em "O que não está coberto", no fim desta seção.
+
+### Limites e controle de volume
+
+**Nada é bloqueado por plano** (decisão do responsável): acima do volume contratado, a coleta continua, nenhum log é
+descartado e nenhuma fonte deixa de poder ser autorizada. O que contém o volume e a carga:
+
+| Controle                         | Quanto                                                                                                                                                                  | Onde                                                                                     |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Sem histórico                    | A coleta de cada fonte começa no dia da autorização; nos achados, 24 h antes dele                                                                                       | `collectFrom` (o `only_logs_after` do Wazuh; a primeira janela dos coletores de achados) |
+| Grupos do CloudWatch Logs        | 50 autorizados por conta                                                                                                                                                | A autorização (409 `SOURCE_LIMIT_REACHED`) e, de novo, a lista do Wazuh (`source_limit`) |
+| Fontes de bucket                 | 200 autorizadas por conta                                                                                                                                               | Idem                                                                                     |
+| Fontes por pedido de autorização | 50                                                                                                                                                                      | O contrato da rota                                                                       |
+| Tráfego aceito dos flow logs     | Descartado no módulo: só o rejeitado chega ao analysisd                                                                                                                 | `discard_regex` na configuração do manager                                               |
+| Requisições liberadas do WAF     | Descartadas no módulo                                                                                                                                                   | Idem                                                                                     |
+| Aviso de volume                  | Antes de autorizar flow logs e grupos de logs, e nas fontes marcadas `high_volume`                                                                                      | O painel, na confirmação                                                                 |
+| Descoberta                       | Uma execução por vez por conta; a manual, uma a cada 5 min; 500 flow logs, 500 grupos, 200 Web ACLs e 100 load balancers por região                                     | A rota e a tarefa `aws-discovery`                                                        |
+| "Tentar de novo" numa fonte      | Um pedido a cada 30 s por fonte                                                                                                                                         | 429 `SOURCE_RETRY_RATE_LIMITED`                                                          |
+| Coletores de achados             | A cada 5 min; 2 contas ao mesmo tempo; 4 chamadas por conta; 10 páginas por fonte por execução; 200 detalhes do Access Analyzer; um registro acima de 512 KB é recusado | A tarefa `aws-findings`                                                                  |
+| Recuo                            | Limite de requisições: 5 min, dobrando, até 1 h; recusa: 15 min, dobrando, até 6 h                                                                                      | Idem (cada tentativa recusada é uma linha de acesso negado no CloudTrail do cliente)     |
+| Janela do "Conectar"             | 60 min, com tentativas a 20 s, 40 s e depois a cada 60 s                                                                                                                | A tarefa `aws-check`                                                                     |
+
+O volume lido conta no medidor da AWS do cliente (`IngestUsage`, fonte `aws`) e nos avisos de 80% e 100% do plano: o
+que o analysisd recebe, nas fontes do Wazuh, e os bytes de cada achado novo ou com versão nova, nas de API. O cliente
+desautoriza qualquer fonte a qualquer momento.
+
+### Isolamento entre clientes
+
+O que impede o dado de um cliente de aparecer para outro, em cada ponto:
+
+- **Na entrada do papel:** uma identidade do Google por cliente, nunca dividida (seção "Por que papel sem chave"). O
+  papel do cliente B só aceita o `sub` da identidade de B: se o cliente A cadastrar a conta AWS de B, a entrada é
+  recusada (`trust_denied`), e nada da conta de B é descoberto nem coletado.
+- **No banco:** `AwsDiscoveryRun` e `AwsSource` têm `tenantId` e chave estrangeira composta com a conta; as rotas
+  usam o escopo do cliente da sessão (a conta ou a fonte de outro cliente é 404, sem tocar nela), e as tarefas do
+  worker gravam pelo escopo do cliente da conta. A escolha gravada do "Conectar" é uma coluna da própria conta.
+- **Nos alertas de bucket** (trilha, flow logs, export do GuardDuty, WAF): o dono sai do próprio evento, o bucket
+  que o módulo leu e a conta da pasta (ou a do conteúdo), conferidos com o cadastro na hora da leitura. Uma mudança
+  no cadastro só tira o dono de um alerta; para entregá-lo a outro cliente, a conta AWS citada no evento teria de
+  estar cadastrada para ele.
+- **Nos alertas do CloudWatch Logs:** o evento não diz de quem é, então só é atribuído com a prova de que o manager
+  só coletou grupos de uma conta de um cliente em todo o intervalo, com a continuidade do sinal `applied` ("Dono dos
+  alertas do CloudWatch Logs"). Na dúvida, não é de ninguém: vai para a fila sem dono, que só a equipe da Verax vê.
+- **Nos achados pela API:** o achado é do cliente da conta cuja sessão o leu, desde que a conta citada no achado seja
+  a da fonte ou outra conta cadastrada para o mesmo cliente; senão, fila sem dono.
+- **No manager do Wazuh:** um profile por conta, com o papel derivado do ID da conta. O manager processa log não
+  confiável e lê o token do nó: no nó dedicado, isso é de um cliente só (o risco da célula está na seção "Célula
+  compartilhada (Plataforma)").
+- **Na célula compartilhada:** a descoberta, os coletores de achados, a saúde das fontes e a prova do dono não são
+  ligados; o estado continua legível, e as escritas que dependem deles respondem 409 `DISCOVERY_UNAVAILABLE`.
+
+Os testes negativos (o cliente A não lê, não conecta, não descobre, não autoriza, não revoga e não sonda nada de B;
+os achados e os alertas de uma conta de outro cliente vão para a fila sem dono) estão em `apps/api/test/aws-*.test.ts`
+e `cloudwatch-alert-ownership.test.ts`.
+
+### O que não está coberto
+
+- **A célula compartilhada** (CE-11 e CE-12): sem a identidade por cliente, a coleta da AWS não existe lá. A
+  descoberta e os coletores ficam desligados, e a conferência da conexão segue como antes.
+- **A VM própria do cliente** continua com a chave do usuário IAM de leitura no cofre do nó (decisão de 18/11/2026),
+  e não com o papel sem chave. O resto do fluxo é o mesmo.
+- **Resposta automática:** o papel só lê. Bloquear um IP, isolar uma instância ou desativar uma chave ficam para um
+  papel separado, com autorização própria do cliente (decisão do responsável).
+- **Security Hub v2** (achados em OCSF, `GetFindingsV2`); o cruzamento dos achados do Access Analyzer e do export do
+  GuardDuty com os do Security Hub; o fechamento automático no painel do que foi resolvido na origem; e as
+  contas-membro de um administrador delegado que não estão cadastradas para o cliente (os achados delas vão para a
+  fila sem dono).
+- **Tipos descobertos e ainda não coletados:** o AWS Config e os logs de acesso dos load balancers. Os flow logs em
+  Parquet, com partições do Hive ou com formato próprio, o WAF no Firehose e o prefixo antes de `AWSLogs/` fora de um
+  bucket do cadastro aparecem com o motivo, e não são lidos.
+- **Tráfego aceito dos flow logs:** a lista e o gerador aceitam `"traffic": "all"` por fonte; a escolha no painel não
+  existe.
+- **Histórico anterior à autorização:** nunca é buscado, nem a pedido.
+- **Limites do módulo do Wazuh:** estão em "Limites conhecidos da coleta pelo Wazuh".
+
+### O que foi conferido onde
+
+Nenhum teste chama a AWS. O que cada camada prova, e o que só uma conta AWS de teste prova
+(`docs/runbooks/homologacao-onboarding-aws.md`):
+
+| O quê                                      | Como foi conferido (sem AWS)                                                                                                                                                                                                                                                                        | O que falta conferir numa conta AWS de teste                                                                                                                                               |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Template v2                                | cfn-lint, cfn-guard (uma regra por declaração de cada autorização), checkov e os testes Python do template (as oito combinações das autorizações, a lista exata de ações, o tamanho das políticas); o preenchimento, por teste linha a linha e pelo e2e do painel                                   | A pilha criada de verdade. Três comportamentos do IAM: `logs:GetLogEvents` com a tag do grupo; `s3:prefix` vazio pelo CloudFormation; SSE-KMS sob a negação por IP com `aws:ViaAWSService` |
+| Entrada no papel, identidade e tags        | Unitários e integração com Postgres, com a conferência falsa (`AwsConnectionChecker`): a janela, o tempo esgotado, as tags lidas e mudadas                                                                                                                                                          | `AssumeRoleWithWebIdentity` de ponta a ponta, o `GetRole` nas próprias tags                                                                                                                |
+| Descoberta e sondagens                     | Unitários e integração com clientes falsos do SDK e Postgres: completa e parcial, contas sem CloudTrail, GuardDuty ou Security Hub, várias regiões, KMS negado, trilha de organização, Hive, destinos do WAF, grupos com e sem tag; a trava de só leitura; cada chamada contra as ações da política | As respostas reais de cada serviço, os códigos de erro de um serviço desligado, os tetos com uma conta grande                                                                              |
+| Rotas e estado da conta                    | Integração com Postgres: o contrato estrito, papéis, A/B, a trilha de auditoria; a derivação do estado e das conferências, unitária                                                                                                                                                                 | Nada próprio (dependem do que está acima)                                                                                                                                                  |
+| Lista e configuração do Wazuh              | Testes Python do gerador; na imagem fixada do manager, sem rede (`test-aws-sources.sh`): o `wazuh-modulesd -t` aceita o `ossec.conf` gerado e recusa uma etiqueta desconhecida, cada entrada passa pelos validadores do próprio módulo, as regiões são as do módulo                                 | A leitura real de cada tipo de bucket e dos grupos; o caminho do WAF por Web ACL (derivado do código do módulo, não de objetos de verdade)                                                 |
+| Web identity no manager                    | Na imagem, sem rede (`test-aws-profile.sh`): o boto3 do manager usa o provedor de web identity e troca o token no STS da região, com a troca interceptada                                                                                                                                           | A troca de verdade, com o token do Google do nó                                                                                                                                            |
+| Marcadores (`progress`) e saúde das fontes | O exportador lê de volta os bancos que o código do próprio módulo grava (na imagem, sem rede); o script do host com o Docker simulado; a saúde, com Postgres e marcadores de exemplo                                                                                                                | Os marcadores de uma leitura real; a fonte parada (`stalled`) com um bucket de verdade                                                                                                     |
+| Regras de Flow Logs                        | `test-rules.sh`, no `wazuh-logtest` da imagem do nó: cada limite, as portas, o ignore                                                                                                                                                                                                               | As duas regras disparando com tráfego de verdade, lido do bucket                                                                                                                           |
+| Sinal `applied` e a prova do dono          | O script do host num contêiner Linux, com o Docker simulado (cada troca contada, o reboot, o reinício interrompido); o contrato do formato entre o host e o worker; a prova, unitária e com Postgres e um relógio só                                                                                | A prova num nó de verdade (os tempos do reinício do manager, a margem de 15 min e a espera de 10 min)                                                                                      |
+| Coletores de achados                       | Integração com clientes falsos do SDK e Postgres: paginação, cursor com sobreposição, deduplicação, o limite de requisições, a permissão negada, o serviço desligado, a retomada, a revogação, o dono                                                                                               | Os achados de exemplo de cada serviço; o GuardDuty pelos dois caminhos; os códigos de erro reais                                                                                           |
+| Painel                                     | Unitários (cada estado, cada código com o texto dele, a escolha gravada, o aviso de diferença, as fontes das conferências) e o e2e sobre a demonstração, nos dois temas, com axe                                                                                                                    | O fluxo no navegador contra um nó de verdade                                                                                                                                               |
 
 ## Ativos e Postura da AWS
 
@@ -3682,9 +4054,12 @@ pediria uma concessão por nó num bucket do projeto do plano de controle, que o
    código** (PR-W1 e PR-W2); o aceite depende da homologação no ar.
 3. **Cofre e AWS:** cofre de credenciais (feito no PR-V1; fica para o token do Cloudflare); template do papel de
    leitura sem chave (feito no PR-V2', que substituiu o usuário IAM do PR-V2); "Conectar AWS" no painel (feito no
-   PR-V3', com a conferência real ainda por fazer no PR-V5'); entrega ao
-   Wazuh pelo token do Google, com recarga sem parar o painel; checagem da conexão e das fontes; medidor da ingestão;
-   regras críticas da AWS com títulos em português. O template espera o teste prático na conta AWS de teste.
+   PR-V3'); entrega ao Wazuh pelo token do Google, com recarga sem parar o painel (PR-V4'); checagem da conexão e das
+   fontes (PR-V5'); medidor da ingestão (PR-V6); regras críticas da AWS com títulos em português (PR-V7). **Feito no
+   código.** Depois, na revisão de 22/11/2026, o onboarding self-service (o template no modelo 2, a descoberta, a
+   autorização das fontes e os coletores novos: seção "Onboarding AWS self-service"), na branch de integração. O
+   template e a coleta esperam o teste prático na conta AWS de teste
+   (`docs/runbooks/homologacao-onboarding-aws.md`).
 4. **Cloudflare:** token no cofre, auditoria e eventos de segurança.
 5. **Ativos e Postura da AWS** pelo papel de leitura do cliente. **Feito no código**: o inventário nativo (PR-14') e
    a postura nativa com 18 checagens (PR-15'), numa coleta só, uma vez por dia; falta o teste prático.
