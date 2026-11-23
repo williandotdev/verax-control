@@ -1,4 +1,12 @@
+import {
+  cloudflareOauthClientIdSchema,
+  cloudflareOauthScopeSchema,
+  cloudflareOauthScopesSchema,
+  isCloudflareOauthRedirectUri,
+  tenantSlugSchema,
+} from '@verax/shared';
 import { z } from 'zod';
+import { cloudflareOauthRedirectUri } from '../../cloudflare-oauth/redirect-uri.js';
 
 const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
 
@@ -477,6 +485,18 @@ const envShape = {
         'deve ser o endereço https da rota, sem consulta nem fragmento (ex.: https://conta.exemplo.com.br/v1/node-sync)',
     })
     .default(DEFAULT_NODE_SYNC_AUDIENCE),
+  // "Conectar com Cloudflare" por OAuth (`cloudflare-oauth/`), desligado sem CLOUDFLARE_OAUTH_CLIENT_ID. Nada aqui é
+  // segredo: o app não tem segredo, e o nó do cliente faz a troca e guarda os tokens. Os três papéis recebem o mesmo: o
+  // cp-public repassa o retorno, o cp-worker manda a configuração ao nó e o cp-admin deixa de aceitar token colado.
+  // - CLOUDFLARE_OAUTH_SCOPES: separados por vírgula, só de leitura, com o da renovação (obrigatória com o CLIENT_ID);
+  // - CLOUDFLARE_OAUTH_TENANT_SLUGS: os subdomínios liberados, separados por vírgula. Vazia ou ausente, ninguém; `*`
+  //   sozinho, todos os clientes do servidor gerenciado.
+  // O endereço de retorno sai da origem de NODE_SYNC_AUDIENCE (a do cp-public) e tem de ser o registrado no app.
+  CLOUDFLARE_OAUTH_CLIENT_ID: cloudflareOauthClientIdSchema.optional(),
+  CLOUDFLARE_OAUTH_SCOPES: list(cloudflareOauthScopeSchema).pipe(cloudflareOauthScopesSchema).optional(),
+  CLOUDFLARE_OAUTH_TENANT_SLUGS: list(z.union([z.literal('*'), tenantSlugSchema]), 0)
+    .refine((slugs) => slugs.length <= 1 || !slugs.includes('*'), { error: '* só sozinho' })
+    .optional(),
   // A conta do console do responsável (`cp-admin`, CP-11): o cp-worker aceita o token dela só nas operações do
   // responsável (`delete-now`, `export`, `resume`, cancelar, suspender e reativar um contrato direto), com quem agiu no
   // corpo. O console usa `WORKER_URL` para chamar.
@@ -654,6 +674,24 @@ export const envSchema = z.object(envShape).superRefine((env, ctx) => {
     const missing = env.SSO_ISSUER === undefined ? 'SSO_ISSUER' : 'SSO_REDIRECT_URIS';
     const present = missing === 'SSO_ISSUER' ? 'SSO_REDIRECT_URIS' : 'SSO_ISSUER';
     ctx.addIssue({ code: 'custom', path: [missing], message: `obrigatória com ${present}` });
+  }
+  // A conexão do Cloudflare por OAuth: o app e os escopos andam juntos, e o endereço de retorno tem a forma canônica.
+  const oauthClient = env.CLOUDFLARE_OAUTH_CLIENT_ID !== undefined;
+  if (oauthClient !== (env.CLOUDFLARE_OAUTH_SCOPES !== undefined)) {
+    const missing = oauthClient ? 'CLOUDFLARE_OAUTH_SCOPES' : 'CLOUDFLARE_OAUTH_CLIENT_ID';
+    const present = oauthClient ? 'CLOUDFLARE_OAUTH_CLIENT_ID' : 'CLOUDFLARE_OAUTH_SCOPES';
+    ctx.addIssue({ code: 'custom', path: [missing], message: `obrigatória com ${present}` });
+  }
+  if (
+    oauthClient &&
+    isNodeSyncAudience(env.NODE_SYNC_AUDIENCE) &&
+    !isCloudflareOauthRedirectUri(cloudflareOauthRedirectUri(env))
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['NODE_SYNC_AUDIENCE'],
+      message: 'com CLOUDFLARE_OAUTH_CLIENT_ID, a origem deve ser um domínio público em minúsculas',
+    });
   }
   // O grupo do SMTP é do worker (quem envia e-mail): informado o servidor, o resto é obrigatório.
   if (env.ROLE === 'worker' && env.SMTP_HOST !== undefined) {

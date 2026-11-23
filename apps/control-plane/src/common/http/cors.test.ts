@@ -55,6 +55,13 @@ describe('CORS do cp-public (CP-03)', () => {
     expect(decide([], '/v1/public/checkout', SITE).origin).toBe(false);
   });
 
+  it('o retorno do Cloudflare não tem CORS nenhum, nem para a origem do site', () => {
+    expect(decide([SITE], '/v1/public/cloudflare/callback?code=x&state=y', SITE)).toMatchObject({
+      origin: false,
+      credentials: false,
+    });
+  });
+
   it('o webhook da Stripe não tem CORS nenhum, nem para a origem do site (CP-04)', () => {
     expect(decide([SITE], '/v1/stripe/webhook', SITE)).toMatchObject({ origin: false, credentials: false });
     expect(decide([SITE], '/v1/stripe/webhook?x=1', SITE).origin).toBe(false);
