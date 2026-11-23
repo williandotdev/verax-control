@@ -56,6 +56,7 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'cloud_credential.refused': 'Credencial recusada pela origem',
   'cloud_credential.rekey': 'Recifrou a credencial com a chave nova do nó',
   'cloudflare_grant.rekey': 'Recifrou a autorização do Cloudflare com a chave nova do nó',
+  'cloudflare_grant.release': 'Marcou para revogação uma autorização do Cloudflare sem conta em uso',
   'protected_resource.create': 'Incluiu item na lista de proteção',
   'protected_resource.update': 'Alterou item da lista de proteção',
   'protected_resource.delete': 'Removeu item da lista de proteção',

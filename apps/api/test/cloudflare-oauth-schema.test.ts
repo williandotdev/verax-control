@@ -455,7 +455,11 @@ describe('tabelas da conexão do Cloudflare por OAuth', () => {
       });
       const alive = await create({});
 
-      expect(await new ConnectAttemptsPurge(prisma).runOnce(now)).toEqual({ expired: 3, purged: 0 });
+      expect(await new ConnectAttemptsPurge(prisma).runOnce(now)).toEqual({
+        expired: 3,
+        purged: 0,
+        orphaned: 0,
+      });
       for (const id of [started, received, choosing]) {
         expect(await statusOf(id)).toEqual({
           status: 'expired',
@@ -470,7 +474,11 @@ describe('tabelas da conexão do Cloudflare por OAuth', () => {
       });
       expect(await prisma.cloudflareGrant.findUniqueOrThrow({ where: { id: grant.id } })).toEqual(grant);
       // Rodar de novo não muda nada.
-      expect(await new ConnectAttemptsPurge(prisma).runOnce(now)).toEqual({ expired: 0, purged: 0 });
+      expect(await new ConnectAttemptsPurge(prisma).runOnce(now)).toEqual({
+        expired: 0,
+        purged: 0,
+        orphaned: 0,
+      });
     });
 
     it('a terminada some 24 h depois de criada, em qualquer cliente; a vencida há mais tempo, na mesma passada', async () => {
@@ -496,9 +504,78 @@ describe('tabelas da conexão do Cloudflare por OAuth', () => {
         data: attemptData(tenantA, { createdAt: ago(2 * day), expiresAt: ago(2 * day - 10 * MINUTE) }),
       });
 
-      expect(await new ConnectAttemptsPurge(prisma).runOnce(now)).toEqual({ expired: 1, purged: 3 });
+      expect(await new ConnectAttemptsPurge(prisma).runOnce(now)).toEqual({
+        expired: 1,
+        purged: 3,
+        orphaned: 0,
+      });
       for (const { id } of [old, oldB, abandoned]) expect(await statusOf(id)).toBeNull();
       expect(await statusOf(recent.id)).not.toBeNull();
+    });
+
+    it('a concessão sem conta e sem tentativa aberta vai para a revogação, uma vez, com a trilha no cliente dela', async () => {
+      const old = { createdAt: ago(2 * 60 * MINUTE) };
+      const make = (tenantId: string, changes = {}) =>
+        prisma.cloudflareGrant.create({ data: grantData(tenantId, { ...old, ...changes }) });
+      const abandoned = await make(tenantA);
+      await prisma.cloudflareConnectAttempt.create({
+        data: attemptData(tenantA, {
+          status: 'choosing',
+          verifierCiphertext: null,
+          consumedAt: ago(10 * MINUTE),
+          createdAt: ago(15 * MINUTE),
+          expiresAt: ago(5 * MINUTE),
+          grantId: abandoned.id,
+        }),
+      });
+      const orphanB = await make(tenantB, { status: 'reconnect' });
+      const choosing = await make(tenantA);
+      await prisma.cloudflareConnectAttempt.create({
+        data: attemptData(tenantA, {
+          status: 'choosing',
+          verifierCiphertext: null,
+          consumedAt: now,
+          grantId: choosing.id,
+        }),
+      });
+      const used = await make(tenantA);
+      const { id: accountId } = await prisma.cloudAccount.create({
+        data: {
+          tenantId: tenantA,
+          provider: 'cloudflare',
+          accountId: hex(16),
+          regions: [],
+          cloudflareGrantId: used.id,
+        },
+      });
+      const fresh = await newGrant(tenantA);
+
+      const before = await prisma.auditLog.count({ where: { action: 'cloudflare_grant.release' } });
+      expect(await new ConnectAttemptsPurge(prisma).runOnce(now)).toEqual({
+        expired: 1,
+        purged: 0,
+        orphaned: 2,
+      });
+      for (const { id, tenantId } of [abandoned, orphanB]) {
+        expect(await prisma.cloudflareGrant.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: 'revoking',
+          revokeRequestedAt: now,
+        });
+        expect(
+          await prisma.auditLog.count({
+            where: { tenantId, action: 'cloudflare_grant.release', resourceId: id },
+          }),
+        ).toBe(1);
+      }
+      for (const row of [choosing, used, fresh]) {
+        expect(await prisma.cloudflareGrant.findUniqueOrThrow({ where: { id: row.id } })).toEqual(row);
+      }
+      expect(await new ConnectAttemptsPurge(prisma).runOnce(now)).toMatchObject({ orphaned: 0 });
+      expect(await prisma.auditLog.count({ where: { action: 'cloudflare_grant.release' } })).toBe(before + 2);
+
+      // A última conta excluída também solta a concessão.
+      await prisma.cloudAccount.delete({ where: { id: accountId } });
+      expect(await new ConnectAttemptsPurge(prisma).runOnce(now)).toMatchObject({ orphaned: 1 });
     });
 
     it('a parada do worker interrompe antes de escrever', async () => {
