@@ -560,6 +560,123 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
     expect(actions.every((entry) => entry.actorId === CONTROL_PLANE_AUDIT_ACTOR_ID)).toBe(true);
   });
 
+  describe('conta do console excluída pelo cliente no painel (deleted_in_panel)', () => {
+    /** O administrador do cliente exclui a conta no painel (`POST /v1/cloud-accounts/:id/delete`). */
+    async function deleteInPanel(id: string, accountId: string, tenantId = tenantA): Promise<void> {
+      const user = await createSignedInUser(app, { role: 'admin_cliente', tenantId });
+      const { cookie, token: csrf } = await withCsrf(app, user.cookie);
+      await request(app.getHttpServer())
+        .post(`/v1/cloud-accounts/${id}/delete`)
+        .set('Cookie', cookie)
+        .set('Origin', TEST_WEB_ORIGIN)
+        .set('X-CSRF-Token', csrf)
+        .send({ confirmAccountId: accountId })
+        .expect(204);
+    }
+
+    it('a mesma revisão não recria a conta e conta a falha ao console; uma revisão maior recria, com a credencial', async () => {
+      const source = withCredential(cloudflareSource());
+      cp.desired = [source];
+      await run();
+      expect(checks.calls).toBe(1);
+
+      await deleteInPanel(source.id, source.spec.accountId);
+      expect(await accountOf(source.id)).toBeNull();
+      // A credencial saiu com a conta, com o registro dela na trilha (do cliente, não do console).
+      const wipe = await prisma.auditLog.findFirstOrThrow({
+        where: { tenantId: tenantA, resourceId: source.id, action: 'cloud_credential.wipe' },
+      });
+      expect(wipe.actorType).toBe('user');
+
+      // O console ainda manda a revisão 1: o nó não recria a conta e conta a falha, sem a conta.
+      clock = new Date(START.getTime() + 10 * MINUTE);
+      const report = await run();
+      expect(report).toMatchObject({ changed: 0, error: null });
+      expect(await accountOf(source.id)).toBeNull();
+      expect(cp.invalid).toBe(0);
+      expect(cp.last().sources).toEqual([
+        {
+          id: source.id,
+          revision: 1,
+          outcome: 'failed',
+          code: 'deleted_in_panel',
+          credential: null,
+          account: null,
+        },
+      ]);
+      // E de novo, mais tarde: nada muda (a falha de uma revisão só é tentada de novo com outra revisão).
+      clock = new Date(START.getTime() + 3 * 60 * MINUTE);
+      await run();
+      expect(await accountOf(source.id)).toBeNull();
+      expect(await itemOf('log_source', source.id)).toMatchObject({
+        revision: 1,
+        outcome: 'failed',
+        code: 'deleted_in_panel',
+      });
+
+      // O responsável altera a fonte no console (revisão 2): a conta volta, com a credencial do console.
+      clock = new Date(START.getTime() + 4 * 60 * MINUTE);
+      cp.desired = [{ ...source, revision: 2 }];
+      expect(await run()).toMatchObject({ changed: 1, failed: 0 });
+      expect(await accountOf(source.id)).toMatchObject({
+        origin: 'control_plane',
+        controlPlaneRevision: 2,
+        status: 'active',
+        credential: { origin: 'control_plane', controlPlaneRevision: 1 },
+      });
+      expect(checks.calls).toBe(2);
+      expect(cp.last().sources).toEqual([
+        expect.objectContaining({ id: source.id, revision: 2, outcome: 'applied', code: null }),
+      ]);
+    });
+
+    it('a lápide depois da exclusão no painel é contada como removida, sem erro', async () => {
+      const source = cloudflareSource();
+      cp.desired = [source];
+      await run();
+      await deleteInPanel(source.id, source.spec.accountId);
+
+      clock = new Date(START.getTime() + 10 * MINUTE);
+      cp.desired = [{ ...source, revision: 2, state: 'removed' }];
+      const report = await run();
+
+      expect(report).toMatchObject({ failed: 0, error: null });
+      expect(await accountOf(source.id)).toBeNull();
+      expect(await itemOf('log_source', source.id)).toMatchObject({
+        revision: 2,
+        outcome: 'removed',
+        code: null,
+      });
+      expect(cp.last().sources).toEqual([
+        { id: source.id, revision: 2, outcome: 'removed', code: null, credential: null, account: null },
+      ]);
+      expect(logger.lines.filter((line) => line.level === 'error')).toEqual([]);
+    });
+
+    it('a passagem que leu o item antes da exclusão também não recria a conta (a guarda na transação)', async () => {
+      const source = cloudflareSource();
+      cp.desired = [source];
+      await run();
+      await deleteInPanel(source.id, source.spec.accountId);
+      // Como se a sincronização tivesse lido o item antes da exclusão e decidido tentar a revisão 1 de novo.
+      await prisma.controlPlaneSyncItem.update({
+        where: { kind_itemId: { kind: 'log_source', itemId: source.id } },
+        data: { nextAttemptAt: new Date(START.getTime() - MINUTE) },
+      });
+
+      clock = new Date(START.getTime() + 10 * MINUTE);
+      await run();
+
+      expect(await accountOf(source.id)).toBeNull();
+      expect(await itemOf('log_source', source.id)).toMatchObject({
+        revision: 1,
+        outcome: 'failed',
+        code: 'deleted_in_panel',
+        nextAttemptAt: null,
+      });
+    });
+  });
+
   it('nunca toca na conta que o cliente cadastrou no painel (account_exists_panel)', async () => {
     const accountId = cloudflareId();
     const panel = await prisma.cloudAccount.create({

@@ -4,9 +4,11 @@ import {
   type AwsConnect,
   type CloudAccount,
   type CloudAccountCreate,
+  type CloudAccountDelete,
   type CloudAccountListQuery,
   type CloudAccountUpdate,
   CONSOLE_MANAGED_CODE,
+  DELETE_CONFIRMATION_MISMATCH_CODE,
   fieldsOutsideProvider,
   mergeLogBuckets,
   type Paginated,
@@ -37,6 +39,7 @@ import {
   serializeChosenCapabilities,
 } from '../aws/onboarding/chosen-capabilities.js';
 import { syncLegacyAwsSources } from '../aws/onboarding/legacy-sources.js';
+import { recordDeletedInPanel } from '../control-plane-sync/deleted-in-panel.js';
 import { assertLogOriginsFree, type LogOrigins } from './log-origins.js';
 
 // A credencial e as tarefas do worker importam daqui desde antes da extração para `cloud-account-data.ts`.
@@ -245,7 +248,8 @@ export class CloudAccountsService {
     // Libera uma vaga do plano: sob o mesmo lock da criação e da reativação, lido e gravado na mesma transação.
     await this.plan.lockSeats('cloudAccounts', auth.scopeTenantId as string);
     const before = await this.find(id);
-    // A conta que a Verax cadastrou pelo console só é removida por lá (a lápide da sincronização).
+    // A conta que a Verax cadastrou pelo console só é desativada por lá (a lápide da sincronização); o cliente pode
+    // excluí-la (`delete`).
     if (before.origin === 'control_plane') {
       this.audit.describe({
         action: 'cloud_account.deactivate',
@@ -267,6 +271,46 @@ export class CloudAccountsService {
       before: toAccount(before, this.node),
       after: toAccount(row, this.node),
     });
+  }
+
+  /**
+   * Exclusão do cadastro (diferente de desativar): a conta sai do nó e o mesmo ID pode ser cadastrado de novo (por
+   * exemplo, para refazer a conexão da AWS pelo "Conectar com AWS"). O cliente digita o ID da conta no provedor, e a API
+   * confere (`confirmAccountId`; outro texto, 400 `ACCOUNT_ID_MISMATCH`, sem mudar nada).
+   *
+   * Numa transação, sob o lock das vagas do plano (como a desativação, a exclusão libera a vaga): a credencial do cofre
+   * sai com o registro dela na trilha (`wipeCredential`), e a linha da conta é apagada. As chaves estrangeiras levam
+   * junto o que só existe por ela: as execuções da descoberta e as fontes da AWS (`AwsDiscoveryRun`, `AwsSource`), os
+   * cursores dos coletores (`CollectorCursor`) e os objetos medidos na origem (`AwsVolumeObject`). Fica o que é
+   * histórico e guarda o ID da conta como texto: achados, incidentes, postura, inventário, volume e a trilha. Nada é
+   * apagado na nuvem do cliente: a próxima lista do Wazuh, feita das linhas, só deixa de ter a conta.
+   *
+   * A conta que a Verax cadastrou pelo console também sai, e a sincronização com o plano de controle não a recria: o
+   * item da fonte fica como falha `deleted_in_panel` na revisão de agora (`recordDeletedInPanel`), contada ao console na
+   * próxima chamada, e só uma revisão maior do console cadastra a conta de novo.
+   */
+  async delete(auth: RequestAuth, id: string, input: CloudAccountDelete): Promise<void> {
+    this.audit.describe({ action: 'cloud_account.delete', resourceType: 'cloud_account', resourceId: id });
+    // Libera uma vaga do plano: o lock das vagas antes da leitura, como na desativação.
+    await this.plan.lockSeats('cloudAccounts', auth.scopeTenantId as string);
+    const before = await this.find(id);
+    if (input.confirmAccountId !== before.accountId) {
+      throw new ApiError(
+        HttpStatus.BAD_REQUEST,
+        'O ID digitado não é o desta conta: nada foi excluído.',
+        DELETE_CONFIRMATION_MISMATCH_CODE,
+      );
+    }
+    if (before.origin === 'control_plane') {
+      await recordDeletedInPanel(this.prisma.db(), {
+        tenantId: auth.scopeTenantId as string,
+        sourceId: id,
+        revision: before.controlPlaneRevision,
+      });
+    }
+    await this.wipeCredential(id);
+    await this.prisma.scoped().cloudAccount.delete({ where: { id }, select: { id: true } });
+    this.audit.describe({ before: { ...toAccount(before, this.node), origin: before.origin }, after: null });
   }
 
   /**
@@ -339,8 +383,9 @@ export class CloudAccountsService {
   }
 
   /**
-   * Conta desativada não guarda credencial: a linha do cofre sai na mesma transação, sob o lock da conta (o mesmo da
-   * troca pelo painel e da recifragem), com um registro próprio na trilha (`cloud_credential.wipe`, só metadados).
+   * Conta desativada (ou excluída) não guarda credencial: a linha do cofre sai na mesma transação, sob o lock da conta
+   * (o mesmo da troca pelo painel e da recifragem), com um registro próprio na trilha (`cloud_credential.wipe`, só
+   * metadados).
    */
   private async wipeCredential(id: string): Promise<void> {
     await lockCredential(this.prisma.db(), id);
