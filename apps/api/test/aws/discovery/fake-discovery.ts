@@ -1,3 +1,10 @@
+import {
+  AWS_READER_CAPABILITIES,
+  AWS_READER_ROLE_TAGS,
+  AWS_READER_TEMPLATE_VERSION,
+  type AwsReaderCapability,
+  awsReaderCapabilitiesTagValue,
+} from '@verax/shared';
 import type { DiscoveryClientFactory, DiscoveryClients } from '../../../src/aws/discovery/clients.js';
 import { awsError } from '../../inventory/fake-aws.js';
 
@@ -6,8 +13,9 @@ import { awsError } from '../../inventory/fake-aws.js';
  * por serviço e região, e toda chamada fica registrada. Nada sai para a rede.
  *
  * Sem handler, a resposta é a de uma conta vazia: nenhuma trilha, nenhum flow log, nenhum detector, o Security Hub
- * desligado (a AWS responde `InvalidAccessException`), o Inspector desligado e nenhum bucket. Cada teste só declara o que
- * importa para ele. `deny` recusa um serviço inteiro numa região (ou em todas, com `*`).
+ * desligado (a AWS responde `InvalidAccessException`), o Inspector desligado e nenhum bucket. O papel de leitura é o do
+ * template atual, com tudo ligado (as tags que o `GetRole` devolve). Cada teste só declara o que importa para ele. `deny`
+ * recusa um serviço inteiro numa região (ou em todas, com `*`).
  */
 
 type Handler = (input: Record<string, unknown>) => unknown;
@@ -44,6 +52,17 @@ type Service =
   | 'elbv2'
   | 'config';
 
+/** As tags do papel de leitura para uma versão do template e as capacidades ligadas (a resposta do `GetRole`). */
+export function readerRoleTags(
+  capabilities: readonly AwsReaderCapability[] = AWS_READER_CAPABILITIES,
+  templateVersion: number = AWS_READER_TEMPLATE_VERSION,
+): { Key: string; Value: string }[] {
+  return [
+    { Key: AWS_READER_ROLE_TAGS.template, Value: String(templateVersion) },
+    { Key: AWS_READER_ROLE_TAGS.capabilities, Value: awsReaderCapabilitiesTagValue(capabilities) },
+  ];
+}
+
 /** As respostas de uma conta vazia. */
 function defaults(account: FakeDiscoveryAccount): Partial<Record<Service, Handlers>> {
   return {
@@ -57,6 +76,7 @@ function defaults(account: FakeDiscoveryAccount): Partial<Record<Service, Handle
     },
     iam: {
       GetAccountSummaryCommand: () => ({ SummaryMap: { Users: 0, AccountMFAEnabled: 1 } }),
+      GetRoleCommand: () => ({ Role: { Tags: readerRoleTags() } }),
     },
     s3: {
       ListBucketsCommand: () => ({ Buckets: [] }),

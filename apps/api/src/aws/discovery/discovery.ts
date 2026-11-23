@@ -1,7 +1,6 @@
 import {
   AWS_DISCOVERY_MAX_ERRORS,
   AWS_SOURCE_GLOBAL_REGION,
-  AWS_SOURCE_KIND_INFO,
   type AwsDiscoveryError,
   type AwsDiscoveryService,
   type AwsInfrastructureSummary,
@@ -42,6 +41,7 @@ import {
 } from './catalogue.js';
 import type { DiscoveryClients } from './clients.js';
 import {
+  CLOUDFRONT_WAF_REGION,
   countDbClusters,
   countDbInstances,
   countVpcs,
@@ -60,7 +60,7 @@ import {
   trailLogging,
   trailManagementEvents,
 } from './lookups.js';
-import { type ProbeResult, probeSource } from './probes.js';
+import { probeInto, type ProbeResult } from './probes.js';
 import { ReadOnlyViolation } from './read-only.js';
 
 /**
@@ -85,8 +85,6 @@ import { ReadOnlyViolation } from './read-only.js';
 export const REGION_CONCURRENCY = 4;
 /** Regiões por execução (a AWS tem menos de 40). */
 export const MAX_REGIONS = 64;
-/** A região onde ficam as Web ACLs do CloudFront. */
-const CLOUDFRONT_WAF_REGION = 'us-east-1';
 
 export interface DiscoveryTarget {
   /** O ID da conta AWS (12 dígitos). */
@@ -488,21 +486,12 @@ export async function discoverAccount(
   const cache = new Map<string, ProbeResult>();
   await mapLimited(sources, regionConcurrency, async (source) => {
     signal.throwIfAborted();
-    const probe = await probeSource(source, context, clients, { signal, now, cache });
-    source.permission = probe.permission;
-    source.permissionDetail = probe.permissionDetail;
-    if (probe.details !== undefined) source.details = { ...source.details, ...probe.details };
-    // Sem a permissão num papel de template anterior (ou com a capacidade desligada), o caminho é atualizar a pilha.
-    const needsStack =
-      probe.permissionDetail === 'capability_off' ||
-      (target.templateOutdated && probe.permission !== 'granted' && source.availability === 'available');
-    if (
-      needsStack &&
-      AWS_SOURCE_KIND_INFO[source.kind].collectable &&
-      !source.notes.includes('stack_update_required')
-    ) {
-      source.notes.push('stack_update_required');
-    }
+    await probeInto(source, context, clients, {
+      signal,
+      now,
+      cache,
+      templateOutdated: target.templateOutdated,
+    });
   });
 
   // 7. O retrato e as regiões com recurso ou fonte.

@@ -4,7 +4,11 @@ import {
   GetEventSelectorsCommand,
   GetTrailStatusCommand,
 } from '@aws-sdk/client-cloudtrail';
-import { DescribeLogGroupsCommand, ListTagsForResourceCommand } from '@aws-sdk/client-cloudwatch-logs';
+import {
+  DescribeLogGroupsCommand,
+  ListTagsForResourceCommand,
+  type LogGroup,
+} from '@aws-sdk/client-cloudwatch-logs';
 import {
   DescribeConfigurationRecordersCommand,
   DescribeConfigurationRecorderStatusCommand,
@@ -27,6 +31,8 @@ import { DescribeDBClustersCommand, DescribeDBInstancesCommand } from '@aws-sdk/
 import { DescribeHubCommand } from '@aws-sdk/client-securityhub';
 import { ListLoggingConfigurationsCommand, ListWebACLsCommand } from '@aws-sdk/client-wafv2';
 import { hasAwsLogGroupReadTag, isAwsRegion } from '@verax/shared';
+import { REFUSED_CODES } from '../../inventory/collectors.js';
+import { awsErrorName } from '../web-identity.js';
 import type {
   AnalyzerFact,
   ConfigRecorderFact,
@@ -51,7 +57,8 @@ import type { DiscoveryClients } from './clients.js';
  * - WAF: `ListWebACLs` e `ListLoggingConfigurations`, por região (escopo `REGIONAL`) e uma vez em us-east-1 (`CLOUDFRONT`);
  * - GuardDuty: `ListDetectors`, `GetDetector`, `ListPublishingDestinations` e `DescribePublishingDestination`;
  * - Security Hub: `DescribeHub`; Inspector: `BatchGetAccountStatus`; Access Analyzer: `ListAnalyzers`;
- * - CloudWatch Logs: `DescribeLogGroups` e, por grupo, `ListTagsForResource`;
+ * - CloudWatch Logs: `DescribeLogGroups` e, por grupo, `ListTagsForResource` (na releitura de um grupo só,
+ *   `readLogGroup`, o `DescribeLogGroups` vai com o nome dele como prefixo);
  * - Config: `DescribeConfigurationRecorders`, `DescribeConfigurationRecorderStatus` e `DescribeDeliveryChannels`;
  * - Load balancers: `DescribeLoadBalancers` e `DescribeLoadBalancerAttributes`;
  * - RDS: `DescribeDBInstances` e `DescribeDBClusters`; IAM: `GetAccountSummary`.
@@ -63,6 +70,8 @@ export const MAX_WEB_ACLS = 200;
 export const MAX_LOG_GROUPS = 500;
 export const MAX_LOAD_BALANCERS = 100;
 export const MAX_DB_INSTANCES = 1000;
+/** A região onde ficam as Web ACLs do CloudFront. */
+export const CLOUDFRONT_WAF_REGION = 'us-east-1';
 const MAX_DETECTORS = 10;
 const MAX_ANALYZERS = 50;
 /** Leituras por item (tags dos grupos, atributos dos load balancers) ao mesmo tempo, dentro de uma região. */
@@ -351,6 +360,20 @@ function logGroupResourceArn(arn: string | null): string | null {
   return arn.endsWith(':*') ? arn.slice(0, -2) : arn;
 }
 
+/** Um grupo como o `DescribeLogGroups` o devolve, sem a tag; null sem nome. */
+function logGroupFact(group: LogGroup): LogGroupFact | null {
+  const name = text(group.logGroupName, 512);
+  if (name === null) return null;
+  return {
+    name,
+    arn: logGroupResourceArn(text(group.logGroupArn) ?? text(group.arn)),
+    storedBytes: count(group.storedBytes),
+    retentionDays: count(group.retentionInDays) || null,
+    kmsKeyId: text(group.kmsKeyId),
+    tagged: null,
+  };
+}
+
 export interface LogGroupsRead {
   groups: LogGroupFact[];
   truncated: boolean;
@@ -374,16 +397,8 @@ export async function listLogGroups(
   do {
     const page = await logs.send(new DescribeLogGroupsCommand({ nextToken: token, limit: 50 }));
     for (const group of page.logGroups ?? []) {
-      const name = text(group.logGroupName, 512);
-      if (name === null) continue;
-      groups.push({
-        name,
-        arn: logGroupResourceArn(text(group.logGroupArn) ?? text(group.arn)),
-        storedBytes: count(group.storedBytes),
-        retentionDays: count(group.retentionInDays) || null,
-        kmsKeyId: text(group.kmsKeyId),
-        tagged: null,
-      });
+      const fact = logGroupFact(group);
+      if (fact !== null) groups.push(fact);
     }
     token = page.nextToken;
   } while (token !== undefined && groups.length < MAX_LOG_GROUPS);
@@ -406,6 +421,55 @@ export async function listLogGroups(
     }
   });
   return read;
+}
+
+/** Páginas do `DescribeLogGroups` na releitura de um grupo: os que dividem o prefixo do nome vêm em ordem. */
+const LOG_GROUP_LOOKUP_PAGES = 4;
+
+export interface LogGroupRead {
+  /** O grupo como está agora, com a tag de leitura lida agora (null: as tags não puderam ser lidas). */
+  group: LogGroupFact;
+  /** A leitura das tags foi recusada: falta ao papel a permissão de lê-las. */
+  tagsRefused: boolean;
+}
+
+/**
+ * Um grupo de logs só, pelo nome, com a tag de leitura como está agora (o "Tentar de novo" de uma fonte): o
+ * `DescribeLogGroups` com o nome como prefixo e, com `readTags`, o `ListTagsForResource` do grupo. `absent`: o grupo
+ * não existe mais; `truncated`: há grupos demais com o mesmo prefixo para dizer. A recusa das tags fica no resultado;
+ * qualquer outra falha (o limite de requisições, o grupo apagado no meio) sobe.
+ */
+export async function readLogGroup(
+  clients: DiscoveryClients,
+  region: string,
+  name: string,
+  readTags: boolean,
+): Promise<LogGroupRead | 'absent' | 'truncated'> {
+  const logs = clients.logs(region);
+  let group: LogGroupFact | null = null;
+  let token: string | undefined;
+  let pages = 0;
+  do {
+    const page = await logs.send(
+      new DescribeLogGroupsCommand({ logGroupNamePrefix: name, nextToken: token, limit: 50 }),
+    );
+    for (const described of page.logGroups ?? []) {
+      const fact = logGroupFact(described);
+      if (fact?.name === name) group = fact;
+    }
+    token = page.nextToken;
+    pages += 1;
+  } while (group === null && token !== undefined && pages < LOG_GROUP_LOOKUP_PAGES);
+  if (group === null) return token === undefined ? 'absent' : 'truncated';
+  if (!readTags || group.arn === null) return { group, tagsRefused: false };
+  try {
+    const tags = await logs.send(new ListTagsForResourceCommand({ resourceArn: group.arn }));
+    group.tagged = hasAwsLogGroupReadTag(tags.tags);
+    return { group, tagsRefused: false };
+  } catch (error) {
+    if (!REFUSED_CODES.has(awsErrorName(error))) throw error;
+    return { group, tagsRefused: true };
+  }
 }
 
 // --- Config ---

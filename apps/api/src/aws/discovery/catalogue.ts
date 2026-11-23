@@ -38,6 +38,11 @@ export interface DiscoveredSource {
   details: AwsSourceDetails;
   permission: AwsSourcePermission;
   permissionDetail: string | null;
+  /**
+   * Grupo de logs: a leitura das tags dele foi recusada (falta ao papel a permissão de lê-las). Só existe na releitura
+   * de uma fonte ("Tentar de novo"), que lê as tags de um grupo só; não vai para o banco.
+   */
+  tagsRefused?: boolean;
 }
 
 /** O que a classificação precisa saber da conta. */

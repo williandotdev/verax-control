@@ -856,6 +856,19 @@ disponível, de tipo coletado, com a permissão conferida e que não repete um b
 da autorização (sem histórico). Tudo ou nada: uma fonte recusada recusa o pedido. Tetos por conta: 50 grupos do
 CloudWatch Logs e 200 fontes de S3 autorizados.
 
+**"Tentar de novo" numa fonte (`POST …/aws/sources/:sourceId/retry`):** a API só grava o pedido; quem responde é a
+tarefa `aws-discovery`, na execução seguinte. O cliente pede a sondagem depois de mudar algo na conta dele, então a
+resposta sai do que a AWS diz agora, e nunca do que a última descoberta gravou: (1) as tags do papel são lidas de novo
+(`aws/reader-tags.ts`, a mesma leitura da conferência da conexão) e gravadas na conta, e a capacidade ligada numa
+atualização da pilha vale na hora (a mudança entra na trilha e pede uma descoberta, para as outras fontes); (2) a
+própria fonte é lida de novo (`discovery/source-reading.ts`, com as mesmas leituras e a mesma classificação da
+descoberta, só do tipo e da região dela): o destino, o prefixo, o formato, o estado do serviço e, no grupo de logs, a
+tag (`ListTagsForResource`); (3) só então a permissão é sondada, e o resultado é gravado com as regras da descoberta
+para uma fonte conhecida. No grupo de logs, a leitura das tags negada é a permissão que falta
+(`logs:ListTagsForResource`), e não a tag. A fonte que não está mais lá (apagada, desligada, ou com o log num destino
+que vira outro tipo de fonte) só desfaz o pedido e pede uma descoberta da conta, que é quem tira ou marca a linha. A
+conta que não entra no papel, a leitura recusada e a sondagem que não termina só desfazem o pedido.
+
 **Estado da conta (`GET …/aws/onboarding`):** derivado pela API a cada leitura (`aws/onboarding/onboarding-state.ts`),
 nunca guardado nem escrito à mão: `not_started`, `awaiting_authorization`, `authenticated`, `discovering`,
 `awaiting_sources`, `configuring`, `collecting`, `partial`, `permission_error`, `ingestion_failure`, `disconnected` e

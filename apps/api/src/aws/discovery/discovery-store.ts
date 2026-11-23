@@ -28,6 +28,9 @@ import { scopeKey } from './discovery.js';
  * - **Fonte revogada:** fica revogada (os dados acompanham).
  *
  * A sondagem que não terminou (`probe_failed`) não apaga uma permissão já conhecida.
+ *
+ * O "Tentar de novo" de uma fonte (`applySourceReading`) grava a releitura dela com as mesmas regras de uma fonte já
+ * conhecida (`knownChange`), numa linha só. O que some ou aparece continua sendo só da descoberta.
  */
 
 export interface ApplyReport {
@@ -91,10 +94,10 @@ function probed(source: Pick<DiscoveredSource, 'permission' | 'permissionDetail'
   );
 }
 
+type ValidatedSource = DiscoveredSource & { detailsJson: Prisma.InputJsonObject };
+
 /** O que a fonte vista vale para o banco, ou null fora do contrato. */
-function validated(
-  source: DiscoveredSource,
-): (DiscoveredSource & { detailsJson: Prisma.InputJsonObject }) | null {
+function validated(source: DiscoveredSource): ValidatedSource | null {
   if (source.resourceId.length === 0 || source.resourceId.length > 512) return null;
   if (!isAwsSourceRegion(source.region)) return null;
   if (source.permissionDetail !== null && !isAwsSourcePermissionDetail(source.permissionDetail)) return null;
@@ -138,6 +141,86 @@ function stable(value: unknown): unknown {
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([key, item]) => [key, stable(item)]),
   );
+}
+
+interface KnownChange {
+  /** Nada do que a leitura descreve mudou, nem o estado. */
+  same: boolean;
+  /** A sondagem decidiu algo agora: a data da conferência da permissão anda. */
+  checked: boolean;
+  /** O estado novo; null quando fica como está. */
+  next: { state: AwsSourceState; stateCode: string | null } | null;
+  /** O que gravar na linha quando algo mudou. */
+  data: Prisma.AwsSourceUncheckedUpdateInput;
+}
+
+/** O que muda numa fonte já conhecida com o que foi visto dela agora (na descoberta, ou na releitura dela). */
+function knownChange(row: SourceRow, source: ValidatedSource, now: Date): KnownChange {
+  // A sondagem que não terminou não apaga o que já se sabia da permissão.
+  const keepPermission = source.permissionDetail === 'probe_failed' && row.permission !== 'unknown';
+  const permission = keepPermission ? row.permission : source.permission;
+  const permissionDetail = keepPermission ? row.permissionDetail : source.permissionDetail;
+  const next = nextSourceState(row, {
+    kind: source.kind,
+    availability: source.availability,
+    permission,
+    permissionDetail,
+  });
+  const same =
+    described({ ...source, permission, permissionDetail }) === described(row) &&
+    next === null &&
+    row.missingSince === null;
+  const checked = !keepPermission && probed(source);
+  return {
+    same,
+    checked,
+    next,
+    data: {
+      name: source.name,
+      details: source.detailsJson,
+      availability: source.availability,
+      loggingState: source.loggingState,
+      notes: source.notes,
+      permission,
+      permissionDetail,
+      ...(checked && { permissionCheckedAt: now }),
+      lastSeenAt: now,
+      // A fonte cujo destino deixou de ser lido conta como sumida desde agora; a que voltou, não mais.
+      missingSince: next?.state === 'source_missing' ? (row.missingSince ?? now) : null,
+      ...(next !== null && { state: next.state, stateCode: next.stateCode, stateSince: now }),
+    },
+  };
+}
+
+/**
+ * Grava numa fonte já conhecida o que a releitura dela viu agora (o "Tentar de novo" do painel) e desfaz o pedido: os
+ * dados, a permissão e o estado, pelas mesmas regras da descoberta. `db` é o cliente do banco no escopo do cliente da
+ * conta, numa transação. A leitura fora do contrato, ou de outra fonte, só desfaz o pedido.
+ */
+export async function applySourceReading(
+  db: Prisma.TransactionClient,
+  row: SourceRow,
+  candidate: DiscoveredSource,
+  now: Date,
+): Promise<'updated' | 'unchanged' | 'invalid'> {
+  const source = validated(candidate);
+  if (source === null || keyOf(source) !== keyOf(row)) {
+    await db.awsSource.update({
+      where: { id: row.id },
+      data: { probeRequestedAt: null },
+      select: { id: true },
+    });
+    return 'invalid';
+  }
+  const change = knownChange(row, source, now);
+  await db.awsSource.update({
+    where: { id: row.id },
+    data: change.same
+      ? { probeRequestedAt: null, lastSeenAt: now, ...(change.checked && { permissionCheckedAt: now }) }
+      : { ...change.data, probeRequestedAt: null },
+    select: { id: true },
+  });
+  return change.same ? 'unchanged' : 'updated';
 }
 
 export interface ApplyInput {
@@ -221,48 +304,17 @@ export async function applyDiscovery(db: Prisma.TransactionClient, input: ApplyI
       continue;
     }
     seenKeys.add(key);
-    // A sondagem que não terminou não apaga o que já se sabia da permissão.
-    const keepPermission = source.permissionDetail === 'probe_failed' && row.permission !== 'unknown';
-    const permission = keepPermission ? row.permission : source.permission;
-    const permissionDetail = keepPermission ? row.permissionDetail : source.permissionDetail;
-    const next = nextSourceState(row, {
-      kind: source.kind,
-      availability: source.availability,
-      permission,
-      permissionDetail,
-    });
-    const same =
-      described({ ...source, permission, permissionDetail }) === described(row) &&
-      next === null &&
-      row.missingSince === null;
-    const checked = !keepPermission && probed(source);
-    if (same) {
-      (checked ? unchangedProbed : unchanged).push(row.id);
+    const change = knownChange(row, source, now);
+    if (change.same) {
+      (change.checked ? unchangedProbed : unchanged).push(row.id);
       continue;
     }
-    if (next !== null && isAuthorizedRow(row)) {
-      if (next.state === 'source_missing') report.missing += 1;
+    if (change.next !== null && isAuthorizedRow(row)) {
+      if (change.next.state === 'source_missing') report.missing += 1;
       else if (row.state === 'source_missing') report.reappeared += 1;
     }
     report.updated += 1;
-    await db.awsSource.update({
-      where: { id: row.id },
-      data: {
-        name: source.name,
-        details: source.detailsJson,
-        availability: source.availability,
-        loggingState: source.loggingState,
-        notes: source.notes,
-        permission,
-        permissionDetail,
-        ...(checked && { permissionCheckedAt: now }),
-        lastSeenAt: now,
-        // A fonte cujo destino deixou de ser lido conta como sumida desde agora; a que voltou, não mais.
-        missingSince: next?.state === 'source_missing' ? (row.missingSince ?? now) : null,
-        ...(next !== null && { state: next.state, stateCode: next.stateCode, stateSince: now }),
-      },
-      select: { id: true },
-    });
+    await db.awsSource.update({ where: { id: row.id }, data: change.data, select: { id: true } });
   }
 
   if (creates.length > 0) {

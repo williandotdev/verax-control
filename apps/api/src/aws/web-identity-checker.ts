@@ -5,17 +5,11 @@ import {
   ListDetectorsCommand,
   ListPublishingDestinationsCommand,
 } from '@aws-sdk/client-guardduty';
-import {
-  GetRoleCommand,
-  GetUserCommand,
-  IAMClient,
-  SimulatePrincipalPolicyCommand,
-} from '@aws-sdk/client-iam';
+import { IAMClient, SimulatePrincipalPolicyCommand } from '@aws-sdk/client-iam';
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   AWS_CONNECTION_WARNING_CODES,
-  AWS_READER_ROLE_NAME,
   type AwsConnectionWarningCode,
   awsAccountIdSchema,
   awsReaderRoleArn,
@@ -23,7 +17,6 @@ import {
   isNodeEgressIp,
   LOG_SOURCES,
   type LogSource,
-  parseReaderRoleTags,
 } from '@verax/shared';
 import { z } from 'zod';
 import type { AwsCredentialIdentity } from '../inventory/read-only-session.js';
@@ -45,6 +38,7 @@ import {
   STS_FALLBACK_REGION,
 } from './web-identity.js';
 import { isIamUserArn } from './aws-key-check.js';
+import { readReaderFacts } from './reader-tags.js';
 
 /**
  * A conferência real da conexão da AWS (fase 2, PR-V5'; a interface e a tarefa são do PR-V3'). Cada chamada é uma
@@ -168,14 +162,6 @@ const destinationsSchema = z.array(
   }),
 );
 const evaluationsSchema = z.array(z.object({ EvalDecision: z.string().optional() }));
-/** As tags do papel: o IAM aceita até 50, com chave de até 128 e valor de até 256 caracteres. */
-const roleTagsSchema = z
-  .array(z.object({ Key: z.string().max(128).optional(), Value: z.string().max(256).optional() }))
-  .max(50);
-
-/** O template v1: sem tags no papel, só com a descoberta (e os buckets cadastrados antes). */
-const TEMPLATE_V1: AwsReaderFacts = parseReaderRoleTags([]);
-
 /** Um bucket a conferir e a primeira fonte que o usa (a fonte vai com o erro). */
 interface BucketToCheck {
   name: string;
@@ -425,7 +411,7 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
    * A versão do template e as capacidades do papel, pelas tags dele (`iam:GetRole` no próprio papel, uma chamada). Na
    * VM própria do cliente, as tags são as do usuário IAM de leitura (`iam:GetUser` sem nome: o dono da chave). A
    * leitura negada (o template v1 não a permitia) ou sem tags é a v1; uma falha passageira, ou a sessão que não abriu,
-   * devolve null (o gravado na conta fica).
+   * devolve null (o gravado na conta fica). A leitura em si é a de `reader-tags.ts`, a mesma do "Tentar de novo".
    */
   async readerFacts(target: AwsCheckTarget, signal: AbortSignal): Promise<AwsReaderFacts | null> {
     let clients: CheckClients | null = null;
@@ -434,21 +420,7 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
       const session = await this.#credentials.session(target.accountId, region, signal);
       const iam = new CheckClients(this.#clients, session.credentials.identity());
       clients = iam;
-      const found = await this.#attempt(
-        async () =>
-          session.principal === 'iam_user'
-            ? (await iam.iam().send(new GetUserCommand({}), { abortSignal: signal })).User?.Tags
-            : (
-                await iam
-                  .iam()
-                  .send(new GetRoleCommand({ RoleName: AWS_READER_ROLE_NAME }), { abortSignal: signal })
-              ).Role?.Tags,
-        signal,
-      );
-      if (!found.ok) return found.transient ? null : TEMPLATE_V1;
-      const tags = roleTagsSchema.safeParse(found.value ?? []);
-      // As tags vêm da conta do cliente: só a versão e os nomes das capacidades contam (`parseReaderRoleTags`).
-      return tags.success ? parseReaderRoleTags(tags.data) : TEMPLATE_V1;
+      return await readReaderFacts(iam.iam(), session.principal, signal);
     } catch (error) {
       if (signal.aborted) throw error;
       if (error instanceof AwsConnectionError) return null;

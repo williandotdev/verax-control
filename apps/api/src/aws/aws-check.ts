@@ -19,6 +19,7 @@ import type {
 } from './aws-connection-check.js';
 import { requestAwsDiscovery } from './discovery/discovery-runs.js';
 import { syncLegacyAwsSources } from './onboarding/legacy-sources.js';
+import { readerFactsChanged, recordReaderFacts } from './onboarding/reader-facts.js';
 
 /** A cada 30 s: o "Verificar" do painel é respondido logo, e o painel consulta a conta enquanto espera. */
 export const AWS_CHECK_INTERVAL_MS = 30_000;
@@ -235,19 +236,6 @@ function countFailure(
  */
 function isConnectRequest(row: AccountRow, requestedAt: Date): boolean {
   return row.awsConnectRequestedAt !== null && row.awsConnectRequestedAt.getTime() === requestedAt.getTime();
-}
-
-/** As mesmas capacidades, em qualquer ordem. */
-function sameCapabilities(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((capability) => b.includes(capability));
-}
-
-/** As tags do papel dizem outra coisa que o gravado na conta (outra versão do template, outra lista de capacidades)? */
-function factsChanged(row: AccountRow, facts: AwsReaderFacts): boolean {
-  return (
-    facts.templateVersion !== row.awsTemplateVersion ||
-    !sameCapabilities(facts.capabilities, row.awsCapabilities)
-  );
 }
 
 /**
@@ -487,39 +475,13 @@ export class AwsCheck {
   }
 
   /**
-   * Grava as tags do papel lidas numa conferência sem pedido (uma vez por dia). Sem mudança, só o horário da leitura;
-   * com outra versão do template ou outras capacidades, a mudança entra na trilha do cliente
-   * (`cloud_account.aws_template`) e a conta ganha uma descoberta nova: o que o papel pode ler mudou.
+   * Grava as tags do papel lidas numa conferência sem pedido (uma vez por dia), pela regra de
+   * `onboarding/reader-facts.ts`: sem mudança, só o horário da leitura; com outra versão do template ou outras
+   * capacidades, a mudança entra na trilha do cliente (`cloud_account.aws_template`) e a conta ganha uma descoberta
+   * nova.
    */
-  private recordFacts(row: AccountRow, facts: AwsReaderFacts): Promise<void> {
-    return this.prisma.$transaction(async (tx) => {
-      const db = scopeToTenant(tx, row.tenantId);
-      const now = this.now();
-      const { count } = await db.cloudAccount.updateMany({
-        where: { id: row.id, provider: 'aws', status: 'active' },
-        data: {
-          awsTemplateVersion: facts.templateVersion,
-          awsCapabilities: [...facts.capabilities],
-          awsCapabilitiesCheckedAt: now,
-        },
-      });
-      if (count === 0 || !factsChanged(row, facts)) return;
-      await requestAwsDiscovery(tx, {
-        tenantId: row.tenantId,
-        cloudAccountId: row.id,
-        trigger: 'scheduled',
-        now,
-      });
-      await this.audit.write(tx, {
-        actor: { type: 'system', tenantId: row.tenantId },
-        action: 'cloud_account.aws_template',
-        outcome: 'success',
-        resourceType: 'cloud_account',
-        resourceId: row.id,
-        before: { awsTemplateVersion: row.awsTemplateVersion, awsCapabilities: row.awsCapabilities },
-        after: { awsTemplateVersion: facts.templateVersion, awsCapabilities: [...facts.capabilities] },
-      });
-    });
+  private async recordFacts(row: AccountRow, facts: AwsReaderFacts): Promise<void> {
+    await this.prisma.$transaction((tx) => recordReaderFacts(tx, this.audit, row, facts, this.now()));
   }
 
   /** Uma conferência com resultado: a próxima periódica conta daqui, e as diárias concluídas ficam lembradas. */
@@ -585,7 +547,7 @@ export class AwsCheck {
         }
         if (
           this.onboarding &&
-          (first.count === 1 || connect || (facts !== null && factsChanged(row, facts)))
+          (first.count === 1 || connect || (facts !== null && readerFactsChanged(row, facts)))
         ) {
           const requested = await requestAwsDiscovery(tx, {
             tenantId: row.tenantId,

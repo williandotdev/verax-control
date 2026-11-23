@@ -34,10 +34,17 @@ import { ReadOnlyViolation } from './read-only.js';
  *   a barra no fim e até a região) ou os nomes do primeiro nível, com delimitador. Nunca `HeadBucket`, nem a pasta da
  *   organização sozinha.
  * - **APIs** (GuardDuty, Security Hub, Inspector, Access Analyzer): uma listagem de 1 item.
- * - **CloudWatch Logs**: a tag de leitura (já lida na descoberta) e, com ela, `DescribeLogStreams` de 1 item.
+ * - **CloudWatch Logs**: a tag de leitura e, com ela, `DescribeLogStreams` de 1 item. A leitura das tags recusada é a
+ *   permissão que falta (`logs:ListTagsForResource`), e não a tag.
  *
  * Sem chamada nenhuma: a capacidade do tipo desligada no papel (`capability_off`), o grupo sem a tag (`tag_missing`), e
  * o bucket com prefixo antes de `AWSLogs/` que não está nos buckets do cadastro (`outside_awslogs_prefix`).
+ *
+ * **A fonte e as capacidades têm de ter sido lidas agora.** Esses três atalhos decidem pelo que a fonte e o contexto
+ * dizem (a tag do grupo, o destino, as capacidades do papel), sem perguntar de novo à AWS. Na descoberta, tudo isso
+ * acabou de ser lido na mesma execução. No "Tentar de novo" de uma fonte, quem chama relê antes a fonte
+ * (`source-reading.ts`) e as tags do papel (`reader-tags.ts`): o que está gravado no banco nunca entra aqui, porque o
+ * cliente pede a sondagem justamente depois de mudar algo na conta dele.
  */
 
 export interface ProbeResult {
@@ -68,7 +75,7 @@ function messageOf(error: unknown): string {
 }
 
 /** O que nunca vira resultado de sondagem: o cancelamento, a trava de só leitura e a sessão que caiu. */
-function rethrowFatal(error: unknown, signal: AbortSignal): void {
+export function rethrowFatal(error: unknown, signal: AbortSignal): void {
   if (signal.aborted) throw error;
   if (error instanceof ReadOnlyViolation || error instanceof AwsConnectionError) throw error;
 }
@@ -262,12 +269,17 @@ async function probeApiSource(
   }
 }
 
-/** O grupo de logs: sem a tag, nada a sondar; com ela, uma listagem de 1 stream. */
+/**
+ * O grupo de logs: sem a tag, nada a sondar; com ela, uma listagem de 1 stream. A tag é a que a leitura do grupo acabou
+ * de ver (a descoberta, ou a releitura do "Tentar de novo").
+ */
 async function probeLogGroup(
   source: DiscoveredSource,
   clients: DiscoveryClients,
   signal: AbortSignal,
 ): Promise<ProbeResult> {
+  // A leitura das tags deste grupo foi recusada: é essa permissão que falta, e não a tag.
+  if (source.tagsRefused === true) return missing('logs:ListTagsForResource');
   if (source.details.tagged === false) return missing('tag_missing');
   // As tags não puderam ser lidas: sem saber se o grupo tem a tag, a leitura dele não é tentada.
   if (source.details.tagged === undefined)
@@ -285,8 +297,9 @@ async function probeLogGroup(
 }
 
 /**
- * A sondagem de uma fonte. O que não dá para ler de onde está, ou é de um tipo ainda não coletado, fica sem conferir:
- * ninguém vai autorizá-lo. Um erro fatal (cancelamento, sessão perdida, a trava de só leitura) sobe.
+ * A sondagem de uma fonte que acabou de ser lida. O que não dá para ler de onde está, ou é de um tipo ainda não
+ * coletado, fica sem conferir: ninguém vai autorizá-lo. Um erro fatal (cancelamento, sessão perdida, a trava de só
+ * leitura) sobe.
  */
 export async function probeSource(
   source: DiscoveredSource,
@@ -312,5 +325,37 @@ export async function probeSource(
       return probeApiSource(source, clients, options.signal);
     case 'cloudwatch':
       return probeLogGroup(source, clients, options.signal);
+  }
+}
+
+export interface ProbeIntoOptions extends ProbeOptions {
+  /** O papel é de um template anterior: a fonte sem permissão ganha a nota de atualizar a pilha. */
+  templateOutdated: boolean;
+}
+
+/**
+ * Sonda a fonte e põe nela o resultado: a permissão, o que a sondagem descobriu (o ID da organização da trilha) e, sem
+ * a permissão num papel de template anterior (ou com a capacidade desligada), a nota de atualizar a pilha. É o passo
+ * comum da descoberta e do "Tentar de novo".
+ */
+export async function probeInto(
+  source: DiscoveredSource,
+  context: CatalogueContext,
+  clients: DiscoveryClients,
+  { templateOutdated, ...options }: ProbeIntoOptions,
+): Promise<void> {
+  const probe = await probeSource(source, context, clients, options);
+  source.permission = probe.permission;
+  source.permissionDetail = probe.permissionDetail;
+  if (probe.details !== undefined) source.details = { ...source.details, ...probe.details };
+  const needsStack =
+    probe.permissionDetail === 'capability_off' ||
+    (templateOutdated && probe.permission !== 'granted' && source.availability === 'available');
+  if (
+    needsStack &&
+    AWS_SOURCE_KIND_INFO[source.kind].collectable &&
+    !source.notes.includes('stack_update_required')
+  ) {
+    source.notes.push('stack_update_required');
   }
 }

@@ -24,8 +24,10 @@ import {
   sourceDetails,
   type SourceRow,
 } from '../onboarding/onboarding-view.js';
+import { recordReaderFacts } from '../onboarding/reader-facts.js';
+import { readReaderFacts } from '../reader-tags.js';
 import { AwsConnectionError, type AwsReaderCredentials, STS_FALLBACK_REGION } from '../web-identity.js';
-import type { CatalogueContext, DiscoveredSource } from './catalogue.js';
+import type { CatalogueContext } from './catalogue.js';
 import { type DiscoveryClientFactory, DiscoveryRunClients } from './clients.js';
 import {
   discoverAccount,
@@ -39,9 +41,10 @@ import {
   lockAwsOnboarding,
   requestAwsDiscovery,
 } from './discovery-runs.js';
-import { applyDiscovery, type ApplyReport, nextSourceState } from './discovery-store.js';
-import { type ProbeResult, probeSource } from './probes.js';
+import { applyDiscovery, type ApplyReport, applySourceReading } from './discovery-store.js';
+import { probeInto } from './probes.js';
 import { ReadOnlyViolation } from './read-only.js';
+import { readSource, type SourceReading } from './source-reading.js';
 
 /** Nome da concessão em `SyncState`: um worker por vez na tarefa, mesmo com mais de uma réplica. */
 export const AWS_DISCOVERY_SYNC = 'aws-discovery';
@@ -194,20 +197,11 @@ function withDiscovered(current: readonly string[], discovered: readonly string[
 const sameList = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((value, index) => value === b[index]);
 
-/** A fonte gravada como a sondagem a recebe. */
-function asDiscovered(row: SourceRow): DiscoveredSource {
-  return {
-    kind: row.kind as AwsSourceKind,
-    region: row.region,
-    resourceId: row.resourceId,
-    name: row.name,
-    availability: row.availability as DiscoveredSource['availability'],
-    loggingState: row.loggingState as DiscoveredSource['loggingState'],
-    notes: [],
-    details: sourceDetails(row.details),
-    permission: 'unknown',
-    permissionDetail: null,
-  };
+/** A conta de um lote de sondagens: os clientes da sessão dela e o que as tags do papel dizem agora. */
+interface ProbeSession {
+  clients: DiscoveryRunClients;
+  context: CatalogueContext;
+  templateOutdated: boolean;
 }
 
 /**
@@ -225,7 +219,8 @@ function asDiscovered(row: SourceRow): DiscoveredSource {
  *    transação pelo escopo do cliente da conta: as fontes (`applyDiscovery`), as regiões da conta e o fim da execução,
  *    com a concessão conferida e o lock da conta (o mesmo da autorização pelo painel). A conta que não entra no papel,
  *    foi desativada ou é de um cliente parado termina a execução como falha, sem chamar a AWS.
- * 4. **As sondagens pedidas no painel** ("Tentar de novo" numa fonte): a permissão da fonte é conferida de novo.
+ * 4. **As sondagens pedidas no painel** ("Tentar de novo" numa fonte): as tags do papel e a própria fonte são lidas de
+ *    novo na AWS, e só então a permissão é sondada (`answerProbes`). Nada do que está gravado decide a resposta.
  *
  * **As regiões:** `awsDiscoveredRegions` passa a ser as regiões com recurso ou fonte. As monitoradas (`regions`) só
  * ganham regiões, nunca perdem, e só na conta cadastrada pelo painel: na conta do console, as regiões são do console.
@@ -614,9 +609,18 @@ export class AwsDiscovery {
   }
 
   /**
-   * As sondagens pedidas no painel ("Tentar de novo" numa fonte): a permissão da fonte é conferida de novo pela sessão
-   * da conta e gravada, com o estado que decorre dela. A conta que não entra no papel, ou a sondagem que falha, só
-   * desfaz o pedido: a permissão gravada fica.
+   * As sondagens pedidas no painel ("Tentar de novo" numa fonte). O cliente pede a sondagem depois de mudar algo na conta
+   * dele (a tag no grupo de logs, a pilha, a política do bucket ou da chave, o destino de um log); por isso a resposta
+   * sai do que a AWS diz agora, e não do que a última descoberta gravou:
+   * 1. as tags do papel são lidas de novo, uma vez por conta (`openProbeSession`): a capacidade ligada numa atualização
+   *    da pilha vale na hora;
+   * 2. a fonte é lida de novo (`readSource`): o destino, o prefixo, o formato, a tag do grupo e o estado do serviço;
+   * 3. a permissão é sondada sobre o que foi lido (`probeInto`), e o resultado é gravado com as regras da descoberta
+   *    para uma fonte conhecida (`applySourceReading`).
+   *
+   * A fonte que não está mais lá só desfaz o pedido e pede uma descoberta da conta: quem tira a linha, marca como sumida
+   * ou acha a fonte que entrou no lugar é a descoberta. A conta que não entra no papel, ou a leitura que falha, só desfaz
+   * o pedido: o que está gravado fica.
    */
   private async answerProbes(signal: AbortSignal): Promise<number> {
     const requested = await this.prisma.awsSource.findMany({
@@ -626,68 +630,115 @@ export class AwsDiscovery {
       take: this.probeBatch,
     });
     let answered = 0;
-    const accounts = new Map<string, AccountRow | null>();
-    const clients = new Map<string, DiscoveryRunClients>();
+    const sessions = new Map<string, ProbeSession | null>();
     try {
       for (const row of requested) {
         signal.throwIfAborted();
-        if (!accounts.has(row.cloudAccountId)) {
-          accounts.set(
-            row.cloudAccountId,
-            await this.prisma.cloudAccount.findFirst({
-              where: {
-                id: row.cloudAccountId,
-                tenantId: row.tenantId,
-                provider: 'aws',
-                status: 'active',
-                ...COLLECTING_TENANT,
-              },
-              select: ACCOUNT_SELECT,
-            }),
-          );
+        let session = sessions.get(row.cloudAccountId);
+        if (session === undefined) {
+          session = await this.openProbeSession(row, signal);
+          sessions.set(row.cloudAccountId, session);
         }
-        const account = accounts.get(row.cloudAccountId) ?? null;
-        let probe: ProbeResult | null = null;
-        if (account !== null && entersRole(account)) {
-          const home = account.regions.find(isAwsRegion) ?? STS_FALLBACK_REGION;
+        let reading: SourceReading | null = null;
+        if (session !== null) {
           try {
-            let accountClients = clients.get(account.id);
-            if (accountClients === undefined) {
-              await this.credentials.session(account.accountId, home, signal);
-              accountClients = new DiscoveryRunClients(
-                this.clients(this.credentials.credentialsFor(account.accountId, home), home),
-                home,
-                signal,
-              );
-              clients.set(account.id, accountClients);
-            }
-            const target = targetOf(account);
-            const context: CatalogueContext = {
-              accountId: target.accountId,
-              legacyBuckets: target.legacyBuckets,
-              capabilities: target.capabilities,
-            };
-            probe = await probeSource(asDiscovered(row), context, accountClients, {
+            reading = await readSource(
+              {
+                kind: row.kind as AwsSourceKind,
+                region: row.region,
+                resourceId: row.resourceId,
+                details: sourceDetails(row.details),
+              },
+              session.context,
+              session.clients,
               signal,
-              now: this.now(),
-            });
+            );
+            if (reading.status === 'found') {
+              await probeInto(reading.source, session.context, session.clients, {
+                signal,
+                now: this.now(),
+                templateOutdated: session.templateOutdated,
+              });
+            }
           } catch (error) {
             if (signal.aborted) throw error;
-            // A sessão recusada, a AWS fora: o pedido é desfeito, e a permissão gravada fica.
-            probe = null;
+            // A leitura recusada, a AWS fora: o pedido é desfeito, e o que está gravado fica.
+            reading = null;
           }
         }
-        await this.recordProbe(row, probe);
+        await this.recordProbe(row, reading);
         answered += 1;
       }
     } finally {
-      for (const accountClients of clients.values()) accountClients.destroy();
+      for (const session of sessions.values()) session?.clients.destroy();
     }
     return answered;
   }
 
+  /**
+   * A conta de um lote de sondagens: a sessão de leitura, os clientes e as tags do papel lidas agora (`iam:GetRole` no
+   * próprio papel ou, na VM própria, `iam:GetUser`), gravadas na conta pela mesma regra da conferência diária (a mudança
+   * entra na trilha e pede uma descoberta). Com as tags sem resposta agora, as capacidades ficam desconhecidas e toda
+   * fonte é sondada na AWS: as gravadas na conta não decidem. Null quando a conta não entra no papel ou a sessão foi
+   * recusada.
+   */
+  private async openProbeSession(
+    row: Pick<SourceRow, 'cloudAccountId' | 'tenantId'>,
+    signal: AbortSignal,
+  ): Promise<ProbeSession | null> {
+    const account = await this.prisma.cloudAccount.findFirst({
+      where: {
+        id: row.cloudAccountId,
+        tenantId: row.tenantId,
+        provider: 'aws',
+        status: 'active',
+        ...COLLECTING_TENANT,
+      },
+      select: ACCOUNT_SELECT,
+    });
+    if (account === null || !entersRole(account)) return null;
+    const home = account.regions.find(isAwsRegion) ?? STS_FALLBACK_REGION;
+    let clients: DiscoveryRunClients | null = null;
+    try {
+      const session = await this.credentials.session(account.accountId, home, signal);
+      clients = new DiscoveryRunClients(
+        this.clients(this.credentials.credentialsFor(account.accountId, home), home),
+        home,
+        signal,
+      );
+      const facts = await readReaderFacts(clients.iam(), session.principal, signal);
+      const now = this.now();
+      if (facts !== null) {
+        await this.prisma.$transaction((tx) => recordReaderFacts(tx, this.audit, account, facts, now));
+      }
+      const target = targetOf(
+        facts === null
+          ? { ...account, awsCapabilitiesCheckedAt: null }
+          : {
+              ...account,
+              awsTemplateVersion: facts.templateVersion,
+              awsCapabilities: [...facts.capabilities],
+              awsCapabilitiesCheckedAt: now,
+            },
+      );
+      return {
+        clients,
+        templateOutdated: target.templateOutdated,
+        context: {
+          accountId: target.accountId,
+          legacyBuckets: target.legacyBuckets,
+          capabilities: target.capabilities,
+        },
+      };
+    } catch (error) {
+      clients?.destroy();
+      if (signal.aborted) throw error;
+      return null;
+    }
+  }
+
   /** Grava a resposta de uma sondagem, sob o lock da conta, se o pedido ainda for o lido. */
-  private recordProbe(row: SourceRow, probe: ProbeResult | null): Promise<void> {
+  private recordProbe(row: SourceRow, reading: SourceReading | null): Promise<void> {
     return this.prisma.$transaction(async (tx) => {
       await lockAwsOnboarding(tx, row.cloudAccountId);
       const db = scopeToTenant(tx, row.tenantId);
@@ -697,35 +748,23 @@ export class AwsDiscovery {
       });
       if (current === null) return;
       const now = this.now();
-      const decided = probe !== null && probe.permissionDetail !== 'probe_failed';
-      if (!decided) {
-        await db.awsSource.update({
-          where: { id: row.id },
-          data: { probeRequestedAt: null },
-          select: { id: true },
-        });
+      if (reading?.status === 'found') {
+        await applySourceReading(db, current, reading.source, now);
         return;
       }
-      const next = nextSourceState(current, {
-        kind: current.kind as AwsSourceKind,
-        availability: current.availability as DiscoveredSource['availability'],
-        permission: probe.permission,
-        permissionDetail: probe.permissionDetail,
-      });
       await db.awsSource.update({
         where: { id: row.id },
-        data: {
-          probeRequestedAt: null,
-          permission: probe.permission,
-          permissionDetail: probe.permissionDetail,
-          permissionCheckedAt: now,
-          ...(probe.details !== undefined && {
-            details: { ...sourceDetails(current.details), ...probe.details },
-          }),
-          ...(next !== null && { state: next.state, stateCode: next.stateCode, stateSince: now }),
-        },
+        data: { probeRequestedAt: null },
         select: { id: true },
       });
+      if (reading?.status === 'absent') {
+        await requestAwsDiscovery(tx, {
+          tenantId: row.tenantId,
+          cloudAccountId: row.cloudAccountId,
+          trigger: 'scheduled',
+          now,
+        });
+      }
     });
   }
 }
