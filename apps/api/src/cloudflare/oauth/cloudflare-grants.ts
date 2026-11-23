@@ -101,12 +101,13 @@ const HIDDEN = '[acesso do Cloudflare por OAuth]';
 
 /**
  * O acesso de uma concessão durante a leitura de uma conta. Se o Cloudflare o recusa (401), o cliente chama `renew`, que
- * renova uma vez: a segunda recusa na mesma leitura vale.
+ * renova uma vez: a segunda recusa na mesma leitura vale. Só uma renovação que deu certo (ou a autorização que acabou)
+ * prova a recusa; depois de uma que não pôde ser feita, a resposta continua sendo essa, sem novo pedido ao Cloudflare.
  */
 export class GrantBearer implements CloudflareBearer {
   #value: string;
   #generation: number;
-  #renewed = false;
+  #outcome: BearerRenewal | null = null;
   readonly #renewFrom: (generation: number) => Promise<Renewal>;
 
   constructor(value: string, generation: number, renewFrom: (generation: number) => Promise<Renewal>) {
@@ -125,8 +126,14 @@ export class GrantBearer implements CloudflareBearer {
   }
 
   async renew(): Promise<BearerRenewal> {
-    if (this.#renewed) return 'rejected';
-    this.#renewed = true;
+    if (this.#outcome !== null) return this.#outcome === 'unavailable' ? 'unavailable' : 'rejected';
+    // Se a renovação lançar (o banco fora), nada ficou provado.
+    this.#outcome = 'unavailable';
+    this.#outcome = await this.renewOnce();
+    return this.#outcome;
+  }
+
+  private async renewOnce(): Promise<BearerRenewal> {
     const renewal = await this.#renewFrom(this.#generation);
     if (renewal.kind === 'renewed') {
       this.#value = renewal.tokens.accessToken;

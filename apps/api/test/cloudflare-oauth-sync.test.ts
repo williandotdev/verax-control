@@ -620,6 +620,19 @@ describe('coletor do Cloudflare por OAuth (banco real, Cloudflare e OAuth falsos
       expect((await cursorOf(account.id)).failures).toBe(1);
     });
 
+    it('a renovação que falhou na conferência não vira recusa na auditoria da mesma execução', async () => {
+      const { account, grant } = await readyAccount(tenantA, { streams: ['check', 'audit'] });
+      cloudflare.auditScript.push({ status: 401 }, { status: 401 });
+      oauth.script.push({ status: 503 });
+
+      await syncFor().runOnce(NOW);
+      // Uma só renovação, que não provou nada: a concessão segue ativa, e a coleta tenta de novo depois.
+      expect(oauth.requests).toHaveLength(1);
+      expect(cloudflare.auditScript).toHaveLength(0);
+      expect((await grantRow(grant.id)).status).toBe('active');
+      expect(await accountRow(account.id)).toMatchObject({ connectionError: 'oauth_refresh_unavailable' });
+    });
+
     it('nos eventos de segurança, o novo envio também gasta o orçamento', async () => {
       const { account, grant } = await readyAccount(tenantA, { streams: ['security'] });
       const tag = cloudflare.addSecurityZone(account.accountId, 'loja.exemplo.com.br');
