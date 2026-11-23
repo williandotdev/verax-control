@@ -6564,3 +6564,24 @@ log-source-labels.ts`, `lib/api-types.ts` e `log-sources.test.tsx`; `apps/contro
 - **Riscos:** uma passagem do worker em curso na hora da exclusão pode terminar uma vez com erro de registro não
   encontrado ao gravar o resultado (nada é recriado). Na conta do console recriada por uma revisão maior, a credencial
   só volta se o console ainda tiver o envelope (o consumido precisa ser reenviado).
+
+## Cloudflare por OAuth: base (CF-1 e CF-2, 23/11/2026)
+
+- **O que mudou:** só a base da conexão do Cloudflare por OAuth, sem rota, tela ou coletor: nada muda no
+  comportamento, e nenhum nó anuncia a capacidade nova.
+  - **CF-1:** `packages/shared/src/cloudflare-oauth.ts` (tentativa, conclusão, escolha de contas, conexão, zonas, modo
+    de conexão e escopos por lista do que pode: só `<recurso>.read` e o da renovação); a capacidade `cloudflare_oauth`
+    aceita e a seção opcional `cloudflareOauth` em `node-sync.ts`; `packages/vault-envelope/src/cloudflare-oauth.ts`
+    (rótulo `verax-cfoauth:v1`, um por uso). Decisões: OAuth só no servidor gerenciado e com a configuração ligada; com
+    ele ligado, token colado novo é recusado e os existentes seguem; na VM do cliente, só o token.
+  - **CF-2:** migration `20261125120000_cloudflare_oauth` (só acrescenta: `CloudflareConnectAttempt`,
+    `CloudflareGrant`, `CloudflareZone` e `CloudAccount.cloudflareGrantId`), escopo do cliente (a zona, só leitura), a
+    recifragem das concessões na tarefa `credential-rekey` (`lockGrant`) e a tarefa `cloudflare-oauth-purge`, de hora
+    em hora.
+- **Fora do contrato de propósito:** nenhum valor novo em `CloudCredentialKind` nem campo em `cloudAccountSchema` (os
+  dois são estritos do outro lado); `oauth_reconnect_required` entra em `CLOUDFLARE_BLOCKING_ERRORS` com o coletor e a
+  explicação no painel.
+- **Dependências:** nenhuma.
+- **Riscos:** os escopos, a renovação sem segredo e a leitura da auditoria e do GraphQL por OAuth dependem de um app
+  registrado no Cloudflare e não foram conferidos. O plano de controle grava as capacidades de cada nó num schema
+  estrito: voltar a versão dele depois de um nó anunciar `cloudflare_oauth` recusaria a leitura.

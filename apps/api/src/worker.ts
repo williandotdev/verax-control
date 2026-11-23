@@ -34,6 +34,11 @@ import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 import { buildPinoOptions } from './common/logger/logger.options.js';
 import { PrismaService } from './common/prisma/prisma.service.js';
+import {
+  CONNECT_ATTEMPTS_PURGE_INTERVAL_MS,
+  CONNECT_ATTEMPTS_PURGE_TASK,
+  ConnectAttemptsPurge,
+} from './cloudflare/oauth/connect-attempts.js';
 import { CREDENTIAL_REKEY_INTERVAL_MS, CredentialRekey } from './credentials/credential-rekey.js';
 import { GcpAuditSync } from './gcp/gcp-audit-sync.js';
 import {
@@ -182,7 +187,9 @@ async function awsConnectionSetup(
  * Com os agentes do Wazuh ligados no nó, entra a tarefa `wazuh-agents`, que grava a lista dos agentes exportada pelo host.
  *
  * Com o cofre de credenciais (as chaves privadas num arquivo do tmpfs do nó, só no nó de cliente), entra também a tarefa diária
- * `credential-rekey`, que recifra com a versão corrente as credenciais guardadas com uma versão antiga da chave.
+ * `credential-rekey`, que recifra com a versão corrente as credenciais (e as concessões do Cloudflare) guardadas com uma
+ * versão antiga da chave. A tarefa `cloudflare-oauth-purge`, de hora em hora, vence e apaga as tentativas de conectar o
+ * Cloudflare por OAuth.
  *
  * A tarefa `aws-check` (a cada 30 s) responde o "Verificar" das contas AWS e, sem pedido, confere de novo cada conta já
  * verificada a cada 15 min, com a trilha, o export do GuardDuty e a permissão demais uma vez por dia (PR-V5'). A
@@ -455,6 +462,14 @@ async function main(): Promise<void> {
       intervalMs: RETENTION_CHECK_INTERVAL_MS,
       budgetMs: RETENTION_BUDGET_MS,
       run: (signal) => retention.maybeRun(new Date(), signal),
+    });
+    // Faxina das tentativas de conectar o Cloudflare por OAuth (só o banco do nó).
+    const connectAttempts = new ConnectAttemptsPurge(prisma);
+    tasks.push({
+      name: CONNECT_ATTEMPTS_PURGE_TASK,
+      intervalMs: CONNECT_ATTEMPTS_PURGE_INTERVAL_MS,
+      budgetMs: SYNC_BUDGET_MS,
+      run: (signal) => connectAttempts.runOnce(new Date(), signal),
     });
     const keyring = config.credentialsKeyring;
     if (keyring !== null) {
