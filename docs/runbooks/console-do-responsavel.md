@@ -592,7 +592,9 @@ está no `cp-admin` (`/v1/admin/tenants/<id>/node-sync` e `.../log-sources`).
   colada pelo cliente no painel") e a coleta (a conexão, desde quando lê e o último evento). Com alguma pendente, a
   tela se atualiza sozinha a cada minuto.
 - **A fonte aberta** ("Abrir"): o motivo da falha com o que fazer (cada código do nó tem o seu:
-  `account_exists_panel` é a conta que o cliente já tinha no painel e continua dele; `plan_limit_reached`, o limite de
+  `account_exists_panel` é a conta que o cliente já tinha no painel e continua dele; `deleted_in_panel`, a conta que o
+  cliente excluiu no painel dele (o servidor só a cadastra de novo com uma revisão nova: altere a fonte aqui, ou peça
+  ao cliente para conectar pelo painel); `plan_limit_reached`, o limite de
   contas do plano; `credential_rejected_*`, a origem recusou a chave, com o porquê), o cadastro, as ações e o que
   mandar ao cliente:
   - **AWS no gerenciado:** o bloco "Papel de leitura da AWS (CloudFormation)": o nome da pilha, o papel, os parâmetros

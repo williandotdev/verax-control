@@ -401,6 +401,64 @@ valia para os buckets: é o que permite atribuir cada alerta ao cliente certo. N
 dono sai da conta (seção "Onboarding AWS self-service", "Isolamento entre clientes"). A identidade do sink, além disso, é de um projeto só,
 mesmo dentro do cliente: em outro projeto, daria a ele a publicação no tópico do primeiro.
 
+### Desativar e excluir uma conta (decisão de 23/11/2026)
+
+O painel tem duas operações distintas na conta cloud, as duas para quem tem `cloud_accounts:write`:
+
+- **Desativar** (`DELETE /v1/cloud-accounts/:id`, ou o `PATCH` com `status`): exclusão lógica, como sempre foi. A conta
+  para de ser lida, a credencial do cofre sai e a vaga do plano volta, mas o cadastro fica, e o ID da conta continua do
+  cliente (`@@unique([provider, accountId])`). Reativar retoma de onde parou. Na conta que a Verax cadastrou pelo
+  console, o painel recusa (409 `CONSOLE_MANAGED`): o monitoramento dela é do console.
+- **Excluir** (`POST /v1/cloud-accounts/:id/delete`, corpo estrito `{confirmAccountId}`, 204): o cadastro sai do nó, e
+  o mesmo ID pode ser cadastrado de novo, pelo próprio cliente ou noutro cliente (por exemplo, para refazer a conexão
+  da AWS pelo "Conectar com AWS"). Rota explícita, à parte do `DELETE`, para o `DELETE` de sempre continuar só
+  desativando (os clientes da API e os testes dependem disso) e para a exclusão nunca sair de um parâmetro esquecido.
+  O cliente digita o ID da conta no provedor, e a API confere de novo: outro texto é 400 `ACCOUNT_ID_MISMATCH`, sem
+  mudar nada; a conta de outro cliente, 404 (nada muda); quem só lê, 403. Vale para qualquer provedor e **também para
+  a conta do console** (decisão do responsável: o cliente manda nas contas da nuvem dele).
+
+A exclusão roda numa transação (a da requisição), sob o lock das vagas do plano, como a desativação: a credencial do
+cofre sai primeiro, com o registro `cloud_credential.wipe` (só metadados), e depois a linha da conta, com o registro
+`cloud_account.delete` (o estado de antes, com a origem, sem segredo; o estado de depois, vazio). A vaga do plano volta.
+
+| O que                                                                                                    | Na exclusão                                                                                                                                                                                                                                     |
+| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CloudAccount`                                                                                           | Apagada                                                                                                                                                                                                                                         |
+| `CloudCredential`                                                                                        | Apagada antes da conta, com a trilha (`wipeCredential`); a chave estrangeira também a levaria                                                                                                                                                   |
+| `AwsDiscoveryRun`, `AwsSource`, `CollectorCursor`, `AwsVolumeObject`                                     | Apagadas pela chave estrangeira (`ON DELETE CASCADE`): só existem pela conta. A autorização das fontes não volta numa conta cadastrada de novo: o cliente autoriza outra vez                                                                    |
+| `Finding` (e comentários, notificações), `Incident`, `PostureScan`/`PostureFailure`, `InventorySnapshot` | Ficam: guardam o ID da conta como texto, sem chave estrangeira. O histórico das telas e o expurgo seguem as regras de sempre                                                                                                                    |
+| `IngestUsage`, `IngestUsageDay`, `IngestHealth`, `NodeUsageDay`                                          | Ficam: são por cliente e fonte, não por conta. O volume já medido continua contando no mês e no dia                                                                                                                                             |
+| `AuditLog`                                                                                               | Fica, inteira (a trilha é só de acréscimo)                                                                                                                                                                                                      |
+| `UnownedAlert`                                                                                           | Fica: sem cliente, guarda as contas citadas como texto                                                                                                                                                                                          |
+| `CloudWatchAlertOwnership`                                                                               | Fica: a prova do dono dos grupos de logs é sobre a configuração aplicada no manager. Enquanto a lista antiga estiver aplicada, os alertas dela ainda são da conta (como na desativação); a tarefa `wazuh-config` refaz a prova com a lista nova |
+| `ControlPlaneSyncItem`                                                                                   | Só na conta do console: a falha `deleted_in_panel` da fonte (abaixo); o item da credencial da fonte sai                                                                                                                                         |
+
+Nada é apagado na nuvem do cliente: a lista do Wazuh é feita das linhas (`findWazuhSourceRows`), e a seguinte só deixa
+de ter a conta (o host aplica a lista nova; `remove_from_bucket` e `remove_log_streams` continuam `no`); os coletores
+por API e as tarefas do worker leem as contas a cada passagem e não a acham mais. Uma passagem que já estava em curso
+pode terminar com um erro de "registro não encontrado" (P2025) ou de chave estrangeira ao gravar o resultado: nada é
+recriado, e a seguinte já não tem a conta. Na AWS, a pilha `verax-control-reader` continua na conta do cliente: ele a
+apaga no CloudFormation se não for conectar de novo, ou a deixa para reconectar (a mesma pilha serve quando a conta for
+cadastrada outra vez).
+
+**Conta do console e a sincronização.** Na conta `origin = control_plane`, a exclusão grava, na mesma transação e antes
+de apagar a conta, a falha `deleted_in_panel` no item da fonte (`ControlPlaneSyncItem`, `kind = log_source`), na maior
+revisão entre a última aplicada na conta e a do item, sem nova tentativa (`control-plane-sync/deleted-in-panel.ts`):
+
+- a sincronização não recria a conta na mesma revisão (a regra de sempre: a falha de uma revisão só é tentada de novo
+  com outra revisão); e a transação da sincronização confere o item de novo depois do lock das vagas, o mesmo da
+  exclusão, para uma passagem que leu o item antes da exclusão também não a recriar;
+- o relato seguinte leva a fonte como `failed`/`deleted_in_panel`, sem a conta e sem a credencial; o console a mostra
+  como "Falhou", com o que fazer (`apps/console/src/features/tenants/log-source-labels.ts`), e a visão do plano de
+  controle (`sourceStatusOf`) dá `failed` com esse código;
+- uma revisão maior do console (o responsável altera a fonte) cadastra a conta de novo, com o mesmo id, e a credencial
+  que o console mandar é aplicada de novo (o item da credencial saiu com a conta). Se o envelope já tinha sido
+  consumido no plano de controle, a conta volta sem credencial, e o responsável reenvia a chave (ou o cliente a cola);
+- a lápide (`removed`) de uma revisão maior é contada como `removed`, sem erro: a conta já não existe.
+
+O código novo entra em `NODE_SYNC_SOURCE_CODES` (contrato estrito): o plano de controle sobe antes dos nós, então o
+nó novo nunca o manda a um plano de controle que não o conheça.
+
 ### Regras de detecção: faixas de ID e títulos
 
 Cada regra tem um ID numa faixa própria, e o ID vai para o achado (`ruleId`), para as exceções e para os relatórios.
@@ -2219,7 +2277,8 @@ control_plane`), e o `PLAN` e os ajustes do ambiente são recusados na partida. 
   uso", o volume do mês dá lugar ao contador da franquia (CE-10).
 
 - **Vagas** (`packages/shared/src/plan-usage.ts`): contas cloud ativas (AWS, GCP e Cloudflare) e usuários do cliente
-  convidados ou ativos. A equipe da Verax (`admin_verax`) nunca conta. Criar e reativar pedem vaga; desativar libera.
+  convidados ou ativos. A equipe da Verax (`admin_verax`) nunca conta. Criar e reativar pedem vaga; desativar e
+  excluir liberam.
   Descer de plano com o uso acima do novo limite não desativa nem apaga nada: só a próxima criação é recusada, e o
   painel mostra "acima do limite do plano".
 - **Onde a vaga é conferida:** `assertWithinPlan` (`apps/api/src/plan/plan-limits.ts`), sempre na transação que grava,
@@ -2228,7 +2287,8 @@ control_plane`), e o `PLAN` e os ajustes do ambiente são recusados na partida. 
   pega o mesmo lock **antes** de ler o recurso: a decisão tomada sobre o status lido vale até a gravação, e uma
   desativação que corre junto com uma reativação e uma criação não deixa as duas usarem a mesma vaga. O lock do plano
   vem antes dos das origens de log e da credencial (as contas cloud), sempre na mesma ordem. Os pontos:
-  - cadastro, reativação e desativação de conta cloud (`POST`, `PATCH` e `DELETE /v1/cloud-accounts`);
+  - cadastro, reativação, desativação e exclusão de conta cloud (`POST`, `PATCH` e `DELETE /v1/cloud-accounts`, e
+    `POST /v1/cloud-accounts/:id/delete`);
   - cadastro, reativação e desativação de usuário (`POST`, `PATCH` e `DELETE /v1/users`), inclusive o primeiro
     administrador de um cliente novo (`POST /v1/tenants`, que sempre tem vaga);
   - o bootstrap do nó: as contas da GCP (no limite, a conta fica de fora com `plan-limit`, e o resto segue) e, no modo
@@ -3011,7 +3071,10 @@ dois lados); os envelopes da credencial e da senha, em `packages/vault-envelope`
     com o id da fonte, `origin = control_plane` e `controlPlaneRevision`;
   - alterar: só com revisão maior que a aplicada, só os campos do console, com as regras de conexão do painel (outra
     lista de buckets ou outra assinatura recomeçam a conexão); outro provedor ou outro ID é `immutable_changed`;
-  - lápide (`removed`): como o "Desativar" do painel (a conta inativa, a credencial apagada);
+  - lápide (`removed`): como o "Desativar" do painel (a conta inativa, a credencial apagada); a conta que já não
+    existe (o cliente a excluiu no painel) é contada como removida;
+  - a fonte que o cliente excluiu no painel (`deleted_in_panel`) só volta com uma revisão maior (seção "Desativar e
+    excluir uma conta");
   - a credencial, depois da conta e só quando a revisão do console é mais nova que a última do console aplicada (uma
     colada no painel vale até o console mandar outra): aberta com as chaves do cofre (prova a amarração ao cliente, à
     conta, ao tipo e ao ID no provedor; senão `credential_unreadable`), o tipo tem de valer na plataforma
@@ -3053,7 +3116,8 @@ dois lados); os envelopes da credencial e da senha, em `packages/vault-envelope`
   senha).
 - **Painel:** a conta do console sai com `managedBy: 'verax'` e o selo "Cadastrada pela Verax"; alterar a fonte ou o
   monitoramento dela pelo painel dá 409 `CONSOLE_MANAGED` ("Cadastrada pela Verax: peça a alteração à Verax"). A
-  credencial (colar e remover) e o "Verificar" da AWS continuam com o cliente.
+  credencial (colar e remover), o "Verificar" da AWS e a exclusão da conta (`deleted_in_panel`) continuam com o
+  cliente.
 - **Falhas da chamada:** 401, log de erro `control_plane_unauthenticated` e nova tentativa em 1 h; 404 (cliente não
   apto), 6 h; 409 `stale_sequence`, a sequência avança e a chamada é repetida na mesma execução; 429, o `Retry-After`;
   400 com o relógio do nó fora dos 10 min aceitos, log de erro `clock_skew`; 5xx, rede ou resposta fora do contrato,
