@@ -73,8 +73,9 @@ export const CONNECTION_LABELS: Readonly<Record<NodeSyncAccountReport['connectio
 export const COLLECTION_ERROR_LABELS: Readonly<
   Record<NonNullable<NodeSyncAccountReport['collectionError']>, string>
 > = {
-  aws_token_stale: 'O token do servidor para a AWS está velho: a coleta dos buckets parou.',
-  wazuh_apply_failed: 'O servidor não conseguiu aplicar a leitura dos buckets.',
+  aws_token_stale:
+    'O token do servidor para a AWS está velho: a coleta dos buckets e dos grupos de logs parou.',
+  wazuh_apply_failed: 'O servidor não conseguiu aplicar a leitura dos buckets e dos grupos de logs.',
 };
 
 export const MISMATCH_LABELS: Readonly<Record<AwsStackMismatchField, string>> = {

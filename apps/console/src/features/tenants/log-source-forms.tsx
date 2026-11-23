@@ -274,6 +274,12 @@ function SpecFields({ provider }: { provider: LogSourceProvider }) {
             label="Regiões monitoradas"
             hint="Uma por linha (ou separadas por vírgula), como sa-east-1. A primeira abre o CloudFormation."
           />
+          <p className="text-sm text-muted-foreground">
+            Os buckets são só para as exceções. O servidor descobre sozinho os logs que a AWS grava em
+            AWSLogs/&lt;conta&gt;/ (o padrão), e o cliente os autoriza no painel dele, depois do
+            &ldquo;Conectar com AWS&rdquo;. Cadastre aqui só o bucket fora desse padrão: um prefixo antes de
+            AWSLogs/, um bucket central de outra conta.
+          </p>
           <Grid>
             <TextField
               path={['spec', 'buckets', 'cloudtrail']}

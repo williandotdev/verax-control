@@ -66,13 +66,18 @@ export function policyText(policy: unknown): string {
   return JSON.stringify(policy, null, 2);
 }
 
-/** A mensagem pronta para o cliente criar a pilha do papel de leitura (o modelo vai em anexo). */
+/**
+ * A mensagem pronta para o cliente criar a pilha do papel de leitura (o modelo vai em anexo). Começa pelo caminho do
+ * painel (o "Conectar com AWS", com o arquivo já preenchido); os passos e o comando são para quem cria a pilha à mão.
+ */
 export function awsStackMessage(accountId: string, stack: AwsStackView): string {
   const region = regionOf(stack.consoleUrl);
   return [
     `Olá! Para o Verax Control ler os logs da conta AWS ${accountId}, crie nela o papel de leitura, sem chave, com o modelo do CloudFormation que segue em anexo (${AWS_TEMPLATE_FILE}).`,
     '',
-    'Pelo console da AWS:',
+    `O jeito mais simples é pelo painel do Verax Control: em Contas cloud, abra a conta ${accountId} e clique em "Conectar com AWS". O painel baixa o modelo já preenchido, abre o CloudFormation e, depois de criada a pilha, mostra as fontes de log da conta para você escolher o que autoriza.`,
+    '',
+    'Se preferir criar a pilha à mão, pelo console da AWS:',
     `1. Abra o CloudFormation${region === undefined ? '' : ` na região ${region}`}: ${stack.consoleUrl}`,
     `2. Em "Especificar modelo", escolha "Fazer upload de um arquivo de modelo" e envie o ${AWS_TEMPLATE_FILE}.`,
     `3. Nome da pilha: ${stack.stackName}`,
@@ -81,12 +86,13 @@ export function awsStackMessage(accountId: string, stack: AwsStackView): string 
     `   NodeEgressIps: ${listText(stack.egressIps)}`,
     `   Audience: ${stack.audience}`,
     `   LogBucketArns: ${stack.bucketArns.length === 0 ? '(deixe vazio)' : listText(stack.bucketArns)}`,
+    '   ReadAwsServiceLogs, ReadSecurityFindings e ReadTaggedLogGroups: as três autorizações (os logs da AWS no S3, os achados de segurança e os grupos do CloudWatch Logs que você marcar) já vêm ligadas; troque para false a que não quiser.',
     '5. Marque a confirmação de que a pilha cria recursos do IAM com nomes personalizados e crie a pilha.',
     '',
     'Ou, pela AWS CLI, na pasta do modelo:',
     stack.deployCommand,
     '',
-    `O papel criado (${stack.roleArn}) só lê os logs e a configuração de segurança, não tem chave e só aceita o servidor de vocês na Verax, vindo dos IPs acima. Quando a pilha terminar, avise a Verax.`,
+    `O papel criado (${stack.roleArn}) só lê os logs e a configuração de segurança, não tem chave e só aceita o servidor de vocês na Verax, vindo dos IPs acima. Nada é coletado até você autorizar cada fonte no painel. Quando a pilha terminar, o painel avança sozinho; se criou a pilha à mão, clique em "Já criei a pilha: conectar" (ou avise a Verax).`,
   ].join('\n');
 }
 
