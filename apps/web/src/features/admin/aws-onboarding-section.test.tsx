@@ -16,6 +16,7 @@ import {
   authorizedSourceFixture,
   awsAccountFixture,
   checksFixture,
+  FIXTURE_NOW,
   onboardingFixture,
   runFixture,
 } from '@/test/aws-onboarding-fixtures';
@@ -34,6 +35,7 @@ afterEach(() => {
   server.resetHandlers();
   api.resetCsrf();
   vi.restoreAllMocks();
+  vi.useRealTimers();
   objectUrls?.restore();
   objectUrls = undefined;
 });
@@ -1228,6 +1230,8 @@ describe('pilha na AWS: a versão do modelo e as autorizações', () => {
 
 describe('o que encontramos', () => {
   it('o retrato da infraestrutura, as regiões e os serviços identificados', async () => {
+    // O relógio fica no instante das fixtures: o "há 30 minutos" não depende de quanto a suíte já demorou.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(FIXTURE_NOW) });
     open(state('awaiting_sources'));
     const found = await screen.findByRole('region', { name: 'O que encontramos' });
     expect(found).toHaveTextContent(

@@ -115,6 +115,8 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
           ownerTenantId: proven.tenantId,
           ownerAccountId: proven.accountId,
           generation: '0'.repeat(64),
+          // O número de sequência do sinal `applied`: a linha sem ele não vale como prova.
+          appliedSeq: 1n,
           since: new Date(Date.now() - 120 * MINUTE),
           confirmedAt: runAt,
         },
