@@ -67,6 +67,7 @@ describe('query do retorno do Cloudflare', () => {
     ['desconhecido', `code=${code}&state=${STATE}&redirect_uri=https%3A%2F%2Fevil.example`],
     ['desconhecido vazio', `code=${code}&state=${STATE}&x`],
     ['nome em maiúsculas', `Code=${code}&state=${STATE}`],
+    ['constructor', `code=${code}&state=${STATE}&constructor=x`],
     ['__proto__', `code=${code}&state=${STATE}&__proto__=x`],
     ['iss de outro', `code=${code}&state=${STATE}&iss=https%3A%2F%2Fevil.example`],
     ['iss com barra', `code=${code}&state=${STATE}&iss=${ISS}%2F`],

@@ -4,6 +4,7 @@ import {
   cloudflareOauthCodeSchema,
   parseCloudflareOauthState,
 } from '@verax/shared';
+import { z } from 'zod';
 
 /** O retorno do Cloudflare conferido: o que segue ao painel, e o subdomínio de qual painel. */
 export interface CloudflareCallback {
@@ -17,59 +18,53 @@ export const CALLBACK_QUERY_MAX_LENGTH = 8192;
 const IGNORED_VALUE_MAX_LENGTH = 2048;
 const ERROR_MAX_LENGTH = 64;
 
-/**
- * Parâmetros que o Cloudflare pode mandar e ninguém usa: os escopos concedidos (o worker do nó confere os da troca) e a
- * explicação do erro, que nunca é repassada.
- */
-const IGNORED_PARAMETERS: ReadonlySet<string> = new Set([
-  'scope',
-  'error_description',
-  'error_uri',
-  'error_hint',
-  'error_debug',
-]);
-const USED_PARAMETERS: ReadonlySet<string> = new Set(['code', 'state', 'iss', 'error']);
+/** Um parâmetro que o Cloudflare pode mandar e ninguém usa: aceito e descartado. */
+const ignored = z.string().max(IGNORED_VALUE_MAX_LENGTH).optional();
 
-/** Os parâmetros, cada um uma vez; repetido, desconhecido ou grande demais: `null`. */
-function readParameters(raw: string): Map<string, string> | null {
-  if (raw.length > CALLBACK_QUERY_MAX_LENGTH) return null;
-  const values = new Map<string, string>();
-  for (const [name, value] of new URLSearchParams(raw)) {
-    if (values.has(name)) return null;
-    if (!USED_PARAMETERS.has(name) && !IGNORED_PARAMETERS.has(name)) return null;
-    if (value.length > IGNORED_VALUE_MAX_LENGTH) return null;
-    values.set(name, value);
-  }
-  return values;
-}
+/** O `state` com o subdomínio dele, conferidos. */
+const stateSchema = z.string().transform((state, context) => {
+  const parsed = parseCloudflareOauthState(state);
+  if (parsed !== null) return { state, slug: parsed.slug };
+  context.addIssue({ code: 'custom', message: 'state inválido' });
+  return z.NEVER;
+});
+
+/**
+ * O retorno inteiro, estrito: um `state`, e o `code` ou o `error` (nunca os dois). O `iss`, quando vem, é o do Cloudflare.
+ * Os escopos concedidos (o worker do nó confere os da troca) e a explicação do erro são descartados: nunca seguem.
+ */
+const querySchema = z
+  .strictObject({
+    state: stateSchema,
+    code: cloudflareOauthCodeSchema.optional(),
+    error: z.string().min(1).max(ERROR_MAX_LENGTH).transform(cloudflareOauthCallbackError).optional(),
+    iss: z.literal(CLOUDFLARE_OAUTH_ISSUER).optional(),
+    scope: ignored,
+    error_description: ignored,
+    error_uri: ignored,
+    error_hint: ignored,
+    error_debug: ignored,
+  })
+  .refine(({ code, error }) => (code === undefined) !== (error === undefined), { error: 'code ou error' });
 
 /**
  * Confere a query do retorno, lida crua: o leitor de query do Express (listas, objetos) não participa. Parâmetro
  * repetido ou desconhecido, fora do alfabeto ou do tamanho, sem `state`, com `code` e `error` juntos ou sem nenhum dos
- * dois: `null`. O `iss`, quando vem, só passa se for o do Cloudflare; quando não vem, quem decide é a API do nó.
+ * dois: `null`. Sem `iss`, quem decide é a API do nó.
  */
 export function parseCallbackQuery(raw: string): CloudflareCallback | null {
-  const values = readParameters(raw);
-  if (values === null) return null;
-  const state = values.get('state');
-  const parsed = state === undefined ? null : parseCloudflareOauthState(state);
-  if (state === undefined || parsed === null) return null;
-  const iss = values.get('iss');
-  if (iss !== undefined && iss !== CLOUDFLARE_OAUTH_ISSUER) return null;
+  if (raw.length > CALLBACK_QUERY_MAX_LENGTH) return null;
+  const entries = [...new URLSearchParams(raw)];
+  const names = new Set(entries.map(([name]) => name));
+  if (names.size !== entries.length) return null;
+  const parsed = querySchema.safeParse(Object.fromEntries(entries));
+  if (!parsed.success) return null;
 
-  const fragment = new URLSearchParams();
-  const code = values.get('code');
-  const error = values.get('error');
-  if (code !== undefined && error === undefined) {
-    if (!cloudflareOauthCodeSchema.safeParse(code).success) return null;
-    fragment.set('code', code);
-  } else if (error !== undefined && code === undefined) {
-    if (error === '' || error.length > ERROR_MAX_LENGTH) return null;
-    fragment.set('error', cloudflareOauthCallbackError(error));
-  } else {
-    return null;
-  }
-  fragment.set('state', state);
-  if (iss !== undefined) fragment.set('iss', iss);
-  return { slug: parsed.slug, fragment: fragment.toString() };
+  const { state, code, error, iss } = parsed.data;
+  const fragment = new URLSearchParams(
+    Object.entries({ code, error, state: state.state, iss }).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+  return { slug: state.slug, fragment: fragment.toString() };
 }
