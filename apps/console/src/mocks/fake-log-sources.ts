@@ -61,6 +61,8 @@ export interface FakeLogSourcesState {
   panelAccounts: Set<string>;
   /** O código com que o nó recusa a próxima chave (`credential_rejected_*`); sem ele, aceita. */
   rejectCredential?: NodeSyncSourceCode;
+  /** O Cloudflare é conectado por OAuth nos clientes do servidor gerenciado: o console não aceita token. */
+  cloudflareOauth?: boolean;
 }
 
 export interface FakeResponse {
@@ -470,9 +472,11 @@ function viewOf(
   };
 }
 
-function credentialKindsOf(tenant: TenantDetail): CredentialKind[] {
+function credentialKindsOf(tenant: TenantDetail, oauth: boolean): CredentialKind[] {
   return tenant.hosting === 'verax'
-    ? ['cloudflare_api_token']
+    ? oauth
+      ? []
+      : ['cloudflare_api_token']
     : ['cloudflare_api_token', 'aws_access_key', 'gcp_service_account_key'];
 }
 
@@ -483,7 +487,7 @@ function overviewOf(state: FakeLogSourcesState, tenant: TenantDetail, now: Date)
   return {
     hosting: tenant.hosting,
     platform,
-    credentialKinds: credentialKindsOf(tenant),
+    credentialKinds: credentialKindsOf(tenant, state.cloudflareOauth === true),
     generation: sync.generation,
     node:
       node === null
@@ -657,7 +661,7 @@ function credentialRefusal(
   kind: CredentialKind,
 ): string | undefined {
   if (CREDENTIAL_PROVIDERS[kind] !== provider) return 'credential_provider_mismatch';
-  if (!credentialKindsOf(tenant).includes(kind)) return 'credential_kind_not_allowed';
+  if (!credentialKindsOf(tenant, false).includes(kind)) return 'credential_kind_not_allowed';
   const node = sync.node;
   if (node === null || node.nodeTenantId === null) return 'node_not_synced';
   if (node.platform !== (tenant.hosting === 'verax' ? 'gcp' : 'vm')) return 'platform_mismatch';
