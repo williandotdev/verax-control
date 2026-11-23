@@ -467,6 +467,28 @@ export function awsReaderUserCommands(
   ].join('\n');
 }
 
+/**
+ * Os comandos da CLI para atualizar o usuário de leitura que já existe (a VM própria do cliente não tem pilha): uma
+ * versão nova da política de leitura, do arquivo que o painel mostra (`AWS_READER_POLICY_FILE`), marcada como a
+ * padrão, e as etiquetas do usuário, que dizem ao nó a versão do modelo e o que foi autorizado (as mesmas de
+ * `awsReaderUserCommands`). É o que o cliente roda para sair do modelo anterior ou para ligar ou desligar uma
+ * autorização. O `tag-user` troca o valor das etiquetas que já existem. O ID da conta chega já validado (12 dígitos), e
+ * só os nomes de `AWS_READER_CAPABILITIES` entram no valor da etiqueta.
+ *
+ * Uma política do IAM guarda no máximo 5 versões: na sexta, o `create-policy-version` recusa até uma antiga ser apagada
+ * (`aws iam delete-policy-version`); o painel avisa.
+ */
+export function awsReaderUserUpdateCommands(
+  accountId: string,
+  capabilities?: readonly AwsReaderCapability[],
+): string {
+  const policyArn = `arn:aws:iam::${accountId}:policy${AWS_READER_USER_PATH}${AWS_READER_POLICY_NAME}`;
+  return [
+    `aws iam create-policy-version --policy-arn ${policyArn} --policy-document file://${AWS_READER_POLICY_FILE} --set-as-default`,
+    `aws iam tag-user --user-name ${AWS_READER_IAM_NAME} --tags ${awsReaderUserTags(capabilities)}`,
+  ].join('\n');
+}
+
 /** Os nomes do que o cliente cria no projeto dele, na GCP. */
 export const GCP_READER_TOPIC = 'verax-control-security';
 export const GCP_READER_SUBSCRIPTION = 'verax-control-security';

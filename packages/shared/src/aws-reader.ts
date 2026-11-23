@@ -359,6 +359,36 @@ function stackEgressIps(egressIps: readonly string[]): string | null {
   return egressIps.every(isNodeEgressIp) ? egressIps.join(',') : null;
 }
 
+/** O que muda no comando da CLI além dos valores da pilha. */
+export interface AwsReaderDeployOptions {
+  /**
+   * O nome do arquivo do modelo, na pasta em que o cliente roda o comando: sem ele, `AWS_READER_TEMPLATE_FILE`. Um
+   * nome fora do formato de `isTemplateFileName` não entra no comando: vale o do repositório.
+   */
+  templateFile?: string | undefined;
+}
+
+/** O tamanho máximo do nome de arquivo que entra no comando. */
+const MAX_TEMPLATE_FILE_NAME_LENGTH = 64;
+const TEMPLATE_FILE_EXTENSION = '.yaml';
+
+/**
+ * Um nome de arquivo que pode ir no comando da CLI: só minúsculas, números, hífen e ponto (os caracteres de
+ * `AWS_READER_TEMPLATE_FILE` e do nome que `awsReaderPrefilledFileName` monta), terminado em `.yaml`. Começa por letra
+ * ou número (com um hífen na frente, a CLI o leria como opção) e não tem `..`. É um nome, não um caminho: sem barra,
+ * espaço ou qualquer caractere que o terminal interprete. Caractere a caractere, sem regex.
+ */
+function isTemplateFileName(value: string): boolean {
+  return (
+    value.length > TEMPLATE_FILE_EXTENSION.length &&
+    value.length <= MAX_TEMPLATE_FILE_NAME_LENGTH &&
+    value.endsWith(TEMPLATE_FILE_EXTENSION) &&
+    !value.includes('..') &&
+    isLowerAlnum(value.charCodeAt(0)) &&
+    every(value, (code, char) => isLowerAlnum(code) || char === '-' || char === '.')
+  );
+}
+
 /**
  * A alternativa ao console: o `aws cloudformation deploy` com os valores do nó e os buckets da conta (o template vai
  * direto, sem bucket, porque cabe no `TemplateBody`). Todo valor é conferido antes de entrar no comando, que o cliente
@@ -370,8 +400,20 @@ function stackEgressIps(egressIps: readonly string[]): string | null {
  * painel e rodar o comando de novo deixaria o papel lendo os buckets antigos. Pelo mesmo motivo, as três autorizações
  * vão sempre, com `true` ou `false`: desligar uma no painel e rodar o comando de novo tira a permissão dela. Só os
  * nomes de `AWS_READER_CAPABILITIES` contam; qualquer outro texto na lista é ignorado.
+ *
+ * O arquivo que o comando lê é o do repositório, ou o que `options.templateFile` disser: o painel passa o nome do
+ * arquivo que o botão ao lado baixa (o preenchido, `awsReaderPrefilledFileName`), para o comando copiado achar o
+ * arquivo que o cliente tem na pasta. Com o arquivo preenchido, os parâmetros continuam indo no comando: os padrões
+ * gravados nele só valem para uma pilha nova, e numa atualização a AWS ficaria com os valores anteriores.
  */
-export function awsReaderDeployCommand(values: AwsReaderStackValues): string {
+export function awsReaderDeployCommand(
+  values: AwsReaderStackValues,
+  options: AwsReaderDeployOptions = {},
+): string {
+  const templateFile =
+    options.templateFile !== undefined && isTemplateFileName(options.templateFile)
+      ? options.templateFile
+      : AWS_READER_TEMPLATE_FILE;
   const serviceAccount =
     values.nodeServiceAccountId !== null && isNodeServiceAccountId(values.nodeServiceAccountId)
       ? values.nodeServiceAccountId
@@ -387,7 +429,7 @@ export function awsReaderDeployCommand(values: AwsReaderStackValues): string {
   overrides.push(`LogBucketArns=${arns.length > 0 ? arns.join(',') : '""'}`);
   return [
     `aws cloudformation deploy --stack-name ${AWS_READER_STACK_NAME} \\`,
-    `  --template-file ${AWS_READER_TEMPLATE_FILE} --capabilities CAPABILITY_NAMED_IAM \\`,
+    `  --template-file ${templateFile} --capabilities CAPABILITY_NAMED_IAM \\`,
     '  --parameter-overrides \\',
     ...overrides.map((line, index) => `    ${line}${index < overrides.length - 1 ? ' \\' : ''}`),
   ].join('\n');
@@ -602,8 +644,20 @@ export function awsReaderPrefilledFileName(accountId: string): string {
 /** Região do console quando a conta não tem uma válida. */
 const DEFAULT_CONSOLE_REGION = 'sa-east-1';
 
+/** A região do console: a informada, quando é uma região da AWS; senão, a padrão. */
+function consoleRegion(region: string | undefined): string {
+  return region !== undefined && isAwsRegion(region) ? region : DEFAULT_CONSOLE_REGION;
+}
+
 /** O CloudFormation no console da AWS, na região informada (a primeira monitorada), na criação de pilha. */
 export function cloudFormationConsoleUrl(region: string | undefined): string {
-  const chosen = region !== undefined && isAwsRegion(region) ? region : DEFAULT_CONSOLE_REGION;
-  return `https://console.aws.amazon.com/cloudformation/home?region=${chosen}#/stacks/create`;
+  return `https://console.aws.amazon.com/cloudformation/home?region=${consoleRegion(region)}#/stacks/create`;
+}
+
+/**
+ * A lista de pilhas do CloudFormation no console da AWS, na região informada: de onde o cliente abre a pilha
+ * `AWS_READER_STACK_NAME` que já existe, para atualizá-la (outro modelo, uma autorização ligada ou desligada).
+ */
+export function cloudFormationStacksUrl(region: string | undefined): string {
+  return `https://console.aws.amazon.com/cloudformation/home?region=${consoleRegion(region)}#/stacks`;
 }

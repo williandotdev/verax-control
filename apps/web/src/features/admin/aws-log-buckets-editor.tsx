@@ -185,9 +185,11 @@ export function LogBucketsList({ buckets }: { buckets: LogBuckets }) {
 }
 
 /**
- * Os buckets de log no detalhe da conta AWS: quem administra altera a lista; quem só lê vê os buckets gravados. Salva
- * uma lista com outros nomes, a tela diz o que falta: atualizar o `LogBucketArns` da pilha (o passo 2 já mostra a lista
- * nova) e clicar em "Verificar conexão". A API volta a conexão para "aguardando" e não pede nada à AWS sozinha.
+ * Os buckets cadastrados à mão no detalhe da conta AWS ("Avançado: buckets fora do padrão"): só para as exceções, os
+ * logs que ficam fora de `AWSLogs/<conta>/`, que o Verax lê sozinho. Quem administra altera a lista; quem só lê vê os
+ * buckets gravados. Salva uma lista com outros nomes, a tela diz o que falta: atualizar o `LogBucketArns` da pilha (em
+ * "Pilha na AWS", com a lista nova) e clicar em "Verificar conexão". A API volta a conexão para "aguardando" e não pede
+ * nada à AWS sozinha. As fontes destes buckets aparecem em "Fontes autorizadas" como "cadastrada manualmente".
  */
 export function AwsLogBuckets({
   account,
@@ -203,11 +205,15 @@ export function AwsLogBuckets({
   return (
     <section aria-labelledby={titleId} className="space-y-3 rounded-md border p-3">
       <h3 id={titleId} className="text-sm font-semibold">
-        Buckets de log
+        Buckets fora do padrão
       </h3>
       <p className="text-sm text-muted-foreground">
-        Os buckets S3 de onde o Verax lê os logs desta conta, no máximo um por fonte. Eles vão no{' '}
-        <code className="font-mono text-xs">LogBucketArns</code> da pilha, e o Verificar lê um objeto de cada.
+        Só para exceções. O Verax lê sozinho os logs que a AWS grava em AWSLogs/&lt;conta&gt;/, sem você
+        informar bucket nenhum. Cadastre um bucket aqui apenas se os logs ficam fora desse padrão: um prefixo
+        antes de AWSLogs/, entregas do Firehose ou um bucket central com logs de várias contas. No máximo um
+        por fonte: eles vão no <code className="font-mono text-xs">LogBucketArns</code> da pilha, o Verax lê o
+        bucket inteiro, e as fontes deles aparecem em &ldquo;Fontes autorizadas&rdquo; como cadastradas
+        manualmente.
       </p>
       {canWrite ? (
         <AwsLogBucketsForm account={account} />
@@ -264,15 +270,16 @@ function AwsLogBucketsForm({ account }: { account: CloudAccount }) {
         rows={rows}
         onChange={setRows}
         errors={errors}
-        legend="Buckets de log"
+        legend="Buckets fora do padrão"
         legendHidden
       />
       <FormError error={update.error} />
       {saved === 'changed' && (
         <p role="status" className="rounded-md border border-medium/70 bg-medium/15 p-2 text-sm">
           Buckets salvos, e a lista mudou. Se a pilha {AWS_READER_STACK_NAME} já existe na conta, atualize o{' '}
-          <code className="font-mono text-xs">LogBucketArns</code> dela com a lista nova (no passo 2, abaixo,
-          com o comando da CLI) e depois clique em Verificar conexão. Até lá, a conexão fica em Aguardando.
+          <code className="font-mono text-xs">LogBucketArns</code> dela com a lista nova (os passos e o
+          comando da CLI estão em &ldquo;Pilha na AWS&rdquo;, acima) e depois clique em Verificar conexão. Até
+          lá, a conexão fica em Aguardando.
         </p>
       )}
       {saved === 'same' && (

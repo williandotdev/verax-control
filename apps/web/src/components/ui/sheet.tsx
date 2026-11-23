@@ -1,6 +1,7 @@
 import { X } from 'lucide-react';
 import { Dialog } from 'radix-ui';
 import { type ReactNode, useRef } from 'react';
+import { cn } from '@/lib/cn';
 import { Button } from './button';
 
 /**
@@ -17,12 +18,15 @@ export function Sheet({
   onOpenChange,
   title,
   description,
+  size = 'default',
   children,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: ReactNode;
   description?: ReactNode;
+  /** `wide`: para o detalhe com tabela (a conta AWS e as fontes dela). No celular, os dois ocupam a tela inteira. */
+  size?: 'default' | 'wide';
   children: ReactNode;
 }) {
   const opener = useRef<HTMLElement | null>(null);
@@ -41,7 +45,10 @@ export function Sheet({
             if (opener.current?.isConnected) opener.current.focus();
             opener.current = null;
           }}
-          className="fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l bg-surface shadow-lg focus:outline-none"
+          className={cn(
+            'fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l bg-surface shadow-lg focus:outline-none',
+            size === 'wide' ? 'max-w-4xl' : 'max-w-xl',
+          )}
         >
           <header className="flex items-start justify-between gap-3 border-b px-5 py-4">
             <div className="min-w-0 space-y-1">

@@ -98,7 +98,7 @@ test.describe('revisão de UX (modo mock)', () => {
     [`/cadastros/contas?conta=${GCP_ACCOUNT}`, 'Projeto da GCP loja-alfa-demo'],
     // Conta do Cloudflare: o link do token, o IP de saída e o cartão do token com o aviso de vencimento.
     [`/cadastros/contas?conta=${CLOUDFLARE_ACCOUNT}`, CLOUDFLARE_DIALOG],
-    // Conta AWS: o papel de leitura sem chave, com o template, os três valores do nó e o resultado da verificação.
+    // Conta AWS conectada: a situação, a pilha, o que a descoberta encontrou, as fontes autorizadas e as fontes de log.
     [`/cadastros/contas?conta=${AWS_ACCOUNT}`, AWS_DIALOG],
   ] as const) {
     test(`painel de detalhe ${path}: sem violação de acessibilidade`, async ({ page }) => {
@@ -143,8 +143,11 @@ test.describe('revisão de UX (modo mock)', () => {
   test('Conectar AWS: o template baixado é o do repositório, byte a byte, com o nome do arquivo', async ({
     page,
   }) => {
-    await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
-    const sheet = page.getByRole('dialog', { name: AWS_DIALOG });
+    // A alternativa manual do "Conectar com AWS" (na conta desconectada, em "criar de novo"): o template sem preencher.
+    await page.goto(`/cadastros/contas?conta=${AWS_REFUSED_ACCOUNT}`);
+    const sheet = page.getByRole('dialog', { name: AWS_REFUSED_DIALOG });
+    await sheet.getByText('A pilha foi apagada da conta? Criar de novo').click();
+    await sheet.getByText('Alternativa manual (sem o arquivo preenchido)').click();
     const link = sheet.getByRole('link', { name: /Baixar o template/ });
     await expect(link).toHaveAttribute('download', 'verax-control-reader.yaml');
     const [download] = await Promise.all([page.waitForEvent('download'), link.click()]);
@@ -158,19 +161,23 @@ test.describe('revisão de UX (modo mock)', () => {
   }) => {
     await page.goto(`/cadastros/contas?conta=${AWS_REFUSED_ACCOUNT}`);
     const sheet = page.getByRole('dialog', { name: AWS_REFUSED_DIALOG });
-    const status = sheet.getByRole('status');
-    await expect(status).toContainText('A AWS recusou a entrada no papel');
-    // O comando da CLI, aberto.
-    await sheet.getByText('Prefere a CLI?').click();
+    const situation = sheet.getByRole('region', { name: 'Situação da conexão' });
+    const status = situation.getByRole('status');
+    await expect(status).toContainText('Desconectada');
+    const checks = sheet.getByRole('region', { name: 'Conferências da conexão' });
+    await expect(checks.getByText(/^A AWS recusou a entrada no papel/)).toBeVisible();
+    // O caminho para criar a pilha de novo, com o comando da CLI aberto.
+    await sheet.getByText('A pilha foi apagada da conta? Criar de novo').click();
+    await sheet.getByText('Alternativa manual (sem o arquivo preenchido)').click();
     await expect(sheet.getByText(/^aws cloudformation deploy/)).toBeVisible();
     expect(await violations(page)).toEqual([]);
     // Verificar: pendente (o botão desliga e o estado vem pela região de status), depois o resultado.
-    await sheet.getByRole('button', { name: 'Verificar conexão' }).click();
-    await expect(status).toContainText('Verificação pedida');
-    await expect(sheet.getByRole('button', { name: 'Verificando…' })).toBeDisabled();
+    await situation.getByRole('button', { name: 'Verificar conexão' }).click();
+    await expect(status).toContainText('ele tenta de novo por até 10 minutos');
+    await expect(situation.getByRole('button', { name: 'Verificando…' })).toBeDisabled();
     expect(await violations(page)).toEqual([]);
-    await expect(status).toContainText('A AWS recusou a entrada no papel', { timeout: 15_000 });
-    await expect(sheet.getByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
+    await expect(status).toContainText('Desconectada', { timeout: 15_000 });
+    await expect(situation.getByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
     expect(await violations(page)).toEqual([]);
   });
 
