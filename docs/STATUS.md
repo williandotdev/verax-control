@@ -6484,11 +6484,12 @@ note?, confirmSlug}` → `{amendmentId, state, hosting, hostingChanged, nodeLimi
   (só texto).
 - **Dependências:** nenhuma.
 - **Testes:** `pnpm lint`, `format:check` e `typecheck` (todos os pacotes), limpos. Shared, 29 arquivos e 514
-  testes. API com Postgres, 181 arquivos e 2687 testes (três arquivos caíram no erro conhecido do worker do vitest no
-  Windows, código 3221226505, e passaram rodados de novo). Web, 56 arquivos e 724 testes; o build com a varredura do
-  bundle; os e2e `aws-onboarding.mock.spec.ts` e `aws-buckets.mock.spec.ts`, 11 de 11 (um novo: a escolha desligada
-  no clique sai no arquivo, bate com a pilha lida e volta na tela reaberta). Console, 22 arquivos e 145 testes, o
-  build e o e2e (30 de 30). `wazuh-apply-test.sh` (101 verificações) e `wazuh-progress-test.sh` (36) num
+  testes. API com Postgres, 181 arquivos e 2687 testes (na rodada final, dois arquivos caíram no erro conhecido do
+  worker do vitest no Windows, código 3221226505, e passaram rodados de novo). Web, 56 arquivos e 724 testes; o
+  build com a varredura do bundle; os e2e `aws-onboarding.mock.spec.ts` e `aws-buckets.mock.spec.ts`, 11 de 11 (um
+  novo: a escolha desligada no clique sai no arquivo, bate com a pilha lida e volta na tela reaberta). Console, 22
+  arquivos e 145 testes, o build e o e2e (30 de 30). `wazuh-apply-test.sh` (101 verificações) e
+  `wazuh-progress-test.sh` (36) num
   contêiner Linux; `shellcheck -x -S style` limpo nos dois arquivos alterados; os testes Python do template (107) e o
   cfn-lint, porque o README que eles leem mudou; os do gerador do Wazuh (79). Cada lacuna tem teste que cai sem a
   mudança (conferido tirando a mudança: 30 testes da API na escolha, nas fontes das conferências e no
