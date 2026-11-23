@@ -56,9 +56,10 @@ const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
  * gravou e a conta de serviço do cliente (`TenantCloudIdentity`, de onde sai o token que lê a AWS dele). O volume por dia
  * (CE-09) também: é a base da cobrança da franquia, e só os coletores e a tarefa `aws-volume` o gravam
  * (`usage/usage-meter.ts`, `usage/aws-volume.ts`). E, no nó dedicado, o resultado de cada item da sincronização com o
- * plano de controle (`ControlPlaneSyncItem`, só a tarefa `control-plane-sync`). No escopo do cliente, só a leitura passa;
- * a gravação é recusada mesmo que um service a tente, e quem grava usa o cliente base, fora do escopo
- * (`tenants/tenant-host.ts`, `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`, `control-plane-sync/`).
+ * plano de controle (`ControlPlaneSyncItem`, a tarefa `control-plane-sync` e a exclusão da conta do console pelo
+ * cliente, `control-plane-sync/deleted-in-panel.ts`). No escopo do cliente, só a leitura passa; a gravação é recusada
+ * mesmo que um service a tente, e quem grava usa o cliente base, fora do escopo (`tenants/tenant-host.ts`,
+ * `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`, `control-plane-sync/`).
  */
 export const SYSTEM_WRITTEN_MODELS = [
   'tenantHost',

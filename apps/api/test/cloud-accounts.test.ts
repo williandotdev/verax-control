@@ -573,6 +573,255 @@ describe('contas cloud (T3.3)', () => {
     });
   });
 
+  describe('exclusão do cadastro (POST /v1/cloud-accounts/:id/delete)', () => {
+    const remove = (session: TestSession, id: string, confirmAccountId: string) =>
+      call(session).post(`/v1/cloud-accounts/${id}/delete`, { confirmAccountId });
+
+    /** O que as chaves estrangeiras levam junto com a conta. */
+    const dependents = (id: string) =>
+      Promise.all([
+        prisma.awsSource.count({ where: { cloudAccountId: id } }),
+        prisma.awsDiscoveryRun.count({ where: { cloudAccountId: id } }),
+        prisma.collectorCursor.count({ where: { cloudAccountId: id } }),
+        prisma.awsVolumeObject.count({ where: { cloudAccountId: id } }),
+        prisma.cloudCredential.count({ where: { cloudAccountId: id } }),
+      ]);
+
+    /** Um achado da conta, como o sync grava: guarda o ID da conta como texto. */
+    const findingOf = (tenantId: string, account: string) =>
+      prisma.finding.create({
+        data: {
+          tenantId,
+          accountId: account,
+          source: 'wazuh',
+          sourceEventId: `wazuh/${account}/cloudtrail:${randomBytes(8).toString('hex')}:80202`,
+          logSource: 'cloudtrail',
+          occurredAt: new Date('2026-11-20T12:00:00.000Z'),
+          severity: 'high',
+          ruleId: '80202',
+          ruleLevel: 10,
+          title: 'Achado de teste da conta excluída',
+          mitreTactics: [],
+          mitreTechniques: [],
+        },
+      });
+
+    it('AWS do painel: a linha e o que depende dela saem; o achado e a trilha ficam; o mesmo ID volta', async () => {
+      const id = accountId();
+      const created = cloudAccountSchema.parse(
+        (
+          await call(adminA)
+            .post('/v1/cloud-accounts', newAccount({ accountId: id, buckets: { cloudtrail: bucket() } }))
+            .expect(201)
+        ).body,
+      );
+      await prisma.awsDiscoveryRun.create({
+        data: { tenantId: tenantA, cloudAccountId: created.id, trigger: 'connect' },
+      });
+      await prisma.collectorCursor.create({
+        data: { cloudAccountId: created.id, stream: 'aws_security_hub', region: 'sa-east-1' },
+      });
+      await prisma.awsVolumeObject.create({
+        data: {
+          cloudAccountId: created.id,
+          tenantId: tenantA,
+          objectHash: randomBytes(32).toString('hex'),
+          day: new Date('2026-11-20T00:00:00Z'),
+          stream: 'cloudtrail',
+          compressedBytes: 10n,
+          bytes: 500n,
+          isizeFallback: false,
+        },
+      });
+      const finding = await findingOf(tenantA, id);
+      const [sources, runs, cursors, objects] = await dependents(created.id);
+      expect({ sources, runs, cursors, objects }).toEqual({ sources: 1, runs: 1, cursors: 1, objects: 1 });
+
+      const deleted = await remove(adminA, created.id, id).expect(204);
+
+      expect(deleted.text).toBe('');
+      expect(await prisma.cloudAccount.findUnique({ where: { id: created.id } })).toBeNull();
+      expect(await dependents(created.id)).toEqual([0, 0, 0, 0, 0]);
+      expect(await prisma.finding.findUniqueOrThrow({ where: { id: finding.id } })).toMatchObject({
+        accountId: id,
+        tenantId: tenantA,
+      });
+      const entry = await entryOf(deleted);
+      expect(entry).toMatchObject({
+        action: 'cloud_account.delete',
+        resourceType: 'cloud_account',
+        resourceId: created.id,
+        outcome: 'success',
+        tenantId: tenantA,
+        actorType: 'user',
+        before: { accountId: id, provider: 'aws', origin: 'panel', managedBy: 'panel' },
+      });
+      expect(entry.after).toBeNull();
+      expect(JSON.stringify(entry.before)).not.toMatch(/ciphertext|secret|token/i);
+      // A trilha de antes da exclusão continua lá.
+      expect(
+        await prisma.auditLog.count({ where: { resourceId: created.id, action: 'cloud_account.create' } }),
+      ).toBe(1);
+      await call(adminA).get(`/v1/cloud-accounts/${created.id}`).expect(404);
+
+      // O mesmo ID de conta pode ser cadastrado de novo (outro cadastro, outro id).
+      const again = cloudAccountSchema.parse(
+        (
+          await call(adminA)
+            .post('/v1/cloud-accounts', newAccount({ accountId: id }))
+            .expect(201)
+        ).body,
+      );
+      expect(again.id).not.toBe(created.id);
+      expect(again).toMatchObject({ accountId: id, connection: 'waiting', status: 'active' });
+    });
+
+    it('Cloudflare (e conta desativada): sai e o mesmo ID volta, inclusive noutro cliente', async () => {
+      const id = cloudflareAccount();
+      const zoneName = zone();
+      const created = cloudAccountSchema.parse(
+        (
+          await call(adminA)
+            .post('/v1/cloud-accounts', { provider: 'cloudflare', accountId: id, zones: [zoneName] })
+            .expect(201)
+        ).body,
+      );
+      await call(adminA).delete(`/v1/cloud-accounts/${created.id}`).expect(204);
+      await remove(adminA, created.id, id).expect(204);
+      expect(await prisma.cloudAccount.count({ where: { accountId: id } })).toBe(0);
+      // A conta e a zona ficam livres.
+      await call(adminB)
+        .post('/v1/cloud-accounts', { provider: 'cloudflare', accountId: id, zones: [zoneName] })
+        .expect(201);
+    });
+
+    it('o ID digitado diferente: 400 ACCOUNT_ID_MISMATCH, nada muda, e a recusa fica na trilha', async () => {
+      const created = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      const before = await prisma.cloudAccount.findUniqueOrThrow({ where: { id: created.id } });
+      for (const typed of [accountId(), ` ${created.accountId}`, created.accountId.slice(1)]) {
+        const refused = await remove(adminA, created.id, typed).expect(400);
+        expect(refused.body).toMatchObject({ code: 'ACCOUNT_ID_MISMATCH' });
+        expect(await entryOf(refused)).toMatchObject({
+          action: 'cloud_account.delete',
+          resourceId: created.id,
+          outcome: 'failure',
+          tenantId: tenantA,
+        });
+      }
+      for (const body of [{}, { confirmAccountId: created.accountId, permanent: true }]) {
+        await call(adminA).post(`/v1/cloud-accounts/${created.id}/delete`, body).expect(400);
+      }
+      expect(await prisma.cloudAccount.findUniqueOrThrow({ where: { id: created.id } })).toEqual(before);
+    });
+
+    it('quem só lê não exclui (403); o cliente B recebe 404 na conta de A, e nada muda', async () => {
+      const created = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      const before = await prisma.cloudAccount.findUniqueOrThrow({ where: { id: created.id } });
+      await remove(readerA, created.id, created.accountId).expect(403);
+      await remove(adminB, created.id, created.accountId).expect(404);
+      expect(await prisma.cloudAccount.findUniqueOrThrow({ where: { id: created.id } })).toEqual(before);
+      // Uma conta que não existe (ou já foi excluída) também é 404.
+      await remove(adminA, '018f0000-0000-7000-8000-0000000000ff', created.accountId).expect(404);
+    });
+
+    it('conta do console: sai, e a sincronização guarda a falha deleted_in_panel na revisão de agora', async () => {
+      const verax = await prisma.cloudAccount.create({
+        data: {
+          tenantId: tenantA,
+          provider: 'cloudflare',
+          accountId: cloudflareAccount(),
+          zones: [zone()],
+          origin: 'control_plane',
+          controlPlaneRevision: 3,
+        },
+      });
+      // O resultado da credencial da fonte sai junto: a conta recriada recebe de novo a do console.
+      await prisma.controlPlaneSyncItem.create({
+        data: {
+          kind: 'log_source_credential',
+          itemId: verax.id,
+          tenantId: tenantA,
+          revision: 1,
+          outcome: 'applied',
+        },
+      });
+
+      const deleted = await remove(adminA, verax.id, verax.accountId).expect(204);
+
+      expect(await prisma.cloudAccount.findUnique({ where: { id: verax.id } })).toBeNull();
+      expect(
+        await prisma.controlPlaneSyncItem.findUnique({
+          where: { kind_itemId: { kind: 'log_source', itemId: verax.id } },
+        }),
+      ).toMatchObject({
+        tenantId: tenantA,
+        revision: 3,
+        outcome: 'failed',
+        code: 'deleted_in_panel',
+        nextAttemptAt: null,
+      });
+      expect(
+        await prisma.controlPlaneSyncItem.findUnique({
+          where: { kind_itemId: { kind: 'log_source_credential', itemId: verax.id } },
+        }),
+      ).toBeNull();
+      expect(await entryOf(deleted)).toMatchObject({
+        action: 'cloud_account.delete',
+        outcome: 'success',
+        before: { origin: 'control_plane', managedBy: 'verax' },
+      });
+    });
+
+    it('conta do console com uma revisão mais nova que falhou: a falha da exclusão fica nessa revisão', async () => {
+      const verax = await prisma.cloudAccount.create({
+        data: {
+          tenantId: tenantA,
+          provider: 'cloudflare',
+          accountId: cloudflareAccount(),
+          zones: [zone()],
+          origin: 'control_plane',
+          controlPlaneRevision: 2,
+        },
+      });
+      await prisma.controlPlaneSyncItem.create({
+        data: {
+          kind: 'log_source',
+          itemId: verax.id,
+          tenantId: tenantA,
+          revision: 5,
+          outcome: 'failed',
+          code: 'origin_conflict',
+        },
+      });
+      await remove(adminA, verax.id, verax.accountId).expect(204);
+      expect(
+        await prisma.controlPlaneSyncItem.findUnique({
+          where: { kind_itemId: { kind: 'log_source', itemId: verax.id } },
+        }),
+      ).toMatchObject({ revision: 5, outcome: 'failed', code: 'deleted_in_panel' });
+    });
+
+    it('o cliente B não exclui a conta do console de A (404), e nenhum item da sincronização é gravado', async () => {
+      const verax = await prisma.cloudAccount.create({
+        data: {
+          tenantId: tenantA,
+          provider: 'cloudflare',
+          accountId: cloudflareAccount(),
+          zones: [zone()],
+          origin: 'control_plane',
+          controlPlaneRevision: 1,
+        },
+      });
+      await remove(adminB, verax.id, verax.accountId).expect(404);
+      expect(await prisma.cloudAccount.findUnique({ where: { id: verax.id } })).not.toBeNull();
+      expect(await prisma.controlPlaneSyncItem.count({ where: { itemId: verax.id } })).toBe(0);
+    });
+  });
+
   describe('conexão (fase 2)', () => {
     it('a API devolve a conexão: aguardando no cadastro, depois o que o coletor gravou', async () => {
       const created = cloudAccountSchema.parse(

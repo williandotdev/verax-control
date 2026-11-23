@@ -499,6 +499,21 @@ describe('cp-worker: sincronização do nó dedicado', () => {
     });
   });
 
+  it('a fonte que o cliente excluiu no painel: o relato com deleted_in_panel, sem a conta, é aceito e gravado', async () => {
+    const node = await managed();
+    const source = await seedSource(node.tenant.id);
+    const deleted = {
+      ...sourceReport(source.id, 1),
+      outcome: 'failed' as const,
+      code: 'deleted_in_panel' as const,
+      account: null,
+    };
+    expect((await syncManaged(node, { sources: [deleted] })).status).toBe(200);
+    expect(await documents.get(COLLECTIONS.logSourceReports(node.tenant.id), source.id)).toMatchObject({
+      report: { revision: 1, outcome: 'failed', code: 'deleted_in_panel', credential: null, account: null },
+    });
+  });
+
   it('sequência e intervalo: repetição ou sequência menor é 409; mais de uma chamada em 20 s é 429', async () => {
     const node = await managed();
     expect((await syncManaged(node)).status).toBe(200);

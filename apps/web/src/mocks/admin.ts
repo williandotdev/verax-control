@@ -8,10 +8,12 @@ import {
   awsReaderRoleArn,
   type CloudAccount,
   cloudAccountCreateSchema,
+  cloudAccountDeleteSchema,
   cloudAccountListQuerySchema,
   cloudAccountSchema,
   cloudAccountUpdateSchema,
   CONSOLE_MANAGED_CODE,
+  DELETE_CONFIRMATION_MISMATCH_CODE,
   cloudCredentialInputSchema,
   CREDENTIAL_KIND_PROVIDERS,
   credentialStatus,
@@ -895,6 +897,28 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         rest.status === 'inactive' ? { keyStatus: null } : {},
       );
       return HttpResponse.json(account);
+    }),
+    // Excluir o cadastro, como a API: o ID digitado confere com o da conta (outro texto, 400 ACCOUNT_ID_MISMATCH), e a
+    // conta sai da lista (o mesmo ID pode ser cadastrado de novo). Vale também para a conta que a Verax cadastrou.
+    http.post(url('/v1/cloud-accounts/:id/delete'), async ({ params, request }) => {
+      const scope = scoped('cloud_accounts:write', request);
+      if (!scope.ok) return scope.error;
+      const accounts = listOf(store.accounts, scope.tenantId);
+      const index = accounts.findIndex((candidate) => candidate.id === params['id']);
+      const account = accounts[index];
+      if (!account) return problem(404, 'Conta não encontrada');
+      const input = cloudAccountDeleteSchema.safeParse(await body(request));
+      if (!input.success) return problem(400, 'Dados inválidos');
+      if (input.data.confirmAccountId !== account.accountId) {
+        return problem(
+          400,
+          'O ID digitado não é o desta conta: nada foi excluído.',
+          DELETE_CONFIRMATION_MISMATCH_CODE,
+        );
+      }
+      accounts.splice(index, 1);
+      store.awsOnboarding.delete(account.id);
+      return new HttpResponse(null, { status: 204 });
     }),
     // "Verificar" a conta AWS, como a API: grava o pedido (a conexão volta a aguardar) e responde na hora (202); o
     // pedido pendente não é renovado. Quem responde é o "worker" da demonstração, na leitura da lista. Com as

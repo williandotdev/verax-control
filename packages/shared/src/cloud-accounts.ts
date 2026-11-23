@@ -14,7 +14,8 @@ export const CLOUD_ACCOUNT_CONNECTIONS = ['waiting', 'connected', 'error'] as co
 export type CloudAccountConnection = (typeof CLOUD_ACCOUNT_CONNECTIONS)[number];
 /**
  * Quem cadastrou a conta: o cliente, no painel, ou a Verax, pelo console (a sincronização do nó com o plano de
- * controle, `node-sync.ts`). A conta da Verax não muda nem é desativada pelo painel (409 `CONSOLE_MANAGED_CODE`).
+ * controle, `node-sync.ts`). A conta da Verax não muda nem é desativada pelo painel (409 `CONSOLE_MANAGED_CODE`), mas o
+ * cliente pode excluí-la (`POST /v1/cloud-accounts/:id/delete`; a Verax é avisada pela sincronização).
  */
 export const CLOUD_ACCOUNT_MANAGERS = ['panel', 'verax'] as const;
 export type CloudAccountManager = (typeof CLOUD_ACCOUNT_MANAGERS)[number];
@@ -401,6 +402,20 @@ const PROVIDER_FIELDS: Record<CloudProvider, readonly string[]> = {
 export function fieldsOutsideProvider(provider: CloudProvider, update: CloudAccountUpdate): string[] {
   return Object.keys(update).filter((field) => !PROVIDER_FIELDS[provider].includes(field));
 }
+
+/**
+ * Corpo de `POST /v1/cloud-accounts/:id/delete`, a exclusão do cadastro (diferente de desativar): o cliente digita o ID
+ * da conta no provedor (`accountId`), e a API confere de novo. O cadastro sai do nó e o mesmo ID pode ser cadastrado
+ * outra vez; achados, incidentes, histórico e a trilha ficam (guardam o ID da conta como texto). Nada é apagado na nuvem
+ * do cliente.
+ */
+export const cloudAccountDeleteSchema = z.strictObject({
+  confirmAccountId: z.string().min(1).max(32),
+});
+export type CloudAccountDelete = z.infer<typeof cloudAccountDeleteSchema>;
+
+/** Código da recusa da exclusão quando o ID digitado não é o da conta (400). */
+export const DELETE_CONFIRMATION_MISMATCH_CODE = 'ACCOUNT_ID_MISMATCH';
 
 export const cloudAccountListQuerySchema = withPagination({
   status: z.enum(CLOUD_ACCOUNT_STATUSES).optional(),

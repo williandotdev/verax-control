@@ -42,6 +42,7 @@ import { Prisma, type ControlPlaneItemKind } from '../generated/prisma/client.js
 import { assertWithinPlan, lockPlanSeats, lockSeatRow, PlanLimitReached } from '../plan/plan-limits.js';
 import type { TenantPlans } from '../plan/tenant-plan.js';
 import type { SourceCredentialChecks } from './credential-checks.js';
+import { deletedInPanelAt } from './deleted-in-panel.js';
 
 /** A vaga do plano que faltou, ou o plano que ainda não chegou, é tentada de novo a cada hora (com a mesma revisão). */
 export const PLAN_RETRY_MS = 60 * 60 * 1000;
@@ -252,7 +253,8 @@ type AccountStep = 'applied' | 'removed' | 'unchanged';
 
 /**
  * A conta desejada, numa transação: criar, alterar (só os campos do console, as mesmas regras do `update` do painel) ou
- * desativar (a lápide, como o `deactivate`). Nunca toca numa conta do painel. Lança `SourceFailure` com o código.
+ * desativar (a lápide, como o `deactivate`). Nunca toca numa conta do painel. Lança `SourceFailure` com o código. A
+ * lápide de uma conta que não existe mais (o cliente a excluiu no painel) é contada como removida.
  */
 async function applyAccount(
   tx: Tx,
@@ -298,6 +300,9 @@ async function applyAccount(
   await lockSeats(tx, ctx);
   const existing = await db.cloudAccount.findUnique({ where: { id: source.id }, select: accountSelect });
   if (existing === null) {
+    // O cliente excluiu a conta no painel nesta revisão (ou depois dela): só uma revisão maior a cadastra de novo. Lido
+    // depois do lock das vagas, o mesmo da exclusão: a passagem que leu o item antes dela também não recria a conta.
+    if (await deletedInPanelAt(tx, source.id, source.revision)) throw new SourceFailure('deleted_in_panel');
     // A mesma conta do provedor já cadastrada (pelo cliente, ou por outro cadastro do console): nunca é tocada.
     const same = await tx.cloudAccount.findUnique({
       where: { provider_accountId: { provider: spec.provider, accountId: spec.accountId } },
@@ -505,7 +510,10 @@ async function applyCredential(
     }
     const outcome = await prisma.$transaction(
       async (tx) => {
-        // O lock da conta: o mesmo da troca pelo painel, da recifragem e da desativação.
+        // O lock da conta: o mesmo da troca pelo painel, da recifragem, da desativação e da exclusão. A ordem dos locks é
+        // a de todo caminho que toca a credencial e os itens da sincronização: (as vagas do plano, quando há) o lock da
+        // credencial e só depois o item (`recordItem`, no fim). A exclusão no painel segue a mesma ordem
+        // (`deleted-in-panel.ts`); o item antes do lock levaria a um deadlock com ela.
         await lockCredential(tx, source.id);
         const scoped = scopeToTenant(tx, tenantId);
         const still = await scoped.cloudAccount.findUnique({

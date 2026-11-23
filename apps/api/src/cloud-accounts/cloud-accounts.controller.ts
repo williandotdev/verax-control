@@ -17,6 +17,8 @@ import {
   type CloudAccount,
   type CloudAccountCreate,
   cloudAccountCreateSchema,
+  type CloudAccountDelete,
+  cloudAccountDeleteSchema,
   type CloudAccountListQuery,
   cloudAccountListQuerySchema,
   type CloudAccountUpdate,
@@ -32,8 +34,8 @@ import { CloudAccountsService } from './cloud-accounts.service.js';
 const accountIdSchema = z.uuid();
 
 /**
- * Contas cloud do cliente da sessão (T3.3). Todos leem; administradores cadastram, alteram e pedem a verificação da
- * conta AWS.
+ * Contas cloud do cliente da sessão (T3.3). Todos leem; administradores cadastram, alteram, desativam, excluem e pedem a
+ * verificação da conta AWS.
  */
 @Controller('cloud-accounts')
 export class CloudAccountsController {
@@ -77,6 +79,23 @@ export class CloudAccountsController {
   @RequirePermission('cloud_accounts:write')
   deactivate(@Req() request: Request, @Param('id', { schema: accountIdSchema }) id: string): Promise<void> {
     return this.accounts.deactivate(request.auth as RequestAuth, id);
+  }
+
+  /**
+   * Excluir o cadastro (`cloud_account.delete`), à parte do `DELETE` (que só desativa e continua como sempre): rota
+   * explícita, com o ID da conta digitado no corpo (`{confirmAccountId}`), conferido pela API. Responde 204; o ID
+   * digitado diferente, 400 `ACCOUNT_ID_MISMATCH`; a conta de outro cliente, 404. Vale para qualquer provedor e também
+   * para a conta que a Verax cadastrou pelo console (o nó avisa o console na próxima sincronização).
+   */
+  @Post(':id/delete')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequirePermission('cloud_accounts:write')
+  delete(
+    @Req() request: Request,
+    @Param('id', { schema: accountIdSchema }) id: string,
+    @Body({ schema: cloudAccountDeleteSchema }) body: CloudAccountDelete,
+  ): Promise<void> {
+    return this.accounts.delete(request.auth as RequestAuth, id, body);
   }
 
   /**

@@ -257,6 +257,24 @@ describe('limites do plano (fase 2, PR-18)', () => {
       expect(await prisma.cloudAccount.count({ where: { tenantId, status: 'active' } })).toBe(MAX_ACCOUNTS);
     });
 
+    it('excluir libera a vaga: no limite, a conta excluída abre lugar para outra, e o mesmo ID volta', async () => {
+      const { tenantId, admin } = await freshTenant();
+      const [first = ''] = await fillAccounts(admin, MAX_ACCOUNTS);
+      await call(admin).post('/v1/cloud-accounts', newAccount(0)).expect(409);
+      const { accountId } = await prisma.cloudAccount.findUniqueOrThrow({ where: { id: first } });
+
+      await call(admin)
+        .post(`/v1/cloud-accounts/${first}/delete`, { confirmAccountId: accountId })
+        .expect(204);
+
+      expect(await prisma.cloudAccount.count({ where: { tenantId } })).toBe(MAX_ACCOUNTS - 1);
+      // A conta da primeira vaga (AWS) volta com o mesmo ID; a seguinte já passa do limite.
+      await call(admin)
+        .post('/v1/cloud-accounts', { provider: 'aws', accountId, regions: ['sa-east-1'] })
+        .expect(201);
+      await call(admin).post('/v1/cloud-accounts', newAccount(1)).expect(409);
+    });
+
     it('duas criações simultâneas no limite menos 1: uma passa e a outra recebe 409', async () => {
       // Algumas rodadas: sem o lock do plano, as duas transações contam antes de a outra gravar e passam juntas.
       for (let round = 0; round < 3; round += 1) {

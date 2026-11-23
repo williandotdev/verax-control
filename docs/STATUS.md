@@ -6517,3 +6517,50 @@ note?, confirmSlug}` → `{amendmentId, state, hosting, hostingChanged, nodeLimi
 - **Pendente para a produção:** a homologação (as conferências H-03, H-04 e H-05, do IAM, são bloqueio); o merge da
   integração na `main` (decisão do responsável); a versão do nó e a promoção para a frota, nessa ordem (o checklist
   está no fim do roteiro de homologação). Os clientes com a pilha do modelo 1 atualizam quando quiserem.
+
+## Excluir a conta cloud pelo painel (decisão de 23/11/2026)
+
+- **O que mudou:** o cliente exclui a conta cloud no painel, e o mesmo ID pode ser cadastrado de novo (por exemplo, para
+  refazer a conexão da AWS pelo "Conectar com AWS"). Antes, o `DELETE /v1/cloud-accounts/:id` só desativava (o ID
+  continuava ocupado, "Esta conta já está cadastrada"), e a conta da Verax recusava até isso (409 `CONSOLE_MANAGED`).
+  - **API:** rota nova e explícita, `POST /v1/cloud-accounts/:id/delete` (`cloud_accounts:write`, corpo estrito
+    `{confirmAccountId}`, 204); o ID digitado diferente, 400 `ACCOUNT_ID_MISMATCH`; outro cliente, 404; quem só lê, 403.
+    O `DELETE` continua só desativando. Numa transação, sob o lock das vagas: a credencial sai (`cloud_credential.wipe`),
+    a linha da conta é apagada (as chaves estrangeiras levam descobertas, fontes da AWS, cursores e objetos medidos), a
+    vaga volta, e a trilha grava `cloud_account.delete` com o antes (sem segredo). Achados, incidentes, postura,
+    inventário, uso e a trilha ficam (guardam o ID como texto). A tabela do que sai e do que fica está em
+    `docs/ARQUITETURA.md`, "Desativar e excluir uma conta".
+  - **Conta do console:** o cliente também exclui. O item da fonte em `ControlPlaneSyncItem` vira a falha
+    `deleted_in_panel` (código novo em `NODE_SYNC_SOURCE_CODES`) na maior revisão entre a aplicada e a do item, sem nova
+    tentativa, na mesma transação; o item da credencial sai. A sincronização não recria a conta na mesma revisão (e
+    confere o item de novo dentro da transação dela, depois do lock das vagas), conta a falha ao console, recria com
+    uma revisão maior e conta a lápide depois da exclusão como `removed`. O console mostra o código com o que fazer; a
+    visão do plano de controle dá `failed` com o código.
+  - **Painel:** "Excluir conta", na zona de perigo do detalhe, à parte do "Desativar monitoramento", para quem
+    administra: a confirmação no próprio painel (como a remoção do token e a confirmação pelo subdomínio no console, sem
+    outra janela sobre o painel lateral) diz o que sai e o que fica, o que fazer com a pilha `verax-control-reader` na
+    AWS e, na conta do console, que a Verax será avisada; o botão só libera com o ID digitado. Excluída, o painel fecha,
+    a linha sai e o aviso recebe o foco.
+- **Arquivos:** `packages/shared/src/cloud-accounts.ts` e `node-sync.ts` (e os testes);
+  `apps/api/src/cloud-accounts/cloud-accounts.{controller,service}.ts`, `control-plane-sync/deleted-in-panel.ts` (novo)
+  e `apply-source.ts`, comentários em `common/prisma/tenant-scope.ts` e `prisma/schema.prisma` (sem migration); os
+  testes `cloud-accounts`, `control-plane-sync`, `plan-limits` e `wazuh-config`; `apps/console/src/features/tenants/
+log-source-labels.ts`, `lib/api-types.ts` e `log-sources.test.tsx`; `apps/control-plane/test/admin-log-sources` e
+  `node-sync-worker`; `apps/web/src/features/admin/delete-cloud-account.tsx` (novo), `admin-api.ts`,
+  `pages/admin/cloud-accounts-page.tsx`, `features/audit/labels.ts`, `mocks/admin.ts`, os testes
+  `cloud-accounts-delete.test.tsx` e o e2e `cloud-account-delete.mock.spec.ts`; `docs/ARQUITETURA.md`,
+  `docs/runbooks/onboarding-cliente.md` e `console-do-responsavel.md`.
+- **Dependências:** nenhuma.
+- **Testes:** `pnpm lint`, `format:check` e `typecheck` (todos os pacotes), limpos. Shared, 29 arquivos e 515 testes.
+  API com Postgres descartável, 181 arquivos e 2704 testes (um arquivo caiu no erro conhecido do worker do vitest no
+  Windows, 3221226505, e passou rodado de novo); 14 novos: a exclusão AWS e Cloudflare (o que sai, o que fica, a trilha,
+  o mesmo ID de novo), a confirmação errada, a leitura, o outro cliente, a conta do console (o item e a revisão), a vaga
+  liberada, a lista do Wazuh sem a conta e a sincronização (mesma revisão não recria e conta o código; revisão maior
+  recria com a credencial; lápide depois da exclusão; a guarda dentro da transação, que cai sem a mudança). Plano de
+  controle, 1158 testes (`--maxWorkers=2`). Console, 146. Web, 57 arquivos e 736 testes; o build com a varredura do
+  bundle; os e2e `cloud-account-delete`, `aws-buckets`, `aws-onboarding` (13) e `pages` (69).
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`, Contas cloud → uma conta → "Excluir conta…", digitar o ID e
+  cadastrar o mesmo ID de novo, nos dois temas.
+- **Riscos:** uma passagem do worker em curso na hora da exclusão pode terminar uma vez com erro de registro não
+  encontrado ao gravar o resultado (nada é recriado). Na conta do console recriada por uma revisão maior, a credencial
+  só volta se o console ainda tiver o envelope (o consumido precisa ser reenviado).

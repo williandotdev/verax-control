@@ -24,8 +24,8 @@ import {
 import { wazuhSourcesLine } from '../src/cli/wazuh-sources.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import type { Prisma } from '../src/generated/prisma/client.js';
-import { createSignedInUser, createTenant } from './support/auth-helpers.js';
-import { createApp } from './support/create-app.js';
+import { createSignedInUser, createTenant, withCsrf } from './support/auth-helpers.js';
+import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 
 const accountId = () => String(randomInt(100_000_000_000, 999_999_999_999));
 const bucket = (prefix = 'trilha') => `${prefix}-${randomInt(1_000_000, 9_999_999)}`;
@@ -461,6 +461,34 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     expect(await task.runOnce()).toMatchObject({ accounts: 0, cleared: 1 });
     expect((await rowOf(account.id)).collectionError).toBeNull();
     expect((await auditOf(account.id)).at(-1)?.after).toEqual({ collectionError: null });
+  });
+
+  it('a conta excluída no painel sai da próxima lista (outra geração), sem levar a outra conta nem mexer na origem', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (conta excluída)');
+    const kept = await awsAccount(tenant, { guarddutyBucket: bucket('guardduty') });
+    const deleted = await awsAccount(tenant, { wafBucket: `aws-waf-logs-${bucket()}` });
+    const before = toWazuhSources(await findWazuhSourceRows(prisma, [tenant]));
+    expect(before.accounts.map((item) => item.accountId)).toEqual([kept.accountId, deleted.accountId].sort());
+    const generation = await generationOf([tenant]);
+
+    const user = await createSignedInUser(app, { role: 'admin_cliente', tenantId: tenant });
+    const { cookie, token } = await withCsrf(app, user.cookie);
+    await request(app.getHttpServer())
+      .post(`/v1/cloud-accounts/${deleted.id}/delete`)
+      .set('Cookie', cookie)
+      .set('Origin', TEST_WEB_ORIGIN)
+      .set('X-CSRF-Token', token)
+      .send({ confirmAccountId: deleted.accountId })
+      .expect(204);
+
+    const after = toWazuhSources(await findWazuhSourceRows(prisma, [tenant]));
+    // A lista sai das linhas: a conta excluída não aparece mais, e a outra fica igual. O host aplica a lista nova (o
+    // manager para de ler os buckets dela) e nada é apagado no bucket: o `remove_from_bucket` continua `no`
+    // (`wazuh-contract.test.ts`).
+    expect(after.accounts.map((item) => item.accountId)).toEqual([kept.accountId]);
+    expect(after.accounts[0]).toEqual(before.accounts.find((item) => item.accountId === kept.accountId));
+    expect(await generationOf([tenant])).not.toBe(generation);
+    expect(serializeWazuhSources(after)).not.toContain(deleted.accountId);
   });
 
   it('o banco só aceita o aviso da coleta na conta AWS, e só com os códigos dela', async () => {

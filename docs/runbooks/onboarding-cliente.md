@@ -113,7 +113,8 @@ Na reunião:
      `PLAN_LIMIT_REACHED`), e a tentativa fica na auditoria do cliente;
    - o bootstrap do nó mostra `Conta GCP <projeto>: plan-limit.` para a conta que ficou de fora, e segue com o resto.
 
-   O caminho é o cliente desativar uma conta ou um usuário (a vaga volta na hora) ou ampliar o plano: troque o ajuste
+   O caminho é o cliente desativar ou excluir uma conta, ou desativar um usuário (a vaga volta na hora), ou ampliar o
+   plano: troque o ajuste
    no `node.conf` (`PLAN_MAX_CLOUD_ACCOUNTS` ou `PLAN_MAX_USERS`, de 1 a 1000) e rode o `deploy.sh`, porque a API lê o
    plano na partida. Uma conta da GCP que ficou de fora no bootstrap entra rodando o bootstrap de novo. Descer de plano
    não desativa nada: o painel mostra "acima do limite do plano", e só os próximos cadastros são recusados. O volume
@@ -372,6 +373,32 @@ Tudo vale em instantes, também para a sessão que o nó já tem aberta (a AWS c
 | Tudo                       | Desativa o monitoramento da conta no painel; no IAM, _Revoke active sessions_ no papel; no CloudFormation, apaga a pilha | A conta fica "Desconectada" (`trust_denied`). As fontes e as autorizações continuam guardadas, para uma reconexão; sem o papel, o nó não entra mais |
 
 Na VM própria: desativar o monitoramento (a chave sai do cofre do nó) e desativar e apagar a chave no IAM.
+
+#### Excluir a conta e cadastrar de novo
+
+"Desativar monitoramento" para a coleta e guarda o cadastro (o ID da conta continua do cliente; reativar retoma).
+Para tirar o cadastro de vez, por exemplo para refazer a conexão da AWS do zero pelo "Conectar com AWS", o
+administrador do cliente usa **Excluir conta**, na zona de perigo do detalhe da conta (Contas cloud), em qualquer
+provedor:
+
+1. "Excluir conta…" abre a confirmação, que diz o que acontece: o cadastro some do painel e a coleta da conta para; os
+   achados, os incidentes e o histórico já registrados ficam; nada é apagado na nuvem do cliente. Na AWS, a pilha
+   `verax-control-reader` continua na conta: o cliente a apaga no CloudFormation se não for conectar de novo, ou a deixa
+   para reconectar (a mesma pilha serve quando a conta for cadastrada outra vez).
+2. O botão "Excluir definitivamente" só libera com o ID da conta digitado (a API confere de novo; outro texto não exclui
+   nada). Excluída, o painel fecha, a linha sai da lista e a vaga do plano volta. A trilha do cliente registra
+   "Excluiu conta cloud", com quem e quando.
+3. Para cadastrar de novo: "Cadastrar conta" com o mesmo ID. Na AWS, com a pilha ainda na conta, basta "Verificar
+   conexão" (ou o comando da CLI da tela, que atualiza a pilha que já existe); sem ela, "Conectar com AWS". Depois, a
+   autorização das fontes de novo (as autorizações saem com a conta excluída).
+
+**Conta cadastrada pela Verax pelo console** (selo "Cadastrada pela Verax"): o cliente também pode excluí-la, e a
+confirmação avisa que a Verax será avisada. O nó conta ao console, na sincronização seguinte (em até uns 5 min), que a
+fonte foi excluída no painel: no console, a fonte aparece como **Falhou** com `deleted_in_panel`. O nó não a cadastra
+de novo sozinho. Para a Verax voltar a cuidar dela, o responsável altera a fonte no console (uma revisão nova, que o nó
+aplica e cadastra a conta outra vez, com a chave que o console mandar; se a chave enviada já foi consumida, reenvie-a),
+ou remove a fonte no console e o cliente conecta a conta pelo painel dele. Se o cliente já cadastrou a mesma conta no
+painel, a revisão nova falha com `account_exists_panel`, e a conta continua com ele.
 
 #### Medidor, saúde, Ativos e Postura
 

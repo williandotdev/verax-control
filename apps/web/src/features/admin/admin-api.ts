@@ -5,9 +5,11 @@ import {
   type AlertExceptionUpdate,
   type CloudAccount,
   type CloudAccountCreate,
+  type CloudAccountDelete,
   cloudAccountSchema,
   type CloudAccountUpdate,
   type CloudCredentialInput,
+  type Paginated,
   paginatedSchema,
   type ProtectedResourceCreate,
   protectedResourceSchema,
@@ -137,6 +139,34 @@ export const useUpdateCloudAccount = (id: string) =>
   useWrite(['admin-cloud-accounts', 'cloud-accounts'], (input: CloudAccountUpdate) =>
     api.patch(`/v1/cloud-accounts/${encodeURIComponent(id)}`, input, cloudAccountSchema),
   );
+
+/**
+ * Excluir o cadastro da conta (`POST /v1/cloud-accounts/:id/delete`, com o ID digitado). Confirmada a exclusão, a conta
+ * sai das listas já guardadas na hora, antes de `onDeleted` fechar o painel: o painel não devolve o foco a uma linha que
+ * vai sumir. Depois, as listas e o plano (a vaga liberada) são relidos.
+ */
+export function useDeleteCloudAccount(id: string, onDeleted: () => void) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CloudAccountDelete) =>
+      api.post(`/v1/cloud-accounts/${encodeURIComponent(id)}/delete`, input),
+    onSuccess: () => {
+      queryClient.setQueriesData<Paginated<CloudAccount>>({ queryKey: ['admin-cloud-accounts'] }, (data) =>
+        data === undefined
+          ? data
+          : {
+              ...data,
+              items: data.items.filter((account) => account.id !== id),
+              total: Math.max(0, data.total - 1),
+            },
+      );
+      onDeleted();
+      for (const key of ['admin-cloud-accounts', 'cloud-accounts', 'plan']) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
+  });
+}
 
 /** Estado da última escrita da credencial: só o resultado (a conta, sem segredo) ou o erro, nunca o que foi colado. */
 interface CredentialWriteState {

@@ -1157,7 +1157,9 @@ enum ControlPlaneItemKind {
 /// worker processou, para contar de volta (`outcome` e `code` do contrato, `packages/shared/src/node-sync.ts`) e para não
 /// tentar de novo uma revisão que falhou, a não ser quando a falha passa sozinha (`nextAttemptAt`: a vaga do plano a
 /// cada hora, a origem fora do ar com espera crescente). `itemId` é o id do item no console (a fonte de log é o id da
-/// conta no banco do nó). Só o worker grava (`SYSTEM_WRITTEN_MODELS`); nenhuma rota lê.
+/// conta no banco do nó). Só o worker grava (`SYSTEM_WRITTEN_MODELS`), com uma exceção: a exclusão da conta do console
+/// pelo cliente no painel grava a falha `deleted_in_panel` da fonte (`control-plane-sync/deleted-in-panel.ts`). Nenhuma
+/// rota lê.
 model ControlPlaneSyncItem {
   kind          ControlPlaneItemKind
   itemId        String               @db.VarChar(36)
