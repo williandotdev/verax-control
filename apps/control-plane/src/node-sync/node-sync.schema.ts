@@ -3,6 +3,7 @@ import {
   cloudAccountCreateSchema,
   NODE_PLATFORMS,
   NODE_SYNC_CAPABILITIES,
+  type NodeSyncCapability,
   NODE_SYNC_ENVELOPE_PATTERN,
   NODE_SYNC_MAX_CAPABILITIES,
   NODE_SYNC_MAX_ENVELOPE_LENGTH,
@@ -34,6 +35,15 @@ import { auditActorSchema } from '../audit/audit.service.js';
 /** Os ids dos dois documentos de `tenants/{id}/nodeSync`. */
 export const NODE_SYNC_STATE_DOC = 'state';
 export const NODE_SYNC_DESIRED_DOC = 'desired';
+/** O terceiro, só de quem anuncia `cloudflare_oauth` (`nodeCloudflareOauthSchema`). */
+export const NODE_SYNC_CLOUDFLARE_OAUTH_DOC = 'cloudflareOauth';
+
+/**
+ * As capacidades gravadas em `nodeSync/state`: só as que toda versão do plano de controle em uso sabe ler. O documento é
+ * estrito, e uma capacidade nova ali faria a versão anterior, numa volta de versão, recusar o estado inteiro do nó (a
+ * sincronização e as telas dele). As novas ficam em documento próprio, que a versão anterior nunca lê.
+ */
+export const STORED_NODE_CAPABILITIES: ReadonlySet<NodeSyncCapability> = new Set(['log_sources', 'users']);
 
 /** Os envelopes de fonte valem 7 dias no Firestore (o TTL de `expiresAt`); o cp-worker apaga antes. */
 export const LOG_SOURCE_SECRET_TTL_MS = 7 * 24 * 60 * 60_000;
@@ -72,6 +82,27 @@ export const nodeSyncStateSchema = z.strictObject({
   error: node.error,
 });
 export type NodeSyncState = z.infer<typeof nodeSyncStateSchema>;
+
+/**
+ * `nodeSync/cloudflareOauth`: o nó anunciou `cloudflare_oauth` na chamada desta `sequence`, aceita em `seenAt`. Só vale
+ * junto do `nodeSync/state` da mesma chamada (`announcesCloudflareOauth`): um nó que voltou à versão anterior, ou um
+ * plano de controle que a versão anterior atendeu no meio, deixam o documento para trás.
+ */
+export const nodeCloudflareOauthSchema = z.strictObject({
+  sequence: nodeSyncStateSchema.shape.sequence,
+  seenAt: z.date(),
+});
+
+/** O nó anunciou `cloudflare_oauth` na última chamada aceita? Documento ausente, velho ou fora do formato: não. */
+export function announcesCloudflareOauth(state: NodeSyncState | undefined, data: unknown): boolean {
+  const parsed = nodeCloudflareOauthSchema.safeParse(data);
+  return (
+    state !== undefined &&
+    parsed.success &&
+    parsed.data.sequence === state.sequence &&
+    parsed.data.seenAt.getTime() === state.lastSeenAt.getTime()
+  );
+}
 
 /** `nodeSync/desired`: a geração do estado desejado, que o console sobe na mesma transação de cada mudança. */
 export const nodeSyncDesiredSchema = z.strictObject({

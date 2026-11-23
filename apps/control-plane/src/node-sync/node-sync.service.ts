@@ -24,7 +24,9 @@ import {
 import type { z } from 'zod';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service.js';
+import { cloudflareOauthSettings, isTenantReleased } from '../cloudflare-oauth/cloudflare-oauth-settings.js';
 import { CLOCK, type Clock } from '../common/clock.js';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { enrollmentHash, nodeKeyValid, sameHash } from '../enrollment/enrollment.js';
 import { COLLECTIONS } from '../firestore/collections.js';
 import {
@@ -36,8 +38,9 @@ import {
   parseDocument,
 } from '../firestore/document-store.js';
 import { TenantStore } from '../tenants/tenant-store.js';
-import { hostingOf, type TenantRecord, type TenantState } from '../tenants/tenant.schema.js';
+import { hostingOf, type TenantRecord } from '../tenants/tenant.schema.js';
 import { NodeIdentityVerifier } from './node-identity.js';
+import { NODE_SYNC_ACTIVE_STATES } from './node-sync-states.js';
 import {
   type LogSource,
   type NodeSyncAuthKind,
@@ -45,8 +48,10 @@ import {
   logSourceSchema,
   type LogSourceSecret,
   logSourceSecretSchema,
+  NODE_SYNC_CLOUDFLARE_OAUTH_DOC,
   NODE_SYNC_DESIRED_DOC,
   NODE_SYNC_STATE_DOC,
+  nodeCloudflareOauthSchema,
   nodeSyncDesiredSchema,
   type NodeSyncState,
   nodeSyncStateSchema,
@@ -55,6 +60,7 @@ import {
   nodeUserSchema,
   type NodeUserSecret,
   nodeUserSecretSchema,
+  STORED_NODE_CAPABILITIES,
 } from './node-sync.schema.js';
 
 /** O que a sincronização recusa, cada um com o seu status (`internal-node-sync.controller.ts`). */
@@ -65,18 +71,6 @@ export type NodeSyncOutcome =
   | { ok: true; response: NodeSyncResponse }
   | { ok: false; reason: NodeSyncRefusal }
   | { ok: false; reason: 'too_soon'; retryAfterSeconds: number };
-
-/**
- * Estados em que o nó gerenciado sincroniza: com a VM no ar (o provisionamento, a espera da conexão, o ambiente pronto
- * e a carência da cobrança). Suspenso, cancelado ou excluído: 404 (a VM do suspenso está parada). Na VM do cliente,
- * valem os estados do registro (`nodeKeyValid`, sem `past_due`: o contrato direto não tem cobrança pela Stripe).
- */
-export const NODE_SYNC_ACTIVE_STATES: ReadonlySet<TenantState> = new Set([
-  'provisioning',
-  'waiting_customer_connection',
-  'active',
-  'past_due',
-]);
 
 /** Uma chamada aceita por cliente a cada 20 s (`nodeSync/state.lastSeenAt`): mais que isso é 429 com `Retry-After`. */
 export const NODE_SYNC_MIN_INTERVAL_MS = 20_000;
@@ -221,7 +215,8 @@ type Resolution = { ok: true; tenant: TenantRecord } | { ok: false; reason: 'una
  *    `node_sync.identity_changed` e descarta os envelopes pendentes, que não abririam mais;
  * 4. grava os relatos só dos itens que existem sob este cliente (os outros são ignorados e contados no log) e apaga os
  *    envelopes consumidos;
- * 5. responde o estado desejado das capacidades que o nó anunciou, conferido com os schemas estritos do protocolo e
+ * 5. responde o estado desejado das capacidades que o nó anunciou (a de `cloudflare_oauth` é a configuração do app, só
+ *    para o nó gerenciado de um cliente liberado, e `null` para os outros), conferido com os schemas estritos do protocolo e
  *    dentro do que o nó lê (`NODE_SYNC_RESPONSE_MAX_BYTES`): o que não cabe fica para a próxima chamada, nunca um 503.
  */
 @Injectable()
@@ -232,6 +227,7 @@ export class NodeSyncService {
     private readonly audit: AuditService,
     private readonly verifier: NodeIdentityVerifier,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     @InjectPinoLogger(NodeSyncService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -274,7 +270,7 @@ export class NodeSyncService {
       return { ok: false, reason: 'clock_skew' };
     }
     const result = await this.store.runTransaction((tx) =>
-      this.apply(tx, tenant.id, authKind, request, now, requestId),
+      this.apply(tx, tenant, authKind, request, now, requestId),
     );
     if (!result.ok) {
       this.logger.info(
@@ -389,12 +385,13 @@ export class NodeSyncService {
   /** A transação: lê tudo do cliente, confere a sequência e o intervalo, grava e monta a resposta. */
   private async apply(
     tx: DocumentTransaction,
-    tenantId: string,
+    tenant: TenantRecord,
     authKind: NodeSyncAuthKind,
     request: NodeSyncRequest,
     now: Date,
     requestId: string | undefined,
   ): Promise<ApplyResult> {
+    const tenantId = tenant.id;
     const stateCollection = COLLECTIONS.nodeSync(tenantId);
     const stateData = await tx.get(stateCollection, NODE_SYNC_STATE_DOC);
     const state =
@@ -530,7 +527,7 @@ export class NodeSyncService {
       authKind,
       platform: node.platform,
       commit: node.commit,
-      capabilities: request.capabilities,
+      capabilities: request.capabilities.filter((capability) => STORED_NODE_CAPABILITIES.has(capability)),
       nodeTenantId: node.tenantId,
       vaultKey,
       serviceAccountId: node.serviceAccountId,
@@ -539,6 +536,14 @@ export class NodeSyncService {
       error: node.error,
     });
     tx.set(stateCollection, NODE_SYNC_STATE_DOC, nextState);
+    const announcesOauth = respondsTo(request.capabilities, 'cloudflare_oauth');
+    if (announcesOauth) {
+      tx.set(
+        stateCollection,
+        NODE_SYNC_CLOUDFLARE_OAUTH_DOC,
+        nodeCloudflareOauthSchema.parse({ sequence: request.sequence, seenAt: now }),
+      );
+    }
     if (counts.identityChanged) {
       this.audit.record(tx, {
         actor: 'system',
@@ -581,12 +586,26 @@ export class NodeSyncService {
         pollAfterSeconds: NODE_SYNC_INTERVAL_SECONDS,
         ...(respondsTo(request.capabilities, 'log_sources') ? { sources: [] } : {}),
         ...(respondsTo(request.capabilities, 'users') ? { users: [] } : {}),
+        ...(announcesOauth ? { cloudflareOauth: this.cloudflareOauthOf(tenant, authKind) } : {}),
       },
       items,
       counts,
     );
     // O que sai é o que o protocolo aceita: um erro aqui é do plano de controle (503), nunca uma resposta torta.
     return { ok: true, response: nodeSyncResponseSchema.parse(response), counts };
+  }
+
+  /**
+   * A configuração do app do Cloudflare para este nó, ou `null` (desligada): só o nó gerenciado de um cliente liberado.
+   * Nada dela é segredo.
+   */
+  private cloudflareOauthOf(
+    tenant: TenantRecord,
+    authKind: NodeSyncAuthKind,
+  ): NonNullable<NodeSyncResponse['cloudflareOauth']> | null {
+    const settings = cloudflareOauthSettings(this.config);
+    if (settings === null || authKind !== 'gcp_identity' || !isTenantReleased(settings, tenant)) return null;
+    return settings.config;
   }
 
   /**
