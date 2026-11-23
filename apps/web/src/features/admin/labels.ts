@@ -1,5 +1,6 @@
 import {
   type AlertExceptionField,
+  AWS_AUTHORIZATION_TIMEOUT_CODE,
   AWS_BUCKET_ERROR_CODES,
   type AwsCollectionErrorCode,
   type AwsConnectionErrorCode,
@@ -184,10 +185,19 @@ const BUCKET_LABELS: Readonly<Record<LogSource, string>> = {
 };
 
 /**
+ * O fim da janela do "Conectar com AWS" (onboarding self-service): o papel não apareceu em 60 minutos.
+ * TODO(PR-T): quando o código entrar em `AWS_CONNECTION_ERROR_CODES` (`@verax/shared`), este texto vira a entrada dele em
+ * `AWS_CONNECTION_ERROR_HINTS`; o PR do painel novo decide o texto final.
+ */
+export const AWS_AUTHORIZATION_TIMEOUT_HINT =
+  'O papel de leitura não apareceu nesta conta em 60 minutos. Confira no CloudFormation se a pilha verax-control-reader terminou de ser criada e conecte a conta de novo.';
+
+/**
  * O que fazer diante do erro (ou do aviso) da conexão de uma conta AWS; null para um código que não é da AWS. Um erro
  * de bucket diz de qual fonte é o bucket (`kms_denied:guardduty`); sem a fonte, de um dos buckets cadastrados.
  */
 export function awsConnectionErrorHint(value: string): string | null {
+  if (value === AWS_AUTHORIZATION_TIMEOUT_CODE) return AWS_AUTHORIZATION_TIMEOUT_HINT;
   const parsed = parseAwsConnectionError(value);
   if (parsed === null) return null;
   const hint = AWS_CONNECTION_ERROR_HINTS[parsed.code];

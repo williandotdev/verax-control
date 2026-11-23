@@ -1,4 +1,5 @@
 import {
+  AWS_AUTHORIZATION_TIMEOUT_CODE,
   AWS_COLLECTION_ERROR_CODES,
   AWS_CONNECTION_ERROR_CODES,
   AWS_CONNECTION_WARNING_CODES,
@@ -59,6 +60,15 @@ describe('explicação do erro e do aviso da conexão da AWS (PR-V5)', () => {
     expect(awsConnectionErrorHint('bucket_denied:waf')).toMatch(/^Bucket do WAF: /);
     expect(awsConnectionErrorHint('bucket_denied')).toMatch(/^Um dos buckets cadastrados: /);
     expect(awsConnectionErrorHint('trust_denied')).toMatch(/^A AWS recusou a entrada no papel/);
+  });
+
+  it('o fim da janela do "Conectar com AWS" tem explicação: a pilha não terminou, conectar de novo', () => {
+    expect(AWS_AUTHORIZATION_TIMEOUT_CODE).toBe('authorization_timeout');
+    expect(awsConnectionErrorHint(AWS_AUTHORIZATION_TIMEOUT_CODE)).toMatch(
+      /pilha verax-control-reader.*de novo/,
+    );
+    // Só o código exato: com uma fonte de bucket colada, não é código da AWS.
+    expect(awsConnectionErrorHint('authorization_timeout:waf')).toBeNull();
   });
 
   it('o que não é código da AWS fica sem explicação (o painel mostra só o tipo)', () => {
