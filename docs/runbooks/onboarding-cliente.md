@@ -69,8 +69,9 @@ Na reunião:
    conta de serviço: se o log do worker disser que não é, corrija o `NODE_SA_UNIQUE_ID` antes de passar o valor ao
    cliente. Sem o `NODE_EGRESS_IPS`, a conferência diária de permissão demais fica de fora. O IP de saída também entra
    nas regras locais do Wazuh do nó (a leitura do próprio nó não vira alerta; a mesma sessão de outro IP vira nível
-   12), e o audience é o que o host pede ao Google a cada 10 min. Depois do deploy, no nó, o `verax-aws-token.timer` e
-   o `verax-wazuh-apply.timer` aparecem em `systemctl list-timers`, e o `verax-wazuh-apply.path` está ativo.
+   12), e o audience é o que o host pede ao Google a cada 10 min. Depois do deploy, no nó, o `verax-aws-token.timer`,
+   o `verax-wazuh-apply.timer` e o `verax-wazuh-progress.timer` aparecem em `systemctl list-timers`, e o
+   `verax-wazuh-apply.path` está ativo.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
 4. Cadastre o cliente no painel, em **Clientes → Novo cliente**, já com o primeiro administrador (nome e e-mail).
    A conta nasce junto com o cliente, como administrador do cliente, com uma senha temporária que aparece **uma
@@ -149,6 +150,27 @@ Na reunião:
    da conexão, e os dois avisos dele são do nó, não da conta do cliente: `aws_token_stale` (o nó não renova o token do
    Google; veja o journal do `verax-aws-token`) e `wazuh_apply_failed` (a configuração nova não subiu, e o manager
    segue com a anterior; veja o do `verax-wazuh-apply`).
+
+   **Fontes autorizadas no onboarding self-service:** cada fonte de bucket ou do CloudWatch Logs que o cliente
+   autoriza entra na mesma lista do manager, em até 1 min, e começa a ser lida no dia da autorização (sem histórico).
+   O estado de cada uma no painel sai dos marcadores do próprio Wazuh, que o host exporta a cada 5 min:
+   `journalctl -u verax-wazuh-progress` mostra cada exportação, e `sudo cat /run/verax/wazuh-signal/progress` o último
+   retrato (por bucket, conta e região: o último objeto lido e quando; por grupo de logs: o último evento). Só nomes de
+   bucket, de objeto e de grupo: nenhum conteúdo de log. O que cada estado quer dizer:
+   - "configurando": a fonte está na lista, e o nó ainda não a aplicou (veja o `verax-wazuh-apply`);
+   - "aguardando eventos": aplicada, e o Wazuh ainda não leu nada dela. Numa fonte nova, o marcador só aparece quando
+     o módulo termina a primeira leitura do bucket;
+   - "coletando": o Wazuh leu um objeto (ou um evento do grupo) desde a autorização;
+   - "parada" (só a trilha e os flow logs): o bucket tem objeto novo há mais de 30 min e o Wazuh não lê nada dela há
+     mais de 2 horas. Veja `docker logs` do manager (`/var/ossec/logs/ossec.log`, linhas `wm_aws`) e a permissão da
+     fonte ("Tentar de novo" no painel);
+   - "erro de ingestão": o motivo vem junto. `aws_token_stale` e `wazuh_apply_failed` são do nó (acima); os outros
+     dizem por que a fonte ficou de fora da lista (um nome com caractere que o Wazuh recusa, uma região que ele não
+     conhece, a trilha de organização sem o ID da organização, o teto de fontes da conta, ou um grupo de logs com o
+     mesmo nome e região de outra conta do nó).
+
+   Se o sinal `progress` parar de ser atualizado (o timer parado, o manager fora do ar), o painel deixa de mudar o
+   estado das fontes depois de 20 min, sem marcar nenhuma como parada: `systemctl status verax-wazuh-progress.timer`.
 
    **Medidor e saúde (PR-V6):** a cada 5 min, o worker lê os contadores do analysisd (usuário `verax_stats` da API do
    manager, só leitura) e soma o volume no uso do cliente (fonte `aws`, a página Plano e uso). Com a conta conectada e os
