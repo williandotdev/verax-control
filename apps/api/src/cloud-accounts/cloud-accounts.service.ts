@@ -32,6 +32,7 @@ import {
   toAccount,
 } from './cloud-account-data.js';
 import {
+  lockAwsAccountRow,
   parseChosenCapabilities,
   serializeChosenCapabilities,
 } from '../aws/onboarding/chosen-capabilities.js';
@@ -277,6 +278,10 @@ export class CloudAccountsService {
    * Com as autorizações que o cliente marcou no painel (`capabilities`, depois de atualizar a pilha ou a política do
    * usuário de leitura), a escolha é gravada junto, mesmo com um pedido pendente, com o antes e o depois na trilha. Sem
    * elas, a escolha gravada fica como está.
+   *
+   * Como no "Conectar" (`AwsOnboardingService.connect`), a linha da conta fica presa enquanto o pedido lê e grava
+   * (`lockAwsAccountRow`), e a escolha do pedido é gravada como veio: dois pedidos quase juntos terminam com a escolha
+   * do último a ser gravado, e o antes da trilha é o que o pedido anterior deixou.
    */
   async requestAwsCheck(id: string, input: AwsConnect = {}): Promise<CloudAccount> {
     this.audit.describe({
@@ -284,13 +289,20 @@ export class CloudAccountsService {
       resourceType: 'cloud_account',
       resourceId: id,
     });
+    const verifiable = (row: AccountRow): void => {
+      if (row.provider !== 'aws') {
+        throw new ApiError(HttpStatus.BAD_REQUEST, 'Só uma conta AWS é verificada assim.');
+      }
+      if (row.status !== 'active') {
+        throw new ApiError(HttpStatus.BAD_REQUEST, 'Reative o monitoramento antes de verificar a conta.');
+      }
+    };
+    const account = await this.find(id);
+    verifiable(account);
+    // Daqui até o fim da transação, só este pedido lê e grava o pedido da verificação e a escolha desta conta.
+    await lockAwsAccountRow(this.prisma.db(), account);
     const before = await this.find(id);
-    if (before.provider !== 'aws') {
-      throw new ApiError(HttpStatus.BAD_REQUEST, 'Só uma conta AWS é verificada assim.');
-    }
-    if (before.status !== 'active') {
-      throw new ApiError(HttpStatus.BAD_REQUEST, 'Reative o monitoramento antes de verificar a conta.');
-    }
+    verifiable(before);
     const db = this.prisma.scoped();
     const chosen =
       input.capabilities === undefined ? undefined : serializeChosenCapabilities(input.capabilities);
@@ -300,16 +312,16 @@ export class CloudAccountsService {
         ? undefined
         : ((await db.cloudAccount.findUnique({ where: { id }, select: { awsChosenCapabilities: true } }))
             ?.awsChosenCapabilities ?? null);
-    const choice = chosen !== undefined && chosen !== stored;
     const pending = before.checkRequestedAt !== null;
     const row =
-      pending && !choice
+      pending && chosen === undefined
         ? before
         : await db.cloudAccount.update({
             where: { id },
             data: {
               ...(!pending && { connection: 'waiting', connectionError: null, checkRequestedAt: new Date() }),
-              ...(choice && { awsChosenCapabilities: chosen }),
+              // Gravada como veio, sem comparar com a de antes: a mesma de novo deixa o valor como está.
+              ...(chosen !== undefined && { awsChosenCapabilities: chosen }),
             },
             select: accountSelect,
           });

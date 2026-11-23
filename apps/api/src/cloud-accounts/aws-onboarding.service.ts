@@ -20,6 +20,7 @@ import {
 } from '../aws/discovery/discovery-runs.js';
 import { entersRole } from '../aws/onboarding/account-access.js';
 import {
+  lockAwsAccountRow,
   parseChosenCapabilities,
   serializeChosenCapabilities,
 } from '../aws/onboarding/chosen-capabilities.js';
@@ -146,6 +147,12 @@ export class AwsOnboardingService {
    * ainda pendente (o cliente mudou as caixas enquanto esperava a pilha e baixou o arquivo de novo): é o que a tela
    * devolve depois de recarregada. Sem elas, a escolha gravada fica como está. A escolha nunca dá permissão: o que o
    * papel pode ler vem das tags dele.
+   *
+   * A escolha do pedido é a verdade: é gravada como veio (na ordem do catálogo), com a linha da conta presa
+   * (`lockAwsAccountRow`), e nunca decidida por uma leitura de antes. Dois pedidos quase juntos terminam com a escolha
+   * de um dos dois, a do último a ser gravado; o mesmo pedido de novo não muda nada; e a resposta de cada um traz o que
+   * ficou gravado depois dele. O antes e o depois da trilha são lidos com a linha presa: só mostram mudança quando o
+   * valor gravado mudou.
    */
   async connect(id: string, input: AwsConnect = {}): Promise<AwsOnboarding> {
     this.audit.describe({
@@ -153,8 +160,13 @@ export class AwsOnboardingService {
       resourceType: 'cloud_account',
       resourceId: id,
     });
+    const inactive = 'Reative o monitoramento antes de conectar a conta.';
+    const account = await this.find(id);
+    this.assertActive(account, inactive);
+    // Daqui até o fim da transação, só este pedido lê e grava o "Conectar" e a escolha desta conta.
+    await lockAwsAccountRow(this.prisma.db(), account);
     const before = await this.find(id);
-    this.assertActive(before, 'Reative o monitoramento antes de conectar a conta.');
+    this.assertActive(before, inactive);
     const pendingConnect =
       before.checkRequestedAt !== null &&
       before.awsConnectRequestedAt !== null &&
@@ -162,9 +174,8 @@ export class AwsOnboardingService {
     const now = new Date();
     const chosen =
       input.capabilities === undefined ? undefined : serializeChosenCapabilities(input.capabilities);
-    const choice = chosen !== undefined && chosen !== before.awsChosenCapabilities;
     const row =
-      pendingConnect && !choice
+      pendingConnect && chosen === undefined
         ? before
         : await this.prisma.scoped().cloudAccount.update({
             where: { id },
@@ -175,7 +186,8 @@ export class AwsOnboardingService {
                 checkRequestedAt: now,
                 awsConnectRequestedAt: now,
               }),
-              ...(choice && { awsChosenCapabilities: chosen }),
+              // Gravada como veio, sem comparar com a de antes: a mesma de novo deixa o valor como está.
+              ...(chosen !== undefined && { awsChosenCapabilities: chosen }),
             },
             select: ACCOUNT_SELECT,
           });
