@@ -924,10 +924,20 @@ revogada sai na execução seguinte. Uma fonte com falha nunca para as outras.
   se tem 4, 5 ou 6; senão 80301; e 80305 a 80307 na sondagem de porta, que vira um achado por IP e porta. A comparação
   é por trecho do texto, como no Wazuh (a severidade 10 cai na 80301, e 3,7 na 80303); a severidade do achado não
   depende da regra. O achado lido só pela API não tem evento bruto no detalhe (o evento bruto fica no indexer do Wazuh).
-- **Security Hub sem repetir o GuardDuty e o Inspector:** o Security Hub também recebe os achados desses serviços.
-  Quando a conta do achado tem a fonte própria do serviço (`guardduty` ou `inspector`) autorizada na mesma região do
-  achado, o registro do Security Hub é pulado: o achado entra pelo coletor do serviço, com a chave dele. Sem a fonte
-  própria autorizada, ou em outra região (a agregação entre regiões), ele entra pelo Security Hub. Os achados do Access
+- **Security Hub sem repetir o GuardDuty e o Inspector, e sem perder nada:** o Security Hub também recebe os achados
+  desses serviços. O registro dele só é pulado quando a fonte própria do serviço (`guardduty` ou `inspector`), na
+  conta e na região do achado, está de fato sendo coletada, isto é, com a autorização valendo e no estado `collecting`
+  (a última leitura deu certo), e além disso o coletor dela já leu essa versão do achado (o `UpdatedAt` está entre o
+  começo do que ele lê e a posição do cursor dele) ou o registro é dos últimos 10 min da janela (a sobreposição: o
+  coletor próprio ainda vai lê-lo e, se parar antes, a leitura seguinte do Security Hub o traz de novo e o grava). Em
+  qualquer outro caso o achado entra pelo Security Hub: a fonte própria nunca autorizada, revogada, sumida
+  (`source_missing`, como o detector apagado e trocado por outro, que precisa da própria autorização), com
+  `permission_error` ou `ingestion_error`, ainda sem a primeira leitura, de outra região (a agregação entre
+  regiões), ou parada há mais tempo do que a sobreposição. A regra é preferir um achado repetido (um pela fonte
+  própria, outro pelo Security Hub, nas transições) a um buraco: o cursor do Security Hub nunca passa por cima de um
+  achado que ninguém leu. Em cada conta, as fontes próprias são lidas antes da do Security Hub, na mesma execução:
+  autorizadas juntas, a primeira leitura da fonte própria (se terminar a janela) já cobre os achados dela, sem repetir
+  o histórico inteiro; se ela falhar ou parar no teto de páginas, o Security Hub os grava. Os achados do Access
   Analyzer e do export do GuardDuty para o S3 que também passem pelo Security Hub não são cruzados.
 - **Atualização e fechamento:** no GuardDuty vale a regra de sempre (decisão de 04/11/2026): a versão nova de um achado
   ainda não triado só avança o `lastSeenAt`; a de um já triado vira uma recorrência, ligada ao original. Nos outros

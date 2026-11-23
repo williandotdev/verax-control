@@ -6,7 +6,7 @@ import { MAX_FINDING_RECORD_BYTES, resourceRef } from '../../../src/aws/findings
 import type { ParsedFinding, ParseOutcome } from '../../../src/aws/findings/finding-records.js';
 import { parseGuardDutyFinding } from '../../../src/aws/findings/guardduty.js';
 import { parseInspectorFinding } from '../../../src/aws/findings/inspector.js';
-import { parseSecurityHubFinding } from '../../../src/aws/findings/security-hub.js';
+import { coveredByOwnCollector, parseSecurityHubFinding } from '../../../src/aws/findings/security-hub.js';
 import { guardDutyAlert, portProbeAlerts } from '../../alerts/fixtures.js';
 import {
   analyzerFinding,
@@ -521,6 +521,46 @@ describe('Access Analyzer: do achado ao rascunho', () => {
     expect(
       parsed(parseAccessAnalyzerFinding({ ...raw, resourceOwnerAccount: 'x' }, target, NOW)).accounts,
     ).toBeNull();
+  });
+});
+
+describe('o registro do Security Hub de um serviço com fonte própria (GuardDuty, Inspector)', () => {
+  const OVERLAP = 10 * 60_000;
+  /** `minutes` minutos antes do fim da janela do Security Hub. */
+  const before = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
+  const collecting = { floor: before(48 * 60), position: before(5) };
+  const covered = (coverage: Parameters<typeof coveredByOwnCollector>[0], minutes: number) =>
+    coveredByOwnCollector(coverage, before(minutes), NOW, OVERLAP);
+
+  it('sem a fonte própria de fato coletando, nada é pulado: nem o que é recente', () => {
+    expect(covered(undefined, 30)).toBe(false);
+    expect(covered(undefined, 1)).toBe(false);
+    expect(covered(undefined, 0)).toBe(false);
+  });
+
+  it('com ela coletando, é pulado o que ela já leu (do começo do que lê até a posição dela) e o que é recente', () => {
+    expect(covered(collecting, 30)).toBe(true);
+    // A posição e o começo entram.
+    expect(covered(collecting, 5)).toBe(true);
+    expect(covered(collecting, 48 * 60)).toBe(true);
+    // Depois da posição, mas dentro da sobreposição: a janela seguinte do Security Hub o relê.
+    expect(covered(collecting, 2)).toBe(true);
+    expect(covered(collecting, 0)).toBe(true);
+  });
+
+  it('o que ela não alcança entra pelo Security Hub: antes do que ela lê, ou depois de onde parou e fora da sobreposição', () => {
+    // Mais antigo do que a fonte própria lê (ela foi autorizada depois).
+    expect(covered(collecting, 48 * 60 + 1)).toBe(false);
+    // Ela parou há uma hora: o que veio depois só é pulado enquanto está nos últimos 10 min.
+    const stale = { ...collecting, position: before(60) };
+    expect(covered(stale, 60)).toBe(true);
+    expect(covered(stale, 30)).toBe(false);
+    expect(covered(stale, 11)).toBe(false);
+    expect(covered(stale, 10)).toBe(true);
+    // Coletando, mas ainda sem uma janela inteira lida (parou no teto de páginas): só o recente espera por ela.
+    const unconfirmed = { ...collecting, position: null };
+    expect(covered(unconfirmed, 30)).toBe(false);
+    expect(covered(unconfirmed, 3)).toBe(true);
   });
 });
 

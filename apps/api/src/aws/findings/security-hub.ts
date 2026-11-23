@@ -35,10 +35,10 @@ import { AWS_FINDING_RULES, levelOfSeverity, securityHubSeverity } from './findi
  * agir) e o `RESOLVED` (corrigido; é também o que o Security Hub dá ao controle que passou) ficam de fora. O achado que
  * muda para um desses estados só deixa de ser lido: nada é fechado sozinho no painel.
  *
- * **Sem duplicar o GuardDuty e o Inspector:** o Security Hub também recebe os achados desses dois serviços. Quando a
- * conta tem a fonte própria do serviço autorizada na mesma região do achado, o registro do Security Hub é pulado: o
- * achado já entra pelo coletor dele, com a chave dele. Sem a fonte autorizada (ou em outra região), ele entra por aqui.
- * Quem decide é a tarefa (`product`); aqui só se reconhece o produto.
+ * **Sem duplicar o GuardDuty e o Inspector, e sem perder nada:** o Security Hub também recebe os achados desses dois
+ * serviços. O registro dele só é pulado quando a fonte própria do serviço, na conta e na região do achado, está de fato
+ * sendo coletada (`coveredByOwnCollector`); em qualquer outro caso, o achado entra por aqui. Na dúvida, um achado
+ * repetido, nunca um achado perdido. Quem decide é a tarefa (`product`); aqui só se reconhece o produto.
  *
  * **Chave:** `Id` e `ProductArn` juntos identificam o achado (o `Id` sozinho pode se repetir entre produtos); como
  * quase nunca cabem, entram pelo resumo SHA-256. A chave não leva a região: com a agregação entre regiões ligada, o
@@ -48,6 +48,44 @@ import { AWS_FINDING_RULES, levelOfSeverity, securityHubSeverity } from './findi
 export const SECURITY_HUB_PAGE_SIZE = 100;
 /** O Security Hub aceita 3 chamadas por segundo por conta e região: uma a cada 350 ms fica abaixo. */
 export const SECURITY_HUB_MIN_INTERVAL_MS = 350;
+
+/**
+ * Onde está o coletor próprio de um serviço (a fonte `guardduty` ou `inspector`) numa conta e região, quando a fonte
+ * está de fato sendo coletada (autorização valendo e estado `collecting`): o começo do que ele lê (24 h antes do dia
+ * da autorização) e até onde ele já leu uma janela inteira sem erro (null antes da primeira).
+ */
+export interface OwnCollectorCoverage {
+  floor: Date;
+  position: Date | null;
+}
+
+/**
+ * O registro do Security Hub de um serviço com coletor próprio pode ser pulado? Só quando a fonte própria da conta e da
+ * região do achado está de fato sendo coletada (`coverage`) e:
+ * - o coletor dela já leu essa versão: o `UpdatedAt` do registro está entre o começo do que ele lê e a posição
+ *   confirmada dele; ou
+ * - o registro é recente: o `UpdatedAt` está na sobreposição que a janela seguinte do Security Hub relê (os últimos
+ *   10 min da janela). O coletor próprio ainda vai lê-lo; se ele parar antes disso, a leitura seguinte do Security Hub
+ *   traz o registro de novo, já fora deste caso, e ele entra por aqui.
+ *
+ * Em qualquer outro caso o registro é gravado pelo Security Hub: a fonte própria nunca autorizada, revogada, sumida
+ * (`source_missing`: o detector apagado e trocado por outro, que precisa da própria autorização), com erro de
+ * permissão ou de ingestão, ou ainda sem a primeira leitura; e o registro que o coletor próprio não alcança (mais
+ * antigo do que ele lê, ou depois de onde ele parou e já fora da sobreposição). Assim o cursor do Security Hub nunca
+ * passa por cima de um achado que ninguém leu. O custo é um achado repetido (um pela fonte própria, outro pelo
+ * Security Hub) nas transições: é o preço aceito para nunca ficar um buraco.
+ */
+export function coveredByOwnCollector(
+  coverage: OwnCollectorCoverage | undefined,
+  updatedAt: Date,
+  windowEnd: Date,
+  overlapMs: number,
+): boolean {
+  if (coverage === undefined) return false;
+  const { floor, position } = coverage;
+  if (position !== null && updatedAt >= floor && updatedAt <= position) return true;
+  return updatedAt.getTime() >= windowEnd.getTime() - overlapMs;
+}
 
 const OPEN_WORKFLOW: ReadonlySet<string> = new Set(['NEW', 'NOTIFIED']);
 const TACTICS: ReadonlySet<string> = new Set(MITRE_TACTIC_NAMES);

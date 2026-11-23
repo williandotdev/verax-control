@@ -193,6 +193,18 @@ describe('tarefa aws-findings: os achados das fontes autorizadas lidas por API',
   };
   const unownedOf = (account: string) =>
     prisma.unownedAlert.findMany({ where: { source: 'aws', accounts: { has: account } } });
+  /** O cursor de uma fonte que já vinha sendo lida: até onde ela leu e quando volta a ser lida. */
+  const cursorAt = (cloud: Cloud, kind: Kind, position: Date | null, nextRunAt: Date, resourceId = 'det1') =>
+    prisma.collectorCursor.create({
+      data: {
+        cloudAccountId: cloud.id,
+        stream: findingsStream(kind, resourceId),
+        region: 'sa-east-1',
+        cursorAt: position,
+        nextRunAt,
+        lastSuccessAt: position,
+      },
+    });
 
   // --- GuardDuty ---
 
@@ -761,7 +773,7 @@ describe('tarefa aws-findings: os achados das fontes autorizadas lidas por API',
       ).toBe(0);
     });
 
-    it('pula os achados do GuardDuty e do Inspector só quando a conta tem a fonte própria autorizada na mesma região', async () => {
+    it('pula os achados do GuardDuty e do Inspector só quando a conta tem a fonte própria coletando na mesma região', async () => {
       const tenant = await createTenant(app, 'Cliente Demo A (achados, sem duplicar)');
       const withOwn = await connectedAccount(tenant, { regions: ['sa-east-1', 'us-east-1'] });
       const without = await connectedAccount(tenant);
@@ -844,6 +856,312 @@ describe('tarefa aws-findings: os achados das fontes autorizadas lidas por API',
         'Controle reprovado',
       ]);
       expect((await sourceRow(hub.id)).state).toBe('collecting');
+    });
+
+    describe('o achado do GuardDuty que chega pelo Security Hub só é pulado com a fonte própria de fato coletando', () => {
+      const minutesAgo = (minutes: number) => new Date(START.getTime() - minutes * MINUTE);
+      /** Um achado do GuardDuty como o Security Hub o entrega, atualizado `minutes` minutos antes da primeira execução. */
+      const viaHub = (account: string, minutes: number, title = 'Achado do GuardDuty') =>
+        securityHubFinding({
+          account,
+          product: 'guardduty',
+          title,
+          updatedAt: minutesAgo(minutes).toISOString(),
+        });
+      /** Os títulos (sem o prefixo da regra) dos achados que entraram pelo Security Hub. */
+      const hubTitles = async (tenantId: string, account?: string) =>
+        (
+          await prisma.finding.findMany({
+            where: {
+              tenantId,
+              logSource: 'security_hub',
+              ...(account !== undefined && { accountId: account }),
+            },
+          })
+        )
+          .map((finding) => finding.title.replace(/^.*: /, ''))
+          .sort();
+      const sourcesOf = async (tenantId: string, account: string) =>
+        (await prisma.finding.findMany({ where: { tenantId, accountId: account } }))
+          .map((finding) => finding.logSource)
+          .sort();
+
+      it('a fonte própria sumida (o detector apagado e trocado por outro) não cobre nada: o achado entra pelo Security Hub', async () => {
+        const tenant = await createTenant(app, 'Cliente Demo A (achados, detector trocado)');
+        const cloud = await connectedAccount(tenant);
+        const account = cloud.accountId;
+        const hub = await source(cloud, 'security_hub');
+        // O detector autorizado foi apagado: a fonte ficou `source_missing`, com o cursor de quando era lida...
+        await source(cloud, 'guardduty', {
+          resourceId: 'antigo',
+          details: { detectorId: 'antigo' },
+          state: 'source_missing',
+          stateCode: 'not_found',
+          missingSince: minutesAgo(60),
+          lastSyncAt: minutesAgo(120),
+        });
+        await cursorAt(cloud, 'guardduty', minutesAgo(120), START);
+        // ...e o detector que o substituiu ainda não foi autorizado: o coletor próprio não lê nenhum dos dois.
+        await source(cloud, 'guardduty', {
+          resourceId: 'novo',
+          details: { detectorId: 'novo' },
+          authorizedAt: null,
+          authorizedBy: null,
+          collectFrom: null,
+          state: 'available',
+          stateCode: null,
+        });
+        const { task, fakeOf } = setup(
+          [tenant],
+          [
+            {
+              accountId: account,
+              guardduty: { 'sa-east-1': { detectorId: 'novo', findings: [guardDutyFinding({ account })] } },
+              securityhub: {
+                'sa-east-1': {
+                  findings: [viaHub(account, 5), viaHub(account, 45, 'Achado mais antigo do GuardDuty')],
+                },
+              },
+            },
+          ],
+        );
+        expect(await task.runOnce()).toMatchObject({
+          sources: 1,
+          synced: 1,
+          read: 2,
+          skipped: 0,
+          created: 2,
+        });
+        // O coletor próprio não leu o GuardDuty: sem o Security Hub, os achados do detector novo ficariam de fora.
+        expect(fakeOf(account).count('guardduty', 'ListFindingsCommand')).toBe(0);
+        expect(await hubTitles(tenant)).toEqual(['Achado do GuardDuty', 'Achado mais antigo do GuardDuty']);
+        // O cursor do Security Hub andou, e nada do que ficou para trás deixou de ser gravado.
+        expect((await cursorOf(cloud.id, 'security_hub')).cursorAt).toEqual(START);
+        expect((await sourceRow(hub.id)).state).toBe('collecting');
+      });
+
+      it('a fonte própria com erro de permissão, com erro de ingestão ou revogada não cobre nada', async () => {
+        const tenant = await createTenant(app, 'Cliente Demo A (achados, fonte própria com erro)');
+        const states: Partial<Prisma.AwsSourceUncheckedCreateInput>[] = [
+          {
+            state: 'permission_error',
+            stateCode: 'guardduty:ListFindings',
+            permission: 'missing',
+            permissionDetail: 'guardduty:ListFindings',
+          },
+          { state: 'ingestion_error', stateCode: 'throttled' },
+          { state: 'revoked', stateCode: null, revokedAt: minutesAgo(60) },
+        ];
+        const clouds: Cloud[] = [];
+        const accounts: FakeFindingsAccount[] = [];
+        for (const data of states) {
+          const cloud = await connectedAccount(tenant);
+          await source(cloud, 'security_hub');
+          await source(cloud, 'guardduty', { lastSyncAt: minutesAgo(120), ...data });
+          // Já foi lida, até duas horas atrás, e está no recuo: não é lida nesta execução.
+          await cursorAt(cloud, 'guardduty', minutesAgo(120), new Date(START.getTime() + HOUR));
+          clouds.push(cloud);
+          accounts.push({
+            accountId: cloud.accountId,
+            guardduty: { 'sa-east-1': { detectorId: 'det1', findings: [] } },
+            securityhub: { 'sa-east-1': { findings: [viaHub(cloud.accountId, 5)] } },
+          });
+        }
+        const { task, fakeOf } = setup([tenant], accounts);
+        expect(await task.runOnce()).toMatchObject({
+          sources: 5,
+          notDue: 2,
+          synced: 3,
+          read: 3,
+          skipped: 0,
+          created: 3,
+        });
+        for (const cloud of clouds) {
+          expect(fakeOf(cloud.accountId).count('guardduty', 'ListFindingsCommand')).toBe(0);
+          expect(await hubTitles(tenant, cloud.accountId)).toEqual(['Achado do GuardDuty']);
+        }
+      });
+
+      it('a fonte própria coletando cobre o que já leu e o que é recente; o que ela não alcança entra pelo Security Hub', async () => {
+        const tenant = await createTenant(app, 'Cliente Demo A (achados, fonte própria coletando)');
+        const cloud = await connectedAccount(tenant);
+        const account = cloud.accountId;
+        // O Security Hub foi autorizado dois dias antes do GuardDuty: a janela dele vai mais longe do que a da fonte própria.
+        await source(cloud, 'security_hub', {
+          authorizedAt: new Date('2026-11-20T08:30:00.000Z'),
+          collectFrom: new Date('2026-11-20T00:00:00.000Z'),
+        });
+        await source(cloud, 'guardduty', { state: 'collecting', stateCode: null, lastSyncAt: minutesAgo(5) });
+        // Lida sem erro há 5 min, e só volta a ser lida daqui a 5: nesta execução vale o que o cursor dela diz.
+        await cursorAt(cloud, 'guardduty', minutesAgo(5), new Date(START.getTime() + 5 * MINUTE));
+        const { task, fakeOf } = setup(
+          [tenant],
+          [
+            {
+              accountId: account,
+              guardduty: { 'sa-east-1': { detectorId: 'det1', findings: [] } },
+              securityhub: {
+                'sa-east-1': {
+                  findings: [
+                    viaHub(account, 30, 'Já lido pela fonte própria'),
+                    viaHub(account, 2, 'Recente, ainda por ler'),
+                    securityHubFinding({
+                      account,
+                      product: 'guardduty',
+                      title: 'Anterior ao que a fonte própria lê',
+                      updatedAt: '2026-11-20T12:00:00.000Z',
+                    }),
+                    securityHubFinding({ account, title: 'Controle reprovado' }),
+                  ],
+                },
+              },
+            },
+          ],
+        );
+        expect(await task.runOnce()).toMatchObject({
+          sources: 2,
+          notDue: 1,
+          synced: 1,
+          read: 4,
+          skipped: 2,
+          created: 2,
+        });
+        expect(fakeOf(account).count('guardduty', 'ListFindingsCommand')).toBe(0);
+        expect(await hubTitles(tenant)).toEqual(['Anterior ao que a fonte própria lê', 'Controle reprovado']);
+      });
+
+      it('autorizadas juntas: a fonte própria é lida antes do Security Hub na mesma execução, e só cobre se a leitura dela terminar', async () => {
+        const tenant = await createTenant(app, 'Cliente Demo A (achados, autorizadas juntas)');
+        // Três contas, as duas fontes autorizadas e ainda sem leitura: a primeira leitura da fonte própria termina, falha
+        // ou para no teto de páginas.
+        const done = await connectedAccount(tenant);
+        const failing = await connectedAccount(tenant);
+        const cut = await connectedAccount(tenant);
+        for (const cloud of [done, failing, cut]) {
+          await source(cloud, 'security_hub');
+          await source(cloud, 'guardduty');
+        }
+        const own = (account: string, minutes: number) =>
+          guardDutyFinding({ account, updatedAt: minutesAgo(minutes).toISOString() });
+        const limited = () => awsError('ThrottlingException', 429);
+        const { task, fakeOf, clock } = setup(
+          [tenant],
+          [
+            {
+              accountId: done.accountId,
+              guardduty: { 'sa-east-1': { detectorId: 'det1', findings: [own(done.accountId, 30)] } },
+              securityhub: { 'sa-east-1': { findings: [viaHub(done.accountId, 30)] } },
+            },
+            {
+              accountId: failing.accountId,
+              guardduty: { 'sa-east-1': { detectorId: 'det1', findings: [own(failing.accountId, 30)] } },
+              securityhub: { 'sa-east-1': { findings: [viaHub(failing.accountId, 30)] } },
+              failures: { 'guardduty:sa-east-1:ListFindingsCommand': [limited(), limited(), limited()] },
+            },
+            {
+              accountId: cut.accountId,
+              // Uma por página: com o teto de 2 páginas, a primeira leitura do GuardDuty não termina a janela.
+              pageSize: 1,
+              guardduty: {
+                'sa-east-1': {
+                  detectorId: 'det1',
+                  findings: [own(cut.accountId, 40), own(cut.accountId, 30), own(cut.accountId, 20)],
+                },
+              },
+              securityhub: {
+                'sa-east-1': { findings: [viaHub(cut.accountId, 30), viaHub(cut.accountId, 2, 'Recente')] },
+              },
+            },
+          ],
+          { maxPages: 2 },
+        );
+
+        expect(await task.runOnce()).toMatchObject({
+          sources: 6,
+          synced: 5,
+          capped: 1,
+          failed: 1,
+          failures: { throttled: 1 },
+          skipped: 2,
+          created: 5,
+        });
+        // A leitura da fonte própria terminou antes de o Security Hub ser lido: o achado entra uma vez só, por ela.
+        const calls = fakeOf(done.accountId).calls.map((call) => `${call.service}:${call.command}`);
+        expect(calls.indexOf('guardduty:ListFindingsCommand')).toBeGreaterThanOrEqual(0);
+        expect(calls.indexOf('guardduty:ListFindingsCommand')).toBeLessThan(
+          calls.indexOf('securityhub:GetFindingsCommand'),
+        );
+        expect(await sourcesOf(tenant, done.accountId)).toEqual(['guardduty']);
+        // A leitura da fonte própria falhou: ela ainda não coleta, e o achado entra pelo Security Hub.
+        expect(await sourcesOf(tenant, failing.accountId)).toEqual(['security_hub']);
+        // A leitura da fonte própria parou no teto: o que ela ainda não confirmou entra pelo Security Hub; o recente
+        // espera a sobreposição.
+        expect(await sourcesOf(tenant, cut.accountId)).toEqual(['guardduty', 'guardduty', 'security_hub']);
+        expect(await hubTitles(tenant, cut.accountId)).toEqual(['Achado do GuardDuty']);
+
+        // Na execução seguinte, a fonte que falhou lê o mesmo achado: fica repetido (um por cada caminho), nunca perdido.
+        // A que parou no teto termina a janela, e o achado recente que o Security Hub relê já está coberto por ela.
+        clock.advance(5 * MINUTE);
+        expect(await task.runOnce()).toMatchObject({
+          synced: 6,
+          capped: 0,
+          failed: 0,
+          skipped: 1,
+          created: 2,
+        });
+        expect(await sourcesOf(tenant, failing.accountId)).toEqual(['guardduty', 'security_hub']);
+        expect(await sourcesOf(tenant, cut.accountId)).toEqual([
+          'guardduty',
+          'guardduty',
+          'guardduty',
+          'security_hub',
+        ]);
+        expect(await sourcesOf(tenant, done.accountId)).toEqual(['guardduty']);
+      });
+
+      it('a fonte própria que parou de ser lida deixa de cobrir: o recente espera a sobreposição e depois entra, sem buraco', async () => {
+        const tenant = await createTenant(app, 'Cliente Demo A (achados, fonte própria parada)');
+        const cloud = await connectedAccount(tenant);
+        const account = cloud.accountId;
+        await source(cloud, 'security_hub');
+        const direct = await source(cloud, 'guardduty', {
+          state: 'collecting',
+          stateCode: null,
+          lastSyncAt: minutesAgo(120),
+        });
+        // No estado "coletando", mas sem leitura há 2 h e só de volta daqui a 6 h (uma falha passageira em recuo): a
+        // posição dela ficou para trás.
+        await cursorAt(cloud, 'guardduty', minutesAgo(120), new Date(START.getTime() + 6 * HOUR));
+        const { task, fakeOf, clock } = setup(
+          [tenant],
+          [
+            {
+              accountId: account,
+              guardduty: { 'sa-east-1': { detectorId: 'det1', findings: [] } },
+              securityhub: {
+                'sa-east-1': {
+                  findings: [
+                    viaHub(account, 60, 'Depois de onde a fonte própria parou'),
+                    viaHub(account, 2, 'Recente'),
+                  ],
+                },
+              },
+            },
+          ],
+        );
+        // O que ela não leu e já saiu da sobreposição entra pelo Security Hub; o recente ainda pode ser lido por ela.
+        expect(await task.runOnce()).toMatchObject({ notDue: 1, read: 2, skipped: 1, created: 1 });
+        expect(await hubTitles(tenant)).toEqual(['Depois de onde a fonte própria parou']);
+        // 5 min depois o recente é relido (está na sobreposição) e ainda é recente.
+        clock.advance(5 * MINUTE);
+        expect(await task.runOnce()).toMatchObject({ read: 1, skipped: 1, created: 0 });
+        // Mais 5 min: relido de novo, já fora dos últimos 10 min, e a fonte própria continua sem tê-lo lido: entra.
+        clock.advance(5 * MINUTE);
+        expect(await task.runOnce()).toMatchObject({ read: 1, skipped: 0, created: 1 });
+        expect(await hubTitles(tenant)).toEqual(['Depois de onde a fonte própria parou', 'Recente']);
+        expect(fakeOf(account).count('guardduty', 'ListFindingsCommand')).toBe(0);
+        expect((await sourceRow(direct.id)).state).toBe('collecting');
+      });
     });
 
     it('a chamada limitada é repetida com recuo; o limite que persiste fica na fonte e só vira erro na terceira vez', async () => {

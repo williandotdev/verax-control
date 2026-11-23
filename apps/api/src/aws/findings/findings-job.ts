@@ -41,6 +41,7 @@ import {
 import { recordBytes } from './finding-fields.js';
 import {
   addVolume,
+  AWS_FINDINGS_ERROR_AFTER,
   type CursorState,
   decodeCursorState,
   encodeCursorState,
@@ -63,6 +64,8 @@ import {
 import { guardDutyDetectorExists, parseGuardDutyFinding, readGuardDutyPage } from './guardduty.js';
 import { parseInspectorFinding, readInspectorPage } from './inspector.js';
 import {
+  coveredByOwnCollector,
+  type OwnCollectorCoverage,
   parseSecurityHubFinding,
   readSecurityHubPage,
   SECURITY_HUB_MIN_INTERVAL_MS,
@@ -151,7 +154,7 @@ export interface AwsFindingsReport {
   updated: number;
   /** Registros de uma versão já gravada (a sobreposição, a listagem inteira do Access Analyzer). */
   duplicates: number;
-  /** Security Hub: achados de um serviço que a conta já lê pela fonte própria (GuardDuty, Inspector). */
+  /** Security Hub: achados do GuardDuty e do Inspector que a fonte própria da conta, que está coletando, já leu ou lê. */
   skipped: number;
   /** Arquivados, resolvidos ou suprimidos na origem. */
   inactive: number;
@@ -259,8 +262,12 @@ interface RunContext {
   report: AwsFindingsReport;
   exceptions: ReadonlyMap<string, ActiveException[]>;
   lastEvents: LastEvents;
-  /** As fontes próprias (GuardDuty e Inspector) com a autorização valendo: `cliente|conta|tipo|região`. */
-  ownSources: ReadonlySet<string>;
+  /**
+   * Onde está o coletor próprio do GuardDuty e do Inspector de cada conta e região (`cliente|conta|tipo|região`): só
+   * as fontes que estão de fato sendo coletadas. O retrato é o do começo da execução, e cada leitura de fonte própria
+   * desta execução o atualiza (o que ela confirmou, ou a saída dela da coleta).
+   */
+  ownCollectors: Map<string, OwnCollectorCoverage>;
   /** As contas AWS citadas em achados e que não são a da fonte: o cliente de cada uma, ou null se não está cadastrada. */
   members: Map<string, string | null>;
   /** O orçamento de tempo da execução acabou: nenhuma leitura nova começa. */
@@ -324,8 +331,19 @@ export function findingsStream(kind: AwsFindingKind, resourceId: string): string
 const ownSourceKey = (tenantId: string, accountId: string, kind: string, region: string): string =>
   `${tenantId}|${accountId}|${kind}|${region}`;
 
+/** Os serviços com coletor próprio cujos achados também chegam pelo Security Hub. */
+const OWN_COLLECTOR_KINDS = ['guardduty', 'inspector'] as const satisfies readonly AwsFindingKind[];
+
+function isOwnCollectorKind(kind: string): kind is (typeof OWN_COLLECTOR_KINDS)[number] {
+  return (OWN_COLLECTOR_KINDS as readonly string[]).includes(kind);
+}
+
 /** O começo da primeira leitura: 24 h antes do dia da autorização. Nada mais antigo é buscado. */
-function backfillFloor(source: SourceRow, backfillMs: number, now: Date): Date {
+function backfillFloor(
+  source: Pick<SourceRow, 'collectFrom' | 'authorizedAt'>,
+  backfillMs: number,
+  now: Date,
+): Date {
   const from = source.collectFrom ?? source.authorizedAt ?? now;
   return new Date(from.getTime() - backfillMs);
 }
@@ -356,7 +374,11 @@ function isFatal(error: unknown, signal: AbortSignal): boolean {
  *    Com as tags do papel dizendo que a leitura de achados está desligada, a fonte fica `permission_error`
  *    (`capability_off`) sem chamada nenhuma.
  * 2. **Uma conta de cada vez por sessão**, no máximo 2 contas ao mesmo tempo, as fontes de cada conta em sequência, a
- *    mais atrasada primeiro. Passado o orçamento de tempo da execução, as que faltam ficam para a próxima.
+ *    mais atrasada primeiro e a do Security Hub por último: quando ele é lido, o que os coletores do GuardDuty e do
+ *    Inspector da conta leram nesta execução já está confirmado. O registro do Security Hub de um desses serviços só é
+ *    pulado quando a fonte própria está de fato coletando e já o leu (ou ele é recente, e a sobreposição o relê); em
+ *    qualquer outro caso ele é gravado: um achado repetido, nunca um buraco (`coveredByOwnCollector`). Passado o
+ *    orçamento de tempo da execução, as fontes que faltam ficam para a próxima.
  * 3. **A leitura de uma fonte** (o cursor dela em `CollectorCursor`, um fluxo por tipo e região): a janela vai da
  *    posição menos 10 min (a primeira, de 24 h antes do dia da autorização) até agora, página a página. Cada página é
  *    gravada antes de a continuação andar: uma execução que para no meio (o worker parado, o orçamento) relê a página
@@ -533,7 +555,10 @@ export class AwsFindings {
         report,
         exceptions: byAccount.size === 0 ? new Map() : await this.store.activeExceptions(startedAt),
         lastEvents: new LastEvents(),
-        ownSources: byAccount.size === 0 ? new Set() : await this.ownSources(),
+        ownCollectors:
+          byAccount.size === 0
+            ? new Map<string, OwnCollectorCoverage>()
+            : await this.ownCollectors(startedAt),
         members: new Map(),
         exhausted: () => this.elapsed() - startedClock >= this.runBudgetMs,
         firstError: null,
@@ -599,25 +624,66 @@ export class AwsFindings {
   }
 
   /**
-   * As fontes próprias do GuardDuty e do Inspector com a autorização valendo, em qualquer estado: é o que faz o
-   * Security Hub pular os achados desses serviços (o coletor da fonte própria os traz, com a chave dele; se ele estiver
-   * com erro, o cursor dele não anda, e nada se perde).
+   * Onde está o coletor próprio do GuardDuty e do Inspector de cada conta e região, no começo da execução. Só entram as
+   * fontes que estão de fato sendo coletadas: a autorização valendo e o estado `collecting` (a última leitura deu
+   * certo), com o começo do que leem e a posição do cursor (até onde a última janela inteira foi lida). É o que deixa o
+   * Security Hub pular os achados desses serviços (`coveredByOwnCollector`).
+   *
+   * Ficam de fora, e os achados delas entram pelo Security Hub: a fonte sumida (`source_missing`: o detector apagado e
+   * trocado, que o coletor próprio não lê mais), a revogada, a com erro de permissão ou de ingestão e a autorizada que
+   * ainda não teve a primeira leitura. Antes, bastava a autorização valer: os achados do detector novo eram pulados
+   * pelo Security Hub sem que ninguém os lesse, e o cursor dele passava por cima.
    */
-  private async ownSources(): Promise<Set<string>> {
+  private async ownCollectors(now: Date): Promise<Map<string, OwnCollectorCoverage>> {
     const rows = await this.prisma.awsSource.findMany({
       where: {
         method: 'api',
-        kind: { in: ['guardduty', 'inspector'] },
+        kind: { in: [...OWN_COLLECTOR_KINDS] },
         authorizedAt: { not: null },
         revokedAt: null,
+        state: 'collecting',
         cloudAccount: { provider: 'aws', status: 'active' },
         ...this.tenantFilter(),
       },
-      select: { tenantId: true, kind: true, region: true, cloudAccount: { select: { accountId: true } } },
+      select: {
+        tenantId: true,
+        cloudAccountId: true,
+        kind: true,
+        region: true,
+        resourceId: true,
+        collectFrom: true,
+        authorizedAt: true,
+        cloudAccount: { select: { accountId: true } },
+      },
     });
-    return new Set(
-      rows.map((row) => ownSourceKey(row.tenantId, row.cloudAccount.accountId, row.kind, row.region)),
+    const coverage = new Map<string, OwnCollectorCoverage>();
+    if (rows.length === 0) return coverage;
+    const cursors = await this.prisma.collectorCursor.findMany({
+      where: {
+        cloudAccountId: { in: [...new Set(rows.map((row) => row.cloudAccountId))] },
+        stream: { in: OWN_COLLECTOR_KINDS.map((kind) => findingsStream(kind, '')) },
+      },
+      select: { cloudAccountId: true, stream: true, region: true, cursorAt: true },
+    });
+    const positionKey = (cloudAccountId: string, stream: string, region: string) =>
+      `${cloudAccountId}|${stream}|${region}`;
+    const positions = new Map(
+      cursors.map((cursor) => [
+        positionKey(cursor.cloudAccountId, cursor.stream, cursor.region),
+        cursor.cursorAt,
+      ]),
     );
+    for (const row of rows) {
+      if (!isOwnCollectorKind(row.kind)) continue;
+      coverage.set(ownSourceKey(row.tenantId, row.cloudAccount.accountId, row.kind, row.region), {
+        floor: backfillFloor(row, this.backfillMs, now),
+        position:
+          positions.get(
+            positionKey(row.cloudAccountId, findingsStream(row.kind, row.resourceId), row.region),
+          ) ?? null,
+      });
+    }
+    return coverage;
   }
 
   /** As fontes de uma conta: as que estão na hora, com uma sessão só, uma de cada vez. */
@@ -650,6 +716,10 @@ export class AwsFindings {
       seen.add(id);
       if (capabilityOff) {
         this.countFailure(report, 'capability_off');
+        // Fora da coleta: a fonte própria deixa de cobrir os achados dela no Security Hub.
+        context.ownCollectors.delete(
+          ownSourceKey(account.tenantId, account.accountId, source.kind, source.region),
+        );
         // Já registrada assim: nada a gravar de novo a cada execução.
         if (source.state !== 'permission_error' || source.stateCode !== 'capability_off') {
           await this.record(account, source, { type: 'permission', detail: 'capability_off' }, now, context);
@@ -665,7 +735,13 @@ export class AwsFindings {
       due.push({ source, kind: source.kind, key, cursor });
     }
     if (due.length === 0) return;
-    due.sort((a, b) => a.cursor.nextRunAt.getTime() - b.cursor.nextRunAt.getTime());
+    // A mais atrasada primeiro, e a do Security Hub por último: quando ele é lido, o que os coletores do GuardDuty e do
+    // Inspector da conta leram (ou deixaram de ler) nesta execução já está no retrato.
+    due.sort(
+      (a, b) =>
+        Number(a.kind === 'security_hub') - Number(b.kind === 'security_hub') ||
+        a.cursor.nextRunAt.getTime() - b.cursor.nextRunAt.getTime(),
+    );
     if (context.exhausted()) {
       report.deferred += due.length;
       return;
@@ -871,6 +947,7 @@ export class AwsFindings {
       const tally = await this.processPage(run, stream, analyzer, page.records, parse, call, details, meter, {
         context,
         now,
+        windowEnd: window.before,
       });
       if (tally.deferred) break;
       pages += 1;
@@ -910,13 +987,24 @@ export class AwsFindings {
     await meter.flush(this.prisma);
     report.synced += 1;
     if (!complete) report.capped += 1;
-    await this.record(
+    const recorded = await this.record(
       run.account,
       source,
       { type: 'synced', newestEventAt: newest, ingested, volume: volumeLast24h(hours, now) },
       now,
       context,
     );
+    if (isOwnCollectorKind(kind)) {
+      const own = ownSourceKey(run.account.tenantId, run.account.accountId, kind, region);
+      // A fonte própria está coletando: o que esta leitura confirmou passa a valer para o Security Hub (o da conta é lido
+      // depois, nesta mesma execução). Lida a janela inteira, a posição é o fim dela; cortada no teto de páginas, fica
+      // a que o cursor já tinha. A fonte revogada no meio da leitura não cobre mais nada.
+      if (recorded) {
+        context.ownCollectors.set(own, { floor, position: complete ? window.before : cursor.cursorAt });
+      } else {
+        context.ownCollectors.delete(own);
+      }
+    }
   }
 
   /**
@@ -932,7 +1020,7 @@ export class AwsFindings {
     call: FindingsCaller,
     details: { left: number },
     meter: UsageMeter,
-    { context, now }: { context: RunContext; now: Date },
+    { context, now, windowEnd }: { context: RunContext; now: Date; windowEnd: Date },
   ): Promise<PageTally> {
     const { report } = context;
     const { account } = run;
@@ -954,16 +1042,20 @@ export class AwsFindings {
         continue;
       }
       const { finding } = outcome;
-      // Security Hub: o achado de um serviço que esta conta já lê pela fonte própria, na mesma região, é pulado.
+      // Security Hub: o achado do GuardDuty ou do Inspector só é pulado quando a fonte própria da conta e da região do
+      // achado está de fato coletando e já o leu (ou ele é recente, e a sobreposição o relê). Em qualquer outro caso
+      // ele segue e é gravado: um achado repetido, nunca um buraco.
       if (finding.product !== undefined) {
         const cited = finding.accounts?.length === 1 ? finding.accounts[0] : undefined;
-        const covered = ownSourceKey(
-          account.tenantId,
-          cited ?? account.accountId,
-          finding.product.kind,
-          finding.product.region ?? stream.source.region,
+        const own = context.ownCollectors.get(
+          ownSourceKey(
+            account.tenantId,
+            cited ?? account.accountId,
+            finding.product.kind,
+            finding.product.region ?? stream.source.region,
+          ),
         );
-        if (context.ownSources.has(covered)) {
+        if (coveredByOwnCollector(own, new Date(finding.updatedAt), windowEnd, this.overlapMs)) {
           counted.skipped += 1;
           continue;
         }
@@ -1216,12 +1308,21 @@ export class AwsFindings {
     const outcome: SourceOutcome =
       failure.type === 'failed' ? { type: 'failed', code, failures: cursor.failures } : failure;
     await this.record(account, stream.source, outcome, now, context);
+    // A fonte própria que saiu de `collecting` (a permissão negada, o serviço desligado, a terceira falha seguida)
+    // deixa de cobrir os achados dela no Security Hub já nesta execução. A falha passageira não muda o retrato: o que
+    // ela já leu continua lido, e o que é recente o Security Hub relê.
+    if (failure.type !== 'failed' || cursor.failures >= AWS_FINDINGS_ERROR_AFTER) {
+      context.ownCollectors.delete(
+        ownSourceKey(account.tenantId, account.accountId, stream.kind, stream.source.region),
+      );
+    }
   }
 
   /**
    * Grava o estado e a saúde de uma fonte, sob o lock da conta (o mesmo da autorização pelo painel e da descoberta) e
    * pelo escopo do cliente dela, só se a autorização ainda valer e a fonte ainda estiver na coleta: a que foi revogada,
-   * ou que a descoberta marcou como sumida no meio da leitura, fica como está. A mudança de estado entra na trilha.
+   * ou que a descoberta marcou como sumida no meio da leitura, fica como está (e a resposta é `false`). A mudança de
+   * estado entra na trilha.
    */
   private async record(
     account: AccountRow,
@@ -1229,8 +1330,8 @@ export class AwsFindings {
     outcome: SourceOutcome,
     now: Date,
     context: RunContext,
-  ): Promise<void> {
-    const changed = await this.prisma.$transaction(async (tx) => {
+  ): Promise<boolean> {
+    const result = await this.prisma.$transaction(async (tx) => {
       await lockAwsOnboarding(tx, account.id);
       const db = scopeToTenant(tx, account.tenantId);
       const current = await db.awsSource.findFirst({
@@ -1243,10 +1344,10 @@ export class AwsFindings {
         },
         select: SOURCE_SELECT,
       });
-      if (current === null) return false;
+      if (current === null) return 'gone' as const;
       const change = sourceChange(current, outcome, now);
       await db.awsSource.updateMany({ where: { id: source.id, revokedAt: null }, data: change.data });
-      if (change.transition === null) return false;
+      if (change.transition === null) return 'recorded' as const;
       await this.audit.write(tx, {
         actor: { type: 'system', tenantId: account.tenantId },
         action: AUDIT_ACTION,
@@ -1256,8 +1357,9 @@ export class AwsFindings {
         before: { sourceId: source.id, kind: source.kind, region: source.region, ...change.transition.from },
         after: { sourceId: source.id, kind: source.kind, region: source.region, ...change.transition.to },
       });
-      return true;
+      return 'changed' as const;
     });
-    if (changed) context.report.transitions += 1;
+    if (result === 'changed') context.report.transitions += 1;
+    return result !== 'gone';
   }
 }
