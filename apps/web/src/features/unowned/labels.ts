@@ -16,7 +16,7 @@ export const UNOWNED_REASON_LABELS: Readonly<Record<UnownedReason, { label: stri
   },
   ambiguous_source: {
     label: 'Origem em mais de um cliente',
-    hint: 'O mesmo bucket de log está cadastrado em clientes diferentes. Deixe-o só no cliente dono. No alerta de um grupo do CloudWatch Logs: mais de um cliente do nó tem grupo autorizado, e o evento não diz de quem é.',
+    hint: 'O mesmo bucket de log está cadastrado em clientes diferentes. Deixe-o só no cliente dono. No alerta de um grupo do CloudWatch Logs: mais de um cliente do nó tem grupo autorizado, e o evento não diz de quem é; ou a coleta mudou há pouco (um grupo de outro cliente saiu ou entrou, o nó reiniciou) e ainda não dá para garantir de quem era o que foi coletado.',
   },
   conflicting_accounts: {
     label: 'Contas diferentes no evento',

@@ -99,8 +99,34 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
   });
   const awsSync = (indexer: AlertSearchClient) =>
     new AlertSync(prisma, indexer, { name: `teste-${randomUUID().slice(0, 8)}` });
-  const cloudWatchSync = (indexer: AlertSearchClient, tenantIds: string[]) =>
-    new CloudWatchAlertSync(prisma, indexer, { name: `teste-${randomUUID().slice(0, 8)}`, tenantIds });
+  /**
+   * O sync dos alertas do CloudWatch Logs, com um registro da prova do dono só dele. Com `proven`, a prova já está de
+   * pé para aquela conta há 2 horas, e a execução acontece 11 min depois de agora (a espera da prova é de 10 min): os
+   * alertas do teste, de minutos atrás, cabem nela. Sem `proven`, não há registro nenhum. As transições da prova têm o
+   * arquivo delas (`cloudwatch-alert-ownership.test.ts`).
+   */
+  async function cloudWatchSync(indexer: AlertSearchClient, tenantIds: string[], proven?: Cloud) {
+    const ownershipKey = `teste-${randomUUID().slice(0, 8)}`;
+    const runAt = new Date(Date.now() + 11 * MINUTE);
+    if (proven !== undefined) {
+      await prisma.cloudWatchAlertOwnership.create({
+        data: {
+          id: ownershipKey,
+          ownerTenantId: proven.tenantId,
+          ownerAccountId: proven.accountId,
+          generation: '0'.repeat(64),
+          since: new Date(Date.now() - 120 * MINUTE),
+          confirmedAt: runAt,
+        },
+      });
+    }
+    const sync = new CloudWatchAlertSync(prisma, indexer, {
+      name: `teste-${randomUUID().slice(0, 8)}`,
+      tenantIds,
+      ownershipKey,
+    });
+    return { runOnce: () => sync.runOnce(runAt) };
+  }
   const findingsOf = (rawEventIds: string[]) =>
     prisma.finding.findMany({ where: { rawEventId: { in: rawEventIds } }, orderBy: { rawEventId: 'asc' } });
   const unownedOf = (ids: string[]) =>
@@ -335,7 +361,7 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       const fromBucket = at(cloudTrailAlert({ account: cloud.accountId }), 3);
       const fromAgent = at(cloudWatchAlert({ agentId: '001' }), 2);
       const indexer = new FakeIndexer([alert, low, fromBucket, fromAgent]);
-      const sync = cloudWatchSync(indexer, [tenant]);
+      const sync = await cloudWatchSync(indexer, [tenant], cloud);
 
       expect(await sync.runOnce()).toMatchObject({
         status: 'done',
@@ -379,10 +405,8 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       });
       // O mesmo alerta relido (a sobreposição da janela, outra execução): um achado só.
       expect(await sync.runOnce()).toMatchObject({ created: 0, duplicates: 1 });
-      expect(await cloudWatchSync(new FakeIndexer([alert]), [tenant]).runOnce()).toMatchObject({
-        created: 0,
-        duplicates: 1,
-      });
+      const again = await cloudWatchSync(new FakeIndexer([alert]), [tenant], cloud);
+      expect(await again.runOnce()).toMatchObject({ created: 0, duplicates: 1 });
       expect(await findingsOf([alert.id])).toHaveLength(1);
       expect(
         (await prisma.cloudAccount.findUniqueOrThrow({ where: { id: cloud.id } })).lastEventAt,
@@ -397,10 +421,9 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       await logGroup(cloudA);
       const groupB = await logGroup(cloudB);
       const alert = at(cloudWatchAlert());
-      expect(await cloudWatchSync(new FakeIndexer([alert]), [first, second]).runOnce()).toMatchObject({
-        created: 0,
-        unowned: 1,
-      });
+      // Nem com um registro da prova em nome do primeiro: as autorizações de agora são de dois clientes.
+      const both = await cloudWatchSync(new FakeIndexer([alert]), [first, second], cloudA);
+      expect(await both.runOnce()).toMatchObject({ created: 0, unowned: 1 });
       expect(await unownedOf([alert.id])).toEqual([
         {
           sourceEventId: alert.id,
@@ -413,14 +436,20 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       // Nenhum achado em nenhum dos dois clientes.
       expect(await prisma.finding.count({ where: { tenantId: { in: [first, second] } } })).toBe(0);
 
-      // O segundo cliente tira a autorização: os alertas seguintes são do primeiro.
+      // O segundo cliente tira a autorização. Pelas autorizações de agora só sobra o primeiro, mas isso não diz de quem
+      // é o que o manager coletou: sem a prova de que ele só rodou os grupos do primeiro, nada é atribuído, nem o
+      // alerta de antes (relido), nem o seguinte.
       await revoke(groupB.id);
       const next = at(cloudWatchAlert(), 1);
-      expect(await cloudWatchSync(new FakeIndexer([next]), [first, second]).runOnce()).toMatchObject({
-        created: 1,
-        unowned: 0,
-      });
-      expect(await findingsOf([next.id])).toMatchObject([{ tenantId: first, accountId: cloudA.accountId }]);
+      const afterRevoke = await cloudWatchSync(new FakeIndexer([alert, next]), [first, second]);
+      expect(await afterRevoke.runOnce()).toMatchObject({ created: 0, unowned: 2 });
+      expect(await findingsOf([alert.id, next.id])).toEqual([]);
+      expect(await unownedOf([next.id])).toMatchObject([{ reason: 'ambiguous_source', accounts: [] }]);
+      // E o que já está na fila fica nela, mesmo com uma prova de pé depois: a releitura não o atribui.
+      const proven = await cloudWatchSync(new FakeIndexer([alert, next]), [first, second], cloudA);
+      expect(await proven.runOnce()).toMatchObject({ created: 0, keptUnowned: 2 });
+      expect(await findingsOf([alert.id, next.id])).toEqual([]);
+      expect(await prisma.finding.count({ where: { tenantId: { in: [first, second] } } })).toBe(0);
     });
 
     it('sem grupo autorizado, com a conta desativada ou com grupos em duas contas, o alerta vai para a fila com o motivo', async () => {
@@ -440,23 +469,22 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       await revoke(group.id);
       await source(cloud, { details: { bucket: bucket('fluxo') } });
       const none = at(cloudWatchAlert());
-      expect(await cloudWatchSync(new FakeIndexer([none]), [tenant]).runOnce()).toMatchObject({ unowned: 1 });
+      const noGroup = await cloudWatchSync(new FakeIndexer([none]), [tenant], cloud);
+      expect(await noGroup.runOnce()).toMatchObject({ unowned: 1 });
 
       // Duas contas do mesmo cliente com grupo autorizado: o alerta é dele, mas não há como dizer de que conta.
       const other = await cloudAccount(tenant);
       await logGroup(cloud);
       await logGroup(other);
       const twoAccounts = at(cloudWatchAlert(), 4);
-      expect(await cloudWatchSync(new FakeIndexer([twoAccounts]), [tenant]).runOnce()).toMatchObject({
-        unowned: 1,
-      });
+      const twoGroups = await cloudWatchSync(new FakeIndexer([twoAccounts]), [tenant], cloud);
+      expect(await twoGroups.runOnce()).toMatchObject({ unowned: 1 });
 
-      // Uma das contas desativada: sobra uma, e o alerta volta a ter dono.
+      // Uma das contas desativada: sobra uma. Com a prova de pé para ela, o alerta volta a ter dono.
       await prisma.cloudAccount.update({ where: { id: other.id }, data: { status: 'inactive' } });
       const owned = at(cloudWatchAlert(), 3);
-      expect(await cloudWatchSync(new FakeIndexer([owned]), [tenant]).runOnce()).toMatchObject({
-        created: 1,
-      });
+      const oneLeft = await cloudWatchSync(new FakeIndexer([owned]), [tenant], cloud);
+      expect(await oneLeft.runOnce()).toMatchObject({ created: 1 });
 
       expect(await unownedOf([none.id, twoAccounts.id])).toMatchObject(
         [
@@ -479,11 +507,8 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       await logGroup(cloud);
       const good = at(cloudWatchAlert());
       const broken = { ...at(cloudWatchAlert(), 4), rule: 'não é objeto' };
-      expect(await cloudWatchSync(new FakeIndexer([broken, good]), [tenant]).runOnce()).toMatchObject({
-        read: 2,
-        created: 1,
-        unowned: 1,
-      });
+      const sync = await cloudWatchSync(new FakeIndexer([broken, good]), [tenant], cloud);
+      expect(await sync.runOnce()).toMatchObject({ read: 2, created: 1, unowned: 1 });
       expect(await unownedOf([broken.id])).toMatchObject([{ reason: 'invalid_alert', accounts: [] }]);
     });
   });

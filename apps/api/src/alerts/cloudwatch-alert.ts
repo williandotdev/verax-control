@@ -25,13 +25,19 @@ import {
  * Do log (`data.*`) só saem campos para mostrar e agrupar (o decoder, o IP de origem, o usuário), conferidos no formato:
  * a linha é de quem escreve no grupo, e nunca decide o dono.
  *
- * Quem decide o dono (`resolveCloudWatchOwner`) é só o cadastro: como o evento não diz de que conta nem de que grupo
- * veio, ele só é atribuído quando a origem não tem como ser outra, isto é, quando **um só cliente** do nó tem grupo de
- * logs autorizado, em **uma só conta**. Fora disso vai para a fila sem dono, com o motivo:
- * - nenhum cliente com grupo autorizado (a autorização saiu com o alerta a caminho): `unknown_source`;
- * - mais de um cliente com grupo autorizado: `ambiguous_source`;
- * - um cliente só, com grupos autorizados em mais de uma conta: `no_account` (o alerta é dele, mas não há como dizer de
- *   que conta, e o achado precisa de uma).
+ * O dono: como o evento não diz de que conta nem de que grupo veio, ele só é atribuído quando a origem não tem como ser
+ * outra. São duas condições, e as duas precisam valer:
+ * 1. pelas autorizações de agora (`resolveCloudWatchOwner`), **um só cliente** do nó tem grupo de logs autorizado, em
+ *    **uma só conta**. Fora disso vai para a fila sem dono, com o motivo:
+ *    - nenhum cliente com grupo autorizado (a autorização saiu com o alerta a caminho): `unknown_source`;
+ *    - mais de um cliente com grupo autorizado: `ambiguous_source`;
+ *    - um cliente só, com grupos autorizados em mais de uma conta: `no_account` (o alerta é dele, mas não há como dizer
+ *      de que conta, e o achado precisa de uma);
+ * 2. a prova de que a configuração **aplicada no manager** só teve grupos de logs desse dono em todo o intervalo em que
+ *    o alerta pode ter sido coletado (`cloudwatch-ownership.ts`). As autorizações de agora não dizem isso: quando um de
+ *    dois clientes tira a autorização, o manager segue coletando o grupo dele até a configuração nova ser aplicada, e o
+ *    alerta desse grupo viraria achado do cliente que ficou. Sem a prova, o alerta vai para a fila como
+ *    `ambiguous_source`.
  */
 
 /** O `location` com que o módulo aws-s3 entrega ao analysisd tudo o que lê. */
@@ -81,10 +87,27 @@ export function isCloudWatchAlert(document: unknown): boolean {
   return at(document, 'location') === WAZUH_AWS_LOCATION && at(document, 'data', 'integration') !== 'aws';
 }
 
+/**
+ * O começo do evento de bucket como o módulo o manda ao analysisd: `{"integration": "aws", "aws": {...}}`. O evento que
+ * passa do tamanho que o analysisd lê chega cortado, não é decodificado e fica sem `data.integration`: por esse campo,
+ * pareceria uma linha de um grupo de logs, e seria atribuído ao dono dos grupos, de quem não é (é do bucket de uma
+ * conta qualquer do nó). No Wazuh 4.14.9 ele não casa com regra nenhuma (conferido no wazuh-logtest); a conferência
+ * fica para o dia em que uma regra passar a casar.
+ */
+const BUCKET_EVENT_START = /^\s*\{\s*"integration"\s*:\s*"aws"/;
+
+/** O texto do evento (`full_log`) começa como um evento de bucket do módulo. */
+function looksLikeBucketEvent(document: unknown): boolean {
+  const log = at(document, 'full_log');
+  return typeof log === 'string' && BUCKET_EVENT_START.test(log.slice(0, 64));
+}
+
 /** Valida o documento do indexer e extrai o que a API usa. Nunca lança: o que não serve vira um motivo. */
 export function parseCloudWatchAlert(document: unknown): ParsedCloudWatchAlert {
   const id = matching(at(document, 'id'), ALERT_ID, 128) ?? null;
   if (!isCloudWatchAlert(document)) return { ok: false, reason: 'not_cloudwatch', id };
+  // Um evento de bucket que não foi decodificado: não é de grupo de logs nenhum, e não há como dizer de quem é.
+  if (looksLikeBucketEvent(document)) return { ok: false, reason: 'invalid_alert', id };
   const envelope = envelopeSchema.safeParse(document);
   const timestamp = envelope.success ? normalizeTimestamp(envelope.data.timestamp) : null;
   if (!envelope.success || timestamp === null) return { ok: false, reason: 'invalid_alert', id };
@@ -125,8 +148,10 @@ export type CloudWatchAlertOwner =
   | { owned: false; reason: CloudWatchUnownedReason; accounts: string[] };
 
 /**
- * De quem são os alertas do CloudWatch Logs deste nó, pelas contas com grupo autorizado. A mesma resposta vale para
- * todo alerta da execução: o evento não traz nada que separe um do outro.
+ * De quem são os alertas do CloudWatch Logs deste nó, pelas contas com grupo autorizado agora. A mesma resposta vale
+ * para todo alerta da execução: o evento não traz nada que separe um do outro. É só a primeira das duas condições: com
+ * um dono aqui, cada alerta ainda precisa caber na prova de que o manager só coletou os grupos dele
+ * (`cloudwatch-ownership.ts`).
  */
 export function resolveCloudWatchOwner(sources: readonly CloudWatchSourceOwner[]): CloudWatchAlertOwner {
   const tenants = new Set(sources.map((source) => source.tenantId));

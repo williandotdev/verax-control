@@ -3,6 +3,7 @@ import { open, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AwsCollectionErrorCode } from '@verax/shared';
 import { z } from 'zod';
+import { CloudWatchOwnershipStore } from '../alerts/cloudwatch-ownership.js';
 import { AuditService } from '../common/audit/audit.service.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
@@ -21,6 +22,7 @@ import {
 } from './wazuh-source-health.js';
 import {
   findWazuhSourceRows,
+  plannedLogGroupOwners,
   planWazuhSources,
   serializeWazuhSources,
   wazuhSourcesGeneration,
@@ -82,6 +84,11 @@ export interface WazuhConfigReport {
   invalidSignals: number;
   /** A saúde das fontes lidas pelo Wazuh; ausente no nó que não a grava (a célula). */
   sources?: WazuhSourceHealthReport;
+  /**
+   * A prova do dono dos alertas do CloudWatch Logs depois desta execução (`alerts/cloudwatch-ownership.ts`): provado
+   * para um dono, provado sem grupo de logs nenhum, ou sem prova. Ausente no nó que não a grava (a célula).
+   */
+  cloudWatch?: 'owner' | 'empty' | 'unproven';
 }
 
 export interface WazuhConfigOptions {
@@ -100,6 +107,8 @@ export interface WazuhConfigOptions {
   /** A conferência da origem das fontes paradas (a sessão de leitura das contas); sem ela, nenhuma é marcada. */
   stallProbe?: WazuhStallProbe | null;
   progressStaleAfterMs?: number;
+  /** Só os testes: a chave do registro da prova do dono dos alertas do CloudWatch Logs (a do nó, por padrão). */
+  cloudWatchOwnershipKey?: string;
 }
 
 /**
@@ -201,6 +210,11 @@ interface CollectionRow {
  * - Com o sinal `progress` do host (até onde o módulo do Wazuh leu cada fonte), grava o estado e os horários de cada
  *   fonte autorizada lida pelo Wazuh (`wazuh-source-health.ts`): configurando, aguardando eventos, coletando, parada
  *   ou com erro. É o que a tela das fontes mostra.
+ * - Grava a prova do dono dos alertas do CloudWatch Logs (`alerts/cloudwatch-ownership.ts`): desde quando a lista que
+ *   o manager de fato roda (o sinal `applied`) só tem grupos de logs de uma conta de um cliente. É a única tarefa que
+ *   sabe os donos da lista planejada e o que o host aplicou; o sync desses alertas só atribui com essa prova. A prova
+ *   cai nesta execução, antes de a geração nova ser gravada para o host, quando a lista planejada passa a ter grupos
+ *   de mais de um dono.
  *
  * O worker só escreve esse sinal sem segredo: quem escreve a configuração do manager e os profiles da AWS é só o gerador
  * (decisão R1 do plano), e o token do Google fica com o host.
@@ -212,6 +226,7 @@ export class WazuhConfig {
   private readonly staleAfterMs: number;
   private readonly tenantIds: readonly string[] | undefined;
   private readonly health: WazuhSourceHealth | null;
+  private readonly ownership: CloudWatchOwnershipStore | null;
   private readonly progressStaleAfterMs: number;
   /** O último sinal `progress` lido, pelo arquivo dele: o mesmo arquivo não é conferido de novo a cada 30 s. */
   private lastProgress: { key: string; progress: WazuhProgress | null } | null = null;
@@ -228,6 +243,7 @@ export class WazuhConfig {
       sourceHealth = true,
       stallProbe = null,
       progressStaleAfterMs = WAZUH_PROGRESS_STALE_AFTER_MS,
+      cloudWatchOwnershipKey,
     }: WazuhConfigOptions = {},
   ) {
     this.audit = audit;
@@ -236,6 +252,8 @@ export class WazuhConfig {
     this.staleAfterMs = staleAfterMs;
     this.tenantIds = tenantIds;
     this.health = sourceHealth ? new WazuhSourceHealth(prisma, { audit, stallProbe }) : null;
+    // Como a saúde das fontes, só no nó dedicado: na célula, o sync dos alertas do CloudWatch Logs nem existe.
+    this.ownership = sourceHealth ? new CloudWatchOwnershipStore(prisma, cloudWatchOwnershipKey) : null;
     this.progressStaleAfterMs = progressStaleAfterMs;
   }
 
@@ -244,11 +262,23 @@ export class WazuhConfig {
     // As contas que o manager lê: as que têm ao menos uma fonte na lista.
     const rows = plan.accounts;
     const generation = wazuhSourcesGeneration(serializeWazuhSources(plan.list));
-    const written = await this.writeGeneration(generation);
 
     const applied = parseSignal(await readSignal(this.path('applied')), appliedSchema);
     const token = parseSignal(await readSignal(this.path('awsToken')), tokenSchema);
     const invalidSignals = [applied, token].filter((value) => value === INVALID).length;
+
+    // A prova do dono dos alertas do CloudWatch Logs, antes de a geração ir para o host: a lista com grupos de mais de
+    // um dono derruba a prova aqui, quando é planejada, e não quando o manager passa a rodá-la.
+    const ownership =
+      this.ownership === null
+        ? undefined
+        : await this.ownership.observe({
+            now: this.now(),
+            generation,
+            owners: plannedLogGroupOwners(plan.sources),
+            applied: applied === INVALID ? null : applied,
+          });
+    const written = await this.writeGeneration(generation);
 
     // Sem o sinal do token (o host ainda não o renovou desde a partida), o prazo conta da partida do worker.
     const tokenAt = token !== null && token !== INVALID ? new Date(token.tokenAt) : this.startedAt;
@@ -267,6 +297,9 @@ export class WazuhConfig {
       marked: 0,
       cleared: 0,
       invalidSignals,
+      ...(ownership !== undefined && {
+        cloudWatch: ownership === null ? 'unproven' : ownership.owner === null ? 'empty' : 'owner',
+      }),
     };
     // A conta que deixou a coleta (desativada, ou sem bucket) não mostra mais aviso dela.
     const leftovers = await this.prisma.cloudAccount.findMany({

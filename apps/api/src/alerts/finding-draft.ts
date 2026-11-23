@@ -195,11 +195,25 @@ export function toFindingDraft(
 }
 
 /**
- * Achado de um alerta do CloudWatch Logs, com o dono decidido por `resolveCloudWatchOwner` (um só cliente e uma só conta
- * com grupo autorizado no nó). A linha de log não traz um id próprio: a chave leva o id do alerta
- * (`wazuh/<conta>/alert:<id>:<regra>`, a mesma forma do alerta da AWS sem id nativo), que é o mesmo a cada releitura do
- * documento no indexer. A severidade vem do nível da regra, e o MITRE, da regra. O recurso fica vazio: o evento não diz
- * de que grupo veio. O IP e o usuário vêm da linha de log, só para mostrar e agrupar.
+ * A chave do achado de um alerta do CloudWatch Logs numa conta: `wazuh/<conta>/alert:<id>:<regra>`, a mesma forma do
+ * alerta da AWS sem id nativo. A linha de log não traz um id próprio; o id do alerta é o mesmo a cada releitura do
+ * documento no indexer.
+ */
+export function cloudWatchFindingKey(
+  alert: Pick<WazuhCloudWatchAlert, 'id' | 'rule'>,
+  accountId: string,
+): string {
+  return wazuhFindingKey(
+    { id: alert.id, nativeId: undefined, source: 'cloudtrail', rule: alert.rule },
+    accountId,
+  );
+}
+
+/**
+ * Achado de um alerta do CloudWatch Logs, com o dono decidido pelo sync (`cloudwatch-alert-sync.ts`: um só cliente e
+ * uma só conta com grupo autorizado no nó, e a prova de que o manager só coletou os grupos dele). A chave leva o id do
+ * alerta (`cloudWatchFindingKey`). A severidade vem do nível da regra, e o MITRE, da regra. O recurso fica vazio: o
+ * evento não diz de que grupo veio. O IP e o usuário vêm da linha de log, só para mostrar e agrupar.
  */
 export function toCloudWatchFindingDraft(
   alert: WazuhCloudWatchAlert,
@@ -209,10 +223,7 @@ export function toCloudWatchFindingDraft(
     tenantId: owner.tenantId,
     accountId: owner.accountId,
     source: 'wazuh',
-    sourceEventId: wazuhFindingKey(
-      { id: alert.id, nativeId: undefined, source: 'cloudtrail', rule: alert.rule },
-      owner.accountId,
-    ),
+    sourceEventId: cloudWatchFindingKey(alert, owner.accountId),
     rawEventId: alert.id,
     occurredAt: alert.timestamp,
     severity: severityOfLevel(alert.rule.level),

@@ -323,6 +323,26 @@ describe('alerta do CloudWatch Logs (onboarding self-service da AWS)', () => {
 
   it('o que não é do CloudWatch Logs é pulado, e o envelope inválido é recusado com o id', () => {
     expect(parseCloudWatchAlert(cloudTrailAlert())).toMatchObject({ ok: false, reason: 'not_cloudwatch' });
+    // O evento de bucket cortado pelo analysisd (grande demais): não foi decodificado, e fica sem `data.integration`.
+    // Pelo texto, é do módulo dos buckets, e não de um grupo de logs: nunca é atribuído ao dono dos grupos.
+    const truncated: Record<string, unknown> = {
+      ...cloudWatchAlert({ data: null }),
+      decoder: { name: 'json' },
+      full_log:
+        '{"integration": "aws", "aws": {"log_info": {"s3bucket": "trilha-beta"}, "requestParameters": {"po',
+    };
+    expect(isCloudWatchAlert(truncated)).toBe(true);
+    expect(parseCloudWatchAlert(truncated)).toEqual({
+      ok: false,
+      reason: 'invalid_alert',
+      id: truncated['id'],
+    });
+    // A linha de um grupo de logs em JSON, de uma aplicação, segue sendo um alerta do CloudWatch Logs.
+    const json = {
+      ...cloudWatchAlert({ data: null }),
+      full_log: '{"integration": "pagamentos", "level": "error"}',
+    };
+    expect(parseCloudWatchAlert(json)).toMatchObject({ ok: true });
     expect(parseCloudWatchAlert(cloudWatchAlert({ agentId: '001' }))).toMatchObject({
       ok: false,
       reason: 'not_cloudwatch',

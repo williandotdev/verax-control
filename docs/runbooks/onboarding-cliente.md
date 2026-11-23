@@ -172,6 +172,14 @@ Na reunião:
    Se o sinal `progress` parar de ser atualizado (o timer parado, o manager fora do ar), o painel deixa de mudar o
    estado das fontes depois de 20 min, sem marcar nenhuma como parada: `systemctl status verax-wazuh-progress.timer`.
 
+   **Grupos do CloudWatch Logs:** o evento de um grupo chega sem a conta e sem o grupo, e só vira achado do cliente
+   com a prova de que o manager só coletou grupos dele (um cliente só, numa conta só, na configuração aplicada). O
+   achado aparece pelo menos 10 min depois do alerta. Depois de o nó reiniciar, de o worker ficar mais de 5 min parado
+   ou de outro cliente autorizar um grupo de logs no mesmo nó, a prova recomeça: os alertas dos 15 min seguintes vão
+   para a fila sem dono ("Origem em mais de um cliente") e ficam lá. No log do worker, a tarefa `wazuh-config` diz o
+   estado da prova a cada execução (`cloudWatch`: `owner`, `empty` ou `unproven`); a regra inteira está em
+   `docs/ARQUITETURA.md` ("Dono dos alertas do CloudWatch Logs").
+
    **Flow logs da VPC:** só o tráfego rejeitado é lido, e um registro sozinho nunca vira alerta. O que aparece no
    painel são duas detecções, as duas contadas por conta e por endereço de origem: "Possível varredura de rede vinda do
    mesmo endereço" (média: 40 registros rejeitados em 120 s) e "Insistência em porta de administração remota vinda do

@@ -738,6 +738,33 @@ model SyncState {
   updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
 }
 
+/// A prova de quem é o dono dos alertas do CloudWatch Logs deste nó (onboarding self-service da AWS). O evento de um
+/// grupo de logs chega ao indexer sem a conta e sem o grupo: só pode ser atribuído se, em todo o intervalo em que pode
+/// ter sido coletado, a configuração aplicada no manager do Wazuh só tinha grupos de logs de uma conta de um cliente.
+/// Esta linha guarda desde quando isso vale (`since`), para quem (`ownerTenantId` e `ownerAccountId`; os dois vazios
+/// enquanto nenhuma configuração aplicada teve grupo de logs) e até quando foi conferido (`confirmedAt`). Quem a grava
+/// é só a tarefa `wazuh-config` do worker, pelo sinal `applied` do host (`alerts/cloudwatch-ownership.ts`); quem a lê é
+/// só o sync dos alertas do CloudWatch Logs. Sem a linha, nenhum alerta é atribuído.
+///
+/// Sem `tenantId` de propósito, como a fila sem dono: não é dado do cliente, não entra no escopo de cliente nenhum e
+/// nenhuma rota a devolve. Sem chave estrangeira: o cliente ou a conta apagados deixam a linha sem efeito (o dono dela
+/// deixa de ser o dono de agora), e a tarefa a refaz.
+model CloudWatchAlertOwnership {
+  /// Uma linha só por nó (`node`).
+  id             String   @id @db.VarChar(32)
+  ownerTenantId  String?  @db.Uuid
+  /// O ID da conta AWS (12 dígitos) dos grupos de logs.
+  ownerAccountId String?  @db.VarChar(12)
+  /// A geração (o SHA-256 da lista) que o manager roda, a última que a tarefa conferiu pelo sinal `applied`.
+  generation     String   @db.VarChar(64)
+  /// Desde quando toda configuração aplicada só teve grupos de logs deste dono (ou nenhum). Nunca anda para trás: a
+  /// linha que perde a prova é apagada, e a nova começa de novo.
+  since          DateTime @db.Timestamptz(3)
+  /// A última conferência da tarefa. O sync só atribui o alerta mais antigo que ela, com folga.
+  confirmedAt    DateTime @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+}
+
 /// Prazo de histórico do expurgo diário do nó inteiro (fase 2, PR-19). Desde o CE-02 o prazo é de cada cliente
 /// (`TenantRetentionState`, que a migration `20261110180000_tenant_plan` semeou daqui): a tabela fica só
 /// para uma volta de versão não perder a carência, e nada mais a grava. Sai num PR futuro.

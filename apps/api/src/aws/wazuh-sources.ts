@@ -302,6 +302,23 @@ export interface PlannedWazuhSource {
   outcome: WazuhSourceOutcome;
 }
 
+/**
+ * Os donos (o cliente e a conta AWS) dos grupos do CloudWatch Logs que estão na lista, sem repetição. O evento de um
+ * grupo chega ao indexer sem a conta e sem o grupo: só com um dono só, na lista que o manager de fato roda, dá para
+ * dizer de quem ele é (`alerts/cloudwatch-ownership.ts`). O grupo que ficou de fora da lista não conta: o manager não
+ * o lê.
+ */
+export function plannedLogGroupOwners(
+  sources: readonly PlannedWazuhSource[],
+): { tenantId: string; accountId: string }[] {
+  const owners = new Map<string, { tenantId: string; accountId: string }>();
+  for (const { row, accountId, outcome } of sources) {
+    if (row.method !== 'cloudwatch' || !outcome.included) continue;
+    owners.set(`${row.tenantId}:${accountId}`, { tenantId: row.tenantId, accountId });
+  }
+  return [...owners.values()];
+}
+
 export interface WazuhPlan {
   list: WazuhSourceList;
   /** As contas que estão na lista (as que o manager lê). */

@@ -1018,11 +1018,69 @@ contagem; por isso o achado não é do registro:
   do registro (a interface, a janela, a origem, o destino, o protocolo e a ação).
 
 O cadastro de buckets do sync soma os das fontes de bucket autorizadas (revogada a fonte, o bucket dela deixa de ser
-origem conhecida). Os eventos dos grupos do CloudWatch Logs têm um sync próprio (tarefa `wazuh-cloudwatch-alerts`, fora
-da célula; nível 7 para cima, como os agentes): o módulo entrega a linha crua, sem conta nem grupo, e o alerta só é
-atribuído quando um único cliente do nó tem grupo autorizado, numa única conta. Senão vai para a fila sem dono
-(`ambiguous_source` com mais de um cliente, `no_account` com mais de uma conta do mesmo cliente, `unknown_source` sem
-nenhum).
+origem conhecida). Nos alertas de bucket, o dono sai do próprio evento: o bucket que o módulo leu e a conta da pasta
+(ou a do conteúdo, no GuardDuty e no WAF), conferidos com o cadastro na hora da leitura. Uma mudança no cadastro só
+tira o dono de um alerta (a fonte revogada vira `unknown_source`; a pasta da conta de outro cliente, `source_mismatch`),
+e nunca o entrega a outro cliente: para isso, a conta AWS citada no evento teria de estar cadastrada para ele.
+
+**Dono dos alertas do CloudWatch Logs (`apps/api/src/alerts/cloudwatch-ownership.ts`):** os eventos dos grupos de logs
+têm um sync próprio (tarefa `wazuh-cloudwatch-alerts`, fora da célula; nível 7 para cima, como os agentes). O módulo
+entrega a linha crua, sem conta nem grupo: nada no evento diz de quem ele é. As autorizações do momento da leitura
+também não dizem: quando um de dois clientes tira a autorização, o manager segue coletando o grupo dele até a
+configuração nova ser aplicada, e o que sobrou viraria dono de eventos do outro. **A regra: o alerta só é do cliente T,
+na conta A, se a configuração aplicada no manager só teve grupos de logs dessa conta desse cliente (ou nenhum) em todo o
+intervalo em que o alerta pode ter sido coletado. Na dúvida, não é de ninguém.** São duas condições:
+
+1. pelas autorizações de agora, um único cliente do nó tem grupo autorizado, numa única conta. Senão, a fila sem dono:
+   `ambiguous_source` com mais de um cliente, `no_account` com mais de uma conta do mesmo cliente, `unknown_source` sem
+   nenhum;
+2. a prova, gravada pela tarefa `wazuh-config` (a única que conhece a lista planejada e lê o sinal `applied` do host)
+   numa linha do banco (`CloudWatchAlertOwnership`: o dono, a geração que o manager roda, `since` e a última
+   conferência; sem `tenantId`, só o sistema a grava, e nenhuma rota a lê). Sem a prova, `ambiguous_source`.
+
+A prova, a cada conferência (30 s):
+
+- **nasce** quando o sinal `applied` diz ok para a geração da lista planejada de agora e essa lista tem grupos de logs
+  de no máximo um dono. `since` é a hora dessa conferência (ou a do sinal, se for mais tarde);
+- **continua**, com o mesmo `since`, enquanto cada conferência seguinte, a no máximo 5 min da anterior, mostra o manager
+  numa geração conferida (a do registro ou a planejada de agora) e a lista planejada com no máximo esse dono. A geração
+  aplicada atrás da planejada não a derruba (as duas são do mesmo dono). O registro sem dono (nenhuma configuração
+  aplicada teve grupo de logs) vira do primeiro dono que aparecer, sem recomeçar: antes dele não havia de quem coletar.
+  É o cliente que autoriza o primeiro grupo num nó já no ar, e os alertas da primeira leitura já são dele;
+- **cai**, e só volta nascendo de novo, com outro `since`: no instante em que a lista **planejada** passa a ter grupos
+  de mais de um dono (antes de ela chegar ao manager, e antes de a geração nova ir para o host); quando o dono
+  planejado é outro (um cliente sai e outro entra depois: nada do que foi coletado para o primeiro passa para o
+  segundo); quando o sinal some (o nó reiniciou), sai do formato ou cita uma geração que a tarefa não conferiu, com ok
+  ou com erro (o host aplicou uma lista que o worker não planejou); e quando a tarefa fica mais de 5 min sem conferir
+  (o worker parado não viu o que o host aplicou; o timer do host aplica a cada 15 min).
+
+O sync só atribui o alerta cujo horário está **entre `since` mais 15 min e a última conferência menos 10 min**:
+
+| Folga              | Quanto | O que cobre                                                                                                                                                                                                                                                                              |
+| ------------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Margem, no começo  | 15 min | O que a configuração anterior ainda pode entregar depois de trocada: o módulo lê os grupos a cada 5 min, a troca reinicia o manager e espera o healthcheck dele (até 3 min; com a volta da configuração anterior, mais 3), e o analysisd ainda esvazia a fila. 5 + 6 min, com 4 de folga |
+| Espera, no fim     | 10 min | O atraso do sinal: o host só grava o `applied` depois de reiniciar o manager e esperar o healthcheck (até 3 + 3 min), e o timer dele pode aplicar uma lista que o worker ainda não planejou (uma autorização desfeita em menos de 30 s). Nesse meio tempo o manager já roda a lista nova |
+| Entre conferências | 5 min  | O worker parado: sem conferir por mais que isso, a tarefa não sabe o que o host aplicou, e a prova recomeça                                                                                                                                                                              |
+
+- **O alerta novo demais** (mais novo que a última conferência menos 10 min) não é decidido ainda: não vira achado nem
+  vai para a fila, e a execução seguinte o relê. Todo achado do CloudWatch Logs aparece, então, pelo menos 10 min
+  depois do alerta. Se a prova cair nesse intervalo, ele vai para a fila.
+- **A primeira decisão vale.** O alerta que já está na fila sem dono nunca vira achado numa releitura, mesmo que passe
+  a caber numa prova; e o que já virou achado não ganha uma linha na fila quando a sobreposição o relê sem a prova.
+- **Só linha de grupo de logs:** o evento de bucket que passa do tamanho que o analysisd lê chega cortado, não é
+  decodificado e fica sem `data.integration`; pelo começo do texto (o envelope do módulo, `{"integration": "aws"`), o
+  sync o reconhece e o manda para a fila como inválido, em vez de atribuí-lo ao dono dos grupos. No Wazuh 4.14.9 esse
+  evento não casa com regra nenhuma (conferido no `wazuh-logtest`); a conferência é para uma regra futura.
+- **Os relógios:** o horário do alerta é o campo `timestamp` do documento no indexer (o relógio do manager, quando o
+  analysisd gerou o alerta; o mesmo campo que ordena e pagina a leitura do sync). `since` e a última conferência são do
+  relógio do worker, e `since` nunca fica antes da hora do sinal do host. No nó, os três estão na mesma máquina; a
+  margem e a espera absorvem uma diferença de minutos.
+- **O que isso custa:** depois de cada queda da prova (o nó reiniciado, o worker parado por mais de 5 min, outro
+  cliente com grupo de logs no nó), os alertas dos 15 min seguintes ao renascimento vão para a fila sem dono e não
+  voltam. O cliente único do nó dedicado, com a prova de pé desde antes do primeiro grupo, não perde nada.
+- **O que a prova supõe:** com o worker no ar, a tarefa lê o sinal ao menos uma vez entre duas trocas de configuração
+  do host (cada troca reinicia o manager e espera o healthcheck dele; a tarefa confere a cada 30 s). O sinal não tem
+  um número de sequência: duas trocas entre duas conferências não seriam vistas.
 
 **Limites conhecidos da coleta pelo Wazuh:**
 
@@ -1038,7 +1096,9 @@ nenhum).
 - **Grupos do CloudWatch Logs:** o marcador do módulo é por região, grupo e stream, sem a conta: o mesmo nome na mesma
   região em duas contas do nó só é lido na primeira autorizada (a outra fica `log_group_name_conflict`). Um grupo
   negado ou apagado faz o módulo parar a leitura dos grupos seguintes da mesma conta e região até a descoberta tirar a
-  fonte da lista (no máximo um dia, ou no "Tentar de novo"). O alerta não diz de que grupo veio.
+  fonte da lista (no máximo um dia, ou no "Tentar de novo"). O alerta não diz de que grupo veio, e por isso só é
+  atribuído com a prova do dono ("Dono dos alertas do CloudWatch Logs"): o achado sai pelo menos 10 min depois do
+  alerta, e os alertas dos 15 min seguintes a uma queda da prova ficam na fila sem dono.
 - **Trilha de conta e de organização no mesmo bucket, para a mesma conta:** o marcador do módulo é o mesmo para as duas
   pastas, e a leitura de uma pode pular objetos da outra. Autorize só uma das duas.
 - **Export do GuardDuty de várias regiões no mesmo bucket:** pelo código do módulo, o marcador do tipo `guardduty` é

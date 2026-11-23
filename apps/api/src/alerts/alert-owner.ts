@@ -38,7 +38,10 @@ export type UnownedReason =
   | 'not_aws'
   /** Bucket de origem não cadastrado para aquela fonte. No CloudWatch Logs: nenhum cliente com grupo autorizado. */
   | 'unknown_source'
-  /** O mesmo bucket cadastrado por clientes diferentes. No CloudWatch Logs: mais de um cliente com grupo autorizado. */
+  /**
+   * O mesmo bucket cadastrado por clientes diferentes. No CloudWatch Logs: mais de um cliente com grupo autorizado, ou
+   * um só, sem a prova de que o manager só coletou os grupos dele quando o alerta foi gerado (`cloudwatch-ownership.ts`).
+   */
   | 'ambiguous_source'
   /** O evento não cita conta. No CloudWatch Logs: o cliente tem grupos autorizados em mais de uma conta. */
   | 'no_account'

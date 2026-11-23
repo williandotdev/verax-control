@@ -33,6 +33,8 @@ const MIGRATION = '20261124120000_aws_onboarding';
 const RETRY_LIMIT = '20261124130000_aws_source_retry_limit';
 /** E a da nota dos flow logs lidos juntos: o CHECK da descoberta com um valor a mais na lista de notas. */
 const FLOW_NOTE = '20261124140000_aws_source_note_flow_logs';
+/** E a da prova do dono dos alertas do CloudWatch Logs: uma tabela nova, do sistema. */
+const OWNERSHIP = '20261124150000_cloudwatch_alert_ownership';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -76,8 +78,8 @@ function listedAfter(definition: string, marker: string): string[] {
 
 describe(`migration ${MIGRATION}`, () => {
   it('só acrescenta, ela e a do limite do "Tentar de novo", que vem depois: nada é apagado nem reescrito', () => {
-    expect(migrations.slice(migrations.indexOf(MIGRATION) + 1)).toEqual([RETRY_LIMIT, FLOW_NOTE]);
-    for (const name of [MIGRATION, RETRY_LIMIT]) {
+    expect(migrations.slice(migrations.indexOf(MIGRATION) + 1)).toEqual([RETRY_LIMIT, FLOW_NOTE, OWNERSHIP]);
+    for (const name of [MIGRATION, RETRY_LIMIT, OWNERSHIP]) {
       const sql = sqlOf(name);
       expect(sql, name).not.toMatch(/\bDROP\b|DELETE FROM|^\s*UPDATE\b|\bTRUNCATE\b|ALTER COLUMN/im);
       // Os buckets cadastrados continuam nas colunas da conta.
@@ -110,6 +112,21 @@ describe(`migration ${MIGRATION}`, () => {
       ),
     ]);
     expect(AWS_SOURCE_NOTES).toContain('flow_logs_read_together');
+  });
+
+  it('a da prova do dono dos alertas do CloudWatch Logs só cria a tabela dela, do sistema: sem cliente e sem chave estrangeira', () => {
+    const sql = sqlOf(OWNERSHIP);
+    const statements = sql
+      .split('\n')
+      .filter((line) => line.trim().length > 0 && !line.startsWith('--'))
+      .join('\n');
+    // Uma tabela e o CHECK dela; nada do que já existe é citado.
+    expect(statements.match(/^(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE)\b.*$/gm)).toEqual([
+      'CREATE TABLE "CloudWatchAlertOwnership" (',
+      'ALTER TABLE "CloudWatchAlertOwnership" ADD CONSTRAINT "CloudWatchAlertOwnership_owner_check" CHECK (',
+    ]);
+    // Não é dado do cliente: sem `tenantId` (o escopo do cliente nunca a alcança) e sem chave estrangeira.
+    expect(statements).not.toMatch(/"tenantId"|FOREIGN KEY|REFERENCES/);
   });
 
   describe('banco novo (o banco de teste, migrado do zero)', () => {
