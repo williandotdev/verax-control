@@ -41,6 +41,14 @@ export async function lockTenantFindings(tx: Prisma.TransactionClient, tenantId:
  */
 const isTriaged = (status: FindingStatus): boolean => status !== 'new';
 
+/** A ordem das severidades, para saber se a de um achado atualizado na origem subiu. */
+const SEVERITY_RANK: Readonly<Record<FindingDraft['severity'], number>> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
+
 export function findingRow(draft: FindingDraft, exception: ActiveException | null) {
   return {
     tenantId: draft.tenantId,
@@ -50,7 +58,11 @@ export function findingRow(draft: FindingDraft, exception: ActiveException | nul
     rawEventId: draft.rawEventId ?? null,
     logSource: draft.logSource,
     occurredAt: new Date(draft.occurredAt),
-    lastSeenAt: draft.recurrence ? new Date(draft.recurrence.lastSeenAt) : null,
+    lastSeenAt: draft.recurrence
+      ? new Date(draft.recurrence.lastSeenAt)
+      : draft.revision
+        ? new Date(draft.revision.lastSeenAt)
+        : null,
     chainKey: draft.recurrence?.chainKey ?? null,
     severity: draft.severity,
     // A exceção marca o achado como esperado já na chegada: ele não entra na fila de triagem.
@@ -138,10 +150,52 @@ export class FindingStore {
       });
       if (count === 1) return this.settle(db, draft, draft.sourceEventId, exception, now);
       // A chave já existe. Só o GuardDuty traz a versão do achado, que diz se é a mesma ou uma nova.
-      return draft.recurrence
-        ? this.recur(db, draft, draft.recurrence, exception, now)
-        : ('duplicate' as const);
+      if (draft.recurrence) return this.recur(db, draft, draft.recurrence, exception, now);
+      // Os achados de estado da API da AWS trazem a versão também, e ela só atualiza o que já existe.
+      if (draft.revision) return this.revise(db, draft, draft.revision);
+      return 'duplicate' as const;
     });
+  }
+
+  /**
+   * A chave já existe e o achado é de estado (Security Hub, Inspector, Access Analyzer): a origem o atualiza a cada
+   * reavaliação, e a versão nova nunca vira outro achado. Versão igual ou mais antiga que a conhecida: nada muda. Mais
+   * nova: o `lastSeenAt` avança e, se mudaram na origem, a severidade (com o nível), a regra e o título acompanham (o
+   * acesso externo que virou público, a vulnerabilidade que o fornecedor reclassificou). O status, os
+   * comentários e o incidente não mudam: quem fecha o achado é sempre uma pessoa. Se a severidade subiu para alta ou
+   * crítica, o aviso por e-mail sai agora, uma vez só por achado (a chave do aviso é a do achado); o achado marcado
+   * como legítimo (por uma pessoa ou por exceção) não avisa. A chave de um achado de outro cliente não é vista pelo
+   * escopo, e nada é tocado.
+   */
+  private async revise(
+    db: ScopedDb,
+    draft: FindingDraft,
+    revision: NonNullable<FindingDraft['revision']>,
+  ): Promise<PersistOutcome> {
+    const current = await db.finding.findUnique({
+      where: { source_sourceEventId: { source: draft.source, sourceEventId: draft.sourceEventId } },
+      select: { id: true, lastSeenAt: true, severity: true, ruleId: true, title: true, status: true },
+    });
+    if (!current) return 'duplicate' as const;
+    const seenAt = new Date(revision.lastSeenAt);
+    if (current.lastSeenAt !== null && seenAt <= current.lastSeenAt) return 'duplicate' as const;
+    const title = draft.title.slice(0, 500);
+    const severityChanged = current.severity !== draft.severity;
+    await db.finding.update({
+      where: { id: current.id },
+      data: {
+        lastSeenAt: seenAt,
+        ...(severityChanged && { severity: draft.severity, ruleLevel: draft.ruleLevel }),
+        ...(current.ruleId !== draft.ruleId && { ruleId: draft.ruleId }),
+        ...(current.title !== title && { title }),
+      },
+      select: { id: true },
+    });
+    const rose = SEVERITY_RANK[draft.severity] > SEVERITY_RANK[current.severity];
+    if (rose && current.status !== 'legitimate') {
+      await this.notices.enqueue(db, { tenantId: draft.tenantId, id: current.id, severity: draft.severity });
+    }
+    return 'duplicate' as const;
   }
 
   /**

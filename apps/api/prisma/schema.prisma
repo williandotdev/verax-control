@@ -602,13 +602,14 @@ model Finding {
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   /// Conta do provedor de onde veio o evento (12 dígitos, ID do projeto ou ID do Cloudflare).
   accountId       String           @db.VarChar(32)
-  /// Sistema de origem do alerta (`wazuh` ou `gcp`).
+  /// Sistema de origem do alerta: `wazuh`, `gcp`, `cloudflare` ou `aws` (os achados lidos pela API do Security Hub, do
+  /// Inspector e do Access Analyzer; o GuardDuty lido pela API sai como `wazuh`, com a chave do caminho do bucket).
   source          String           @db.VarChar(16)
   /// Chave do achado na origem, a mesma a cada releitura do evento (no Wazuh, `wazuh/<conta>/<tipo>:<id>:<regra>`).
   sourceEventId   String           @db.VarChar(128)
   /// Só no Wazuh: ID do alerta da primeira leitura, por onde o detalhe busca o evento bruto no indexer.
   rawEventId      String?          @db.VarChar(128)
-  /// Fonte de log: `cloudtrail`, `guardduty`, `waf`.
+  /// Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `security_hub`, `inspector`...
   logSource       String           @db.VarChar(32)
   occurredAt      DateTime         @db.Timestamptz(3)
   severity        FindingSeverity
@@ -634,8 +635,9 @@ model Finding {
   incident        Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
   /// Primeira vez que alguém tirou o achado de "novo" (relatório de tempo até a triagem).
   triagedAt       DateTime?        @db.Timestamptz(3)
-  /// Só no GuardDuty: a versão do achado na origem (o `updatedAt` do GuardDuty, que só avança). Decide a reincidência:
-  /// a versão mais nova de um achado já triado vira outro achado; a de um ainda não triado só avança esta data.
+  /// A versão do achado na origem (o `updatedAt`, que só avança). No GuardDuty, decide a reincidência: a versão mais
+  /// nova de um achado já triado vira outro achado; a de um ainda não triado só avança esta data. Nos achados de estado
+  /// lidos pela API da AWS (Security Hub, Inspector, Access Analyzer), a versão nova só avança esta data.
   lastSeenAt      DateTime?        @db.Timestamptz(3)
   /// Só no GuardDuty: a chave do achado inteiro na origem (`wazuh/<conta>/guardduty:<id>:<regra>`), a mesma no
   /// original, nas recorrências e, na sondagem de porta, no achado de cada IP. A cadeia da reincidência é lida por aqui.
