@@ -14,7 +14,7 @@ import {
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { QueryClient } from '@tanstack/react-query';
 import { AWS_READER_TEMPLATE_URL } from '@/features/admin/aws-reader-template';
 import { api } from '@/lib/api';
@@ -32,20 +32,33 @@ import {
 import { demoAdminStore } from '@/mocks/admin';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
+import {
+  authorizedSourceFixture,
+  checksFixture,
+  legacySourceFixture,
+  onboardingFixture,
+} from '@/test/aws-onboarding-fixtures';
+import { onboardingApi } from '@/test/aws-onboarding-harness';
+import { readerTemplateHandler } from '@/test/aws-reader-template';
+import { stubObjectUrls } from '@/test/object-url';
 
 // Os formulários são preenchidos letra por letra: com a suíte inteira em paralelo, passam dos 5 s padrão.
 const FORM_TIMEOUT = 15_000;
-/** O "Verificar" espera a tela reler a conta (a cada 5 s) até o "worker" da demonstração responder. */
-const AWS_CHECK_TIMEOUT = 30_000;
+/** O "Conectar" e o "Verificar" esperam a tela reler a conta (a cada 5 s) até o "worker" da demonstração responder. */
+const AWS_CHECK_TIMEOUT = 40_000;
 /** As contas AWS da demonstração (`account(1, ...)` e `account(2, ...)` em mocks/admin.ts). */
 const DEMO_AWS_ALFA_ID = '018f2c1e-0000-7000-8000-0000000c0001';
 const DEMO_AWS_HOMOLOGACAO_ID = '018f2c1e-0000-7000-8000-0000000c0002';
 
 const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
+let objectUrls: ReturnType<typeof stubObjectUrls> | undefined;
 afterEach(() => {
   server.resetHandlers();
   api.resetCsrf();
+  vi.restoreAllMocks();
+  objectUrls?.restore();
+  objectUrls = undefined;
 });
 afterAll(() => server.close());
 
@@ -56,7 +69,8 @@ function renderAt(
   /** Respostas que valem antes das do mock (o MSW usa a primeira que casa). */
   overrides: Parameters<typeof server.use> = [],
 ) {
-  server.use(...overrides, ...createHandlers(state));
+  // O template do papel de leitura é servido pelo próprio painel; no teste, pelo arquivo do repositório.
+  server.use(...overrides, readerTemplateHandler(), ...createHandlers(state));
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   render(
     <QueryClientProvider client={client}>
@@ -319,99 +333,148 @@ describe('Usuários (T7.2)', { timeout: FORM_TIMEOUT }, () => {
 });
 
 describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
-  it('mostra conexão e último evento; cadastrar conta AWS leva ao papel de leitura sem chave, sem ExternalId', async () => {
-    renderAt('/cadastros/contas');
+  it('cadastrar conta AWS pede só o ID e a região principal, e leva ao "Conectar com AWS", sem chave nem ExternalId', async () => {
+    const created: unknown[] = [];
+    renderAt('/cadastros/contas', undefined, undefined, [
+      http.post(`${API_URL}/v1/cloud-accounts`, async ({ request }) => {
+        created.push(await request.clone().json());
+        return undefined;
+      }),
+    ]);
     const rows = await rowsOf('Contas cloud do cliente');
     expect(rows).toHaveLength(4);
     expect(rows[0]).toHaveTextContent('Conectada');
     await userEvent.click(screen.getByRole('button', { name: 'Cadastrar conta' }));
     const sheet = await screen.findByRole('dialog', { name: 'Cadastrar conta' });
+    // Só o ID e a região: nada de lista de regiões nem de bucket para digitar.
+    expect(within(sheet).getByLabelText('Região principal')).toHaveValue('sa-east-1');
+    expect(within(sheet).queryByLabelText('Regiões monitoradas')).not.toBeInTheDocument();
+    expect(within(sheet).queryByLabelText('Nome do bucket')).not.toBeInTheDocument();
+    // Os buckets fora do padrão ficam recolhidos, para as exceções.
+    expect(
+      within(sheet).getByText('Avançado: buckets fora do padrão', { selector: 'summary' }).closest('details'),
+    ).not.toHaveAttribute('open');
     await userEvent.type(within(sheet).getByLabelText('ID da conta AWS'), '1234');
     await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar conta' }));
     expect(within(sheet).getByLabelText('ID da conta AWS')).toHaveAccessibleDescription(/12 dígitos/);
+    expect(created).toEqual([]);
     await userEvent.clear(within(sheet).getByLabelText('ID da conta AWS'));
     await userEvent.type(within(sheet).getByLabelText('ID da conta AWS'), '210987654321');
+    await userEvent.selectOptions(within(sheet).getByLabelText('Região principal'), 'us-east-1');
     await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar conta' }));
     expect(await within(sheet).findByText(/Conta AWS 210987654321 cadastrada/)).toHaveTextContent(
-      'Falta criar o papel de leitura nela e verificar.',
+      'Falta conectar a conta: é o próximo passo, abaixo.',
     );
-    expect(within(sheet).getByRole('heading', { name: 'Conectar a conta 210987654321' })).toBeInTheDocument();
-    // O template é o arquivo do repositório, servido pelo próprio painel (não um link do GitHub nem um preenchido).
-    const download = within(sheet).getByRole('link', { name: /Baixar o template/ });
+    expect(created).toEqual([{ provider: 'aws', accountId: '210987654321', regions: ['us-east-1'] }]);
+    const connect = await within(sheet).findByRole('region', { name: 'Conectar a conta 210987654321' });
+    await waitFor(() =>
+      expect(within(connect).getByRole('button', { name: 'Conectar com AWS' })).toBeEnabled(),
+    );
+    // O template sem preencher continua sendo o arquivo do repositório, servido pelo próprio painel.
+    const download = within(connect).getByRole('link', { name: /Baixar o template/ });
     expect(download).toHaveAttribute('href', AWS_READER_TEMPLATE_URL);
     expect(download).toHaveAttribute('download', 'verax-control-reader.yaml');
     expect(AWS_READER_TEMPLATE_URL).toMatch(/verax-control-reader\.yaml$/);
+    // O console abre na região escolhida.
+    expect(within(connect).getByRole('link', { name: /CloudFormation/ })).toHaveAttribute(
+      'href',
+      'https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create',
+    );
     expect(within(sheet).queryByText(/ExternalId/)).not.toBeInTheDocument();
-    expect(within(sheet).getByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
   });
 
-  it('AWS: o passo a passo mostra os três valores do nó (com cópia), os buckets e o comando da CLI', async () => {
-    const user = userEvent.setup();
+  it('AWS conectada: a situação, a pilha com os valores do nó, o que foi encontrado e as fontes', async () => {
     renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`);
     const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaProducao}` });
     expect(within(sheet).getByText('Papel de leitura').nextElementSibling).toHaveTextContent(
       `arn:aws:iam::${DEMO_ACCOUNTS.alfaProducao}:role/verax/verax-control-reader`,
     );
-    const steps = within(sheet).getByRole('region', {
-      name: `Conectar a conta ${DEMO_ACCOUNTS.alfaProducao}`,
-    });
-    expect(within(steps).getByText(DEMO_NODE_SERVICE_ACCOUNT_ID)).toBeInTheDocument();
-    expect(within(steps).getByText(DEMO_EGRESS_IPS.join(','))).toBeInTheDocument();
-    expect(within(steps).getByText(AWS_READER_AUDIENCE)).toBeInTheDocument();
-    await user.click(within(steps).getByRole('button', { name: 'Copiar: ID da conta de serviço do nó' }));
-    expect(await navigator.clipboard.readText()).toBe(DEMO_NODE_SERVICE_ACCOUNT_ID);
-    // Os três buckets da conta (trilha, GuardDuty e WAF), na ordem das fontes.
-    expect(
-      within(steps).getByText(
-        [
-          `arn:aws:s3:::trilha-${DEMO_ACCOUNTS.alfaProducao}`,
-          `arn:aws:s3:::${DEMO_ALFA_MORE_BUCKETS.guardduty}`,
-          `arn:aws:s3:::${DEMO_ALFA_MORE_BUCKETS.waf}`,
-        ].join(','),
-      ),
-    ).toBeInTheDocument();
-    expect(within(steps).getByRole('link', { name: /CloudFormation/ })).toHaveAttribute(
-      'href',
-      'https://console.aws.amazon.com/cloudformation/home?region=sa-east-1#/stacks/create',
-    );
-    const command = within(steps).getByText(/^aws cloudformation deploy/);
+    const status = await within(sheet).findByRole('region', { name: 'Situação da conexão' });
+    expect(within(status).getByRole('status')).toHaveTextContent('Parcialmente operacional');
+    // A conta conectada não oferece o "Conectar com AWS" de novo.
+    expect(within(sheet).queryByRole('button', { name: 'Conectar com AWS' })).not.toBeInTheDocument();
+    // A pilha: a autorização dos grupos de logs está desligada na demonstração, e o comando leva os valores do nó.
+    const stack = within(sheet).getByRole('region', { name: 'Pilha na AWS' });
+    expect(stack).toHaveTextContent('Grupos do CloudWatch Logs marcados: desligada');
+    const command = within(stack).getByText(/^aws cloudformation deploy/);
     expect(command).toHaveTextContent(`NodeServiceAccountId=${DEMO_NODE_SERVICE_ACCOUNT_ID}`);
     expect(command).toHaveTextContent(`NodeEgressIps=${DEMO_EGRESS_IPS.join(',')}`);
     expect(command).toHaveTextContent(`Audience=${AWS_READER_AUDIENCE}`);
     expect(command).toHaveTextContent('--capabilities CAPABILITY_NAMED_IAM');
-    // Conectada na demonstração: o início da coleta aparece como dia, sem o fuso puxar para o anterior.
-    expect(within(steps).getByRole('status')).toHaveTextContent(
-      /Conectada: o Verax entrou no papel de leitura\. Os logs são lidos a partir de \d{2}\/\d{2}\/\d{4}\./,
+    expect(command).toHaveTextContent('ReadTaggedLogGroups=false');
+    // Os três buckets cadastrados manualmente (trilha, GuardDuty e WAF), na ordem das fontes.
+    expect(command).toHaveTextContent(
+      `LogBucketArns=${[
+        `arn:aws:s3:::trilha-${DEMO_ACCOUNTS.alfaProducao}`,
+        `arn:aws:s3:::${DEMO_ALFA_MORE_BUCKETS.guardduty}`,
+        `arn:aws:s3:::${DEMO_ALFA_MORE_BUCKETS.waf}`,
+      ].join(',')}`,
     );
+    expect(within(sheet).getByRole('region', { name: 'O que encontramos' })).toHaveTextContent(
+      'Descoberta parcial: 3 leituras ficaram de fora.',
+    );
+    // As fontes dos buckets do cadastro estão no acompanhamento, como cadastradas manualmente.
+    const monitor = within(sheet).getByRole('region', { name: 'Fontes autorizadas' });
+    expect(within(monitor).getAllByText('Cadastrada manualmente')).toHaveLength(3);
+    expect(within(sheet).getByRole('region', { name: 'Fontes de log' })).toHaveTextContent(
+      'A leitura de grupos de logs está desligada na pilha.',
+    );
+    // Os buckets do cadastro ficam em "Avançado", aberto porque a conta os tem.
+    expect(
+      within(sheet).getByText('Avançado: buckets fora do padrão', { selector: 'summary' }).closest('details'),
+    ).toHaveAttribute('open');
   });
 
   it(
-    'AWS: Verificar mostra "Verificando…" e, quando o worker responde, Conectada com o início da coleta',
+    'AWS: "Conectar com AWS" baixa o arquivo, abre o console e a tela acompanha a API até a descoberta',
     async () => {
+      objectUrls = stubObjectUrls();
+      const downloads: string[] = [];
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+        if (this.download) downloads.push(this.download);
+      });
+      const opened = vi.spyOn(window, 'open').mockReturnValue(null);
       renderAt('/cadastros/contas');
       await userEvent.click(await screen.findByRole('button', { name: 'Cadastrar conta' }));
       const sheet = await screen.findByRole('dialog', { name: 'Cadastrar conta' });
       await userEvent.type(within(sheet).getByLabelText('ID da conta AWS'), '135792468024');
       await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar conta' }));
-      await within(sheet).findByRole('heading', { name: 'Conectar a conta 135792468024' });
-      // O cadastro não relê a conta: abre o detalhe pela tabela, que acompanha a verificação.
+      await within(sheet).findByRole('region', { name: 'Conectar a conta 135792468024' });
+      // O cadastro não relê a conta: abre o detalhe pela tabela, que acompanha a conexão.
       await userEvent.keyboard('{Escape}');
       const row = await screen.findByRole('button', { name: (name) => name.includes('135792468024') });
       await userEvent.click(row);
       const detail = await screen.findByRole('dialog', { name: 'Conta AWS 135792468024' });
-      await userEvent.click(within(detail).getByRole('button', { name: 'Verificar conexão' }));
-      expect(await within(detail).findByText(/^Verificação pedida/)).toBeInTheDocument();
-      expect(within(detail).getByRole('button', { name: 'Verificando…' })).toBeDisabled();
+      const button = await within(detail).findByRole('button', { name: 'Conectar com AWS' });
+      await waitFor(() => expect(button).toBeEnabled());
+      await userEvent.click(button);
+      expect(downloads).toEqual(['verax-control-reader-135792468024.yaml']);
+      expect(opened).toHaveBeenCalledTimes(1);
+      // A espera vem da API: os passos, o aviso e o selo da conta.
+      expect(await within(detail).findByRole('region', { name: 'Crie a pilha na AWS' })).toHaveTextContent(
+        /Tempo restante para criar a pilha: (1 h|59 min)/,
+      );
+      const status = within(detail).getByRole('region', { name: 'Situação da conexão' });
+      expect(within(status).getByRole('status')).toHaveTextContent('Aguardando autorização na AWS');
       expect(within(detail).getByText('Conexão').nextElementSibling).toHaveTextContent(
         'Verificando: o Verax está entrando no papel de leitura da conta.',
       );
-      // A tela relê a conta a cada 5 s enquanto o pedido está pendente.
-      expect(
-        await within(detail).findByText(/^Conectada: o Verax entrou no papel de leitura\./, undefined, {
-          timeout: 12_000,
-        }),
-      ).toHaveTextContent(/Os logs são lidos a partir de \d{2}\/\d{2}\/\d{4}\./);
-      expect(within(detail).getByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
+      // A tela relê o estado a cada 5 s: o "worker" da demonstração acha o papel, e a descoberta começa sozinha.
+      await waitFor(
+        () =>
+          expect(within(status).getByRole('status')).toHaveTextContent(
+            /Autenticação validada|Descoberta em andamento|Aguardando autorização de fontes/,
+          ),
+        { timeout: 15_000 },
+      );
+      expect(within(detail).queryByRole('region', { name: 'Crie a pilha na AWS' })).not.toBeInTheDocument();
+      await waitFor(
+        () => expect(within(detail).getByText('Conexão').nextElementSibling).toHaveTextContent(/^Conectada/),
+        { timeout: 10_000 },
+      );
+      expect(within(detail).getByRole('region', { name: 'Pilha na AWS' })).toHaveTextContent(
+        'versão 2 (atual)',
+      );
     },
     AWS_CHECK_TIMEOUT,
   );
@@ -421,30 +484,40 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     async () => {
       renderAt(`/cadastros/contas?conta=${DEMO_AWS_HOMOLOGACAO_ID}`);
       const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaHomologacao}` });
-      const status = within(sheet).getByRole('status');
-      expect(status).toHaveTextContent(
-        /A AWS recusou a entrada no papel\. Confira se a pilha verax-control-reader/,
-      );
-      expect(status).toHaveTextContent(/Corrija e clique em Verificar de novo\.$/);
-      await userEvent.click(within(sheet).getByRole('button', { name: 'Verificar conexão' }));
-      expect(await within(sheet).findByText(/^Verificação pedida/)).toBeInTheDocument();
+      const status = await within(sheet).findByRole('region', { name: 'Situação da conexão' });
+      expect(within(status).getByRole('status')).toHaveTextContent('Desconectada');
+      const checks = within(sheet).getByRole('region', { name: 'Conferências da conexão' });
       expect(
-        await within(sheet).findByText(/^A AWS recusou a entrada no papel/, undefined, { timeout: 12_000 }),
+        within(checks).getByText(
+          /^A AWS recusou a entrada no papel\. Confira se a pilha verax-control-reader/,
+        ),
       ).toBeInTheDocument();
+      await userEvent.click(within(status).getByRole('button', { name: 'Verificar conexão' }));
+      expect(await within(status).findByRole('button', { name: 'Verificando…' })).toBeDisabled();
+      expect(within(status).getByRole('status')).toHaveTextContent('ele tenta de novo por até 10 minutos');
+      expect(
+        await within(checks).findByText(/^A AWS recusou a entrada no papel/, undefined, { timeout: 12_000 }),
+      ).toBeInTheDocument();
+      expect(within(status).getByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
     },
     AWS_CHECK_TIMEOUT,
   );
 
-  it('AWS: quem só lê vê os valores e o resultado, sem o botão de verificar', async () => {
+  it('AWS: quem só lê vê a situação e as fontes, sem conectar, verificar, autorizar nem revogar', async () => {
     renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`, { me: demoMe('leitura') });
     const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaProducao}` });
-    expect(within(sheet).getByText(DEMO_NODE_SERVICE_ACCOUNT_ID)).toBeInTheDocument();
-    expect(within(sheet).getByRole('link', { name: /Baixar o template/ })).toBeInTheDocument();
-    expect(within(sheet).queryByRole('button', { name: /Verificar/ })).not.toBeInTheDocument();
-    expect(within(sheet).getByText('Quem administra as contas pede a verificação.')).toBeInTheDocument();
+    const status = await within(sheet).findByRole('region', { name: 'Situação da conexão' });
+    expect(within(status).getByText('Quem administra as contas pede a verificação.')).toBeInTheDocument();
+    expect(
+      within(sheet).queryByRole('button', { name: /Verificar|Conectar|Autorizar|Revogar|Descobrir/ }),
+    ).toBeNull();
+    expect(within(sheet).getByRole('region', { name: 'Fontes de log' })).toHaveTextContent(
+      'Quem administra as contas autoriza as fontes.',
+    );
+    expect(within(sheet).getByRole('region', { name: 'Fontes autorizadas' })).toBeInTheDocument();
   });
 
-  it('AWS: o nó que não informa o ID da conta de serviço nem o IP: a tela pede à Verax, e o comando leva os marcadores', async () => {
+  it('AWS: o nó que não informa o ID da conta de serviço nem o IP: a tela pede à Verax, sem arquivo quebrado', async () => {
     const created = '2026-11-01T00:00:00.000Z';
     const lonely = cloudAccountSchema.parse({
       id: '018f2c1e-0000-7000-8000-0000000c0fff',
@@ -471,27 +544,35 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       createdAt: created,
       updatedAt: created,
     });
-    renderAt(`/cadastros/contas?conta=${lonely.id}`);
-    server.use(
+    renderAt(`/cadastros/contas?conta=${lonely.id}`, undefined, undefined, [
       http.get(`${API_URL}/v1/cloud-accounts`, () =>
         HttpResponse.json({ items: [lonely], page: 1, pageSize: 20, total: 1 }),
       ),
-    );
+      ...onboardingApi(lonely, onboardingFixture(lonely.id, 'not_started')).handlers,
+    ]);
     const sheet = await screen.findByRole('dialog', { name: 'Conta AWS 999988887777' });
-    expect(within(sheet).getByText(/Nenhum bucket de log cadastrado/)).toBeInTheDocument();
-    expect(within(sheet).getByRole('link', { name: /CloudFormation/ })).toHaveAttribute(
+    const connect = await within(sheet).findByRole('region', { name: 'Conectar a conta 999988887777' });
+    expect(await within(connect).findByRole('alert')).toHaveTextContent(
+      'Peça à Verax antes de criar a pilha.',
+    );
+    expect(within(connect).queryByRole('button', { name: 'Conectar com AWS' })).not.toBeInTheDocument();
+    expect(within(connect).getByRole('link', { name: /CloudFormation/ })).toHaveAttribute(
       'href',
       'https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create',
     );
     expect(
-      within(sheet).getByText('Este nó ainda não informa o ID. Peça à Verax antes de criar a pilha.'),
+      within(connect).getByText('Este nó ainda não informa o ID. Peça à Verax antes de criar a pilha.'),
     ).toBeInTheDocument();
     expect(
-      within(sheet).getByText('Este nó ainda não informa o IP. Peça à Verax antes de criar a pilha.'),
+      within(connect).getByText('Este nó ainda não informa o IP. Peça à Verax antes de criar a pilha.'),
     ).toBeInTheDocument();
-    const command = within(sheet).getByText(/^aws cloudformation deploy/);
+    const command = within(connect).getByText(/^aws cloudformation deploy/);
     expect(command).toHaveTextContent('NodeServiceAccountId=ID_DA_CONTA_DE_SERVICO_DO_NO');
     expect(command).toHaveTextContent('NodeEgressIps=IP_DE_SAIDA_DO_NO/32');
+    // Sem bucket cadastrado, o "Avançado" fica fechado.
+    expect(
+      within(sheet).getByText('Avançado: buckets fora do padrão', { selector: 'summary' }).closest('details'),
+    ).not.toHaveAttribute('open');
   });
 
   describe('AWS (PR-V5): avisos e erros da conferência do worker', () => {
@@ -527,11 +608,15 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
         createdAt: created,
         updatedAt: created,
       });
-    const listing = (account: ReturnType<typeof awsAccount>) => [
+    type DemoAccount = ReturnType<typeof awsAccount>;
+    /** A lista com a conta, e o estado do onboarding que a API daria para ela. */
+    const listing = (account: DemoAccount, onboarding: Parameters<typeof onboardingFixture>[2] = {}) => [
       http.get(`${API_URL}/v1/cloud-accounts`, () =>
         HttpResponse.json({ items: [account], page: 1, pageSize: 20, total: 1 }),
       ),
+      ...onboardingApi(account, onboardingFixture(account.id, 'collecting', onboarding)).handlers,
     ];
+    const trail = (account: DemoAccount) => legacySourceFixture(account.buckets.cloudtrail ?? '');
 
     it('conectada com aviso: o que conferir e que a coleta continua, com o tipo do aviso no detalhe', async () => {
       const warned = awsAccount(
@@ -540,11 +625,26 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
         'connected',
         'excess_permissions',
       );
-      renderAt(`/cadastros/contas?conta=${warned.id}`, undefined, undefined, listing(warned));
+      renderAt(
+        `/cadastros/contas?conta=${warned.id}`,
+        undefined,
+        undefined,
+        listing(warned, {
+          sources: [trail(warned)],
+          checks: checksFixture({
+            assume_role: { status: 'ok', code: 'excess_permissions' },
+            identity: { status: 'ok' },
+            template: { status: 'ok' },
+            discovery: { status: 'ok' },
+          }),
+        }),
+      );
       const sheet = await screen.findByRole('dialog', { name: 'Conta AWS 999988887777' });
-      expect(within(sheet).getByText(/^Conectada: o Verax entrou no papel de leitura/)).toBeInTheDocument();
+      const status = await within(sheet).findByRole('region', { name: 'Situação da conexão' });
+      // Conectada e coletando, mas com um aviso: o selo não é o do "tudo certo".
+      expect(within(status).getByRole('status')).toHaveTextContent('Coletando eventos, com pendências');
       expect(
-        within(sheet).getByText(/^Aviso: O papel verax-control-reader tem permissão além da leitura/),
+        within(sheet).getByText(/Aviso: O papel verax-control-reader tem permissão além da leitura/),
       ).toHaveTextContent('A coleta continua.');
       expect(within(sheet).getByText(/^A última leitura deu certo./)).toHaveTextContent(
         'Tipo do aviso: excess_permissions.',
@@ -561,7 +661,19 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
         ),
         collectionError: 'wazuh_apply_failed' as const,
       };
-      renderAt(`/cadastros/contas?conta=${both.id}`, undefined, undefined, listing(both));
+      renderAt(
+        `/cadastros/contas?conta=${both.id}`,
+        undefined,
+        undefined,
+        listing(both, {
+          state: 'ingestion_failure',
+          sources: [authorizedSourceFixture('guardduty', 'collecting')],
+          checks: checksFixture({
+            assume_role: { status: 'ok', code: 'trail_not_logging' },
+            collector_config: { status: 'failed', code: 'wazuh_apply_failed' },
+          }),
+        }),
+      );
       const sheet = await screen.findByRole('dialog', { name: 'Conta AWS 999988885555' });
       // A conexão segue conectada, com o aviso dela (a trilha).
       expect(within(sheet).getByText(/^A última leitura deu certo./)).toHaveTextContent(
@@ -570,8 +682,16 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       // A coleta do nó, numa linha própria, com o que fazer e o código.
       expect(within(sheet).getByText('Coleta no nó')).toBeInTheDocument();
       expect(
-        within(sheet).getByText(/^O nó não conseguiu aplicar a configuração nova da coleta/),
+        within(sheet).getByText(/^O nó não conseguiu aplicar a configuração nova da coleta.*Tipo do aviso/),
       ).toHaveTextContent('É do nó, não desta conta: fale com a Verax. Tipo do aviso: wazuh_apply_failed.');
+      // E a conferência dos coletores diz o mesmo, no estado da conta.
+      const status = await within(sheet).findByRole('region', { name: 'Situação da conexão' });
+      expect(within(status).getByRole('status')).toHaveTextContent('Falha de ingestão');
+      expect(
+        within(within(sheet).getByRole('list', { name: 'Conferências da conexão' }))
+          .getByText(/^Configuração dos coletores/)
+          .closest('li'),
+      ).toHaveTextContent('É do nó, não desta conta: fale com a Verax.');
     });
 
     it('sem aviso da coleta, a linha da coleta no nó não aparece', async () => {
@@ -587,25 +707,51 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       };
       renderAt(`/cadastros/contas?conta=${clean.id}`, undefined, undefined, listing(clean));
       const sheet = await screen.findByRole('dialog', { name: 'Conta AWS 999988884444' });
-      expect(within(sheet).getByText(/^Conectada: o Verax entrou no papel de leitura/)).toBeInTheDocument();
+      await within(sheet).findByRole('region', { name: 'Situação da conexão' });
       expect(within(sheet).queryByText('Coleta no nó')).not.toBeInTheDocument();
     });
 
-    it('erro de bucket: diz de qual fonte é o bucket', async () => {
+    it('erro de bucket: a fonte do bucket cadastrado diz de qual é o bucket e o que conferir', async () => {
       const broken = awsAccount(
         '018f2c1e-0000-7000-8000-0000000c0ffd',
         '999988886666',
         'error',
         'bucket_denied:waf',
       );
-      renderAt(`/cadastros/contas?conta=${broken.id}`, undefined, undefined, listing(broken));
+      const bucket = broken.buckets.waf ?? '';
+      renderAt(
+        `/cadastros/contas?conta=${broken.id}`,
+        undefined,
+        undefined,
+        listing(broken, {
+          state: 'permission_error',
+          sources: [
+            legacySourceFixture(bucket, {
+              kind: 'waf',
+              state: 'permission_error',
+              stateCode: 'bucket_denied',
+              permission: 'missing',
+              permissionDetail: 'bucket_denied',
+              details: { bucket, legacySource: 'waf' },
+            }),
+          ],
+          checks: checksFixture({
+            assume_role: { status: 'ok' },
+            permission: { status: 'failed', code: 'bucket_denied' },
+          }),
+        }),
+      );
       const sheet = await screen.findByRole('dialog', { name: 'Conta AWS 999988886666' });
+      const monitor = await within(sheet).findByRole('region', { name: 'Fontes autorizadas' });
       expect(
-        within(sheet).getByText(/^Bucket do WAF: o papel não lista ou não lê os objetos/),
-      ).toHaveTextContent('Corrija e clique em Verificar de novo.');
+        within(monitor).getByText(/^Bucket do WAF: o papel não lista ou não lê os objetos/),
+      ).toHaveTextContent('Corrija e clique em Verificar conexão.');
       expect(within(sheet).getByText(/A última conferência do papel de leitura falhou/)).toHaveTextContent(
         'Tipo do erro: bucket_denied:waf.',
       );
+      expect(
+        within(within(sheet).getByRole('region', { name: 'Situação da conexão' })).getByRole('status'),
+      ).toHaveTextContent('Erro de permissão');
     });
   });
 
@@ -631,7 +777,10 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       'Tipo do erro: trust_denied.',
     );
     expect(within(sheet).getByText('Última coleta').nextElementSibling).toHaveTextContent('ontem');
-    expect(within(sheet).getByText('Último evento').nextElementSibling).toHaveTextContent('ontem');
+    // "Último evento" também é uma coluna da tabela das fontes: aqui, a linha do detalhe da conta.
+    expect(within(sheet).getByText('Último evento', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
+      'ontem',
+    );
   });
 
   it('GCP: conecta quando o primeiro evento chega; trocar a assinatura volta para Aguardando', async () => {
@@ -819,7 +968,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     expect(within(sheet).getByRole('button', { name: /Trocar/ })).toBeEnabled();
   });
 
-  it('conta cadastrada pela Verax na AWS: os buckets só leitura; o "Verificar" continua', async () => {
+  it('conta cadastrada pela Verax na AWS: os buckets só leitura; verificar, descobrir e autorizar continuam com o cliente', async () => {
     const accounts = [...demoAdminStore().accounts.values()].flat();
     const aws = accounts.find((account) => account.id === DEMO_AWS_ALFA_ID);
     if (!aws) throw new Error('a conta AWS da demonstração sumiu');
@@ -833,9 +982,18 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       within(row as HTMLElement).getByRole('button', { name: (name) => name.includes(aws.accountId) }),
     );
     const sheet = await screen.findByRole('dialog', { name: (name) => name.includes(aws.accountId) });
+    expect(within(sheet).getByText('Cadastrada pela Verax')).toBeInTheDocument();
     expect(within(sheet).getByText('A Verax altera os buckets desta conta.')).toBeInTheDocument();
     expect(within(sheet).queryByRole('button', { name: /Salvar buckets/ })).not.toBeInTheDocument();
-    expect(within(sheet).getByRole('button', { name: /Verificar/ })).toBeEnabled();
+    expect(within(sheet).getByRole('button', { name: 'Desativar monitoramento' })).toBeDisabled();
+    // O cadastro é da Verax; a conexão, a descoberta e a autorização das fontes são do cliente.
+    expect(await within(sheet).findByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
+    expect(within(sheet).getByRole('button', { name: 'Descobrir de novo' })).toBeEnabled();
+    const sources = within(sheet).getByRole('region', { name: 'Fontes de log' });
+    const [choice] = within(sources).getAllByRole('checkbox');
+    await userEvent.click(choice as HTMLElement);
+    expect(within(sources).getByRole('button', { name: 'Autorizar selecionadas (1)' })).toBeEnabled();
+    expect(within(sheet).getAllByRole('button', { name: /^Revogar: / }).length).toBeGreaterThan(0);
   });
 
   it('Cloudflare: zonas na tabela; o token guardado aparece só pelo fim do ID; as zonas mudam no detalhe', async () => {

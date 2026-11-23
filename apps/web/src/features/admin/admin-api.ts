@@ -119,8 +119,9 @@ export const useGenerateTemporaryPassword = (id: string) =>
 
 // --- Contas cloud (T3.3) ---
 /**
- * Enquanto uma conta AWS tem o "Verificar" pendente, a lista é relida a cada 5 s, até o worker gravar o resultado (ele
- * responde em até 30 s, ou em até 10 min se o papel ainda não valer no IAM).
+ * Enquanto uma conta AWS tem o "Verificar" ou o "Conectar" pendente, a lista é relida a cada 5 s, até o worker gravar o
+ * resultado (ele responde em até 30 s; em até 10 min se o papel ainda não valer no IAM; em até 60 min no "Conectar",
+ * enquanto a pilha é criada). O "Verificar" e o resto do onboarding da AWS ficam em `aws-onboarding-api.ts`.
  */
 export const AWS_CHECK_POLL_MS = 5_000;
 export const useCloudAccountList = (page: number, enabled: boolean) =>
@@ -135,11 +136,6 @@ export const useCreateCloudAccount = () =>
 export const useUpdateCloudAccount = (id: string) =>
   useWrite(['admin-cloud-accounts', 'cloud-accounts'], (input: CloudAccountUpdate) =>
     api.patch(`/v1/cloud-accounts/${encodeURIComponent(id)}`, input, cloudAccountSchema),
-  );
-/** "Verificar" a conta AWS: o pedido vai para o worker; a resposta já traz a conta com o pedido pendente. */
-export const useVerifyAwsAccount = (id: string) =>
-  useWrite(['admin-cloud-accounts', 'cloud-accounts'], () =>
-    api.post(`/v1/cloud-accounts/${encodeURIComponent(id)}/aws/verify`, undefined, cloudAccountSchema),
   );
 
 /** Estado da última escrita da credencial: só o resultado (a conta, sem segredo) ou o erro, nunca o que foi colado. */

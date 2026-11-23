@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http } from 'msw';
 import { setupServer } from 'msw/node';
@@ -12,6 +12,7 @@ import { createQueryClient } from '@/lib/query-client';
 import { DEMO_ACCOUNTS, DEMO_ALFA_MORE_BUCKETS, demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
+import { readerTemplateHandler } from '@/test/aws-reader-template';
 
 // Os formulários são preenchidos letra por letra: com a suíte inteira em paralelo, passam dos 5 s padrão.
 const FORM_TIMEOUT = 15_000;
@@ -38,6 +39,7 @@ function renderAt(path: string, state: MockState = { me: demoMe('admin_cliente')
       verifyCalls.push(String(params['id']));
       return undefined;
     }),
+    readerTemplateHandler(),
     ...createHandlers(state),
   );
   const router = createMemoryRouter(routes, { initialEntries: [path] });
@@ -52,15 +54,18 @@ function renderAt(path: string, state: MockState = { me: demoMe('admin_cliente')
 async function openAlfa(state?: MockState) {
   const rendered = renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`, state);
   const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${ALFA}` });
-  const section = within(sheet).getByRole('region', { name: 'Buckets de log' });
-  const steps = within(sheet).getByRole('region', { name: `Conectar a conta ${ALFA}` });
+  // Os buckets cadastrados à mão ficam em "Avançado: buckets fora do padrão" (aberto, porque esta conta os tem).
+  const section = within(sheet).getByRole('region', { name: 'Buckets fora do padrão' });
+  expect(section.closest('details')).toHaveAttribute('open');
+  // A pilha: os passos para atualizá-la e o comando da CLI, com a lista de buckets da conta.
+  const steps = await within(sheet).findByRole('region', { name: 'Pilha na AWS' });
   return { ...rendered, sheet, section, steps };
 }
 
 const rowOf = (container: HTMLElement, position: number) =>
   within(within(container).getByRole('group', { name: `Bucket ${position}` }));
 
-describe('buckets de log da conta AWS (painel)', { timeout: FORM_TIMEOUT }, () => {
+describe('buckets fora do padrão da conta AWS (painel)', { timeout: FORM_TIMEOUT }, () => {
   it('a conta mostra os três buckets, um por fonte; sem fonte livre, não há o que adicionar', async () => {
     const { section } = await openAlfa();
     expect(rowOf(section, 1).getByLabelText('Fonte')).toHaveValue('cloudtrail');
@@ -110,7 +115,7 @@ describe('buckets de log da conta AWS (painel)', { timeout: FORM_TIMEOUT }, () =
       /Buckets salvos, e a lista mudou\. Se a pilha verax-control-reader já existe na conta, atualize o LogBucketArns/,
     );
     expect(rowOf(section, 3).getByLabelText('Nome do bucket')).toHaveValue('aws-waf-logs-loja-alfa-nova');
-    // O passo 2 e o comando da CLI já trazem a lista nova.
+    // Os passos para atualizar a pilha e o comando da CLI já trazem a lista nova.
     const arns = [
       `arn:aws:s3:::${TRAIL}`,
       `arn:aws:s3:::${DEMO_ALFA_MORE_BUCKETS.guardduty}`,
@@ -122,7 +127,14 @@ describe('buckets de log da conta AWS (painel)', { timeout: FORM_TIMEOUT }, () =
     expect(within(sheet).getByText('Conexão').nextElementSibling).toHaveTextContent(
       'Aguardando uma nova verificação: se os buckets mudaram, atualize a pilha na conta; depois, clique em Verificar.',
     );
-    expect(within(steps).getByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
+    // A conta volta ao começo sem perder a pilha: o caminho é atualizar a pilha e verificar, não criar outra.
+    const reconnect = await within(sheet).findByRole('region', { name: `Reconectar a conta ${ALFA}` });
+    expect(reconnect).toHaveTextContent('Esta conta já esteve conectada.');
+    expect(within(reconnect).getByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
+    // As fontes dos buckets continuam no acompanhamento, como cadastradas manualmente, com o bucket novo.
+    expect(within(sheet).getByRole('region', { name: 'Fontes autorizadas' })).toHaveTextContent(
+      'aws-waf-logs-loja-alfa-nova',
+    );
     expect(verifyCalls).toEqual([]);
   });
 
@@ -165,9 +177,7 @@ describe('buckets de log da conta AWS (painel)', { timeout: FORM_TIMEOUT }, () =
     expect(within(section).getByText('Nenhum bucket na lista.')).toBeInTheDocument();
     await user.click(within(section).getByRole('button', { name: 'Salvar buckets' }));
     expect(await within(section).findByRole('status')).toHaveTextContent(/a lista mudou/);
-    expect(
-      await within(steps).findByText(/^Nenhum bucket de log cadastrado nesta conta/),
-    ).toBeInTheDocument();
+    await waitFor(() => expect(steps).toHaveTextContent('(LogBucketArns): vazio'));
     expect(
       within(steps)
         .getByText(/^aws cloudformation deploy/)
@@ -189,7 +199,10 @@ describe('buckets de log da conta AWS (painel)', { timeout: FORM_TIMEOUT }, () =
     renderAt('/cadastros/contas');
     await user.click(await screen.findByRole('button', { name: 'Cadastrar conta' }));
     const sheet = await screen.findByRole('dialog', { name: 'Cadastrar conta' });
-    const buckets = within(sheet).getByRole('group', { name: 'Buckets de log (opcional)' });
+    // No cadastro, os buckets ficam recolhidos em "Avançado": só para os logs fora do padrão AWSLogs.
+    const advanced = within(sheet).getByText('Avançado: buckets fora do padrão').closest('details');
+    expect(advanced).not.toHaveAttribute('open');
+    const buckets = within(sheet).getByRole('group', { name: 'Buckets fora do padrão (opcional)' });
     expect(within(buckets).getByText('Nenhum bucket na lista.')).toBeInTheDocument();
     await user.type(within(sheet).getByLabelText('ID da conta AWS'), '135792468024');
 
@@ -213,9 +226,10 @@ describe('buckets de log da conta AWS (painel)', { timeout: FORM_TIMEOUT }, () =
 
     await user.click(within(sheet).getByRole('button', { name: 'Cadastrar conta' }));
     expect(await within(sheet).findByText(/Conta AWS 135792468024 cadastrada/)).toBeInTheDocument();
-    const steps = within(sheet).getByRole('region', { name: 'Conectar a conta 135792468024' });
-    expect(
-      within(steps).getByText('arn:aws:s3:::exemplo-cloudtrail-logs,arn:aws:s3:::aws-waf-logs-exemplo'),
-    ).toBeInTheDocument();
+    // Os buckets cadastrados vão para o LogBucketArns da pilha: na alternativa manual e no comando da CLI.
+    const steps = await within(sheet).findByRole('region', { name: 'Conectar a conta 135792468024' });
+    const arns = 'arn:aws:s3:::exemplo-cloudtrail-logs,arn:aws:s3:::aws-waf-logs-exemplo';
+    expect(within(steps).getByText(arns)).toBeInTheDocument();
+    expect(within(steps).getByText(/^aws cloudformation deploy/)).toHaveTextContent(`LogBucketArns=${arns}`);
   });
 });
