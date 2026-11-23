@@ -16,10 +16,8 @@ import {
   awsKmsKeyPolicyStatement,
   awsLogGroupTagCommand,
   awsReaderPrincipalArn,
-  awsReaderUserUpdateCommands,
   awsStackValues,
   capabilitiesOfChoice,
-  cloudFormationStacksUrl,
   DOWNLOAD_REVOKE_DELAY_MS,
   downloadTextFile,
   LOG_GROUP_ARN_PLACEHOLDER,
@@ -243,16 +241,6 @@ describe('gravação do arquivo e abertura do console', () => {
       'noopener,noreferrer',
     );
   });
-
-  it('a lista de pilhas do CloudFormation fica na região da conta (ou em São Paulo, sem região válida)', () => {
-    expect(cloudFormationStacksUrl('us-east-1')).toBe(
-      'https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks',
-    );
-    expect(cloudFormationStacksUrl(undefined)).toBe(
-      'https://console.aws.amazon.com/cloudformation/home?region=sa-east-1#/stacks',
-    );
-    expect(cloudFormationStacksUrl('regiao invalida')).toContain('region=sa-east-1#/stacks');
-  });
 });
 
 describe('comandos e trechos que o cliente copia', () => {
@@ -296,12 +284,5 @@ describe('comandos e trechos que o cliente copia', () => {
       Resource: '*',
       Condition: { StringLike: { 'kms:ViaService': 's3.*.amazonaws.com' } },
     });
-  });
-
-  it('na VM própria do cliente, atualizar é uma versão nova da política e as etiquetas do usuário', () => {
-    expect(awsReaderUserUpdateCommands('111111111111', ['discovery', 'findings']).split('\n')).toEqual([
-      'aws iam create-policy-version --policy-arn arn:aws:iam::111111111111:policy/verax/VeraxControlReader --policy-document file://verax-control-reader.json --set-as-default',
-      "aws iam tag-user --user-name verax-control-reader --tags Key=verax-control:template,Value=2 'Key=verax-control:capabilities,Value=discovery findings'",
-    ]);
   });
 });

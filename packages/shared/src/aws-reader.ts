@@ -602,8 +602,20 @@ export function awsReaderPrefilledFileName(accountId: string): string {
 /** Região do console quando a conta não tem uma válida. */
 const DEFAULT_CONSOLE_REGION = 'sa-east-1';
 
+/** A região do console: a informada, quando é uma região da AWS; senão, a padrão. */
+function consoleRegion(region: string | undefined): string {
+  return region !== undefined && isAwsRegion(region) ? region : DEFAULT_CONSOLE_REGION;
+}
+
 /** O CloudFormation no console da AWS, na região informada (a primeira monitorada), na criação de pilha. */
 export function cloudFormationConsoleUrl(region: string | undefined): string {
-  const chosen = region !== undefined && isAwsRegion(region) ? region : DEFAULT_CONSOLE_REGION;
-  return `https://console.aws.amazon.com/cloudformation/home?region=${chosen}#/stacks/create`;
+  return `https://console.aws.amazon.com/cloudformation/home?region=${consoleRegion(region)}#/stacks/create`;
+}
+
+/**
+ * A lista de pilhas do CloudFormation no console da AWS, na região informada: de onde o cliente abre a pilha
+ * `AWS_READER_STACK_NAME` que já existe, para atualizá-la (outro modelo, uma autorização ligada ou desligada).
+ */
+export function cloudFormationStacksUrl(region: string | undefined): string {
+  return `https://console.aws.amazon.com/cloudformation/home?region=${consoleRegion(region)}#/stacks`;
 }

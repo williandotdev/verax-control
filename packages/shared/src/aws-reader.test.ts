@@ -26,6 +26,7 @@ import {
   awsReaderRoleArn,
   CLOUDFORMATION_TEMPLATE_BODY_MAX_BYTES,
   cloudFormationConsoleUrl,
+  cloudFormationStacksUrl,
   isAwsConnectionErrorCode,
   isAwsConnectionWarningCode,
   isAwsReaderCapability,
@@ -265,6 +266,23 @@ describe('papel de leitura sem chave (PR-V3)', () => {
     );
     expect(cloudFormationConsoleUrl(undefined)).toContain('region=sa-east-1');
     expect(cloudFormationConsoleUrl('marte-1')).toContain('region=sa-east-1');
+  });
+
+  it('a lista de pilhas (para atualizar a que já existe) abre na mesma região, sem aceitar texto livre', () => {
+    expect(cloudFormationStacksUrl('us-east-1')).toBe(
+      'https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks',
+    );
+    expect(cloudFormationStacksUrl(undefined)).toBe(
+      'https://console.aws.amazon.com/cloudformation/home?region=sa-east-1#/stacks',
+    );
+    // Uma "região" que não é da AWS (ou que tenta levar outro endereço) cai na padrão.
+    for (const region of ['marte-1', 'sa-east-1#/stacks/create', 'us-east-1&x=1', '']) {
+      expect(cloudFormationStacksUrl(region)).toBe(
+        'https://console.aws.amazon.com/cloudformation/home?region=sa-east-1#/stacks',
+      );
+    }
+    // A criação e a lista só diferem no fim do endereço.
+    expect(cloudFormationConsoleUrl('eu-west-1')).toBe(`${cloudFormationStacksUrl('eu-west-1')}/create`);
   });
 });
 

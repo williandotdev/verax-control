@@ -3,15 +3,8 @@ import {
   AWS_READER_AUDIENCE,
   AWS_READER_AUTHORIZATIONS,
   AWS_READER_CAPABILITY_PARAMETERS,
-  AWS_READER_IAM_NAME,
-  AWS_READER_POLICY_FILE,
-  AWS_READER_POLICY_NAME,
-  AWS_READER_ROLE_TAGS,
-  AWS_READER_TEMPLATE_VERSION,
-  AWS_READER_USER_PATH,
   type AwsReaderAuthorization,
   type AwsReaderCapability,
-  awsReaderCapabilitiesTagValue,
   awsReaderDeployCommand,
   awsReaderPrefilledFileName,
   AwsReaderPrefillError,
@@ -20,7 +13,6 @@ import {
   type AwsReaderStackValues,
   awsReaderUserArn,
   type CloudAccount,
-  cloudFormationConsoleUrl,
   isAwsRegion,
   logBucketNames,
   prefillReaderTemplate,
@@ -144,16 +136,6 @@ export function awsConsoleRegion(account: Pick<CloudAccount, 'regions'>): string
   return account.regions[0];
 }
 
-const CREATE_STACK_SUFFIX = '#/stacks/create';
-
-/** A lista de pilhas do CloudFormation na região (para atualizar a pilha que já existe). */
-export function cloudFormationStacksUrl(region: string | undefined): string {
-  const create = cloudFormationConsoleUrl(region);
-  return create.endsWith(CREATE_STACK_SUFFIX)
-    ? `${create.slice(0, -CREATE_STACK_SUFFIX.length)}#/stacks`
-    : create;
-}
-
 /** Abre o endereço em outra aba, sem dar à página aberta acesso a esta (`noopener`). */
 export function openInNewTab(url: string): void {
   window.open(url, '_blank', 'noopener,noreferrer');
@@ -242,24 +224,4 @@ export function awsKmsKeyPolicyStatement(principalArn: string): string {
     null,
     2,
   );
-}
-
-/**
- * Na VM própria do cliente não há pilha: atualizar o que o Verax pode ler é gravar uma versão nova da política de
- * leitura (com o conteúdo que a tela mostra) e as etiquetas do usuário, que dizem a versão do modelo e as autorizações.
- * O ID da conta chega já validado (12 dígitos), e só os nomes de `AWS_READER_CAPABILITIES` entram no valor da etiqueta.
- */
-export function awsReaderUserUpdateCommands(
-  accountId: string,
-  capabilities: readonly AwsReaderCapability[],
-): string {
-  const policyArn = `arn:aws:iam::${accountId}:policy${AWS_READER_USER_PATH}${AWS_READER_POLICY_NAME}`;
-  const tags = [
-    `Key=${AWS_READER_ROLE_TAGS.template},Value=${AWS_READER_TEMPLATE_VERSION}`,
-    `'Key=${AWS_READER_ROLE_TAGS.capabilities},Value=${awsReaderCapabilitiesTagValue(capabilities)}'`,
-  ].join(' ');
-  return [
-    `aws iam create-policy-version --policy-arn ${policyArn} --policy-document file://${AWS_READER_POLICY_FILE} --set-as-default`,
-    `aws iam tag-user --user-name ${AWS_READER_IAM_NAME} --tags ${tags}`,
-  ].join('\n');
 }

@@ -6,7 +6,9 @@ import {
   awsLogBucketArns,
   type AwsOnboarding,
   awsReaderUserPolicy,
+  awsReaderUserUpdateCommands,
   type CloudAccount,
+  cloudFormationStacksUrl,
   logBucketNames,
 } from '@verax/shared';
 import { Download } from 'lucide-react';
@@ -19,9 +21,7 @@ import {
   type AwsAuthorizationChoice,
   awsConsoleRegion,
   awsDeployCommand,
-  awsReaderUserUpdateCommands,
   capabilitiesOfChoice,
-  cloudFormationStacksUrl,
   downloadTextFile,
 } from '@/features/admin/aws-connect';
 import { AwsAuthorizationChoices, StackFileProblem } from '@/features/admin/aws-connect-panel';
@@ -215,6 +215,10 @@ function UpdateReaderUser({
             command={awsReaderUserUpdateCommands(account.accountId, capabilities)}
             label="Copiar os comandos da CLI"
           />
+          <p className="text-xs text-muted-foreground">
+            Uma política do IAM guarda no máximo 5 versões: se o primeiro comando recusar por isso, apague uma
+            versão antiga (<code className="font-mono">aws iam delete-policy-version</code>) e rode de novo.
+          </p>
         </li>
         <li>Depois, clique em Verificar de novo, abaixo.</li>
       </ol>
