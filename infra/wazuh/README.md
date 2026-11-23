@@ -205,7 +205,8 @@ para tudo, sem escrever nada) e gera:
   salvo `"traffic": "all"`), e os grupos de logs num serviço `cloudwatchlogs` por conta, região e data de início, com
   `remove_log_streams` em `no`. Os buckets do cadastro anterior saem byte a byte como antes
   (`tests/fixtures/golden/`);
-- as regras locais: as correlações por conta e as regras críticas como estão no bundle, e `verax_reader_rules.xml`, do
+- as regras locais: as correlações por conta, as regras críticas e as dos flow logs como estão no bundle, e
+  `verax_reader_rules.xml`, do
   modelo `config/manager/rules/verax_reader_rules.xml.tmpl` com o IP do nó (leitura do próprio nó, nível 0; a sessão
   de outro IP, nível 12; alteração do papel, nível 5);
 - o `/root/.aws/config`, com um profile por conta que entra em `arn:aws:iam::<conta>:role/verax/verax-control-reader`
@@ -269,6 +270,45 @@ e nenhuma regra crítica casa leitura. O título em português de cada regra, fi
 (`apps/api/src/alerts/aws-rule-titles.ts`), e a descrição de cada regra começa por ele; os padrões que olham a
 política, o grupo de segurança e o snapshot estão explicados no comentário do arquivo. O XML do Wazuh recusa o
 conteúdo de um elemento com 2.048 caracteres ou mais, e o `test-rules.sh` confere o tamanho.
+
+### Regras de Flow Logs
+
+O `config/manager/rules/verax_aws_flow_rules.xml` (100400 a 100499) traz as duas correlações dos flow logs da VPC
+(onboarding self-service da AWS). O Wazuh só classifica cada registro (80401 no aceito, nível 3; 80402 no rejeitado,
+nível 4), abaixo do corte dos alertas do nó (`log_alert_level` 5): sem estas duas, o tráfego rejeitado é lido e medido,
+e nada vira alerta. As regras do Wazuh ficam como estão. **Os limites:**
+
+| Regra  | Nível     | O que conta                                                                                                 | Limite      | Ignore | MITRE |
+| ------ | --------- | ----------------------------------------------------------------------------------------------------------- | ----------- | ------ | ----- |
+| 100400 | 8 (média) | Varredura: registros rejeitados da mesma conta e do mesmo endereço de origem, para qualquer destino e porta | 40 em 120 s | 60 s   | T1046 |
+| 100401 | 10 (alta) | Insistência em porta de administração remota: os mesmos, para o mesmo destino e a mesma porta, 22 ou 3389   | 15 em 120 s | 60 s   | T1110 |
+
+- **Cada registro é um fluxo**, e não um pacote: a AWS soma numa linha os pacotes do mesmo fluxo (origem, destino,
+  portas e protocolo) numa interface e numa janela de captura. 15 registros para a porta 22 são 15 conexões diferentes.
+- **Os 120 s contam a chegada ao analysisd**, e não o horário do tráfego: o módulo lê os objetos novos do bucket a cada
+  5 min e entrega os registros de cada objeto de uma vez. Na prática, o limite vale para o que uma leitura traz (uns 5 a
+  10 min de tráfego).
+- **Só o tráfego rejeitado conta** (a mãe das duas é a 80402): o aceito casa com a 80401 e, no nó, nem chega ao
+  analysisd.
+- **Cada regra só soma registros da mesma conta** (`aws.aws_account_id`), como as correlações por conta.
+- **A passada pela porta 22 de várias máquinas não é insistência** (o destino tem de ser o mesmo): conta para a
+  varredura. As portas 22 e 3389 não somam entre si, e os registros de uma insistência não somam para a varredura (o
+  Wazuh não conta de novo o registro que já entrou num alerta de nível igual ou maior).
+- **O ignore é da regra, e não do endereço** (é assim no Wazuh): nos 60 s depois de um alerta, uma segunda origem que
+  passe do limite também fica sem alerta dessa regra. Como uma leitura do bucket chega em segundos, o efeito é no máximo
+  um alerta de cada regra por leitura (a cada 5 min); a origem que continua volta a contar na leitura seguinte. É o
+  preço de uma rajada virar um alerta só. Sem o ignore, a mesma rajada daria um alerta a cada 40 (ou 15) registros, e o
+  achado continuaria um só.
+
+**Para ajustar um limite:** mude o número no arquivo das regras e, junto, na guarda dos limites do
+`scripts/test-rules.sh`, nesta tabela e na de `docs/ARQUITETURA.md` ("Regras de Flow Logs"). O `test-rules.sh` confere
+no `wazuh-logtest` da imagem: abaixo do limite, nada; no limite, um alerta, com o nível, o MITRE, a conta e o endereço;
+a rajada que continua dentro do ignore, nenhum outro; o tráfego aceito, dois endereços e duas contas não somam. A regra
+nova entra no nó na atualização seguinte (o hash da configuração muda, e o manager reinicia uma vez).
+
+Na API, o alerta de cada uma vira um achado por regra, conta e endereço de origem, com o título fixo do dicionário
+(`apps/api/src/alerts/aws-rule-titles.ts`); a rajada do mesmo endereço em outra hora só vira outro achado se o primeiro
+já foi triado (`apps/api/src/alerts/wazuh-alert.ts`, `VPC_FLOW_CORRELATION_RULES`).
 
 ## Retenção e backup
 

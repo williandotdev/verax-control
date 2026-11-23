@@ -172,6 +172,15 @@ Na reunião:
    Se o sinal `progress` parar de ser atualizado (o timer parado, o manager fora do ar), o painel deixa de mudar o
    estado das fontes depois de 20 min, sem marcar nenhuma como parada: `systemctl status verax-wazuh-progress.timer`.
 
+   **Flow logs da VPC:** só o tráfego rejeitado é lido, e um registro sozinho nunca vira alerta. O que aparece no
+   painel são duas detecções, as duas contadas por conta e por endereço de origem: "Possível varredura de rede vinda do
+   mesmo endereço" (média: 40 registros rejeitados em 120 s) e "Insistência em porta de administração remota vinda do
+   mesmo endereço" (alta: 15 registros rejeitados em 120 s para a porta 22 ou 3389 do mesmo destino). Cada endereço dá
+   no máximo um achado em aberto por detecção; a rajada seguinte só vira outro achado depois de o primeiro ser triado.
+   Os limites, o que cada número quer dizer e como mudá-los estão em `infra/wazuh/README.md` ("Regras de Flow Logs").
+   Avise o cliente, na autorização, que autorizar um Flow Log lê todos os Flow Logs daquela conta e região que gravam
+   no mesmo bucket.
+
    **Medidor e saúde (PR-V6):** a cada 5 min, o worker lê os contadores do analysisd (usuário `verax_stats` da API do
    manager, só leitura) e soma o volume no uso do cliente (fonte `aws`, a página Plano e uso). Com a conta conectada e os
    eventos da AWS parados há mais de 2 h, a Torre do cliente mostra **Sem logs novos da AWS** e o administrador dele

@@ -400,6 +400,7 @@ A escala de nível é a mesma em todas: 12 ou mais é crítica, 10 alta, 7 médi
 | 80200 a 80499   | Wazuh do nó (`0350-amazon_rules.xml`, do próprio Wazuh)                 | CloudTrail, GuardDuty e WAF; as correlações 80252, 80255 e 80443 sobrescritas para contar por conta (`verax_aws_rules.xml`)    |
 | 100200 a 100299 | Wazuh do nó (`verax_reader_rules.xml`, gerado do modelo com o IP do nó) | O papel de leitura da Verax no CloudTrail do cliente (PR-V4', passo "Coletar")                                                 |
 | 100300 a 100399 | Wazuh do nó (`verax_aws_critical_rules.xml`)                            | Regras críticas da AWS no CloudTrail do cliente (PR-V7): root, administrador, CloudTrail, GuardDuty, S3, grupo de segurança... |
+| 100400 a 100499 | Wazuh do nó (`verax_aws_flow_rules.xml`)                                | Correlações dos flow logs da VPC: a varredura (100400) e a insistência em porta de administração remota (100401)               |
 | 990101 a 990199 | Worker, sem Wazuh (`apps/api/src/gcp/gcp-rules.ts`)                     | Auditoria da GCP                                                                                                               |
 | 990201 a 990299 | Não usada                                                               | Era a do coletor próprio do CloudTrail, que saiu do plano; o subconjunto crítico do catálogo dela virou a faixa 100300         |
 | 990301 a 990399 | Worker, sem Wazuh (`apps/api/src/cloudflare/cloudflare-rules.ts`)       | Auditoria do Cloudflare                                                                                                        |
@@ -860,6 +861,11 @@ inteiro) fica `source_missing`; a que perde a permissão, `permission_error`; a 
 cadastro anterior (`cloudtrailBucket`, `guarddutyBucket`, `wafBucket`) continuam valendo como antes e aparecem como
 linhas `origin = legacy`, autorizadas, espelhadas por `aws/onboarding/legacy-sources.ts`.
 
+**Nota dos flow logs lidos juntos (`flow_logs_read_together`):** toda fonte de flow logs que grava num bucket e dá
+para ler leva essa nota, para o painel avisar antes da autorização (o texto do aviso é da tela nova, PR-U): autorizar um
+Flow Log lê todos os Flow Logs daquela conta e região que gravam no mesmo bucket (o módulo do Wazuh lê a pasta da conta
+e da região, e não um flow log só).
+
 **Estado da fonte:** `available`, `needs_permission` ou `unavailable` antes da autorização; depois, `authorized`
 (aguardando o coletor), `configuring`, `waiting_events`, `collecting`, `stalled`, `permission_error` e
 `ingestion_error`; `source_missing` e `revoked`. A autorização (`POST …/aws/sources/authorize`) só vale para a fonte
@@ -962,23 +968,73 @@ por schema e deixa de usar o sinal com mais de 20 min.
   (`cloud_account.aws_source_collection`, ator sistema) só recebe a primeira coleta de cada fonte e a entrada e a saída
   de um erro ou de uma parada; a espera e os horários de cada leitura não. Na célula, a tarefa não grava a saúde.
 
+**Regras de Flow Logs (`infra/wazuh/config/manager/rules/verax_aws_flow_rules.xml`, faixa 100400 a 100499):** o
+Wazuh só classifica cada registro dos flow logs (80401 no aceito, nível 3; 80402 no rejeitado, nível 4), abaixo do
+corte dos alertas do nó (`log_alert_level` 5), e não traz correlação para eles. As duas regras locais abaixo contam os
+registros rejeitados e são o que vira alerta e achado; as do Wazuh ficam como estão. **Os limites são estes, e é aqui
+que o responsável os ajusta** (o `infra/wazuh/scripts/test-rules.sh` confere cada número no `wazuh-logtest` da imagem
+do nó, e quem muda um limite muda o teste, o arquivo das regras, o README do Wazuh e esta tabela):
+
+| Regra  | Nível     | O que conta                                                                                                 | Limite      | Ignore | MITRE |
+| ------ | --------- | ----------------------------------------------------------------------------------------------------------- | ----------- | ------ | ----- |
+| 100400 | 8 (média) | Varredura: registros rejeitados da mesma conta e do mesmo endereço de origem, para qualquer destino e porta | 40 em 120 s | 60 s   | T1046 |
+| 100401 | 10 (alta) | Insistência em porta de administração remota: os mesmos, para o mesmo destino e a mesma porta, 22 ou 3389   | 15 em 120 s | 60 s   | T1110 |
+
+- **Cada registro é um fluxo**, e não um pacote: a AWS soma numa linha os pacotes do mesmo fluxo (origem, destino,
+  portas e protocolo) numa interface e numa janela de captura. 15 registros para a porta 22 são 15 conexões diferentes.
+- **Os 120 s contam a chegada ao analysisd**, e não o horário do tráfego: o módulo lê os objetos novos do bucket a cada
+  5 min e entrega os registros de cada objeto de uma vez. Na prática, o limite vale para o que uma leitura traz (uns 5 a
+  10 min de tráfego).
+- **Só o tráfego rejeitado conta** (a mãe das duas é a 80402): o aceito casa com a 80401 e, no nó, nem chega ao
+  analysisd.
+- **Cada regra só soma registros da mesma conta** (`aws.aws_account_id`), como as correlações por conta.
+- **A passada pela porta 22 de várias máquinas não é insistência** (o destino tem de ser o mesmo): conta para a
+  varredura. As portas 22 e 3389 não somam entre si, e os registros de uma insistência não somam para a varredura (o
+  Wazuh não conta de novo o registro que já entrou num alerta de nível igual ou maior).
+- **O ignore é da regra, e não do endereço** (é assim no Wazuh): nos 60 s depois de um alerta, uma segunda origem que
+  passe do limite também fica sem alerta dessa regra. Como uma leitura do bucket chega em segundos, o efeito é no máximo
+  um alerta de cada regra por leitura (a cada 5 min); a origem que continua volta a contar na leitura seguinte. É o
+  preço de uma rajada virar um alerta só. Sem o ignore, a mesma rajada daria um alerta a cada 40 (ou 15) registros, e o
+  achado continuaria um só.
+
 **Alertas das fontes novas:** os flow logs entram no sync da AWS (`aws.source = vpc`): o dono é decidido pelo bucket
 autorizado e pela conta da pasta lida (o `account_id` do registro é o dono da interface, que numa VPC compartilhada é
-outra conta), e a chave do achado é a identidade do registro. O cadastro de buckets do sync soma os das fontes de
-bucket autorizadas (revogada a fonte, o bucket dela deixa de ser origem conhecida). Os eventos dos grupos do
-CloudWatch Logs têm um sync próprio (tarefa `wazuh-cloudwatch-alerts`, fora da célula; nível 7 para cima, como os
-agentes): o módulo entrega a linha crua, sem conta nem grupo, e o alerta só é atribuído quando um único cliente do nó
-tem grupo autorizado, numa única conta. Senão vai para a fila sem dono (`ambiguous_source` com mais de um cliente,
-`no_account` com mais de uma conta do mesmo cliente, `unknown_source` sem nenhum).
+outra conta). O alerta é sempre de uma das duas correlações, e o evento que vem nele é só o registro que fechou a
+contagem; por isso o achado não é do registro:
+
+- **A chave do achado** é a conta, o endereço de origem e a regra (`wazuh/<conta>/vpc:<endereço>:<regra>`): toda
+  rajada do mesmo endereço na mesma conta é o mesmo achado. Relida (o `--reparse`, um snapshot restaurado), a rajada
+  pode fechar noutro registro, e ainda assim cai na mesma chave.
+- **A versão** é a hora cheia (UTC) do início da janela do registro que fechou a contagem (o horário do tráfego, e não
+  o do alerta). A rajada do mesmo endereço em outra hora segue a regra de reincidência do GuardDuty (decisão de
+  04/11/2026): com o achado ainda não triado, só a versão avança (`lastSeenAt`); com ele já triado, vira um achado
+  novo, ligado ao original (`...:<regra>@<hora>`). É no máximo um achado em aberto por regra, conta e endereço, e uma
+  rajada da mesma hora já conhecida (ou de antes) não muda nada.
+- **O título** é o fixo do dicionário ("Possível varredura de rede vinda do mesmo endereço" e "Insistência em porta de
+  administração remota vinda do mesmo endereço"), a severidade vem do nível (média e alta), o MITRE vem da regra, o IP
+  do achado é o endereço de origem, e o recurso é a interface do registro que fechou a contagem. O destino e a porta
+  ficam no evento bruto do detalhe.
+- O alerta de um registro sozinho só existiria com o corte do nó abaixo de 5; se chegar, a chave dele é a identidade
+  do registro (a interface, a janela, a origem, o destino, o protocolo e a ação).
+
+O cadastro de buckets do sync soma os das fontes de bucket autorizadas (revogada a fonte, o bucket dela deixa de ser
+origem conhecida). Os eventos dos grupos do CloudWatch Logs têm um sync próprio (tarefa `wazuh-cloudwatch-alerts`, fora
+da célula; nível 7 para cima, como os agentes): o módulo entrega a linha crua, sem conta nem grupo, e o alerta só é
+atribuído quando um único cliente do nó tem grupo autorizado, numa única conta. Senão vai para a fila sem dono
+(`ambiguous_source` com mais de um cliente, `no_account` com mais de uma conta do mesmo cliente, `unknown_source` sem
+nenhum).
 
 **Limites conhecidos da coleta pelo Wazuh:**
 
-- **Flow logs sem alerta próprio:** as regras do Wazuh para os flow logs são de nível 3 e 4, abaixo do corte dos alertas
-  do nó (`log_alert_level` 5), e não há correlação para eles. O tráfego rejeitado é lido, analisado e medido, mas
-  nenhum registro vira alerta nem achado até existir uma regra local. Criar essa regra é decisão de produto (o que
-  conta como varredura, e quanto ruído se aceita).
-- **Autorizar um flow log lê todos os da mesma pasta:** o módulo lê, na pasta da conta e da região, os objetos de todos
-  os flow logs que a conta tem naquela região (`ec2:DescribeFlowLogs`), e não só o do flow log autorizado.
+- **Flow logs: só duas detecções, e no máximo um alerta de cada uma por leitura** (o ignore da regra não separa os
+  endereços; ver "Regras de Flow Logs"). Dois endereços que passem do limite na mesma leitura dão um alerta só; o
+  outro aparece numa leitura seguinte, se continuar. Só o tráfego rejeitado é lido: a escolha de ler também o aceito
+  (`"traffic": "all"`) existe na lista e no gerador, e não no painel.
+- **Autorizar um Flow Log lê todos os Flow Logs daquela conta e região que gravam no mesmo bucket:** o módulo lista os
+  flow logs da região (`ec2:DescribeFlowLogs`) e lê, na pasta da conta e da região naquele bucket (e prefixo), os
+  objetos de cada um, e não só os do flow log autorizado. O flow log que grava em outro bucket não é lido. A fonte
+  leva a nota `flow_logs_read_together`, para o painel avisar antes da autorização, e revogar um dos flow logs não
+  para a leitura enquanto outro do mesmo bucket continuar autorizado.
 - **Grupos do CloudWatch Logs:** o marcador do módulo é por região, grupo e stream, sem a conta: o mesmo nome na mesma
   região em duas contas do nó só é lido na primeira autorizada (a outra fica `log_group_name_conflict`). Um grupo
   negado ou apagado faz o módulo parar a leitura dos grupos seguintes da mesma conta e região até a descoberta tirar a
