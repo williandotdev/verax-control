@@ -189,7 +189,7 @@ export function isAwsSourceActiveState(state: AwsSourceState): boolean {
 }
 
 /**
- * O motivo do estado, quando há um: o coletor que ainda não existe para a fonte, o tipo ainda não coletado etc. Os que
+ * O motivo do estado, quando há um: o coletor que ainda não começou a ler a fonte, o tipo ainda não coletado etc. Os que
  * a coleta pelo Wazuh grava nas fontes de bucket e do CloudWatch Logs (a lista ainda não aplicada, a fonte parada, o
  * motivo de ela ter ficado de fora da lista) estão em `aws-wazuh-sources.ts` (`AWS_WAZUH_SOURCE_STATE_CODES`).
  */
@@ -364,7 +364,6 @@ export const awsSourceHealthSchema = z.strictObject({
   eventsLast24h: z.number().int().nonnegative().nullable(),
   bytesLast24h: z.number().int().nonnegative().nullable(),
 });
-export type AwsSourceHealth = z.infer<typeof awsSourceHealthSchema>;
 
 const codeSchema = z.string().regex(/^[A-Za-z0-9_.:-]{1,64}$/);
 

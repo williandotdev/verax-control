@@ -41,7 +41,7 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'cloud_account.aws_collection': 'Atualizou o estado da coleta da conta AWS no nó',
   // Onboarding self-service da AWS: o "Conectar", a descoberta das fontes e a autorização delas.
   'cloud_account.aws_connect': 'Pediu a conexão da conta AWS',
-  'cloud_account.aws_template': 'Leu a versão e as capacidades do papel de leitura da conta AWS',
+  'cloud_account.aws_template': 'Leu a versão do modelo e as autorizações do papel de leitura da conta AWS',
   'cloud_account.aws_discovery_request': 'Pediu a descoberta das fontes de log da conta AWS',
   'cloud_account.aws_discovery': 'Descobriu as fontes de log da conta AWS',
   'cloud_account.aws_source_authorized': 'Autorizou a coleta de fontes de log da conta AWS',
