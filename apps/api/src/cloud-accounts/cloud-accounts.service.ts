@@ -307,6 +307,8 @@ export class CloudAccountsService {
     // (`applyCredential`) pega o lock da credencial antes de gravar o item da credencial: com os itens antes do lock, as
     // duas transações se esperariam (deadlock). O `wipeCredential` pega o mesmo lock de novo (reentrante na transação).
     await lockCredential(this.prisma.db(), id);
+    // A credencial e a concessão do Cloudflare antes dos itens, como na lápide da sincronização.
+    await this.wipeCredential(auth, id);
     if (before.origin === 'control_plane') {
       await recordDeletedInPanel(this.prisma.db(), {
         tenantId: auth.scopeTenantId as string,
@@ -314,7 +316,6 @@ export class CloudAccountsService {
         revision: before.controlPlaneRevision,
       });
     }
-    await this.wipeCredential(auth, id);
     await this.prisma.scoped().cloudAccount.delete({ where: { id }, select: { id: true } });
     this.audit.describe({ before: { ...toAccount(before, this.node), origin: before.origin }, after: null });
   }
