@@ -31,6 +31,8 @@ import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 const MIGRATION = '20261124120000_aws_onboarding';
 /** A que veio depois, no mesmo trabalho: a coluna do limite do "Tentar de novo" de uma fonte. */
 const RETRY_LIMIT = '20261124130000_aws_source_retry_limit';
+/** E a da nota dos flow logs lidos juntos: o CHECK da descoberta com um valor a mais na lista de notas. */
+const FLOW_NOTE = '20261124140000_aws_source_note_flow_logs';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -74,7 +76,7 @@ function listedAfter(definition: string, marker: string): string[] {
 
 describe(`migration ${MIGRATION}`, () => {
   it('só acrescenta, ela e a do limite do "Tentar de novo", que vem depois: nada é apagado nem reescrito', () => {
-    expect(migrations.slice(migrations.indexOf(MIGRATION) + 1)).toEqual([RETRY_LIMIT]);
+    expect(migrations.slice(migrations.indexOf(MIGRATION) + 1)).toEqual([RETRY_LIMIT, FLOW_NOTE]);
     for (const name of [MIGRATION, RETRY_LIMIT]) {
       const sql = sqlOf(name);
       expect(sql, name).not.toMatch(/\bDROP\b|DELETE FROM|^\s*UPDATE\b|\bTRUNCATE\b|ALTER COLUMN/im);
@@ -88,6 +90,26 @@ describe(`migration ${MIGRATION}`, () => {
     expect(statements).toEqual([
       'ALTER TABLE "AwsSource" ADD COLUMN     "lastProbeRequestAt" TIMESTAMPTZ(3);',
     ]);
+  });
+
+  it('a da nota dos flow logs só troca o CHECK da descoberta pelo mesmo, com a nota a mais', () => {
+    const statements = (name: string) =>
+      sqlOf(name)
+        .split('\n')
+        .filter((line) => line.trim().length > 0 && !line.startsWith('--'));
+    const opening = 'ALTER TABLE "AwsSource" ADD CONSTRAINT "AwsSource_discovery_check" CHECK (';
+    const original = statements(MIGRATION);
+    const from = original.indexOf(opening);
+    const check = original.slice(from, original.indexOf(');', from) + 1);
+    expect(check.length).toBeGreaterThan(5);
+    // Uma constraint sai e a mesma volta: nenhuma tabela, coluna ou linha é tocada.
+    expect(statements(FLOW_NOTE)).toEqual([
+      'ALTER TABLE "AwsSource" DROP CONSTRAINT "AwsSource_discovery_check";',
+      ...check.map((line) =>
+        line.replace("'not_collected_yet'", "'not_collected_yet', 'flow_logs_read_together'"),
+      ),
+    ]);
+    expect(AWS_SOURCE_NOTES).toContain('flow_logs_read_together');
   });
 
   describe('banco novo (o banco de teste, migrado do zero)', () => {
@@ -519,6 +541,30 @@ describe(`migration ${MIGRATION}`, () => {
         (await client.query('SELECT 1 FROM "AwsDiscoveryRun" WHERE "cloudAccountId" = $1', [ids.unverified]))
           .rowCount,
       ).toBe(0);
+    });
+
+    it('as duas seguintes não tocam nas fontes que já existem, e a nota dos flow logs passa a caber no CHECK', async () => {
+      const sources = () =>
+        client.query<{ id: string }>(
+          'SELECT "id", "kind", "notes", "state", "details" FROM "AwsSource" ORDER BY "id"',
+        );
+      const before = await sources();
+      expect(before.rows.length).toBeGreaterThan(0);
+      const id = before.rows[0]?.id;
+      const note = (value: string) =>
+        client.query('UPDATE "AwsSource" SET "notes" = ARRAY[$2]::text[] WHERE "id" = $1', [id, value]);
+      // Antes da migration da nota, o CHECK a recusa.
+      await expect(note('flow_logs_read_together')).rejects.toThrow(/AwsSource_discovery_check/);
+
+      await client.query(sqlOf(RETRY_LIMIT));
+      await client.query(sqlOf(FLOW_NOTE));
+      expect((await sources()).rows).toEqual(before.rows);
+      expect(listedAfter(await constraint(client, 'AwsSource_discovery_check'), 'notes <@').sort()).toEqual(
+        [...AWS_SOURCE_NOTES].sort(),
+      );
+      // Depois, a nota nova cabe, e uma que não existe segue recusada.
+      await note('flow_logs_read_together');
+      await expect(note('nota_que_nao_existe')).rejects.toThrow(/AwsSource_discovery_check/);
     });
   });
 });
