@@ -18,6 +18,7 @@ import {
   CREDENTIAL_KIND_PROVIDERS,
   NODE_PLATFORMS,
 } from './cloud-credentials.js';
+import { cloudflareOauthConfigSchema } from './cloudflare-oauth.js';
 import { TENANT_ROLES, USER_STATUSES, userCreateSchema } from './users.js';
 
 /**
@@ -43,8 +44,13 @@ export const NODE_SYNC_PROTOCOL = 1 as const;
 /** Rota pública do plano de controle. */
 export const NODE_SYNC_PATH = '/v1/node-sync' as const;
 
-/** O que o nó sabe aplicar. A próxima prevista é `plan_limits`. */
-export const NODE_SYNC_CAPABILITIES = ['log_sources', 'users'] as const;
+/**
+ * O que o nó sabe aplicar: é a lista que o plano de controle aceita, e cada nó anuncia só o que usa. Uma capacidade entra
+ * aqui antes de algum nó a anunciar, porque o plano de controle anterior recusa a chamada inteira com uma que não
+ * conhece: o plano de controle sobe antes. `cloudflare_oauth` (a seção `cloudflareOauth`) ainda não é anunciada por nó
+ * nenhum. A próxima prevista é `plan_limits`.
+ */
+export const NODE_SYNC_CAPABILITIES = ['log_sources', 'users', 'cloudflare_oauth'] as const;
 export type NodeSyncCapability = (typeof NODE_SYNC_CAPABILITIES)[number];
 
 /** Intervalo da sincronização no nó, em segundos, com uma variação aleatória de até ±30 s. */
@@ -370,5 +376,10 @@ export const nodeSyncResponseSchema = z.strictObject({
       { error: 'pedido repetido' },
     )
     .optional(),
+  /**
+   * A configuração do app do Cloudflare (sem segredo) ou null, desligada: novas conexões só pelo token colado. Desligar
+   * não derruba as conexões já feitas. Sem a seção, o nó não anunciou a capacidade.
+   */
+  cloudflareOauth: cloudflareOauthConfigSchema.nullable().optional(),
 });
 export type NodeSyncResponse = z.infer<typeof nodeSyncResponseSchema>;

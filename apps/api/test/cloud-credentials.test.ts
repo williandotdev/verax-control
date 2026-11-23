@@ -1,6 +1,11 @@
 import 'reflect-metadata';
-import { generateKeyPairSync, type KeyObject, randomBytes } from 'node:crypto';
+import { generateKeyPairSync, type KeyObject, randomBytes, randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import {
+  type CloudflareOauthTokens,
+  openCloudflareOauthTokens,
+  sealCloudflareOauthTokens,
+} from '@verax/vault-envelope';
 import { pino } from 'pino';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -13,7 +18,7 @@ import {
   type VaultKeyring,
   type VaultPublicKey,
 } from '../src/credentials/credential-keys.js';
-import { CredentialRekey } from '../src/credentials/credential-rekey.js';
+import { CredentialRekey, lockGrant } from '../src/credentials/credential-rekey.js';
 import {
   CloudflareToken,
   CredentialVaultError,
@@ -131,7 +136,36 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
   afterEach(async () => {
     await prisma.cloudCredential.deleteMany({ where: { cloudAccountId: { in: created } } });
     created.length = 0;
+    await prisma.cloudflareGrant.deleteMany({ where: { tenantId: { in: [tenantA, tenantB] } } });
   });
+
+  /** Uma concessão do Cloudflare por OAuth, cifrada como o worker a grava. */
+  async function newGrant(tenantId: string, publicKey = publicV1, changes: { subjectId?: string } = {}) {
+    const id = randomUUID();
+    const tokens: CloudflareOauthTokens = {
+      accessToken: randomBytes(48).toString('base64url'),
+      refreshToken: randomBytes(48).toString('base64url'),
+      accessExpiresAt: new Date('2026-11-23T13:00:00.000Z'),
+    };
+    const binding = { tenantId, subjectId: changes.subjectId ?? id };
+    const ciphertext = sealCloudflareOauthTokens(publicKey, binding, tokens);
+    await prisma.forTenant(tenantId).cloudflareGrant.create({
+      data: {
+        id,
+        tenantId,
+        clientId: 'clientedeteste0001',
+        ciphertext,
+        keyVersion: publicKey.version,
+        accessExpiresAt: tokens.accessExpiresAt,
+        scopes: ['zone.read', 'offline_access'],
+        generation: 7,
+        consentedAt: new Date(),
+        consentedBy: 'usuario-de-teste',
+      },
+    });
+    return { id, tenantId, tokens, ciphertext };
+  }
+  const grantOf = (id: string) => prisma.cloudflareGrant.findUniqueOrThrow({ where: { id } });
 
   afterAll(async () => {
     await app.close();
@@ -244,6 +278,118 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
       expect(response.text).not.toContain(ciphertext.slice(3, 60));
       expect(response.text).not.toMatch(/ciphertext|keyVersion|"credential"/);
     }
+  });
+
+  it('recifragem das concessões do Cloudflare: em todos os clientes e situações, sem mudar a geração, com auditoria', async () => {
+    const grantA = await newGrant(tenantA);
+    const grantB = await newGrant(tenantB);
+    await prisma.cloudflareGrant.update({
+      where: { id: grantB.id },
+      data: { status: 'revoking', revokeRequestedAt: new Date() },
+    });
+    const current = await newGrant(tenantB, bothCurrentV2.publicKey());
+
+    const report = await new CredentialRekey(prisma, bothCurrentV2, { batch: 1 }).runOnce();
+    expect(report).toEqual({ stale: 2, rekeyed: 2, skipped: 0, failed: 0 });
+    for (const grant of [grantA, grantB]) {
+      const row = await grantOf(grant.id);
+      expect(row).toMatchObject({ keyVersion: 2, generation: 7 });
+      expect(row.ciphertext).toMatch(/^v2:/);
+      // Só a chave nova abre, e os tokens são os mesmos.
+      expect(
+        openCloudflareOauthTokens(onlyV2, { tenantId: grant.tenantId, subjectId: grant.id }, row.ciphertext),
+      ).toEqual(grant.tokens);
+    }
+    expect((await grantOf(current.id)).ciphertext).toBe(current.ciphertext);
+    const audit = await prisma.auditLog.findMany({
+      where: { action: 'cloudflare_grant.rekey', resourceId: { in: [grantA.id, grantB.id, current.id] } },
+      select: { tenantId: true, resourceId: true, before: true, after: true },
+      orderBy: { resourceId: 'asc' },
+    });
+    expect(audit).toHaveLength(2);
+    expect(audit.map((entry) => [entry.resourceId, entry.tenantId])).toEqual(
+      expect.arrayContaining([
+        [grantA.id, tenantA],
+        [grantB.id, tenantB],
+      ]),
+    );
+    expect(JSON.stringify(audit)).not.toContain(grantA.tokens.refreshToken);
+    expect(audit[0]).toMatchObject({ before: { keyVersion: 1 }, after: { keyVersion: 2 } });
+    // De novo: nada a fazer.
+    expect(await new CredentialRekey(prisma, bothCurrentV2).runOnce()).toEqual({
+      stale: 0,
+      rekeyed: 0,
+      skipped: 0,
+      failed: 0,
+    });
+  });
+
+  it('recifragem das concessões: a que não abre fica como está e não segura as outras nem as credenciais', async () => {
+    const account = await newAccount(tenantA);
+    await store(account, new CloudflareToken(cloudflareToken()));
+    // Cifrada para outra linha (uma cópia): a amarração não abre.
+    const copied = await newGrant(tenantA, publicV1, { subjectId: randomUUID() });
+    const good = await newGrant(tenantB);
+
+    expect(await new CredentialRekey(prisma, bothCurrentV2, { batch: 1 }).runOnce()).toEqual({
+      stale: 3,
+      rekeyed: 2,
+      skipped: 0,
+      failed: 1,
+      failures: { decrypt_failed: 1 },
+    });
+    expect(await grantOf(copied.id)).toMatchObject({ ciphertext: copied.ciphertext, keyVersion: 1 });
+    expect((await grantOf(good.id)).keyVersion).toBe(2);
+    expect((await rowOf(account.id)).keyVersion).toBe(2);
+  });
+
+  it('recifragem das concessões: a renovação que grava antes vence, e nada pisa no token novo', async () => {
+    const grant = await newGrant(tenantA);
+    const renewed = sealCloudflareOauthTokens(
+      publicV1,
+      { tenantId: tenantA, subjectId: grant.id },
+      { ...grant.tokens, refreshToken: randomBytes(48).toString('base64url') },
+    );
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    // A renovação segura o lock da concessão e grava a geração seguinte.
+    const renewal = prisma.$transaction(
+      async (tx) => {
+        await lockGrant(tx, grant.id);
+        locked();
+        await held;
+        await tx.cloudflareGrant.update({
+          where: { id: grant.id },
+          data: { ciphertext: renewed, generation: 8 },
+        });
+      },
+      { timeout: 20_000 },
+    );
+    await started;
+    const rekey = new CredentialRekey(prisma, bothCurrentV2).runOnce();
+    // A recifragem espera o lock: enquanto ele está preso, a linha não muda.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect((await grantOf(grant.id)).ciphertext).toBe(grant.ciphertext);
+    release();
+    await renewal;
+    expect(await rekey).toEqual({ stale: 1, rekeyed: 1, skipped: 0, failed: 0 });
+    const row = await grantOf(grant.id);
+    expect(row).toMatchObject({ generation: 8, keyVersion: 2 });
+    const opened = openCloudflareOauthTokens(
+      bothCurrentV2,
+      { tenantId: tenantA, subjectId: grant.id },
+      row.ciphertext,
+    );
+    expect(opened.refreshToken).not.toBe(grant.tokens.refreshToken);
+    expect(opened.refreshToken).toBe(
+      openCloudflareOauthTokens(onlyV1, { tenantId: tenantA, subjectId: grant.id }, renewed).refreshToken,
+    );
   });
 
   it('recifragem: v1 para v2 em todos os clientes, pelo escopo de cada um, com auditoria na trilha dele', async () => {

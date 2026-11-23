@@ -9,6 +9,7 @@ export * from './aws-reader.js';
 export * from './aws-wazuh-sources.js';
 export * from './cloud-accounts.js';
 export * from './cloud-credentials.js';
+export * from './cloudflare-oauth.js';
 export * from './detections.js';
 export * from './escalation-contact.js';
 export * from './findings.js';

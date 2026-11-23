@@ -96,6 +96,8 @@ describe(`migration ${MIGRATION}`, () => {
         'CloudAccount_aws_collection_error_check',
         // As colunas do onboarding self-service só na conta AWS (migration 20261124120000_aws_onboarding).
         'CloudAccount_aws_onboarding_check',
+        // A concessão do Cloudflare por OAuth, só na conta do Cloudflare (migration 20261125120000).
+        'CloudAccount_cloudflare_grant_check',
         // A revisão do console só na conta do console (migration 20261122120000_control_plane_sync).
         'CloudAccount_control_plane_revision_check',
         'CloudAccount_gcp_sinkWriterIdentity_check',

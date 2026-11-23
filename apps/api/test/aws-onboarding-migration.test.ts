@@ -40,6 +40,8 @@ const OWNERSHIP = '20261124150000_cloudwatch_alert_ownership';
 const CHOSEN = '20261124160000_aws_chosen_capabilities';
 /** E a do número de sequência do sinal `applied` na prova do dono: uma coluna, com o CHECK dela. */
 const APPLIED_SEQ = '20261124170000_cloudwatch_ownership_applied_seq';
+/** A da conexão do Cloudflare por OAuth, de outro trabalho (`cloudflare-oauth-schema.test.ts`). */
+const CLOUDFLARE_OAUTH = '20261125120000_cloudflare_oauth';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -89,6 +91,7 @@ describe(`migration ${MIGRATION}`, () => {
       OWNERSHIP,
       CHOSEN,
       APPLIED_SEQ,
+      CLOUDFLARE_OAUTH,
     ]);
     for (const name of [MIGRATION, RETRY_LIMIT, OWNERSHIP, CHOSEN, APPLIED_SEQ]) {
       const sql = sqlOf(name);

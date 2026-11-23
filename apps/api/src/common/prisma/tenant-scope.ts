@@ -44,6 +44,11 @@ export const TENANT_SCOPED_MODELS = [
   // conta).
   'awsDiscoveryRun',
   'awsSource',
+  // Conexão do Cloudflare por OAuth: as tentativas (o painel começa e conclui, pela sessão) e as concessões, com os tokens
+  // cifrados (o worker grava; a API só solta e manda revogar). As zonas, só o sistema grava (`SYSTEM_WRITTEN_MODELS`).
+  'cloudflareConnectAttempt',
+  'cloudflareGrant',
+  'cloudflareZone',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 
@@ -57,9 +62,11 @@ const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
  * (CE-09) também: é a base da cobrança da franquia, e só os coletores e a tarefa `aws-volume` o gravam
  * (`usage/usage-meter.ts`, `usage/aws-volume.ts`). E, no nó dedicado, o resultado de cada item da sincronização com o
  * plano de controle (`ControlPlaneSyncItem`, a tarefa `control-plane-sync` e a exclusão da conta do console pelo
- * cliente, `control-plane-sync/deleted-in-panel.ts`). No escopo do cliente, só a leitura passa; a gravação é recusada
+ * cliente, `control-plane-sync/deleted-in-panel.ts`), e as zonas do Cloudflare (`CloudflareZone`, o que o worker leu de
+ * cada uma). No escopo do cliente, só a leitura passa; a gravação é recusada
  * mesmo que um service a tente, e quem grava usa o cliente base, fora do escopo (`tenants/tenant-host.ts`,
- * `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`, `control-plane-sync/`).
+ * `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`, `control-plane-sync/`,
+ * `cloudflare/`).
  */
 export const SYSTEM_WRITTEN_MODELS = [
   'tenantHost',
@@ -71,6 +78,7 @@ export const SYSTEM_WRITTEN_MODELS = [
   'ingestUsageDay',
   'awsVolumeObject',
   'controlPlaneSyncItem',
+  'cloudflareZone',
 ] as const;
 const SYSTEM_WRITTEN = new Set<string>(SYSTEM_WRITTEN_MODELS);
 const READ_OPERATIONS = new Set([
