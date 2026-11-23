@@ -3,10 +3,10 @@ import { expect, type Page, test } from '@playwright/test';
 import { skipDemoTour } from './demo-tour';
 
 /**
- * Buckets de log da conta AWS no navegador, sobre a demonstração (`dev:mock`): o campo do cadastro e da alteração sem
- * violação de acessibilidade (WCAG 2.2 AA, inclusive contraste) em cada passo, nos dois temas, com o teclado (remover
- * devolve o foco para "Adicionar bucket", adicionar põe o foco no nome da linha nova, o erro leva o foco ao campo) e o
- * aviso de atualizar a pilha depois de salvar outra lista.
+ * Os buckets cadastrados à mão da conta AWS ("Avançado: buckets fora do padrão") no navegador, sobre a demonstração
+ * (`dev:mock`): o campo do cadastro e da alteração sem violação de acessibilidade (WCAG 2.2 AA, inclusive contraste) em
+ * cada passo, nos dois temas, com o teclado (remover devolve o foco para "Adicionar bucket", adicionar põe o foco no
+ * nome da linha nova, o erro leva o foco ao campo) e o aviso de atualizar a pilha depois de salvar outra lista.
  */
 
 /** A conta AWS conectada da demonstração (`account(1, ...)` em mocks/admin.ts), com a trilha, o GuardDuty e o WAF. */
@@ -33,16 +33,20 @@ async function useRole(page: Page, role: string, theme: 'light' | 'dark' = 'ligh
   await skipDemoTour(page);
 }
 
-test.describe('buckets de log da conta AWS (modo mock)', () => {
+test.describe('buckets fora do padrão da conta AWS (modo mock)', () => {
   for (const theme of ['light', 'dark'] as const) {
     test(`alteração (${theme === 'light' ? 'claro' : 'escuro'}): remover, adicionar pelo teclado, o erro no campo e o aviso da pilha, sem violação de acessibilidade`, async ({
       page,
     }) => {
+      // Cinco análises de acessibilidade sobre o detalhe da conta, que agora traz as fontes e os grupos de logs: com os
+      // outros testes em paralelo, passam dos 30 s padrão sem nada de errado.
+      test.setTimeout(90_000);
       await useRole(page, 'admin_verax', theme);
       await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
       const sheet = page.getByRole('dialog', { name: AWS_DIALOG });
-      const section = sheet.getByRole('region', { name: 'Buckets de log' });
-      const steps = sheet.getByRole('region', { name: 'Conectar a conta 111122223333' });
+      // A conta tem buckets cadastrados: o "Avançado" abre sozinho.
+      const section = sheet.getByRole('region', { name: 'Buckets fora do padrão' });
+      const stack = sheet.getByRole('region', { name: 'Pilha na AWS' });
       await expect(section.getByRole('group', { name: 'Bucket 3' })).toBeVisible();
       await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
       expect(await violations(page)).toEqual([]);
@@ -72,11 +76,16 @@ test.describe('buckets de log da conta AWS (modo mock)', () => {
       await section.getByRole('button', { name: 'Salvar buckets' }).click();
       await expect(section.getByRole('status')).toContainText('Buckets salvos, e a lista mudou.');
       await expect(name).toHaveValue('aws-waf-logs-loja-alfa-nova');
-      await expect(steps.getByText(/^aws cloudformation deploy/)).toContainText(
+      // A lista nova já está nos passos da pilha (o comando da CLI fica recolhido).
+      await expect(stack.getByRole('listitem').filter({ hasText: '(LogBucketArns)' }).last()).toContainText(
         'arn:aws:s3:::aws-waf-logs-loja-alfa-nova',
       );
       await expect(sheet.getByText('Aguardando uma nova verificação', { exact: false })).toBeVisible();
-      await expect(steps.getByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
+      await expect(
+        sheet
+          .getByRole('region', { name: 'Reconectar a conta 111122223333' })
+          .getByRole('button', { name: 'Verificar conexão' }),
+      ).toBeEnabled();
       expect(await violations(page)).toEqual([]);
     });
   }
@@ -88,7 +97,9 @@ test.describe('buckets de log da conta AWS (modo mock)', () => {
     await page.goto('/cadastros/contas');
     await page.getByRole('button', { name: 'Cadastrar conta' }).click();
     const sheet = page.getByRole('dialog', { name: 'Cadastrar conta' });
-    const buckets = sheet.getByRole('group', { name: 'Buckets de log (opcional)' });
+    // No cadastro, os buckets ficam recolhidos: só para os logs fora do padrão AWSLogs.
+    await sheet.getByText('Avançado: buckets fora do padrão').click();
+    const buckets = sheet.getByRole('group', { name: 'Buckets fora do padrão (opcional)' });
     await sheet.getByLabel('ID da conta AWS').fill('135792468024');
     await buckets.getByRole('button', { name: 'Adicionar bucket' }).click();
     const name = buckets.getByRole('group', { name: 'Bucket 1' }).getByLabel('Nome do bucket');
@@ -101,11 +112,11 @@ test.describe('buckets de log da conta AWS (modo mock)', () => {
     await name.fill('exemplo-cloudtrail-logs');
     await sheet.getByRole('button', { name: 'Cadastrar conta' }).click();
     await expect(sheet.getByText(/Conta AWS 135792468024 cadastrada/)).toBeVisible();
-    await expect(
-      sheet
-        .getByRole('region', { name: 'Conectar a conta 135792468024' })
-        .getByText('arn:aws:s3:::exemplo-cloudtrail-logs', { exact: true }),
-    ).toBeVisible();
+    // O bucket cadastrado vai para o LogBucketArns da pilha: aparece na alternativa manual do "Conectar com AWS".
+    const connect = sheet.getByRole('region', { name: 'Conectar a conta 135792468024' });
+    await expect(connect.getByRole('button', { name: 'Conectar com AWS' })).toBeEnabled();
+    await connect.getByText('Alternativa manual (sem o arquivo preenchido)').click();
+    await expect(connect.getByText('arn:aws:s3:::exemplo-cloudtrail-logs', { exact: true })).toBeVisible();
     expect(await violations(page)).toEqual([]);
   });
 
@@ -114,7 +125,7 @@ test.describe('buckets de log da conta AWS (modo mock)', () => {
     await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
     const section = page
       .getByRole('dialog', { name: AWS_DIALOG })
-      .getByRole('region', { name: 'Buckets de log' });
+      .getByRole('region', { name: 'Buckets fora do padrão' });
     await expect(section.getByText('aws-waf-logs-loja-alfa')).toBeVisible();
     await expect(section.getByRole('button')).toHaveCount(0);
     await expect(section.getByRole('textbox')).toHaveCount(0);

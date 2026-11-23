@@ -20,11 +20,14 @@ import { formatRelative, formatTimestamp } from '@/lib/format';
 import { FindingStatusBadge } from './finding-status-badge';
 import { useAddFindingComment, useCreateAlertException, useUpdateFindingStatus } from './findings-api';
 
-/** De onde vem a regra do alerta, quando não é a do Wazuh para os logs da AWS. */
+/**
+ * De onde vem a regra do alerta, quando não é a do Wazuh para os logs da AWS. Os achados lidos pela API do Security
+ * Hub, do Inspector e do IAM Access Analyzer têm regras do próprio nó, uma por classe de achado.
+ */
 const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
   security_hub: 'Regra (achados do Security Hub)',
   inspector: 'Regra (achados do Inspector)',
-  access_analyzer: 'Regra (achados do Access Analyzer)',
+  access_analyzer: 'Regra (achados do IAM Access Analyzer)',
   gcp_audit: 'Regra (auditoria da GCP)',
   cloudflare_audit: 'Regra (auditoria do Cloudflare)',
   cloudflare_waf: 'Regra (eventos de segurança do Cloudflare)',
@@ -55,7 +58,8 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
     ],
     ['IP de origem', finding.actor.ip],
     [
-      // Os alertas da AWS e dos agentes vêm das regras do Wazuh; os da GCP e do Cloudflare, das regras do próprio nó.
+      // Os alertas dos logs da AWS e dos agentes vêm das regras do Wazuh; os dos achados lidos pela API da AWS, da GCP
+      // e do Cloudflare, das regras do próprio nó.
       RULE_LABELS[finding.source] ?? 'Regra (logs da AWS)',
       `${finding.ruleId} (nível ${finding.ruleLevel})`,
     ],
