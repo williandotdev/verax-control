@@ -194,6 +194,12 @@ export const AWS_SOURCE_STATE_CODES = [
   'not_collectable_yet',
   /** `source_missing`: a descoberta não achou mais a fonte. */
   'not_found',
+  /** `source_missing`: o serviço foi desligado na conta depois da autorização (o coletor de achados o viu recusar). */
+  'not_enabled',
+  /** `collecting`: a fonte de achados já foi lida sem erro, e ainda não trouxe nenhum achado. */
+  'no_findings_yet',
+  /** `ingestion_error`: a API do serviço segue limitando as chamadas (os demais códigos são o nome do erro da AWS). */
+  'throttled',
 ] as const;
 
 /** De onde a linha veio: da descoberta, ou dos buckets cadastrados antes dela (`cloudtrailBucket` e os outros dois). */
@@ -332,7 +338,12 @@ export const awsSourceDetailsSchema = z.strictObject({
 });
 export type AwsSourceDetails = z.infer<typeof awsSourceDetailsSchema>;
 
-/** Saúde da coleta de uma fonte. Tudo null até o coletor da fonte existir e rodar (os PRs dos coletores). */
+/**
+ * Saúde da coleta de uma fonte. Tudo null até o coletor da fonte rodar. Nas fontes lidas por API (achados), o
+ * `lastSyncAt` é a última leitura sem erro, o `lastEventAt` é a atualização mais recente de um achado na origem, o
+ * `lastIngestedAt` é quando o achado mais recente entrou no nó, o `lagSeconds` é o tempo desde a última leitura sem
+ * erro, e o volume é o dos achados novos (ou com versão nova) das últimas 24 h.
+ */
 export const awsSourceHealthSchema = z.strictObject({
   /** A última vez que o coletor leu a fonte sem erro. */
   lastSyncAt: z.iso.datetime().nullable(),
@@ -575,7 +586,9 @@ export type AwsOnboardingCheckStatus = (typeof AWS_ONBOARDING_CHECK_STATUSES)[nu
  * - `template_outdated`: o papel (ou, na VM própria do cliente, o usuário IAM de leitura) é de um template anterior;
  * - `template_unreadable`: a tag da versão do template existe e não é um número de versão;
  * - `awaiting_collector`: fonte autorizada, com o coletor ainda sem ler;
- * - `no_data`: sem medida ainda.
+ * - `no_data`: sem medida ainda;
+ * - `sync_delayed`: uma fonte lida por API (achados) está há mais de 2 h sem uma leitura bem-sucedida. Fonte de
+ *   achados nunca fica "parada" por não ter achado: o que conta é a última leitura.
  */
 export const AWS_ONBOARDING_CHECK_CODES = [
   'not_requested',
@@ -585,6 +598,7 @@ export const AWS_ONBOARDING_CHECK_CODES = [
   'template_unreadable',
   'awaiting_collector',
   'no_data',
+  'sync_delayed',
 ] as const;
 
 export const awsOnboardingCheckSchema = z.strictObject({

@@ -23,12 +23,17 @@ export type FindingStatus = (typeof FINDING_STATUSES)[number];
 /**
  * Fontes de log: as da AWS (lidas pelo Wazuh), a auditoria da GCP (lida do Pub/Sub pelo próprio nó), do Cloudflare
  * (lidos pela API dele, com o token do cofre do nó) a auditoria da conta e os eventos de segurança das zonas (WAF,
- * limite de taxa, DDoS), e os agentes do Wazuh nas instâncias do cliente.
+ * limite de taxa, DDoS), e os agentes do Wazuh nas instâncias do cliente. Os achados da AWS lidos pela API de cada
+ * serviço (tarefa `aws-findings` do worker, onboarding self-service): o Security Hub, o Inspector e o Access Analyzer;
+ * o GuardDuty lido pela API cai na mesma fonte (`guardduty`) e na mesma chave do que chega pelo Wazuh.
  */
 export const FINDING_SOURCES = [
   'cloudtrail',
   'guardduty',
   'waf',
+  'security_hub',
+  'inspector',
+  'access_analyzer',
   'gcp_audit',
   'cloudflare_audit',
   'cloudflare_waf',

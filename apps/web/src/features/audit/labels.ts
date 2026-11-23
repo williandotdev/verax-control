@@ -47,6 +47,7 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'cloud_account.aws_source_authorized': 'Autorizou a coleta de fontes de log da conta AWS',
   'cloud_account.aws_source_revoked': 'Desautorizou a coleta de uma fonte de log da conta AWS',
   'cloud_account.aws_source_retry': 'Pediu a conferência da permissão de uma fonte de log da conta AWS',
+  'cloud_account.aws_source_collection': 'Mudou o estado da coleta de uma fonte de achados da conta AWS',
   'cloud_credential.set': 'Guardou a credencial de leitura da conta',
   'cloud_credential.rotate': 'Trocou a credencial de leitura da conta',
   'cloud_credential.remove': 'Removeu a credencial de leitura da conta',
