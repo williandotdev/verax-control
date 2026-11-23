@@ -26,12 +26,18 @@ export interface ListPage<T> {
   emptyDescription: string;
   /** Com o painel aberto ao lado, a tabela esconde as colunas que se repetem no detalhe. */
   compact?: boolean;
+  /** Ao lado do radar: as colunas que não cabem (a origem, a hora) vão numa linha embaixo do título. */
+  dense?: boolean;
 }
 
 const HEAD = 'px-3 py-2 text-left font-medium';
 const CELL = 'px-3 py-2 align-top';
 /** Coluna que sai com o painel aberto ao lado (o detalhe mostra o mesmo). */
 const OPTIONAL = 'group-data-[compact=true]:hidden';
+/** Coluna que, ao lado do radar, vira uma linha embaixo do título (`DenseMeta`). */
+const ROOMY = 'group-data-[dense=true]:hidden';
+/** A coluna do título. */
+const TITLE = 'md:min-w-64 group-data-[dense=true]:md:min-w-40';
 /** Coluna da tela média para cima: no celular, a severidade, o status e a hora vão embaixo do título. */
 const WIDE = 'hidden md:table-cell';
 
@@ -41,6 +47,13 @@ function MobileMeta({ children }: { children: ReactNode }) {
     <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground md:hidden">
       {children}
     </span>
+  );
+}
+
+/** Ao lado do radar, embaixo do título: o que saiu das colunas. No celular, o `MobileMeta` já diz. */
+function DenseMeta({ children }: { children: ReactNode }) {
+  return (
+    <span className="mt-0.5 hidden text-xs wrap-anywhere text-muted-foreground md:block">{children}</span>
   );
 }
 
@@ -101,12 +114,18 @@ function Frame<T>({
         role="region"
         aria-label={caption.startsWith('Alertas') ? 'Lista de alertas' : 'Lista de incidentes'}
         tabIndex={0}
-        className="overflow-x-auto rounded-lg border focus-visible:outline-2 focus-visible:outline-ring"
+        // `relative`: os textos só para leitor de tela (posição absoluta) ficam presos à área que rola, e não alargam a página.
+        className="relative overflow-x-auto rounded-lg border focus-visible:outline-2 focus-visible:outline-ring"
         aria-busy={page.loading}
       >
         <table
           data-compact={page.compact === true}
-          className={cn('group w-full text-sm md:min-w-[40rem]', page.loading && 'opacity-60')}
+          data-dense={page.dense === true}
+          className={cn(
+            'group w-full text-sm',
+            !page.dense && 'md:min-w-[40rem]',
+            page.loading && 'opacity-60',
+          )}
         >
           <caption className="sr-only">{caption}</caption>
           <thead className="bg-foreground/[0.03] text-xs text-muted-foreground">
@@ -173,7 +192,7 @@ export function IncidentsList({
           <th scope="col" className={cn(HEAD, 'w-10')}>
             <span className="sr-only">Abrir os alertas</span>
           </th>
-          <th scope="col" className={cn(HEAD, 'md:min-w-64')}>
+          <th scope="col" className={cn(HEAD, TITLE)}>
             Incidente
           </th>
           <th scope="col" className={cn(HEAD, WIDE)}>
@@ -188,7 +207,7 @@ export function IncidentsList({
           <th scope="col" className={cn(HEAD, WIDE, OPTIONAL)}>
             Ativos
           </th>
-          <th scope="col" className={cn(HEAD, WIDE, 'whitespace-nowrap')}>
+          <th scope="col" className={cn(HEAD, WIDE, ROOMY, 'whitespace-nowrap')}>
             Última atividade
           </th>
         </>
@@ -201,6 +220,7 @@ export function IncidentsList({
               key={row.incident.id}
               incident={row.incident}
               matched={filtered ? row.matchedFindings : null}
+              dense={page.dense === true}
               selection={selection}
               onOpen={onOpen}
             />
@@ -222,6 +242,11 @@ export function IncidentsList({
                   Alerta fora de incidente · {FINDING_SOURCE_LABELS[row.finding.source]} ·{' '}
                   {findingOriginLabel(row.finding.accountId)}
                 </span>
+                {page.dense && (
+                  <DenseMeta>
+                    <When at={row.finding.occurredAt} />
+                  </DenseMeta>
+                )}
                 <MobileMeta>
                   <SeverityBadge severity={row.finding.severity} />
                   <FindingStatusBadge status={row.finding.status} />
@@ -242,7 +267,7 @@ export function IncidentsList({
                   <span className="text-muted-foreground">—</span>
                 )}
               </td>
-              <td className={cn(CELL, WIDE)}>
+              <td className={cn(CELL, WIDE, ROOMY)}>
                 <When at={row.finding.occurredAt} />
               </td>
             </tr>
@@ -256,11 +281,13 @@ export function IncidentsList({
 function IncidentRows({
   incident,
   matched,
+  dense,
   selection,
   onOpen,
 }: {
   incident: Incident;
   matched: number | null;
+  dense: boolean;
   selection: DetectionSelection;
   onOpen: (selection: NonNullable<DetectionSelection>, opener: HTMLElement) => void;
 }) {
@@ -297,6 +324,11 @@ function IncidentRows({
               : plural(incident.findingCount, 'alerta', 'alertas')}{' '}
             · {originsText(incident)}
           </span>
+          {dense && (
+            <DenseMeta>
+              {incident.assignee?.name ?? 'Sem responsável'} · <When at={incident.lastSeenAt} />
+            </DenseMeta>
+          )}
           <MobileMeta>
             <SeverityBadge severity={incident.severity} />
             <IncidentStatusBadge status={incident.status} />
@@ -314,7 +346,7 @@ function IncidentRows({
           {incident.assignee?.name ?? <span className="text-muted-foreground">Ninguém</span>}
         </td>
         <td className={cn(CELL, WIDE, OPTIONAL, 'min-w-40 max-w-64')}>{assetsText(incident)}</td>
-        <td className={cn(CELL, WIDE)}>
+        <td className={cn(CELL, WIDE, ROOMY)}>
           <When at={incident.lastSeenAt} />
         </td>
       </tr>
@@ -396,19 +428,19 @@ export function AlertsList({
           <th scope="col" className={cn(HEAD, WIDE)}>
             Severidade
           </th>
-          <th scope="col" className={cn(HEAD, 'md:min-w-64')}>
+          <th scope="col" className={cn(HEAD, TITLE)}>
             Alerta
           </th>
           <th scope="col" className={cn(HEAD, WIDE, OPTIONAL)}>
             Conta
           </th>
-          <th scope="col" className={cn(HEAD, WIDE)}>
+          <th scope="col" className={cn(HEAD, WIDE, ROOMY)}>
             Origem
           </th>
           <th scope="col" className={cn(HEAD, WIDE, OPTIONAL)}>
             Usuário ou IP
           </th>
-          <th scope="col" className={cn(HEAD, WIDE)}>
+          <th scope="col" className={cn(HEAD, WIDE, ROOMY)}>
             Quando
           </th>
           <th scope="col" className={cn(HEAD, WIDE)}>
@@ -434,7 +466,17 @@ export function AlertsList({
               >
                 {row.title}
               </OpenButton>
-              {row.eventName && <span className="block text-xs text-muted-foreground">{row.eventName}</span>}
+              {row.eventName && (
+                <span className="block text-xs wrap-anywhere text-muted-foreground">{row.eventName}</span>
+              )}
+              {page.dense && (
+                <DenseMeta>
+                  {[FINDING_SOURCE_LABELS[row.source], row.actor.user ?? row.actor.ip]
+                    .filter(Boolean)
+                    .join(' · ')}{' '}
+                  · <When at={row.occurredAt} />
+                </DenseMeta>
+              )}
               <MobileMeta>
                 <SeverityBadge severity={row.severity} />
                 <FindingStatusBadge status={row.status} />
@@ -445,11 +487,11 @@ export function AlertsList({
             <td className={cn(CELL, WIDE, OPTIONAL)}>
               <span className="font-mono text-xs">{findingOriginId(row.accountId)}</span>
             </td>
-            <td className={cn(CELL, WIDE)}>{FINDING_SOURCE_LABELS[row.source]}</td>
+            <td className={cn(CELL, WIDE, ROOMY)}>{FINDING_SOURCE_LABELS[row.source]}</td>
             <td className={cn(CELL, WIDE, OPTIONAL, 'max-w-48')}>
               <span className="break-all">{row.actor.user ?? row.actor.ip ?? '—'}</span>
             </td>
-            <td className={cn(CELL, WIDE)}>
+            <td className={cn(CELL, WIDE, ROOMY)}>
               <When at={row.occurredAt} />
             </td>
             <td className={cn(CELL, WIDE)}>
