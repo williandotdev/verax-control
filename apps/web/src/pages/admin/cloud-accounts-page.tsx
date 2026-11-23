@@ -45,6 +45,7 @@ import { AwsLogBuckets, LogBucketsEditor } from '@/features/admin/aws-log-bucket
 import { AWS_DEFAULT_REGION, AWS_REGION_OPTIONS } from '@/features/admin/aws-onboarding-labels';
 import { AwsOnboardingSection } from '@/features/admin/aws-onboarding-section';
 import { CommandBlock } from '@/features/admin/command-block';
+import { DeleteCloudAccount } from '@/features/admin/delete-cloud-account';
 import { CredentialStep } from '@/features/admin/credential-step';
 import {
   CREDENTIAL_TEXTS,
@@ -140,6 +141,16 @@ export function CloudAccountsPage() {
       return next;
     });
   const selected = list.data?.items.find((account) => account.id === open) ?? null;
+  // O aviso da conta excluída: o painel fecha, a linha sai da tabela e o foco vem para cá.
+  const [deleted, setDeleted] = useState<CloudAccount | null>(null);
+  const deletedNotice = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (deleted) deletedNotice.current?.focus();
+  }, [deleted]);
+  const onDeleted = (account: CloudAccount) => {
+    setDeleted(account);
+    setOpen(null);
+  };
 
   const columns: Column<CloudAccount>[] = [
     {
@@ -189,6 +200,19 @@ export function CloudAccountsPage() {
       description="Contas AWS, projetos da GCP e contas do Cloudflare monitorados. O Verax Control só lê: na AWS, por um papel de leitura sem chave; o token do Cloudflare fica cifrado no cofre do nó, nunca no cadastro."
       action={canWrite && <Button onClick={() => setOpen(NEW)}>Cadastrar conta</Button>}
     >
+      {deleted && (
+        <p
+          ref={deletedNotice}
+          role="status"
+          tabIndex={-1}
+          className="rounded-md border border-ok/50 bg-ok/10 p-3 text-sm focus:outline-none"
+        >
+          {ACCOUNT_NOUNS[deleted.provider].noun} {deleted.accountId}{' '}
+          {ACCOUNT_NOUNS[deleted.provider].registered.replace('cadastrad', 'excluíd')}. Os achados, os
+          incidentes e o histórico já registrados continuam no painel, e o mesmo ID pode ser cadastrado de
+          novo.
+        </p>
+      )}
       <DataTable
         caption="Contas cloud do cliente"
         columns={columns}
@@ -222,7 +246,9 @@ export function CloudAccountsPage() {
         {open === NEW ? (
           <CreateAccount />
         ) : (
-          selected && <AccountDetail key={selected.id} account={selected} canWrite={canWrite} />
+          selected && (
+            <AccountDetail key={selected.id} account={selected} canWrite={canWrite} onDeleted={onDeleted} />
+          )
         )}
       </Sheet>
     </AdminShell>
@@ -482,7 +508,15 @@ function CreateAccount() {
   );
 }
 
-function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+function AccountDetail({
+  account,
+  canWrite,
+  onDeleted,
+}: {
+  account: CloudAccount;
+  canWrite: boolean;
+  onDeleted: (account: CloudAccount) => void;
+}) {
   const update = useUpdateCloudAccount(account.id);
   // A conta do console: a fonte e o monitoramento só mudam pela Verax (a API recusa com 409 CONSOLE_MANAGED). A
   // credencial e o "Verificar" continuam com o cliente.
@@ -495,7 +529,7 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
           <ManagedBadge />
           <p className="text-muted-foreground">
             A Verax cadastrou esta conta: peça à Verax para alterar a fonte ou o monitoramento. A credencial,
-            a verificação e, na AWS, a conexão e a autorização das fontes continuam aqui.
+            a verificação, a exclusão e, na AWS, a conexão e a autorização das fontes continuam aqui.
           </p>
         </div>
       )}
@@ -546,6 +580,8 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
           <FormError error={update.error} />
         </div>
       )}
+      {/* Excluir vale também na conta que a Verax cadastrou: a Verax é avisada pela sincronização do nó. */}
+      {canWrite && <DeleteCloudAccount account={account} onDeleted={onDeleted} />}
     </div>
   );
 }
