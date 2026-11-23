@@ -4,6 +4,20 @@
  * disso, porque também vai para o navegador.
  */
 export {
+  CLOUDFLARE_OAUTH_SEAL_USES,
+  CLOUDFLARE_OAUTH_TOKEN_MAX_LENGTH,
+  type CloudflareOauthBinding,
+  cloudflareOauthLabel,
+  type CloudflareOauthSealUse,
+  type CloudflareOauthTokens,
+  openCloudflareOauthCode,
+  openCloudflareOauthTokens,
+  openCloudflareOauthVerifier,
+  sealCloudflareOauthCode,
+  sealCloudflareOauthTokens,
+  sealCloudflareOauthVerifier,
+} from './cloudflare-oauth.js';
+export {
   CLOUDFLARE_API_TOKEN,
   type AwsCredentialPayload,
   awsCredentialPayloadSchema,
