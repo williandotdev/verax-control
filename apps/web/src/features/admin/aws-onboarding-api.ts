@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  type AwsConnect,
   type AwsOnboarding,
   awsOnboardingSchema,
+  type AwsReaderAuthorization,
   type AwsSource,
   type AwsSourcesAuthorize,
   cloudAccountSchema,
@@ -121,9 +123,22 @@ function useOnboardingWrite<TInput>(accountId: string, write: (input: TInput) =>
   });
 }
 
-/** "Conectar com AWS": o servidor passa a tentar a entrada no papel por até 60 min. */
+/**
+ * O corpo do "Conectar" e do "Verificar": as autorizações que o cliente marcou, quando o clique as confirma (a API as
+ * guarda como a escolha dele); sem elas, nenhum corpo, e a escolha gravada fica como está.
+ */
+function choiceBody(capabilities: AwsReaderAuthorization[] | void): AwsConnect | undefined {
+  return capabilities === undefined ? undefined : { capabilities };
+}
+
+/**
+ * "Conectar com AWS": o servidor passa a tentar a entrada no papel por até 60 min. Com as autorizações marcadas na
+ * tela, elas ficam gravadas: a tela recarregada devolve as mesmas caixas e o mesmo arquivo.
+ */
 export const useAwsConnect = (accountId: string) =>
-  useOnboardingWrite(accountId, () => api.post(path(accountId, 'connect'), undefined, awsOnboardingSchema));
+  useOnboardingWrite(accountId, (capabilities: AwsReaderAuthorization[] | void) =>
+    api.post(path(accountId, 'connect'), choiceBody(capabilities), awsOnboardingSchema),
+  );
 
 /** Pede outra descoberta das fontes (no máximo uma a cada 5 min). */
 export const useAwsDiscovery = (accountId: string) =>
@@ -157,12 +172,14 @@ export const useAwsRetrySource = (accountId: string) =>
 
 /**
  * "Verificar conexão": o pedido de sempre (`POST …/aws/verify`), que responde com a conta. O estado do onboarding é
- * relido em seguida, junto das listas de contas.
+ * relido em seguida, junto das listas de contas. Depois de atualizar a pilha (ou a política do usuário de leitura)
+ * pela tela, o pedido leva as autorizações marcadas ali: passam a ser a escolha gravada do cliente.
  */
 export function useAwsVerify(accountId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post(path(accountId, 'verify'), undefined, cloudAccountSchema),
+    mutationFn: (capabilities: AwsReaderAuthorization[] | void) =>
+      api.post(path(accountId, 'verify'), choiceBody(capabilities), cloudAccountSchema),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: onboardingKey(accountId) });
       for (const key of ACCOUNT_LIST_KEYS) void queryClient.invalidateQueries({ queryKey: [key] });

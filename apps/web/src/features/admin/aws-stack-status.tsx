@@ -5,6 +5,7 @@ import {
   AWS_READER_TEMPLATE_VERSION,
   awsLogBucketArns,
   type AwsOnboarding,
+  type AwsReaderAuthorization,
   awsReaderUserPolicy,
   awsReaderUserUpdateCommands,
   type CloudAccount,
@@ -15,13 +16,15 @@ import { Download } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
-  ALL_AWS_AUTHORIZATIONS,
-  authorizationChoiceOf,
+  authorizationMismatch,
   authorizationParameters,
   type AwsAuthorizationChoice,
+  type AwsAuthorizationMismatch,
   awsConsoleRegion,
   capabilitiesOfChoice,
+  chosenAuthorizations,
   downloadTextFile,
+  storedAuthorizationChoice,
 } from '@/features/admin/aws-connect';
 import {
   AwsAuthorizationChoices,
@@ -69,15 +72,27 @@ const REASON_TEXTS: Readonly<Record<UpdateReason, { role: string; key: string }>
   },
 };
 
-/** O "verificar de novo" depois de atualizar: o servidor relê a versão do modelo e as autorizações do papel. */
-function VerifyAfterUpdate({ account, waiting }: { account: CloudAccount; waiting: boolean }) {
+/**
+ * O "verificar de novo" depois de atualizar: o servidor relê a versão do modelo e as autorizações do papel. O pedido
+ * leva as autorizações marcadas neste bloco, que passam a ser a escolha gravada: se a pilha ficar diferente delas (o
+ * console do CloudFormation mantém os valores anteriores dos parâmetros), a tela avisa.
+ */
+function VerifyAfterUpdate({
+  account,
+  waiting,
+  choice,
+}: {
+  account: CloudAccount;
+  waiting: boolean;
+  choice: AwsAuthorizationChoice;
+}) {
   const verify = useAwsVerify(account.id);
   return (
     <div className="space-y-1">
       <Button
         type="button"
         variant="secondary"
-        onClick={() => verify.mutate()}
+        onClick={() => verify.mutate(chosenAuthorizations(choice))}
         disabled={waiting || verify.isPending || account.status !== 'active'}
       >
         {waiting ? 'Verificando…' : 'Verificar de novo'}
@@ -166,7 +181,7 @@ function UpdateStack({
         O comando atualiza a pilha que já existe e leva os valores deste ambiente e as autorizações escolhidas
         acima: numa atualização, a AWS mantém o valor anterior de todo parâmetro que o comando não informa.
       </PrefilledStackCli>
-      <VerifyAfterUpdate account={account} waiting={waiting} />
+      <VerifyAfterUpdate account={account} waiting={waiting} choice={choice} />
     </div>
   );
 }
@@ -220,15 +235,70 @@ function UpdateReaderUser({
         </li>
         <li>Depois, clique em Verificar de novo, abaixo.</li>
       </ol>
-      <VerifyAfterUpdate account={account} waiting={onboarding.state === 'awaiting_authorization'} />
+      <VerifyAfterUpdate
+        account={account}
+        waiting={onboarding.state === 'awaiting_authorization'}
+        choice={choice}
+      />
     </div>
+  );
+}
+
+/** Os nomes das autorizações, numa frase ("A", "A e B", "A, B e C"). */
+function authorizationNames(authorizations: readonly AwsReaderAuthorization[]): string {
+  const names = authorizations.map((authorization) => `“${AWS_AUTHORIZATION_TEXTS[authorization].label}”`);
+  const last = names.pop() ?? '';
+  return names.length === 0 ? last : `${names.join(', ')} e ${last}`;
+}
+
+/**
+ * O papel na AWS não está como o cliente escolheu aqui: o aviso diz o que está ligado a mais (o papel concede mais do
+ * que a escolha) e o que está desligado, e que vale o que está na AWS. O bloco de atualização, logo abaixo, já vem com
+ * a escolha do cliente marcada.
+ */
+function MismatchNotice({ mismatch, keyMode }: { mismatch: AwsAuthorizationMismatch; keyMode: boolean }) {
+  const { extra, missing } = mismatch;
+  const subject = keyMode ? 'O usuário de leitura' : 'A pilha';
+  const where = keyMode ? 'nas políticas do usuário de leitura' : 'na pilha';
+  return (
+    <Notice
+      tone={extra.length > 0 ? 'high' : 'medium'}
+      role="status"
+      title={`${subject} na AWS não está como você escolheu aqui`}
+    >
+      {extra.length > 0 && (
+        <p>
+          <strong className="font-semibold">Concede mais do que a sua escolha:</strong>{' '}
+          {authorizationNames(extra)} {extra.length === 1 ? 'está ligada' : 'estão ligadas'} {where}, e você
+          não {extra.length === 1 ? 'a' : 'as'} marcou aqui.
+        </p>
+      )}
+      {missing.length > 0 && (
+        <p>
+          Você marcou {authorizationNames(missing)} aqui, e {where}{' '}
+          {missing.length === 1 ? 'ela está desligada' : 'elas estão desligadas'}: as fontes desse tipo ficam
+          em &ldquo;Precisam de permissão adicional&rdquo;.
+        </p>
+      )}
+      <p>
+        Vale o que está na AWS: o Verax só lê o que {keyMode ? 'as políticas permitem' : 'a pilha permite'}.
+        Para deixar como você escolheu, {keyMode ? 'atualize as políticas' : 'atualize a pilha'} pelos passos
+        abaixo, que já vêm com a sua escolha
+        {keyMode
+          ? ''
+          : ' (na tela dos parâmetros do CloudFormation, confira cada autorização: o console mantém o valor anterior)'}
+        . Se o que está na AWS é o que você quer, marque as caixas abaixo como está lá e clique em Verificar
+        de novo.
+      </p>
+    </Notice>
   );
 }
 
 /**
  * A pilha na AWS como o Verax a leu (as etiquetas do papel): a versão do modelo e as autorizações ligadas. Com o modelo
  * anterior ou uma autorização desligada, o bloco "Atualize a pilha" aparece aberto; com tudo em dia, fica fechado, para
- * quem quiser desligar uma autorização.
+ * quem quiser desligar uma autorização. Quando as autorizações lidas não são as que o cliente escolheu no painel, um
+ * aviso diz a diferença, e o bloco abre com a escolha dele.
  */
 export function AwsStackStatus({
   account,
@@ -243,13 +313,13 @@ export function AwsStackStatus({
   const keyMode = onboarding.credentialMode === 'access_key';
   const reason = updateReason(onboarding);
   const needed = reason !== 'change';
-  // O modelo anterior não tinha autorizações: o arquivo novo sai com as três, como o padrão do modelo.
-  const initial =
-    reason === 'outdated' || reason === 'unreadable' || template.checkedAt === null
-      ? ALL_AWS_AUTHORIZATIONS
-      : authorizationChoiceOf(template.capabilities);
-  // Outra leitura das etiquetas (a pilha foi atualizada) recomeça a escolha a partir do que a pilha tem agora.
-  const resetKey = `${String(template.version)}:${template.capabilities.join(',')}`;
+  const mismatch = authorizationMismatch(onboarding);
+  // O bloco começa com a escolha que o cliente confirmou por último aqui; sem ela, com o que a pilha tem; e, no modelo
+  // anterior (que não tinha autorizações) ou sem leitura nenhuma, com as três do padrão do modelo.
+  const initial = storedAuthorizationChoice(onboarding);
+  // Outra leitura das etiquetas (a pilha foi atualizada) ou outra escolha gravada recomeçam o bloco.
+  const chosen = onboarding.connect.capabilities;
+  const resetKey = `${String(template.version)}:${template.capabilities.join(',')}:${chosen === null ? '-' : chosen.join(',')}`;
   const update = keyMode ? (
     <UpdateReaderUser key={resetKey} account={account} onboarding={onboarding} initial={initial} />
   ) : (
@@ -295,6 +365,7 @@ export function AwsStackStatus({
         <dt className="text-muted-foreground">Conferido</dt>
         <dd>{template.checkedAt === null ? 'ainda não' : formatRelative(template.checkedAt)}</dd>
       </dl>
+      {mismatch !== null && <MismatchNotice mismatch={mismatch} keyMode={keyMode} />}
       {needed ? (
         <Notice tone={reason === 'authorization_off' ? 'medium' : 'high'} title={updateTitle}>
           <p>{REASON_TEXTS[reason][keyMode ? 'key' : 'role']}</p>
@@ -306,7 +377,8 @@ export function AwsStackStatus({
         </Notice>
       ) : (
         canWrite && (
-          <details className="space-y-3 text-sm">
+          // Com a pilha diferente da escolha, o bloco já vem aberto: é nele que a diferença se resolve.
+          <details className="space-y-3 text-sm" open={mismatch !== null ? true : undefined}>
             <summary className="cursor-pointer font-medium">
               {keyMode ? 'Mudar o que está autorizado' : 'Atualizar a pilha ou mudar o que está autorizado'}
             </summary>

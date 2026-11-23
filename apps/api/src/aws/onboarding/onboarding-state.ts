@@ -35,6 +35,11 @@ import {
  * 10. nenhuma fonte coletando: `configuring` se alguma ainda espera o coletor ou os eventos, senão `ingestion_failure`
  *     (todas paradas ou sumidas);
  * 11. todas coletando: `collecting`; só parte: `partial`.
+ *
+ * As cinco conferências das fontes autorizadas (`permission`, `collector_config`, `events`, `last_sync` e `lag`) citam,
+ * em `sourceIds`, as fontes que as deixam pendentes ou com falha, para o painel apontar a linha de cada uma. Quando o
+ * motivo não é de uma fonte (o aviso da coleta do nó inteiro, o bucket do cadastro negado sem a linha dele na lista), o
+ * campo não vem.
  */
 
 /** O que a derivação lê da conta. */
@@ -59,6 +64,8 @@ export interface OnboardingRunFacts {
 
 /** O que a derivação lê de uma fonte. */
 export interface OnboardingSourceFacts {
+  /** O ID da fonte: vai para as conferências que ela deixa pendentes ou com falha (`sourceIds`). */
+  id: string;
   state: AwsSourceState;
   stateCode: string | null;
   /**
@@ -121,8 +128,16 @@ function check(
   status: AwsOnboardingCheckStatus,
   code: string | null = null,
   checkedAt: Date | null = null,
+  /** As fontes que deixam a conferência assim; sem nenhuma, o campo não vai. */
+  sources: readonly OnboardingSourceFacts[] = [],
 ): AwsOnboardingCheck {
-  return { id, status, code, checkedAt: checkedAt?.toISOString() ?? null };
+  return {
+    id,
+    status,
+    code,
+    checkedAt: checkedAt?.toISOString() ?? null,
+    ...(sources.length > 0 && { sourceIds: sources.map((source) => source.id) }),
+  };
 }
 
 /** O pedido pendente é o do "Conectar" (o mesmo horário nos dois campos)? */
@@ -202,60 +217,77 @@ export function deriveAwsOnboarding(facts: OnboardingFacts): OnboardingDerived {
       check('lag', 'skipped'),
     );
   } else {
-    const denied = authorized.find(
+    const denied = authorized.filter(
       (source) => source.state === 'permission_error' || source.permission === 'missing',
     );
-    const unknown = authorized.some((source) => source.permission === 'unknown');
+    const [firstDenied] = denied;
+    const unchecked = authorized.filter((source) => source.permission === 'unknown');
     checks.push(
       bucketError
-        ? check('permission', 'failed', connectionCode)
-        : denied !== undefined
-          ? check('permission', 'failed', denied.permissionDetail ?? denied.stateCode)
-          : unknown
-            ? check('permission', 'pending')
+        ? // O bucket do cadastro negado: a linha dele, se a conferência disse qual é (`legacyPermission`).
+          check('permission', 'failed', connectionCode, null, denied)
+        : firstDenied !== undefined
+          ? check('permission', 'failed', firstDenied.permissionDetail ?? firstDenied.stateCode, null, denied)
+          : unchecked.length > 0
+            ? check('permission', 'pending', null, null, unchecked)
             : check('permission', 'ok'),
     );
-    const awaitingCollector = authorized.some((source) => AWAITING_COLLECTOR_STATES.includes(source.state));
+    const awaiting = authorized.filter((source) => AWAITING_COLLECTOR_STATES.includes(source.state));
+    const awaitingCollector = awaiting.length > 0;
     checks.push(
       account.collectionError !== null
         ? check('collector_config', 'failed', account.collectionError)
         : awaitingCollector
-          ? check('collector_config', 'pending', 'awaiting_collector')
+          ? check('collector_config', 'pending', 'awaiting_collector', null, awaiting)
           : check('collector_config', 'ok'),
     );
-    const failing = authorized.find(
+    const failing = authorized.filter(
       (source) => source.state === 'ingestion_error' || source.state === 'stalled',
     );
-    const allCollecting = authorized.every((source) => source.state === 'collecting');
+    const [firstFailing] = failing;
+    const notCollecting = authorized.filter((source) => source.state !== 'collecting');
     checks.push(
-      failing !== undefined
-        ? check('events', 'failed', failing.stateCode ?? failing.state)
-        : allCollecting
+      firstFailing !== undefined
+        ? check('events', 'failed', firstFailing.stateCode ?? firstFailing.state, null, failing)
+        : notCollecting.length === 0
           ? check('events', 'ok')
-          : check('events', 'pending', awaitingCollector ? 'awaiting_collector' : 'waiting_events'),
+          : check(
+              'events',
+              'pending',
+              awaitingCollector ? 'awaiting_collector' : 'waiting_events',
+              null,
+              notCollecting,
+            ),
     );
-    const synced = authorized.map((source) => source.lastSyncAt);
-    const oldest = synced.every((at) => at !== null)
-      ? synced.reduce<Date | null>((min, at) => (min === null || at < min ? at : min), null)
-      : null;
+    const neverSynced = authorized.filter((source) => source.lastSyncAt === null);
+    const oldest =
+      neverSynced.length === 0
+        ? authorized.reduce<Date | null>(
+            (min, { lastSyncAt }) =>
+              lastSyncAt !== null && (min === null || lastSyncAt < min) ? lastSyncAt : min,
+            null,
+          )
+        : null;
     checks.push(
-      oldest !== null ? check('last_sync', 'ok', null, oldest) : check('last_sync', 'pending', 'no_data'),
+      oldest !== null
+        ? check('last_sync', 'ok', null, oldest)
+        : check('last_sync', 'pending', 'no_data', null, neverSynced),
     );
-    const lags = authorized.flatMap((source) => (source.lagSeconds === null ? [] : [source.lagSeconds]));
-    const stalled = authorized.some((source) => source.state === 'stalled');
+    const unmeasured = authorized.filter((source) => source.lagSeconds === null);
+    const stalled = authorized.filter((source) => source.state === 'stalled');
     const late = authorized.filter(
       (source) => source.lagSeconds !== null && source.lagSeconds > AWS_LAG_LIMIT_SECONDS,
     );
     // A fonte contínua sem eventos está parada; a de achados com a leitura atrasada só está sem ser lida.
     const lateCode = late.every((source) => source.method === 'api') ? 'sync_delayed' : 'stalled';
     checks.push(
-      stalled
-        ? check('lag', 'failed', 'stalled')
+      stalled.length > 0
+        ? check('lag', 'failed', 'stalled', null, stalled)
         : late.length > 0
-          ? check('lag', 'failed', lateCode)
-          : lags.length === authorized.length
+          ? check('lag', 'failed', lateCode, null, late)
+          : unmeasured.length === 0
             ? check('lag', 'ok')
-            : check('lag', 'pending', 'no_data'),
+            : check('lag', 'pending', 'no_data', null, unmeasured),
     );
   }
 

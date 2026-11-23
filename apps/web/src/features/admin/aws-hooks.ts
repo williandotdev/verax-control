@@ -54,6 +54,11 @@ export function useAwsStackFile(
 
 /** O "Verificar de novo" (ou "Tentar de novo") das fontes de uma conta. */
 export interface SourceRetry {
+  /**
+   * Este ambiente confere uma fonte a pedido? Onde o servidor não descobre as fontes sozinho (`discoveryAvailable` da
+   * API), o pedido seria recusado: o botão nem aparece.
+   */
+  available: boolean;
   /** Pede à API a conferência da fonte. */
   retry: (sourceId: string) => void;
   /** A fonte cujo pedido está indo para a API agora; null sem pedido no caminho. */
@@ -74,7 +79,7 @@ const RETRY_RATE_LIMITED: AwsOnboardingErrorCode = 'SOURCE_RETRY_RATE_LIMITED';
  * recusa por outro motivo (a conta desconectada, por exemplo) desfaz a espera: a API não gravou pedido nenhum, e o
  * botão volta a valer assim que o motivo for resolvido.
  */
-export function useSourceRetry(accountId: string): SourceRetry {
+export function useSourceRetry(accountId: string, available = true): SourceRetry {
   const mutation = useAwsRetrySource(accountId);
   const [until, setUntil] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [now, setNow] = useState(() => Date.now());
@@ -102,6 +107,7 @@ export function useSourceRetry(accountId: string): SourceRetry {
   };
   const failed = mutation.variables;
   return {
+    available,
     retry,
     pendingId: mutation.isPending ? (mutation.variables ?? null) : null,
     secondsLeft: (sourceId) => Math.max(0, Math.ceil(((until.get(sourceId) ?? 0) - now) / 1_000)),

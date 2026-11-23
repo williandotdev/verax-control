@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import {
   AWS_LOG_GROUP_TAG,
+  AWS_READER_AUTHORIZATIONS,
   AWS_READER_CAPABILITIES,
   AWS_READER_TEMPLATE_VERSION,
+  type AwsReaderAuthorization,
   type AwsReaderCapability,
 } from './aws-reader.js';
 import { bucketNameProblem, isAwsRegion } from './cloud-accounts.js';
@@ -563,6 +565,11 @@ export const AWS_ONBOARDING_STATES = [
 ] as const;
 export type AwsOnboardingState = (typeof AWS_ONBOARDING_STATES)[number];
 
+/** Tetos do que uma conta pode ter autorizado, e do que uma resposta carrega. */
+export const AWS_MAX_AUTHORIZED_LOG_GROUPS = 50;
+export const AWS_MAX_AUTHORIZED_S3_SOURCES = 200;
+export const AWS_MAX_SOURCES_PER_ACCOUNT = 2000;
+
 /**
  * As conferências da conexão, na ordem em que acontecem: a entrada no papel, a identidade (a conta e o papel certos), o
  * template (versão e capacidades), a descoberta e, das fontes autorizadas, a permissão, a configuração do coletor, a
@@ -608,6 +615,18 @@ export const AWS_ONBOARDING_CHECK_CODES = [
   'sync_delayed',
 ] as const;
 
+/**
+ * As conferências das fontes autorizadas: só elas levam `sourceIds`, as fontes que deixam a conferência pendente ou com
+ * falha, para o painel apontar a linha de cada uma.
+ */
+export const AWS_ONBOARDING_SOURCE_CHECK_IDS = [
+  'permission',
+  'collector_config',
+  'events',
+  'last_sync',
+  'lag',
+] as const satisfies readonly AwsOnboardingCheckId[];
+
 export const awsOnboardingCheckSchema = z.strictObject({
   id: z.enum(AWS_ONBOARDING_CHECK_IDS),
   status: z.enum(AWS_ONBOARDING_CHECK_STATUSES),
@@ -615,6 +634,12 @@ export const awsOnboardingCheckSchema = z.strictObject({
   code: codeSchema.nullable(),
   /** Quando a conferência foi feita pela última vez; null se nunca, ou se o horário não é guardado. */
   checkedAt: z.iso.datetime().nullable(),
+  /**
+   * As fontes autorizadas que deixam a conferência pendente ou com falha (os IDs de `sources`). Só nas conferências de
+   * `AWS_ONBOARDING_SOURCE_CHECK_IDS`, e só quando o motivo é de fontes: no aviso do nó inteiro (o token parado, a
+   * configuração não aplicada) e no bucket do cadastro negado, o campo não vem.
+   */
+  sourceIds: z.array(z.uuid()).min(1).max(AWS_MAX_SOURCES_PER_ACCOUNT).optional(),
 });
 export type AwsOnboardingCheck = z.infer<typeof awsOnboardingCheckSchema>;
 
@@ -622,10 +647,33 @@ export type AwsOnboardingCheck = z.infer<typeof awsOnboardingCheckSchema>;
 export const AWS_CREDENTIAL_MODES = ['role', 'access_key'] as const;
 export type AwsCredentialMode = (typeof AWS_CREDENTIAL_MODES)[number];
 
-/** Tetos do que uma conta pode ter autorizado, e do que uma resposta carrega. */
-export const AWS_MAX_AUTHORIZED_LOG_GROUPS = 50;
-export const AWS_MAX_AUTHORIZED_S3_SOURCES = 200;
-export const AWS_MAX_SOURCES_PER_ACCOUNT = 2000;
+/**
+ * As autorizações que o cliente escolhe no painel (as três do papel; a descoberta vale sempre e não entra): sem
+ * repetição, em qualquer ordem. A lista vazia é uma escolha (só a descoberta).
+ */
+const chosenCapabilitiesSchema = z
+  .array(z.enum(AWS_READER_AUTHORIZATIONS))
+  .max(AWS_READER_AUTHORIZATIONS.length)
+  .refine((list) => new Set(list).size === list.length, { error: 'autorização repetida' });
+
+/** As autorizações escolhidas, na ordem do catálogo (a mesma em que a API as guarda e devolve). */
+export function sortAwsChosenCapabilities(
+  chosen: readonly AwsReaderAuthorization[],
+): AwsReaderAuthorization[] {
+  return AWS_READER_AUTHORIZATIONS.filter((authorization) => chosen.includes(authorization));
+}
+
+/**
+ * O corpo, opcional, de `POST /v1/cloud-accounts/:id/aws/connect` e de `POST /v1/cloud-accounts/:id/aws/verify`: as
+ * autorizações que o cliente marcou no painel para o arquivo da pilha (ou, na VM própria, para a política do usuário de
+ * leitura). A API só as guarda, para a tela mostrar a mesma escolha depois de recarregada e avisar quando o papel na
+ * AWS ficou diferente dela: quem diz o que o papel pode ler são as tags dele, nunca este campo. Sem o corpo, ou sem
+ * `capabilities`, a escolha gravada fica como está.
+ */
+export const awsConnectSchema = z.strictObject({
+  capabilities: chosenCapabilitiesSchema.optional(),
+});
+export type AwsConnect = z.infer<typeof awsConnectSchema>;
 
 /** `GET /v1/cloud-accounts/:id/aws/onboarding` (e a resposta de todas as escritas do onboarding). */
 export const awsOnboardingSchema = z.strictObject({
@@ -633,10 +681,16 @@ export const awsOnboardingSchema = z.strictObject({
   cloudAccountId: z.uuid(),
   state: z.enum(AWS_ONBOARDING_STATES),
   credentialMode: z.enum(AWS_CREDENTIAL_MODES),
-  /** O "Conectar com AWS": quando foi pedido e até quando o nó espera o papel (null fora da janela). */
+  /**
+   * O "Conectar com AWS": quando foi pedido, até quando o nó espera o papel (null fora da janela) e as autorizações que
+   * o cliente escolheu no painel (`awsConnectSchema`), para a tela devolver as mesmas caixas marcadas e o mesmo arquivo
+   * depois de recarregada. Null se nenhuma escolha foi gravada (a conta de antes disso, ou conectada sem o painel). É o
+   * que o cliente escolheu, e não o que o papel tem: isso é `template.capabilities`, lido das tags dele.
+   */
   connect: z.strictObject({
     requestedAt: z.iso.datetime().nullable(),
     waitingUntil: z.iso.datetime().nullable(),
+    capabilities: chosenCapabilitiesSchema.nullable(),
   }),
   checks: z.array(awsOnboardingCheckSchema).length(AWS_ONBOARDING_CHECK_IDS.length),
   template: z.strictObject({
@@ -657,6 +711,11 @@ export const awsOnboardingSchema = z.strictObject({
     /** As regiões com recurso ou fonte, pela última descoberta. */
     regions: z.array(z.string().max(32)).max(64),
   }),
+  /**
+   * Este nó descobre as fontes sozinho? False na célula compartilhada, onde a descoberta e a sondagem de uma fonte ainda
+   * não rodam (os pedidos respondem `DISCOVERY_UNAVAILABLE`): o painel não oferece o que seria recusado.
+   */
+  discoveryAvailable: z.boolean(),
   /** O retrato da última descoberta que entrou na conta; null antes dela. */
   infrastructure: awsInfrastructureSummarySchema.nullable(),
   sources: z.array(awsSourceSchema).max(AWS_MAX_SOURCES_PER_ACCOUNT),
@@ -682,8 +741,8 @@ function distinct(ids: readonly string[]): boolean {
  * mande só `sourceIds` é recusado inteiro se a lista tiver uma fonte sensível. Tudo ou nada: uma fonte recusada recusa
  * o pedido.
  *
- * As demais escritas do onboarding não têm corpo: `…/aws/connect`, `…/aws/discovery`, `…/aws/sources/:sourceId/revoke`
- * e `…/aws/sources/:sourceId/retry` levam só os IDs no caminho.
+ * Das demais escritas do onboarding, só o `…/aws/connect` aceita corpo, e opcional (`awsConnectSchema`):
+ * `…/aws/discovery`, `…/aws/sources/:sourceId/revoke` e `…/aws/sources/:sourceId/retry` levam só os IDs no caminho.
  */
 export const awsSourcesAuthorizeSchema = z
   .strictObject({

@@ -19,6 +19,7 @@ import {
   awsConsoleRegion,
   awsDeployCommand,
   awsStackFileName,
+  chosenAuthorizations,
   downloadTextFile,
   openInNewTab,
 } from '@/features/admin/aws-connect';
@@ -177,7 +178,8 @@ export function PrefilledStackCli({
  * Antes de conectar (e depois do tempo esgotado): o que a integração faz, o que o cliente autoriza e o botão
  * **Conectar com AWS**. Um clique: (1) baixa o template com os valores deste ambiente e as autorizações escolhidas já
  * gravados, montado aqui no navegador; (2) abre o CloudFormation na criação de pilha, em outra aba; (3) avisa a API,
- * que passa a tentar a entrada no papel. A tela só muda de passo quando a API responde: nada é adiantado.
+ * que passa a tentar a entrada no papel e guarda as autorizações escolhidas (as do arquivo baixado). A tela só muda de
+ * passo quando a API responde: nada é adiantado.
  */
 export function AwsConnectPanel({
   account,
@@ -202,7 +204,8 @@ export function AwsConnectPanel({
     if (stack.file === null || !stack.file.ok) return;
     downloadTextFile(stack.file.fileName, stack.file.text);
     openInNewTab(cloudFormationConsoleUrl(awsConsoleRegion(account)));
-    connect.mutate();
+    // A escolha vai junto: é a do arquivo que acabou de ser baixado, e é ela que a tela devolve depois de recarregada.
+    connect.mutate(chosenAuthorizations(choice));
   };
 
   return (
@@ -259,7 +262,7 @@ export function AwsConnectPanel({
         choice={choice}
         canConnect={canWrite && active}
         connecting={connect.isPending}
-        onConnect={() => connect.mutate()}
+        onConnect={() => connect.mutate(chosenAuthorizations(choice))}
       />
     </Section>
   );
@@ -377,7 +380,9 @@ const COUNTDOWN_TICK_MS = 15_000;
  * Depois do clique, enquanto a API diz que está esperando o papel (`awaiting_authorization`, com a janela do
  * "Conectar" aberta): os três passos de novo, o aviso de que o Verax não enxerga a pilha enquanto ela é criada, o
  * tempo que falta da janela de 60 min (do `connect.waitingUntil` da API) e os dois atalhos, baixar o arquivo de novo e
- * abrir o CloudFormation.
+ * abrir o CloudFormation. As caixas vêm com a escolha gravada no "Conectar" (o arquivo baixado de novo é o mesmo); se
+ * o cliente as muda aqui, a escolha nova é gravada na hora, sem renovar o prazo, para o arquivo, o comando da CLI e o
+ * que a tela mostra depois dizerem a mesma coisa.
  */
 export function AwsWaitingPanel({
   account,
@@ -394,6 +399,11 @@ export function AwsWaitingPanel({
 }) {
   const now = useNow(COUNTDOWN_TICK_MS);
   const stack = useAwsStackFile(account, choice, canWrite);
+  const connect = useAwsConnect(account.id);
+  const change = (next: AwsAuthorizationChoice) => {
+    onChoiceChange(next);
+    connect.mutate(chosenAuthorizations(next));
+  };
   const until = onboarding.connect.waitingUntil;
   const remainingMs = until === null ? 0 : Math.max(0, Date.parse(until) - now);
   const again = () => {
@@ -442,9 +452,17 @@ export function AwsWaitingPanel({
           <summary className="cursor-pointer font-medium">O que o arquivo autoriza</summary>
           <AwsAuthorizationChoices
             choice={choice}
-            onChange={onChoiceChange}
+            onChange={change}
             legend="O arquivo baixado de novo sai com estas autorizações"
           />
+          <p className="text-xs text-muted-foreground">
+            A escolha fica gravada: se você mudar uma caixa, baixe o arquivo de novo antes de criar a pilha.
+          </p>
+          {connect.error ? (
+            <p role="alert" className="text-sm text-critical-text">
+              {awsOnboardingErrorText(connect.error)}
+            </p>
+          ) : null}
         </details>
       )}
       {canWrite && (

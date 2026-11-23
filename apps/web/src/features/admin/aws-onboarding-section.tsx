@@ -8,7 +8,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
-import { ALL_AWS_AUTHORIZATIONS, type AwsAuthorizationChoice } from '@/features/admin/aws-connect';
+import { type AwsAuthorizationChoice, storedAuthorizationChoice } from '@/features/admin/aws-connect';
 import { AwsConnectPanel, AwsWaitingPanel } from '@/features/admin/aws-connect-panel';
 import { AwsDiscoveryResults } from '@/features/admin/aws-discovery-results';
 import { useSourceRetry } from '@/features/admin/aws-hooks';
@@ -106,12 +106,17 @@ function ReconnectPanel({ account, canWrite }: { account: CloudAccount; canWrite
  * "Conectar com AWS" (ou, na VM própria do cliente, os passos da chave de leitura), a pilha, o que a descoberta
  * encontrou, as fontes para autorizar e a saúde das autorizadas. O que aparece em cada momento sai do estado que a API
  * manda (`GET …/aws/onboarding`), relido sozinho enquanto uma mudança é esperada; a tela nunca adianta um passo.
+ *
+ * As autorizações marcadas também saem dele: a tela começa com a escolha que a API guardou (`storedAuthorizationChoice`)
+ * e só passa a valer a que o cliente mudar aqui. Recarregada ou reaberta, ela devolve as mesmas caixas, e o arquivo
+ * baixado de novo é o mesmo: nunca volta sozinha para as três ligadas.
  */
 export function AwsOnboardingSection({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
   const query = useAwsOnboarding(account.id);
-  const [choice, setChoice] = useState<AwsAuthorizationChoice>(ALL_AWS_AUTHORIZATIONS);
+  // O que o cliente mudou nesta tela desde que ela abriu; null enquanto vale a escolha que a API guardou.
+  const [picked, setPicked] = useState<AwsAuthorizationChoice | null>(null);
   // Um pedido de conferência para a conta inteira: a fonte muda de lista quando a resposta chega.
-  const retry = useSourceRetry(account.id);
+  const retry = useSourceRetry(account.id, query.data?.discoveryAvailable ?? true);
   useAccountListRefresh(query.data);
   const { refetch } = query;
   useOnboardingRefresh(
@@ -126,6 +131,8 @@ export function AwsOnboardingSection({ account, canWrite }: { account: CloudAcco
 
   const onboarding = query.data;
   const { state } = onboarding;
+  const choice = picked ?? storedAuthorizationChoice(onboarding);
+  const setChoice = setPicked;
   const keyMode = onboarding.credentialMode === 'access_key';
   const outside = OUTSIDE_STATES.includes(state);
   // Já entrou nesta conta alguma vez (a primeira verificação grava o início da coleta; as etiquetas, a leitura delas).

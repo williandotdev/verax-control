@@ -18,7 +18,7 @@ import {
   SourceLocation,
   SourceRegion,
 } from '@/features/admin/aws-source-parts';
-import { groupAwsSources } from '@/features/admin/aws-sources';
+import { awsAuthorizedSourceAnchor, groupAwsSources } from '@/features/admin/aws-sources';
 import { awsConnectionErrorHint } from '@/features/admin/labels';
 import { ScrollTable, Section, Tag, ToneBadge } from '@/features/admin/aws-ui';
 import { formatGb } from '@/features/plan/plan-format';
@@ -72,6 +72,10 @@ function Volume({ source }: { source: AwsSource }) {
  * evento, a última leitura e o atraso são os que a API mandou (os coletores os gravam); sem medida, a célula diz que
  * não há, em vez de um valor inventado. As ações: retirar a autorização (com confirmação) e tentar de novo. As fontes
  * dos buckets cadastrados manualmente aparecem aqui e mudam só no cadastro dos buckets.
+ *
+ * Cada linha tem um `id` (`awsAuthorizedSourceAnchor`): as conferências da conexão apontam para ele a fonte que as
+ * deixa pendentes ou com falha. A linha apontada (o alvo do endereço) fica em destaque, com um contorno e a marca
+ * "Apontada pela conferência", nunca só com cor.
  */
 export function AwsSourceMonitor({
   account,
@@ -133,8 +137,14 @@ export function AwsSourceMonitor({
             const retryable = RETRYABLE_STATES.includes(source.state);
             return (
               <Fragment key={source.id}>
-                <tr className="border-t">
+                <tr
+                  id={awsAuthorizedSourceAnchor(source.id)}
+                  className="group/fonte scroll-mt-4 border-t target:bg-low/10 target:outline-2 target:-outline-offset-2 target:outline-ring"
+                >
                   <th scope="row" className="min-w-64 space-y-1 px-3 py-2 text-left align-top font-normal">
+                    <p className="hidden text-xs font-semibold group-target/fonte:block">
+                      Apontada pela conferência
+                    </p>
                     <p>
                       <span className="font-medium">{AWS_SOURCE_KIND_TEXTS[source.kind].label}</span>
                       {name !== '' && (

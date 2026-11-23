@@ -556,6 +556,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
           awsTemplateVersion: true,
           awsCapabilities: true,
           awsCapabilitiesCheckedAt: true,
+          awsChosenCapabilities: true,
         },
       });
     const runsOf = (id: string) =>
@@ -576,9 +577,11 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
         cloudAccountId: account.id,
         state: 'not_started',
         credentialMode: 'role',
-        connect: { requestedAt: null, waitingUntil: null },
+        // Nenhuma escolha gravada ainda; e este nó descobre as fontes sozinho.
+        connect: { requestedAt: null, waitingUntil: null, capabilities: null },
         template: { version: null, capabilities: [], outdated: false, checkedAt: null },
         discovery: { run: null, lastCompletedAt: null, regions: [] },
+        discoveryAvailable: true,
         infrastructure: null,
         sources: [],
       });
@@ -635,6 +638,182 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
           awsConnectRequestedAt: requestedAt.toISOString(),
         },
       });
+    });
+
+    it('a escolha das autorizações vai no "Conectar", fica gravada e volta na leitura (a tela recarregada a devolve)', async () => {
+      const account = await awsAccount(adminA);
+      // Em qualquer ordem no pedido; guardada e devolvida na ordem do catálogo.
+      const first = await connect(adminA, account.id)
+        .send({ capabilities: ['log-groups', 'service-logs'] })
+        .expect(202);
+      expect(awsOnboardingSchema.parse(first.body).connect.capabilities).toEqual([
+        'service-logs',
+        'log-groups',
+      ]);
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('service-logs log-groups');
+      // Outra leitura (a tela recarregada, ou quem só lê) traz a mesma escolha, e não as três de volta.
+      for (const session of [adminA, sessions.get('leitura') as TestSession]) {
+        expect((await onboardingOf(session, account.id)).connect.capabilities).toEqual([
+          'service-logs',
+          'log-groups',
+        ]);
+      }
+      // É só a escolha: o que o papel pode ler continua vindo das tags dele, ainda não lidas.
+      expect((await connectRow(account.id)).awsCapabilities).toEqual([]);
+      expect((await onboardingOf(adminA, account.id)).template.capabilities).toEqual([]);
+      expect(await entryOf(first)).toMatchObject({
+        action: 'cloud_account.aws_connect',
+        outcome: 'success',
+        before: { chosenCapabilities: null },
+        after: { chosenCapabilities: ['service-logs', 'log-groups'] },
+      });
+
+      // Nenhuma das três também é uma escolha (só a descoberta), diferente de "nunca escolheu".
+      const none = await awsAccount(adminA);
+      const empty = await connect(adminA, none.id).send({ capabilities: [] }).expect(202);
+      expect(awsOnboardingSchema.parse(empty.body).connect.capabilities).toEqual([]);
+      expect((await connectRow(none.id)).awsChosenCapabilities).toBe('');
+    });
+
+    it('no pedido ainda pendente, a escolha nova é gravada sem renovar a janela; sem corpo, a escolha fica', async () => {
+      const account = await awsAccount(adminA);
+      const requestedAt = await (async () => {
+        await connect(adminA, account.id)
+          .send({ capabilities: ['findings'] })
+          .expect(202);
+        return (await connectRow(account.id)).checkRequestedAt as Date;
+      })();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      // O cliente mudou as caixas enquanto esperava a pilha e baixou o arquivo de novo.
+      const changed = await connect(adminA, account.id)
+        .send({ capabilities: ['findings', 'service-logs'] })
+        .expect(202);
+      const onboarding = awsOnboardingSchema.parse(changed.body);
+      expect(onboarding.connect).toEqual({
+        requestedAt: requestedAt.toISOString(),
+        waitingUntil: new Date(requestedAt.getTime() + AWS_CONNECT_WINDOW_MS).toISOString(),
+        capabilities: ['service-logs', 'findings'],
+      });
+      expect(await connectRow(account.id)).toMatchObject({
+        checkRequestedAt: requestedAt,
+        awsConnectRequestedAt: requestedAt,
+        awsChosenCapabilities: 'service-logs findings',
+      });
+      expect(await entryOf(changed)).toMatchObject({
+        before: { checkRequestedAt: requestedAt.toISOString(), chosenCapabilities: ['findings'] },
+        after: {
+          checkRequestedAt: requestedAt.toISOString(),
+          chosenCapabilities: ['service-logs', 'findings'],
+        },
+      });
+
+      // Sem corpo (o "Conectar de novo" das conferências), com o corpo vazio ou sem o campo: a escolha fica.
+      await connect(adminA, account.id).expect(202);
+      await connect(adminA, account.id).send({}).expect(202);
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('service-logs findings');
+      // E num "Conectar" novo (a janela fechou e o cliente tenta de novo), também.
+      await prisma.cloudAccount.update({
+        where: { id: account.id },
+        data: { connection: 'error', connectionError: 'authorization_timeout', checkRequestedAt: null },
+      });
+      const again = awsOnboardingSchema.parse((await connect(adminA, account.id).expect(202)).body);
+      expect(again).toMatchObject({
+        state: 'awaiting_authorization',
+        connect: { capabilities: ['service-logs', 'findings'] },
+      });
+    });
+
+    it('o corpo do "Conectar" é estrito: a descoberta, um nome de fora, a repetição e campo a mais dão 400, sem gravar', async () => {
+      const account = await awsAccount(adminA);
+      for (const body of [
+        { capabilities: ['discovery'] },
+        { capabilities: ['discovery', 'findings'] },
+        { capabilities: ['findings', 'findings'] },
+        { capabilities: ['resposta'] },
+        { capabilities: 'findings' },
+        { capabilities: null },
+        { capabilities: ['findings'], templateVersion: 2 },
+        { awsCapabilities: ['findings'] },
+      ]) {
+        await connect(adminA, account.id).send(body).expect(400);
+      }
+      expect(await connectRow(account.id)).toMatchObject({
+        checkRequestedAt: null,
+        awsConnectRequestedAt: null,
+        awsChosenCapabilities: null,
+      });
+    });
+
+    it('A não grava a escolha na conta de B (404), e quem não administra não a grava (403)', async () => {
+      const ofB = await awsAccount(adminB);
+      await connect(adminB, ofB.id)
+        .send({ capabilities: ['findings'] })
+        .expect(202);
+      await connect(adminA, ofB.id).send({ capabilities: [] }).expect(404);
+      await verify(adminA, ofB.id).send({ capabilities: [] }).expect(404);
+      expect((await connectRow(ofB.id)).awsChosenCapabilities).toBe('findings');
+      // A leitura de A não alcança a escolha de B.
+      await get(adminA, `/v1/cloud-accounts/${ofB.id}/aws/onboarding`).expect(404);
+
+      const account = await awsAccount(adminA);
+      for (const role of ['analista_cliente', 'leitura'] as const) {
+        await connect(sessions.get(role) as TestSession, account.id)
+          .send({ capabilities: [] })
+          .expect(403);
+        await verify(sessions.get(role) as TestSession, account.id)
+          .send({ capabilities: [] })
+          .expect(403);
+      }
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBeNull();
+    });
+
+    it('o "Verificar" depois de atualizar a pilha leva a escolha nova: gravada com o antes e o depois, mesmo com um pedido pendente', async () => {
+      const account = await awsAccount(adminA);
+      await connect(adminA, account.id)
+        .send({ capabilities: ['service-logs'] })
+        .expect(202);
+      const checker = new FakeTaggedChecker();
+      await new AwsCheck(prisma, checker, { onboarding: true }).runOnce();
+      expect(await connectRow(account.id)).toMatchObject({ connection: 'connected', checkRequestedAt: null });
+
+      // O cliente ligou os achados em "Atualize a pilha" e clicou em "Verificar de novo".
+      const updated = await verify(adminA, account.id)
+        .send({ capabilities: ['service-logs', 'findings'] })
+        .expect(202);
+      expect(cloudAccountSchema.parse(updated.body)).toMatchObject({ connection: 'waiting' });
+      const pendingAt = (await connectRow(account.id)).checkRequestedAt as Date;
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('service-logs findings');
+      expect((await onboardingOf(adminA, account.id)).connect.capabilities).toEqual([
+        'service-logs',
+        'findings',
+      ]);
+      expect(await entryOf(updated)).toMatchObject({
+        action: 'cloud_account.aws_verify',
+        outcome: 'success',
+        before: { connection: 'connected', chosenCapabilities: ['service-logs'] },
+        after: { connection: 'waiting', chosenCapabilities: ['service-logs', 'findings'] },
+      });
+
+      // Com o pedido pendente, só a escolha muda: o pedido não é renovado.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await verify(adminA, account.id).send({ capabilities: [] }).expect(202);
+      expect(await connectRow(account.id)).toMatchObject({
+        checkRequestedAt: pendingAt,
+        awsChosenCapabilities: '',
+      });
+      // O "Verificar" de sempre, sem corpo, não toca na escolha e não a põe na trilha.
+      const plain = await verify(adminA, account.id).expect(202);
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('');
+      const entry = await entryOf(plain);
+      expect(entry.before).not.toHaveProperty('chosenCapabilities');
+      expect(entry.after).not.toHaveProperty('chosenCapabilities');
+      // Estrito como o do "Conectar".
+      await verify(adminA, account.id)
+        .send({ capabilities: ['discovery'] })
+        .expect(400);
+      await verify(adminA, account.id).send({ capabilities: [], extra: true }).expect(400);
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('');
     });
 
     it('um "Verificar" pendente vira o pedido do "Conectar" (a janela conta do clique)', async () => {

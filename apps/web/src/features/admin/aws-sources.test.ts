@@ -189,7 +189,7 @@ describe('releitura do estado: só enquanto uma mudança é esperada', () => {
       awsOnboardingPollInterval(
         onboardingFixture(ACCOUNT, 'authenticated', {
           template: { version: 2, capabilities: ['discovery'], outdated: false, checkedAt: template },
-          connect: { requestedAt: connect, waitingUntil: null },
+          connect: { requestedAt: connect, waitingUntil: null, capabilities: null },
         }),
         now,
       );

@@ -1,4 +1,9 @@
-import { type AwsOnboarding, type AwsOnboardingCheck, type CloudAccount } from '@verax/shared';
+import {
+  type AwsOnboarding,
+  type AwsOnboardingCheck,
+  type AwsSource,
+  type CloudAccount,
+} from '@verax/shared';
 import { Button } from '@/components/ui/button';
 import { useAwsConnect, useAwsDiscovery, useAwsVerify } from '@/features/admin/aws-onboarding-api';
 import {
@@ -7,19 +12,26 @@ import {
   AWS_ONBOARDING_STATE_STEP,
   AWS_ONBOARDING_STEP_LABELS,
   AWS_ONBOARDING_STEPS,
+  AWS_SOURCE_KIND_TEXTS,
   type AwsCheckAction,
   awsCheckLabel,
   awsCheckText,
   awsOnboardingErrorText,
   awsOnboardingStateText,
+  awsSourceName,
   STEP_STATUS_LABELS,
   type StepStatus,
   type Tone,
 } from '@/features/admin/aws-onboarding-labels';
-import { attentionChecks, lastVerifiedAt } from '@/features/admin/aws-sources';
+import {
+  attentionChecks,
+  awsAuthorizedSourceAnchor,
+  compareAwsSources,
+  lastVerifiedAt,
+} from '@/features/admin/aws-sources';
 import { Notice, Section, ToneIcon } from '@/features/admin/aws-ui';
 import { cn } from '@/lib/cn';
-import { formatRelative, formatTimestamp } from '@/lib/format';
+import { formatRelative, formatTimestamp, plural } from '@/lib/format';
 
 const STEP_TONES: Readonly<Record<Exclude<StepStatus, 'current'>, Tone>> = {
   done: 'ok',
@@ -61,6 +73,49 @@ function OnboardingSteps({ onboarding }: { onboarding: AwsOnboarding }) {
   );
 }
 
+/** Quantas fontes uma conferência cita pelo nome antes do "e mais N". */
+const VISIBLE_CHECK_SOURCES = 5;
+
+/**
+ * As fontes que deixam uma conferência pendente ou com falha (`sourceIds` da API), cada uma com um link para a linha
+ * dela em "Fontes autorizadas", onde estão o motivo e o que fazer: a linha apontada fica em destaque. O ID que a tela
+ * não conhece (a fonte saiu entre uma leitura e outra) fica de fora.
+ */
+function CheckSources({ check, sources }: { check: AwsOnboardingCheck; sources: readonly AwsSource[] }) {
+  const ids = check.sourceIds ?? [];
+  const cited = sources.filter((source) => ids.includes(source.id)).sort(compareAwsSources);
+  if (cited.length === 0) return null;
+  const visible = cited.slice(0, VISIBLE_CHECK_SOURCES);
+  const hidden = cited.length - visible.length;
+  return (
+    <p className="text-xs">
+      {cited.length === 1 ? 'Fonte: ' : `${cited.length} fontes: `}
+      {visible.map((source, index) => {
+        const name = awsSourceName(source);
+        return (
+          <span key={source.id}>
+            {index > 0 && '; '}
+            <a href={`#${awsAuthorizedSourceAnchor(source.id)}`} className="underline">
+              {AWS_SOURCE_KIND_TEXTS[source.kind].label}
+              {name !== '' && ` ${name}`}
+            </a>
+          </span>
+        );
+      })}
+      {hidden > 0 && (
+        <>
+          {' '}
+          e {plural(hidden, 'outra', 'outras')}, em{' '}
+          <a href="#aws-autorizadas" className="underline">
+            Fontes autorizadas
+          </a>
+        </>
+      )}
+      .
+    </p>
+  );
+}
+
 const ACTION_LABELS: Readonly<Record<AwsCheckAction, string>> = {
   connect: 'Conectar de novo',
   verify: 'Verificar de novo',
@@ -70,8 +125,9 @@ const ACTION_LABELS: Readonly<Record<AwsCheckAction, string>> = {
 /**
  * As nove conferências da conexão, cada uma com a situação (ícone e texto), o que ela quer dizer pelo código e, quando
  * há o que fazer aqui, o "tentar de novo" dela: conectar de novo (o tempo esgotou), verificar a conexão ou rodar a
- * descoberta outra vez. As das fontes autorizadas apontam para a linha da fonte, onde está o que corrigir. Antes de a
- * conexão começar, nenhuma se aplica: a lista fica recolhida, para o "Conectar com AWS" vir primeiro.
+ * descoberta outra vez (só onde o servidor descobre as fontes sozinho). As das fontes autorizadas citam as fontes que
+ * as deixam pendentes ou com falha, com um link para a linha de cada uma, onde está o que corrigir. Antes de a conexão
+ * começar, nenhuma se aplica: a lista fica recolhida, para o "Conectar com AWS" vir primeiro.
  */
 export function AwsOnboardingChecks({
   account,
@@ -98,7 +154,9 @@ export function AwsOnboardingChecks({
   const discovering = run !== null && (run.status === 'pending' || run.status === 'running');
   const available = (check: AwsOnboardingCheck, action: AwsCheckAction): boolean => {
     if (!canAct) return false;
-    if (action === 'discover') return !discovering && check.id === 'discovery';
+    if (action === 'discover') {
+      return onboarding.discoveryAvailable && !discovering && check.id === 'discovery';
+    }
     return onboarding.state !== 'awaiting_authorization';
   };
   const list = (
@@ -117,6 +175,7 @@ export function AwsOnboardingChecks({
                 {text}
                 {check.checkedAt !== null && <> Conferido {formatRelative(check.checkedAt)}.</>}
               </p>
+              <CheckSources check={check} sources={onboarding.sources} />
               {action !== null && available(check, action) && (
                 <Button
                   type="button"
