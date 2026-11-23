@@ -4,6 +4,7 @@ import {
   cloudAccountCreateSchema,
   cloudAccountUpdateSchema,
   cloudCredentialInputSchema,
+  CLOUDFLARE_OAUTH_RECONNECT_ERROR,
   CLOUDFLARE_TOKEN_PERMISSIONS,
   cloudflareTokenTemplateUrl,
   type CloudProvider,
@@ -278,7 +279,10 @@ function ConnectionErrorDetail({ account, code }: { account: CloudAccount; code:
   return (
     <>
       {hint && ` ${hint}`}
-      {stopped && ' A coleta está parada até um token válido ser colado abaixo.'}{' '}
+      {stopped &&
+        (code === CLOUDFLARE_OAUTH_RECONNECT_ERROR
+          ? ' A coleta está parada até a conta ser conectada de novo.'
+          : ' A coleta está parada até um token válido ser colado abaixo.')}{' '}
       {account.connection === 'connected' ? 'Tipo do aviso:' : 'Tipo do erro:'}{' '}
       <code className="font-mono">{code}</code>.
     </>
