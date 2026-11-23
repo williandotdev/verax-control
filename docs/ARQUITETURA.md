@@ -781,9 +781,9 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
 _(em construção, em vários PRs. Feito no código: o template v2 do papel, com a descoberta e as três autorizações do
 cliente (PR-T); o contrato, o modelo de dados, o "Conectar" com validação automática, a descoberta e as rotas de
 autorização (PR-B); a coleta dos achados pelas APIs do GuardDuty, do Security Hub, do Inspector e do Access Analyzer
-(PR-C2); a coleta das fontes de bucket e do CloudWatch Logs pelo Wazuh do nó, com a saúde de cada fonte (PR-C1). A
-construir: a tela nova (PR-U); até lá, a tela de Contas cloud segue a de antes. Nada da coleta pelo Wazuh foi
-exercitado numa conta AWS de verdade: o que foi conferido é o que a imagem do Wazuh aceita e grava, sem rede.)_
+(PR-C2); a coleta das fontes de bucket e do CloudWatch Logs pelo Wazuh do nó, com a saúde de cada fonte (PR-C1); e a
+tela em Contas cloud, do "Conectar com AWS" à saúde de cada fonte (PR-U). Nada da coleta pelo Wazuh foi exercitado
+numa conta AWS de verdade: o que foi conferido é o que a imagem do Wazuh aceita e grava, sem rede.)_
 
 O cliente conecta a conta AWS sozinho: clica em "Conectar com AWS", cria a pilha do papel de leitura no CloudFormation
 e, a partir daí, o nó valida a conexão, descobre as fontes de log da conta e mostra o que pode ser coletado. O cliente
@@ -862,9 +862,19 @@ cadastro anterior (`cloudtrailBucket`, `guarddutyBucket`, `wafBucket`) continuam
 linhas `origin = legacy`, autorizadas, espelhadas por `aws/onboarding/legacy-sources.ts`.
 
 **Nota dos flow logs lidos juntos (`flow_logs_read_together`):** toda fonte de flow logs que grava num bucket e dá
-para ler leva essa nota, para o painel avisar antes da autorização (o texto do aviso é da tela nova, PR-U): autorizar um
-Flow Log lê todos os Flow Logs daquela conta e região que gravam no mesmo bucket (o módulo do Wazuh lê a pasta da conta
-e da região, e não um flow log só).
+para ler leva essa nota: autorizar um Flow Log lê todos os Flow Logs daquela conta e região que gravam no mesmo bucket
+(o módulo do Wazuh lê a pasta da conta e da região, e não um flow log só). O painel diz isso na linha da fonte e de
+novo na confirmação da autorização.
+
+**O que o painel diz da coleta pelo Wazuh (`apps/web/src/features/admin/aws-onboarding-labels.ts`):** a API manda só
+códigos, e cada motivo que a coleta grava numa fonte de bucket ou num grupo de logs tem o texto dele, com o que fazer
+(`AWS_WAZUH_SOURCE_STATE_CODE_TEXTS`, tipado contra `AWS_WAZUH_SOURCE_STATE_CODES`: um código novo não compila sem o
+texto): a configuração ainda não aplicada (`awaiting_apply`), a fonte parada (`no_progress`), os dois avisos do
+servidor e os sete motivos de a fonte ter ficado de fora da coleta; o que a tela não conhece aparece como "Tipo do
+erro". Na linha dos flow logs, antes e depois da autorização, o painel diz que só o tráfego recusado é lido e que as
+detecções vêm das duas regras ("Regras de Flow Logs"); na dos grupos do CloudWatch Logs, que os alertas aparecem com
+pelo menos 10 minutos de atraso e só são atribuídos quando uma única conta do servidor tem grupos autorizados ("Dono
+dos alertas do CloudWatch Logs").
 
 **Estado da fonte:** `available`, `needs_permission` ou `unavailable` antes da autorização; depois, `authorized`
 (aguardando o coletor), `configuring`, `waiting_events`, `collecting`, `stalled`, `permission_error` e

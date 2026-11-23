@@ -45,15 +45,18 @@ import { DEMO_ACCOUNTS, DEMO_AWS_CHECK_DELAY_MS } from './fixtures';
  * O onboarding self-service da AWS no modo mock: uma imitação com estado das rotas `/v1/cloud-accounts/:id/aws/...`
  * (`apps/api/src/cloud-accounts/aws-onboarding.*`), para a demonstração mostrar o fluxo inteiro sem API e sem AWS. O
  * "worker" da demonstração anda com o relógio, a cada leitura: responde o "Conectar" e o "Verificar", roda a
- * descoberta, confere a permissão pedida e faz as fontes autorizadas passarem pelos estados dos coletores (que na API
- * de verdade chegam com os PRs dos coletores: `configuring`, `waiting_events`, `collecting`, `stalled`,
- * `ingestion_error`). O estado da conta e as conferências saem do que está guardado, com as mesmas regras de
+ * descoberta, confere a permissão pedida e faz as fontes autorizadas passarem pelos estados dos coletores, com os
+ * motivos que eles gravam: `configuring` (`awaiting_apply`, nas fontes de bucket e nos grupos de logs),
+ * `waiting_events`, `collecting`, `stalled` (`no_progress`) e `ingestion_error` (o motivo de a fonte ter ficado de
+ * fora da coleta, ou o erro da leitura). O estado da conta e as conferências saem do que está guardado, com as mesmas regras de
  * `apps/api/src/aws/onboarding/onboarding-state.ts`, e toda resposta passa pelo schema do contrato.
  *
  * As contas da demonstração cobrem os estados que não aparecem no caminho feliz:
  * - a de produção da Alfa: com erro de permissão numa fonte de achados (a ação do IAM que falta), outra com a leitura
- *   limitada pela AWS (`throttled`), uma sincronizada sem achado nenhum (`no_findings_yet`) e outra com achados; mais a
- *   autorização dos grupos de logs desligada na pilha, a descoberta parcial e fontes em quase todos os estados;
+ *   limitada pela AWS (`throttled`), uma sincronizada sem achado nenhum (`no_findings_yet`) e outra com achados; uma
+ *   fonte de bucket em cada estado da coleta (configurando, sem eventos ainda, coletando com o atraso medido, parada e
+ *   de fora da coleta por estar numa região que o coletor não lê); mais a autorização dos grupos de logs desligada na
+ *   pilha, a descoberta parcial e fontes em quase todos os estados;
  * - a de homologação da Alfa: desconectada (a AWS recusa a entrada no papel);
  * - a da Beta: coletando, com a pilha do modelo anterior (o bloco "Atualize a pilha");
  * - uma conta nova: do "Conectar com AWS" até coletar tudo. Os IDs de `DEMO_AWS_SCENARIO_ACCOUNTS`, cadastrados na
@@ -343,7 +346,8 @@ function discoveredSources(account: CloudAccount, fake: AwsFake): Discovered[] {
       resourceId: 'fl-0a1b2c3d4e5f60718',
       name: 'fl-0a1b2c3d4e5f60718 (vpc-0a1b2c3d)',
       loggingState: 'logging',
-      notes: withUpdate('vpc_flow_logs', ['high_volume']),
+      // Autorizar um flow log lê todos os da conta e da região que gravam no mesmo bucket.
+      notes: withUpdate('vpc_flow_logs', ['high_volume', 'flow_logs_read_together']),
       details: {
         flowLogId: 'fl-0a1b2c3d4e5f60718',
         attachedTo: 'vpc-0a1b2c3d',
@@ -383,7 +387,7 @@ function discoveredSources(account: CloudAccount, fake: AwsFake): Discovered[] {
       resourceId: 'fl-0c0ffee0c0ffee012',
       name: 'fl-0c0ffee0c0ffee012 (subnet-0c0ffee0)',
       loggingState: 'logging',
-      notes: withUpdate('vpc_flow_logs', ['high_volume']),
+      notes: withUpdate('vpc_flow_logs', ['high_volume', 'flow_logs_read_together']),
       details: {
         flowLogId: 'fl-0c0ffee0c0ffee012',
         attachedTo: 'subnet-0c0ffee0',
@@ -964,7 +968,8 @@ function runCollectors(account: CloudAccount, fake: AwsFake, now: number): void 
       setState(source, 'waiting_events', null, now);
       source.health = { ...NO_HEALTH, lastSyncAt: iso(now) };
     } else if (elapsed >= DEMO_AWS_COLLECTOR_MS.configuring) {
-      setState(source, 'configuring', null, now);
+      // A fonte já está na configuração da coleta, e o servidor ainda não a aplicou.
+      setState(source, 'configuring', 'awaiting_apply', now);
     }
   }
 }
@@ -1184,8 +1189,9 @@ export function demoAwsOnboardingStore(
       stateCode: 'not_enabled',
       missingSince: iso(at - DAY),
     });
-    // Os flow logs pararam de chegar há 3 horas.
+    // Os flow logs pararam de ser lidos há 3 horas, com arquivos novos no bucket (o motivo do coletor).
     pin(fake, at, (source) => source.kind === 'vpc_flow_logs' && source.state === 'available', 'stalled', {
+      stateCode: 'no_progress',
       health: {
         lastSyncAt: iso(at - 60_000),
         lastEventAt: iso(at - 3 * HOUR),
@@ -1195,6 +1201,127 @@ export function demoAwsOnboardingStore(
         bytesLast24h: 1.1 * GB,
       },
     });
+    // As outras fontes de bucket, uma em cada estado que a coleta grava: a Web ACL autorizada agora (na configuração
+    // da coleta, que o servidor ainda não aplicou); a trilha já configurada e ainda sem evento; um flow log coletando,
+    // com o atraso medido; e um flow log de fora da coleta, numa região que o coletor não lê.
+    const main = account.regions[0] ?? 'sa-east-1';
+    const id = account.accountId;
+    const applying = sourceRow(
+      {
+        kind: 'waf',
+        region: main,
+        resourceId: 'a1b2c3d4-0000-4000-8000-0000000000bb',
+        name: 'checkout-acl',
+        loggingState: 'logging',
+        details: {
+          webAclName: 'checkout-acl',
+          webAclScope: 'REGIONAL',
+          destinationType: 's3',
+          bucket: `aws-waf-logs-checkout-${id}`,
+          prefix: `AWSLogs/${id}/WAFLogs/${main}/checkout-acl/`,
+        },
+      },
+      at - 2 * DAY,
+    );
+    const quiet = sourceRow(
+      {
+        kind: 'cloudtrail',
+        region: main,
+        resourceId: `arn:aws:cloudtrail:${main}:${id}:trail/trilha-de-dados`,
+        name: 'trilha-de-dados',
+        loggingState: 'logging',
+        details: {
+          arn: `arn:aws:cloudtrail:${main}:${id}:trail/trilha-de-dados`,
+          destinationType: 's3',
+          bucket: `aws-cloudtrail-dados-${id}-demo`,
+          prefix: `AWSLogs/${id}/CloudTrail/${main}/`,
+          multiRegion: false,
+          organizationTrail: false,
+          managementEvents: false,
+        },
+      },
+      at - 2 * DAY,
+    );
+    const flowing = sourceRow(
+      {
+        kind: 'vpc_flow_logs',
+        region: main,
+        resourceId: 'fl-0d4e5f60718293a4b',
+        name: 'fl-0d4e5f60718293a4b (vpc-0d4e5f60)',
+        loggingState: 'logging',
+        notes: ['high_volume', 'flow_logs_read_together'],
+        details: {
+          flowLogId: 'fl-0d4e5f60718293a4b',
+          attachedTo: 'vpc-0d4e5f60',
+          trafficType: 'ALL',
+          destinationType: 's3',
+          bucket: `vpc-flow-logs-loja-${id}-demo`,
+          prefix: `AWSLogs/${id}/vpcflowlogs/${main}/`,
+          fileFormat: 'plain-text',
+          hivePartitions: false,
+          customFormat: false,
+        },
+      },
+      at - 20 * DAY,
+    );
+    const outside = sourceRow(
+      {
+        kind: 'vpc_flow_logs',
+        region: 'mx-central-1',
+        resourceId: 'fl-0e5f60718293a4b5c',
+        name: 'fl-0e5f60718293a4b5c (vpc-0e5f6071)',
+        loggingState: 'logging',
+        notes: ['high_volume', 'flow_logs_read_together'],
+        details: {
+          flowLogId: 'fl-0e5f60718293a4b5c',
+          attachedTo: 'vpc-0e5f6071',
+          trafficType: 'REJECT',
+          destinationType: 's3',
+          bucket: `vpc-flow-logs-mexico-${id}-demo`,
+          prefix: `AWSLogs/${id}/vpcflowlogs/mx-central-1/`,
+          fileFormat: 'plain-text',
+          hivePartitions: false,
+          customFormat: false,
+        },
+      },
+      at - 9 * DAY,
+    );
+    fake.sources.push(applying, quiet, flowing, outside);
+    pin(
+      fake,
+      at,
+      (source) => source === applying,
+      'configuring',
+      { stateCode: 'awaiting_apply', stateSince: iso(at - 60_000) },
+      0,
+    );
+    pin(
+      fake,
+      at,
+      (source) => source === quiet,
+      'waiting_events',
+      { stateSince: iso(at - 20 * 60_000), health: { ...NO_HEALTH, lastSyncAt: iso(at - 60_000) } },
+      0,
+    );
+    // O atraso é o da leitura do último arquivo: gravado há 9 min, lido há 2.
+    pin(fake, at, (source) => source === flowing, 'collecting', {
+      health: {
+        lastSyncAt: iso(at - 60_000),
+        lastEventAt: iso(at - 9 * 60_000),
+        lastIngestedAt: iso(at - 2 * 60_000),
+        lagSeconds: 7 * 60,
+        eventsLast24h: 52_300,
+        bytesLast24h: 0.7 * GB,
+      },
+    });
+    pin(
+      fake,
+      at,
+      (source) => source === outside,
+      'ingestion_error',
+      { stateCode: 'region_unsupported', stateSince: iso(at - 9 * DAY) },
+      9,
+    );
     // Uma Web ACL autorizada que foi apagada da conta, e outra com a autorização retirada.
     const gone = sourceRow(
       {

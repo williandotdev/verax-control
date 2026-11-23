@@ -20,6 +20,7 @@ import {
 import type { SourceRetry } from '@/features/admin/aws-hooks';
 import {
   AWS_AUTHORIZATION_TEXTS,
+  AWS_SOURCE_COLLECTION_NOTES,
   AWS_SOURCE_KIND_TEXTS,
   AWS_SOURCE_LOGGING_STATE_LABELS,
   AWS_SOURCE_NOTE_TEXTS,
@@ -87,6 +88,15 @@ export function SourceNotes({ source, omit = [] }: { source: AwsSource; omit?: r
       ))}
     </ul>
   );
+}
+
+/**
+ * Como este tipo de fonte é coletado, quando o cliente precisa saber (`AWS_SOURCE_COLLECTION_NOTES`): os flow logs só
+ * com o tráfego recusado e as duas detecções deles; os grupos de logs com o atraso e a regra de atribuição dos alertas.
+ */
+export function SourceCollectionNote({ source }: { source: Pick<AwsSource, 'kind'> }) {
+  const note = AWS_SOURCE_COLLECTION_NOTES[source.kind];
+  return note === undefined ? null : <p className="text-xs text-muted-foreground">{note}</p>;
 }
 
 /** A marca de uma fonte que pode trazer dado de aplicação. */

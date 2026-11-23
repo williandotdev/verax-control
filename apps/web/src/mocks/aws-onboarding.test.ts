@@ -100,7 +100,11 @@ describe('contas da demonstração', () => {
     });
     expect(checkOf(alfa, 'events')).toMatchObject({ status: 'failed', code: 'throttled' });
     expect(checkOf(alfa, 'lag')).toMatchObject({ status: 'failed', code: 'stalled' });
-    expect(checkOf(alfa, 'collector_config')).toMatchObject({ status: 'ok' });
+    // Uma Web ACL acabou de ser autorizada: a configuração da coleta ainda não foi aplicada no servidor.
+    expect(checkOf(alfa, 'collector_config')).toMatchObject({
+      status: 'pending',
+      code: 'awaiting_collector',
+    });
     expect(alfa.discovery.run).toMatchObject({ status: 'partial' });
     expect(
       alfa.discovery.run?.errors.map((error) => `${error.service}|${error.region}|${error.code}`),
@@ -157,6 +161,50 @@ describe('contas da demonstração', () => {
       stateCode: 'not_enabled',
       missingSince: expect.any(String) as string,
     });
+  });
+
+  it('as fontes de bucket da Alfa: uma em cada estado que a coleta grava, com o motivo, e a nota dos flow logs', async () => {
+    start();
+    const alfa = await view(ALFA);
+    const buckets = alfa.sources.filter(
+      (source) =>
+        source.method === 's3' &&
+        source.origin === 'discovered' &&
+        source.authorization.authorizedAt !== null,
+    );
+    const summary = buckets
+      .filter((source) => source.authorization.revokedAt === null && source.state !== 'source_missing')
+      .map((source) => `${source.kind}|${source.state}|${source.stateCode ?? '-'}`)
+      .sort();
+    expect(summary).toEqual([
+      'cloudtrail|waiting_events|-',
+      'vpc_flow_logs|collecting|-',
+      'vpc_flow_logs|ingestion_error|region_unsupported',
+      'vpc_flow_logs|stalled|no_progress',
+      'waf|configuring|awaiting_apply',
+    ]);
+    const of = (state: string) => buckets.find((source) => source.state === state);
+    // Autorizada agora: ainda sem leitura nenhuma.
+    expect(of('configuring')).toMatchObject({
+      collectFrom: '2026-11-23',
+      health: { lastSyncAt: null, lagSeconds: null },
+    });
+    expect(of('waiting_events')?.health).toMatchObject({ lastEventAt: null, lagSeconds: null });
+    expect(of('waiting_events')?.health.lastSyncAt).not.toBeNull();
+    // Coletando: o atraso é o da leitura do último arquivo (gravado há 9 min, lido há 2).
+    expect(of('collecting')?.health).toMatchObject({ lagSeconds: 7 * 60, eventsLast24h: 52_300 });
+    // Parada: sem leitura há 3 horas.
+    expect(of('stalled')?.health.lagSeconds).toBe(3 * 3_600);
+    // De fora da coleta: numa região que o coletor não lê, sem leitura nenhuma.
+    expect(of('ingestion_error')).toMatchObject({ region: 'mx-central-1', health: { lastSyncAt: null } });
+    // Todo flow log que grava num bucket e dá para ler avisa que os do mesmo bucket são lidos juntos.
+    const flows = alfa.sources.filter((source) => source.kind === 'vpc_flow_logs');
+    expect(flows.length).toBeGreaterThanOrEqual(5);
+    for (const flow of flows) {
+      expect(flow.notes.includes('flow_logs_read_together'), flow.name).toBe(
+        flow.availability === 'available',
+      );
+    }
   });
 
   it('sem a fonte parada, o atraso que sobra é o da leitura das fontes de achados (sync_delayed)', async () => {
@@ -268,7 +316,11 @@ describe('uma conta nova, do "Conectar com AWS" até coletar', () => {
 
     pass(DEMO_AWS_COLLECTOR_MS.configuring);
     const configuring = await view(id);
-    expect(configuring.sources.find((source) => source.id === trail.id)?.state).toBe('configuring');
+    // A fonte de bucket diz por que está configurando: a coleta ainda não foi aplicada no servidor.
+    expect(configuring.sources.find((source) => source.id === trail.id)).toMatchObject({
+      state: 'configuring',
+      stateCode: 'awaiting_apply',
+    });
     // A fonte de achados não tem passo intermediário: espera o coletor até a primeira leitura.
     expect(configuring.sources.find((source) => source.id === guardduty.id)).toMatchObject({
       state: 'authorized',

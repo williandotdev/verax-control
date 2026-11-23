@@ -3,7 +3,10 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import type { SourceRetry } from '@/features/admin/aws-hooks';
-import { AWS_LOG_GROUP_CATEGORY_LABELS } from '@/features/admin/aws-onboarding-labels';
+import {
+  AWS_LOG_GROUP_CATEGORY_LABELS,
+  AWS_SOURCE_COLLECTION_NOTES,
+} from '@/features/admin/aws-onboarding-labels';
 import { PermissionFix, RetryButton, SourceNotes, SourceRegion } from '@/features/admin/aws-source-parts';
 import { awsSourceGroup, isAuthorizableSource, matchesLogGroupSearch } from '@/features/admin/aws-sources';
 import { Notice, ToneBadge } from '@/features/admin/aws-ui';
@@ -87,6 +90,7 @@ export function AwsLogGroupList({
           <code className="font-mono text-xs">verax-control = leitura</code>, na AWS. Dos outros, ele vê só o
           nome e o tamanho.
         </p>
+        <p>{AWS_SOURCE_COLLECTION_NOTES.cloudwatch_log_group}</p>
       </Notice>
       {capabilityOff && (
         <Notice tone="medium" title="A leitura de grupos de logs está desligada na pilha.">
