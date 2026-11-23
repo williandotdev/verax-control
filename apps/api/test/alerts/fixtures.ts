@@ -3,7 +3,9 @@ import type { RegisteredAwsAccount } from '../../src/alerts/alert-owner.js';
 
 /**
  * Alertas do Wazuh como ficam no indexer, no formato do módulo aws-s3 do Wazuh 4.14.9 (conferido no código do
- * wodle): evento original em `data.aws`, com `source`, `log_info.s3bucket` e, só no CloudTrail, `aws_account_id`.
+ * wodle): evento original em `data.aws`, com `source`, `log_info.s3bucket` e, no CloudTrail e nos flow logs da VPC,
+ * `aws_account_id`. O evento de um grupo do CloudWatch Logs (`cloudWatchAlert`) é a linha de log crua: sem
+ * `data.integration` nem `data.aws`, só com o `location` do módulo.
  * O `data.aws` passa por `asWazuhWrites`, que grava os valores como o analysisd grava (números e booleanos em texto).
  * Contas e clientes fictícios (IDs de exemplo da documentação da AWS). Cada chamada é um evento novo na AWS, com ID
  * próprio (`eventID`, `id` do achado, `requestId`); para o mesmo evento lido de novo, o teste passa o ID.
@@ -308,6 +310,98 @@ export function wafAlert(
       source: 'waf',
     },
   );
+}
+
+/**
+ * Registro de um flow log da VPC como o tipo `vpcflow` do módulo o entrega (`source: vpc`): os 14 campos do formato
+ * padrão, com o início e o fim em ISO 8601, e a conta da pasta lida em `aws_account_id`. O Wazuh não tem regra de
+ * nível 5 para cima para os flow logs: a regra do alerta é a de uma correlação local de exemplo.
+ */
+export function vpcFlowAlert(
+  options: {
+    account?: string;
+    bucket?: string;
+    /** `account_id` do registro (o dono da interface); `null` tira o campo. */
+    interfaceOwner?: string | null;
+    interfaceId?: string;
+    sourceIp?: string;
+    sourcePort?: number;
+    action?: string;
+    start?: string;
+    level?: number;
+  } = {},
+): Record<string, unknown> {
+  const account = options.account ?? ALFA.accountId;
+  const owner = options.interfaceOwner === undefined ? account : options.interfaceOwner;
+  return document(
+    {
+      id: '100400',
+      level: options.level ?? 6,
+      description: 'AWS VPC Flow: muitas conexões rejeitadas da mesma origem.',
+      groups: ['amazon', 'aws', 'aws_vpcflow'],
+    },
+    {
+      log_info: {
+        aws_account_alias: '',
+        log_file: `AWSLogs/${account}/vpcflowlogs/sa-east-1/2026/11/01/${account}_vpcflowlogs_sa-east-1_fl-0123456789abcdef0_20261101T1000Z_a.log.gz`,
+        s3bucket: options.bucket ?? 'fluxo-alfa',
+      },
+      version: '2',
+      ...(owner === null ? {} : { account_id: owner }),
+      interface_id: options.interfaceId ?? 'eni-0123456789abcdef0',
+      srcaddr: options.sourceIp ?? '203.0.113.50',
+      dstaddr: '10.0.0.10',
+      srcport: options.sourcePort ?? 44321,
+      dstport: 22,
+      protocol: 6,
+      packets: 1,
+      bytes: 40,
+      start: options.start ?? '2026-11-01T09:58:00Z',
+      end: '2026-11-01T09:59:00Z',
+      action: options.action ?? 'REJECT',
+      log_status: 'OK',
+      source: 'vpc',
+      aws_account_id: account,
+    },
+  );
+}
+
+/**
+ * Alerta de uma linha de um grupo do CloudWatch Logs, como o serviço `cloudwatchlogs` do módulo a entrega: a linha crua
+ * vai ao analysisd com o `location` do módulo, e o alerta sai sem `data.integration`, sem conta e sem o nome do grupo.
+ * Os campos de `data` são os que o decoder da linha leu (aqui, os do sshd).
+ */
+export function cloudWatchAlert(
+  options: {
+    level?: number;
+    rule?: { id: string; description: string };
+    data?: Record<string, unknown> | null;
+    agentId?: string;
+    location?: string;
+  } = {},
+): Record<string, unknown> {
+  sequence += 1;
+  const data = options.data === undefined ? { srcip: '203.0.113.50', srcuser: 'root' } : options.data;
+  return {
+    id: `1793527300.${String(sequence).padStart(6, '0')}`,
+    timestamp: '2026-11-01T10:00:00.123+0000',
+    rule: {
+      id: options.rule?.id ?? '5712',
+      level: options.level ?? 10,
+      description: options.rule?.description ?? 'sshd: brute force trying to get access to the system.',
+      groups: ['syslog', 'sshd', 'authentication_failures'],
+      firedtimes: 1,
+      mail: false,
+      mitre: { id: ['T1110'], tactic: ['Credential Access'], technique: ['Brute Force'] },
+    },
+    agent: { id: options.agentId ?? '000', name: 'wazuh.manager' },
+    manager: { name: 'wazuh.manager' },
+    decoder: { name: 'sshd' },
+    location: options.location ?? 'Wazuh-AWS',
+    full_log:
+      'Nov  1 10:00:00 ip-10-0-0-10 sshd[123]: Failed password for root from 203.0.113.50 port 44321 ssh2',
+    ...(data === null ? {} : { data }),
+  };
 }
 
 /** Cópia com alterações em `data.aws` (para montar casos inválidos). */

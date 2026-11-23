@@ -15,6 +15,8 @@ export const FINDING_SOURCE_LABELS: Readonly<Record<FindingSource, string>> = {
   security_hub: 'Security Hub',
   inspector: 'Inspector',
   access_analyzer: 'Access Analyzer',
+  vpc_flow: 'VPC Flow Logs',
+  cloudwatch_logs: 'CloudWatch Logs',
   gcp_audit: 'GCP (auditoria)',
   cloudflare_audit: 'Cloudflare (auditoria)',
   cloudflare_waf: 'Cloudflare (eventos de segurança)',

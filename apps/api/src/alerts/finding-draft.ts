@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { type FindingSeverity, wazuhAgentRef } from '@verax/shared';
+import { type FindingSeverity, type FindingSource, wazuhAgentRef } from '@verax/shared';
 import type { WazuhAgentAlert } from './agent-alert.js';
 import type { AgentAlertOwner } from './agent-owner.js';
 import type { AlertOwner } from './alert-owner.js';
 import { awsAlertTitle } from './aws-rule-titles.js';
+import type { CloudWatchAlertOwner, WazuhCloudWatchAlert } from './cloudwatch-alert.js';
 import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
 
 /**
@@ -38,18 +39,10 @@ export interface FindingDraft {
    */
   title: string;
   /**
-   * Fonte de log: `cloudtrail`, `guardduty`, `waf`, `security_hub`, `inspector`, `access_analyzer`, `gcp_audit`,
-   * `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`.
+   * Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `vpc_flow`, `cloudwatch_logs`, `security_hub`,
+   * `inspector`, `access_analyzer`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`.
    */
-  logSource:
-    | AwsSource
-    | 'security_hub'
-    | 'inspector'
-    | 'access_analyzer'
-    | 'gcp_audit'
-    | 'cloudflare_audit'
-    | 'cloudflare_waf'
-    | 'wazuh_agent';
+  logSource: FindingSource;
   eventName: string | null;
   region: string | null;
   resource: string | null;
@@ -109,12 +102,20 @@ export function severityOfLevel(level: number): FindingSeverity {
 
 const unique = (values: readonly string[]): string[] => [...new Set(values)].sort();
 
+/** A fonte de log do achado de cada fonte do módulo aws-s3 (o `aws.source` dos flow logs é `vpc`). */
+const AWS_LOG_SOURCE: Readonly<Record<AwsSource, FindingSource>> = {
+  cloudtrail: 'cloudtrail',
+  guardduty: 'guardduty',
+  waf: 'waf',
+  vpc: 'vpc_flow',
+};
+
 /** Até onde cabe na chave única do achado (`sourceEventId`, 128). */
 const MAX_EVENT_ID = 128;
 
 /**
  * Chave do achado do Wazuh (fase 2, PR-W2): `wazuh/<conta>/<tipo>:<id>:<regra>`.
- * - O id é o do evento na própria AWS (`nativeId`), com o tipo da fonte (`cloudtrail`, `guardduty`, `waf`). O mesmo
+ * - O id é o do evento na própria AWS (`nativeId`), com o tipo da fonte (`cloudtrail`, `guardduty`, `waf`, `vpc`). O mesmo
  *   evento lido de novo (snapshot restaurado, `--reparse`, achado do GuardDuty atualizado) ganha outro `id` de alerta,
  *   mas cai na mesma chave e não duplica. Sem id nativo, vale o `id` do alerta, com o tipo `alert`.
  *   O `nativeId` já separa o que a AWS repete em eventos diferentes: cada IP da sondagem de porta do GuardDuty e
@@ -174,7 +175,7 @@ export function toFindingDraft(
     ruleId: alert.rule.id,
     ruleLevel: alert.rule.level,
     title: awsAlertTitle(alert.rule),
-    logSource: alert.source,
+    logSource: AWS_LOG_SOURCE[alert.source],
     eventName: alert.eventName ?? null,
     region: alert.region ?? null,
     resource: alert.resource ?? null,
@@ -185,6 +186,44 @@ export function toFindingDraft(
     mitreTactics: unique(alert.rule.mitre.tactics),
     mitreTechniques: unique(alert.rule.mitre.ids),
     ...(recurrence && { recurrence }),
+  };
+}
+
+/**
+ * Achado de um alerta do CloudWatch Logs, com o dono decidido por `resolveCloudWatchOwner` (um só cliente e uma só conta
+ * com grupo autorizado no nó). A linha de log não traz um id próprio: a chave leva o id do alerta
+ * (`wazuh/<conta>/alert:<id>:<regra>`, a mesma forma do alerta da AWS sem id nativo), que é o mesmo a cada releitura do
+ * documento no indexer. A severidade vem do nível da regra, e o MITRE, da regra. O recurso fica vazio: o evento não diz
+ * de que grupo veio. O IP e o usuário vêm da linha de log, só para mostrar e agrupar.
+ */
+export function toCloudWatchFindingDraft(
+  alert: WazuhCloudWatchAlert,
+  owner: Extract<CloudWatchAlertOwner, { owned: true }>,
+): FindingDraft {
+  return {
+    tenantId: owner.tenantId,
+    accountId: owner.accountId,
+    source: 'wazuh',
+    sourceEventId: wazuhFindingKey(
+      { id: alert.id, nativeId: undefined, source: 'cloudtrail', rule: alert.rule },
+      owner.accountId,
+    ),
+    rawEventId: alert.id,
+    occurredAt: alert.timestamp,
+    severity: severityOfLevel(alert.rule.level),
+    ruleId: alert.rule.id,
+    ruleLevel: alert.rule.level,
+    title: alert.rule.description,
+    logSource: 'cloudwatch_logs',
+    eventName: alert.decoder ?? null,
+    region: null,
+    resource: null,
+    actorUser: alert.user ?? null,
+    actorType: null,
+    accessKeyId: null,
+    sourceIp: alert.sourceIp ?? null,
+    mitreTactics: unique(alert.rule.mitre.tactics),
+    mitreTechniques: unique(alert.rule.mitre.ids),
   };
 }
 

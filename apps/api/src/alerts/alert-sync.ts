@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { AlertCursor, AlertSearch } from '../indexer/alert-queries.js';
 import type { AlertHit } from '../indexer/indexer.client.js';
+import { sourceDetails } from '../aws/onboarding/onboarding-view.js';
 import { isAgentAlert } from './agent-alert.js';
 import { AccountDirectory, type RegisteredAwsAccount, resolveAlertOwner } from './alert-owner.js';
 import { awsAlertTitle } from './aws-rule-titles.js';
@@ -16,7 +17,7 @@ import {
   syncWindowStart,
 } from './sync-query.js';
 import type { AlertNotices } from '../notifications/finding-notices.js';
-import { parseWazuhAlert, type WazuhAwsAlert } from './wazuh-alert.js';
+import { type AwsSource, parseWazuhAlert, type WazuhAwsAlert } from './wazuh-alert.js';
 
 /** Quem busca os alertas: o `IndexerClient` em produção, um dublê nos testes. */
 export interface AlertSearchClient {
@@ -55,6 +56,14 @@ export interface SyncReport {
 }
 
 const MAX_EVENT_ID = 128;
+
+/** A fonte do alerta (`aws.source`) de cada tipo de fonte lida de bucket no onboarding self-service. */
+const ALERT_SOURCE_OF_KIND: Readonly<Record<string, AwsSource>> = {
+  cloudtrail: 'cloudtrail',
+  vpc_flow_logs: 'vpc',
+  guardduty_export: 'guardduty',
+  waf: 'waf',
+};
 
 /** O ID que identifica um alerta inválido na fila: o do próprio alerta ou, se nem isso houver, o do indexer. */
 export function eventIdOf(id: string | null, hit: AlertHit): string {
@@ -233,7 +242,11 @@ export class AlertSync {
     if (outcome === 'excepted') report.excepted += 1;
   }
 
-  /** Contas AWS ativas com os buckets de log: o cadastro que decide o dono de cada alerta. */
+  /**
+   * Contas AWS ativas com os buckets de log: o cadastro que decide o dono de cada alerta. Os buckets da conta (o
+   * cadastro anterior) e os das fontes lidas de bucket que o cliente autorizou no onboarding self-service, enquanto a
+   * autorização vale: revogada a fonte, o bucket dela deixa de ser origem conhecida.
+   */
   private async registeredAccounts(): Promise<RegisteredAwsAccount[]> {
     const rows = await this.prisma.cloudAccount.findMany({
       where: { provider: 'aws', status: 'active' },
@@ -243,16 +256,35 @@ export class AlertSync {
         cloudtrailBucket: true,
         guarddutyBucket: true,
         wafBucket: true,
+        awsSources: {
+          where: { method: 's3', origin: 'discovered', authorizedAt: { not: null }, revokedAt: null },
+          select: { kind: true, details: true },
+        },
       },
     });
-    return rows.map((row) => ({
-      tenantId: row.tenantId,
-      accountId: row.accountId,
-      buckets: {
-        ...(row.cloudtrailBucket && { cloudtrail: row.cloudtrailBucket }),
-        ...(row.guarddutyBucket && { guardduty: row.guarddutyBucket }),
-        ...(row.wafBucket && { waf: row.wafBucket }),
-      },
-    }));
+    return rows.flatMap((row) => {
+      const identity = { tenantId: row.tenantId, accountId: row.accountId };
+      const registered: RegisteredAwsAccount[] = [
+        {
+          ...identity,
+          buckets: {
+            ...(row.cloudtrailBucket && { cloudtrail: row.cloudtrailBucket }),
+            ...(row.guarddutyBucket && { guardduty: row.guarddutyBucket }),
+            ...(row.wafBucket && { waf: row.wafBucket }),
+          },
+        },
+      ];
+      // Uma entrada por bucket de cada fonte autorizada (o diretório junta as contas e recusa o bucket em dois clientes).
+      const seen = new Set<string>();
+      for (const source of row.awsSources) {
+        const alertSource = ALERT_SOURCE_OF_KIND[source.kind];
+        const { bucket } = sourceDetails(source.details);
+        if (alertSource === undefined || bucket === undefined || seen.has(`${alertSource}:${bucket}`))
+          continue;
+        seen.add(`${alertSource}:${bucket}`);
+        registered.push({ ...identity, buckets: { [alertSource]: bucket } });
+      }
+      return registered;
+    });
   }
 }
