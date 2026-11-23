@@ -3,6 +3,7 @@ import { AuditService } from '../../common/audit/audit.service.js';
 import type { PrismaService } from '../../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../../common/prisma/tenant-scope.js';
 import { lockGrant } from '../../credentials/credential-rekey.js';
+import { Prisma } from '../../generated/prisma/client.js';
 
 /** Tarefa do worker, de hora em hora (e na partida, como toda tarefa do agendador). */
 export const CONNECT_ATTEMPTS_PURGE_TASK = 'cloudflare-oauth-purge';
@@ -39,7 +40,9 @@ export interface ConnectAttemptsPurgeReport {
  *    uma tentativa confere o prazo por conta própria: esta tarefa não é a defesa, é a faxina;
  * 2. a concessão que ficou solta (a escolha de conta abandonada, a última conta excluída) passa a `revoking`: a
  *    autorização não fica viva no Cloudflare sem ninguém usar. Revogar lá e apagar a linha é da tarefa que fala com ele;
- * 3. a terminada some 24 h depois de criada.
+ * 3. a terminada some 24 h depois de criada;
+ * 4. no nó que não conecta por OAuth (`connects` falso: sem o coletor do Cloudflare ou sem a sincronização), a
+ *    configuração guardada sai: a API volta a aceitar o token colado e não começa conexão que ninguém leria.
  *
  * Os passos 1 e 3 são uma escrita só, com a condição no próprio comando: uma tentativa concluída ao mesmo tempo não é
  * tocada. O passo 2 confere tudo de novo sob o lock da concessão. Quem liga uma conta a uma concessão pega o mesmo lock
@@ -49,9 +52,17 @@ export class ConnectAttemptsPurge {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService = new AuditService(),
+    private readonly connects = true,
   ) {}
 
   async runOnce(now: Date = new Date(), signal?: AbortSignal): Promise<ConnectAttemptsPurgeReport> {
+    signal?.throwIfAborted();
+    if (!this.connects) {
+      await this.prisma.controlPlaneSync.updateMany({
+        where: { cloudflareOauth: { not: Prisma.DbNull } },
+        data: { cloudflareOauth: Prisma.DbNull },
+      });
+    }
     signal?.throwIfAborted();
     const expired = await this.prisma.cloudflareConnectAttempt.updateMany({
       where: { status: { in: OPEN }, expiresAt: { lte: now } },

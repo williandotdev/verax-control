@@ -86,6 +86,11 @@ export interface CloudflareConnectOptions {
   client: CloudflareClient;
   logger: ConnectLogger;
   audit?: AuditService;
+  /**
+   * Trata as tentativas (troca, descoberta e ligação). Falso no nó que não anuncia o OAuth (o coletor do Cloudflare
+   * desligado, por exemplo): uma conta ligada ali não seria lida por ninguém. As revogações seguem sempre.
+   */
+  connect?: boolean;
   /** Nome da concessão do banco (um worker por vez); os testes usam um por arquivo. */
   name?: string;
   leaseMs?: number;
@@ -241,7 +246,7 @@ export class CloudflareConnectJob {
     const report = emptyReport();
     if (!(await this.lease.acquire(this.now()))) return { ...report, status: 'locked' };
     try {
-      await this.attempts(report, signal);
+      if (this.options.connect !== false) await this.attempts(report, signal);
       await this.revocations(report, signal);
       return report;
     } finally {

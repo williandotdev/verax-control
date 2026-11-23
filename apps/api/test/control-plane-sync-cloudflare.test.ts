@@ -10,6 +10,7 @@ import {
 } from '@verax/shared';
 import { sealCloudflareOauthTokens } from '@verax/vault-envelope';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
+import { ConnectAttemptsPurge } from '../src/cloudflare/oauth/connect-attempts.js';
 import { ControlPlaneNodeKey } from '../src/common/config/control-plane-sync.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import type { SyncLogger } from '../src/control-plane-sync/apply-source.js';
@@ -248,6 +249,16 @@ describe('sincronização com o plano de controle: conexão do Cloudflare por OA
     cp.cloudflareOauth = null;
     later(6 * MINUTE);
     await run(sync);
+    expect(await stored()).toBeNull();
+  });
+
+  it('no nó que deixou de conectar (sem o coletor do Cloudflare), a faxina apaga a configuração guardada', async () => {
+    cp.cloudflareOauth = CONFIG;
+    await run(syncFor());
+    expect(await stored()).toEqual(CONFIG);
+    await new ConnectAttemptsPurge(prisma, undefined, true).runOnce(new Date());
+    expect(await stored()).toEqual(CONFIG);
+    await new ConnectAttemptsPurge(prisma, undefined, false).runOnce(new Date());
     expect(await stored()).toBeNull();
   });
 

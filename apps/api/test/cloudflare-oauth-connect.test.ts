@@ -661,6 +661,14 @@ describe('conectar o Cloudflare por OAuth (API e worker, banco real, Cloudflare 
   });
 
   describe('troca, descoberta e ligação no worker', () => {
+    it('sem o coletor do Cloudflare neste nó, nada é trocado nem ligado', async () => {
+      const accountId = fakeCloudflare.accountId();
+      const { attemptId } = await authorized(adminA, { accountId, auditAccounts: [accountId] });
+      expect(await jobFor({ connect: false }).runOnce()).toMatchObject({ exchanged: 0, linked: 0 });
+      expect(oauth.requests).toHaveLength(0);
+      expect((await row(attemptId)).status).toBe('code_received');
+    });
+
     it('uma conta: troca com o PKCE, prova, liga e nada sai em claro', async () => {
       const accountId = fakeCloudflare.accountId();
       const { attemptId, callback } = await authorized(adminA, {

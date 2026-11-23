@@ -29,7 +29,10 @@ import {
 } from './cell/cell-usage-reports.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
 import { CloudflareClient } from './cloudflare/cloudflare.client.js';
-import { controlPlaneSyncTask } from './control-plane-sync/control-plane-sync-task.js';
+import {
+  announcesCloudflareOauth,
+  controlPlaneSyncTask,
+} from './control-plane-sync/control-plane-sync-task.js';
 import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
@@ -473,7 +476,8 @@ async function main(): Promise<void> {
       run: (signal) => retention.maybeRun(new Date(), signal),
     });
     // Faxina das tentativas de conectar o Cloudflare por OAuth (só o banco do nó).
-    const connectAttempts = new ConnectAttemptsPurge(prisma);
+    const connectsCloudflare = config.controlPlaneSync !== null && announcesCloudflareOauth(config);
+    const connectAttempts = new ConnectAttemptsPurge(prisma, undefined, connectsCloudflare);
     tasks.push({
       name: CONNECT_ATTEMPTS_PURGE_TASK,
       intervalMs: CONNECT_ATTEMPTS_PURGE_INTERVAL_MS,
@@ -491,12 +495,14 @@ async function main(): Promise<void> {
       });
     }
     // Conexão do Cloudflare por OAuth (CF-4), só no nó gerenciado: a troca do código, a descoberta, a ligação das contas e a
-    // revogação. Roda mesmo com o OAuth desligado: as autorizações soltas ainda são revogadas.
+    // revogação. Roda mesmo com o OAuth desligado: as autorizações soltas ainda são revogadas. Sem o coletor do Cloudflare
+    // (ou sem a sincronização), nenhuma conta nova é ligada.
     if (keyring !== null && config.NODE_MODE === 'dedicated' && config.NODE_PLATFORM === 'gcp') {
       const connect = new CloudflareConnectJob(prisma, keyring, plans, {
         oauth: new PublicClientTokens(),
         // As provas são uma leitura pequena por conta: sem novas tentativas dentro da chamada, e com prazo curto.
         client: new CloudflareClient({ timeoutMs: 10_000, retryDelaysMs: [] }),
+        connect: connectsCloudflare,
         logger,
       });
       tasks.push({
