@@ -21,7 +21,13 @@ import {
   sourceFixture,
 } from '@/test/aws-onboarding-fixtures';
 import { type OnboardingApi, onboardingApi, refusal, renderAwsSection } from '@/test/aws-onboarding-harness';
-import { AWS_ONBOARDING_ERROR_TEXTS, AWS_SOURCE_STATE_CODE_TEXTS } from './aws-onboarding-labels';
+import {
+  AWS_ONBOARDING_ERROR_TEXTS,
+  AWS_SOURCE_COLLECTION_NOTES,
+  AWS_SOURCE_NOTE_TEXTS,
+  AWS_SOURCE_STATE_CODE_TEXTS,
+  AWS_WAZUH_SOURCE_STATE_CODE_TEXTS,
+} from './aws-onboarding-labels';
 
 const server = setupServer();
 beforeAll(() => server.listen());
@@ -344,6 +350,68 @@ describe('autorizar fontes', () => {
     expect(confirmation).toHaveTextContent('A coleta começa hoje: o Verax não busca o histórico anterior.');
   });
 
+  it('flow log: a linha e a confirmação dizem que os do mesmo bucket são lidos juntos, e só o tráfego recusado', async () => {
+    const user = userEvent.setup();
+    const flow = sourceFixture('vpc_flow_logs', {
+      name: 'fl-0a1b (vpc-0a1b)',
+      notes: ['high_volume', 'flow_logs_read_together'],
+      details: { bucket: 'exemplo-fluxo', prefix: 'AWSLogs/111111111111/vpcflowlogs/sa-east-1/' },
+    });
+    const { fake, view } = open([flow, sourceFixture('cloudtrail', { name: 'management-events' })]);
+    fake.on('authorize', () => view([authorized(flow)]));
+    const region = await sourcesRegion();
+    // Na lista, antes de marcar: a nota e de onde vêm as detecções.
+    const row = within(group(region, /^Disponíveis para coletar/))
+      .getByRole('checkbox', { name: /VPC Flow Logs/ })
+      .closest('li');
+    expect(row).toHaveTextContent(AWS_SOURCE_NOTE_TEXTS.flow_logs_read_together);
+    expect(row).toHaveTextContent('Só o tráfego recusado é lido.');
+    expect(row).toHaveTextContent('varredura de rede');
+    expect(row).toHaveTextContent('insistência em porta de administração remota');
+    // A trilha não leva nada disso.
+    const trail = within(group(region, /^Disponíveis para coletar/))
+      .getByRole('checkbox', { name: /CloudTrail/ })
+      .closest('li');
+    expect(trail).not.toHaveTextContent('Flow Logs desta conta');
+    expect(trail).not.toHaveTextContent('tráfego recusado');
+
+    await user.click(within(region).getByRole('checkbox', { name: /VPC Flow Logs/ }));
+    await user.click(within(region).getByRole('button', { name: 'Autorizar selecionadas (1)' }));
+    const confirmation = within(region).getByRole('group', { name: 'Confirmar a autorização de 1 fonte' });
+    expect(confirmation).toHaveTextContent('A autorização vale para todos os Flow Logs do mesmo bucket.');
+    expect(confirmation).toHaveTextContent(
+      'Ao autorizar este Flow Log, o Verax lê todos os Flow Logs desta conta e região que gravam no mesmo bucket.',
+    );
+    expect(confirmation).toHaveTextContent(AWS_SOURCE_COLLECTION_NOTES.vpc_flow_logs ?? '');
+    // O aviso não trava a autorização: é só para o cliente saber antes de confirmar.
+    await user.click(within(confirmation).getByRole('button', { name: 'Confirmar autorização' }));
+    await waitFor(() =>
+      expect(fake.calls).toEqual([{ route: 'authorize', sourceId: null, body: { sourceIds: [flow.id] } }]),
+    );
+  });
+
+  it('flow log sem a nota (uma descoberta de antes dela) e outras fontes: a confirmação não inventa o aviso do bucket', async () => {
+    const user = userEvent.setup();
+    open([
+      sourceFixture('vpc_flow_logs', { name: 'fl-0a1b', notes: ['high_volume'] }),
+      sourceFixture('cloudtrail', { name: 'management-events' }),
+    ]);
+    const region = await sourcesRegion();
+    await user.click(within(region).getByRole('checkbox', { name: /VPC Flow Logs/ }));
+    await user.click(within(region).getByRole('button', { name: 'Autorizar selecionadas (1)' }));
+    const confirmation = within(region).getByRole('group', { name: /Confirmar a autorização/ });
+    expect(confirmation).toHaveTextContent('O que o Verax lê dos Flow Logs.');
+    expect(confirmation).toHaveTextContent('Só o tráfego recusado é lido.');
+    expect(confirmation).not.toHaveTextContent('todos os Flow Logs do mesmo bucket');
+    // Só a trilha escolhida: nada sobre flow logs.
+    await user.click(within(region).getByRole('checkbox', { name: /VPC Flow Logs/ }));
+    await user.click(within(region).getByRole('checkbox', { name: /CloudTrail/ }));
+    await user.click(within(region).getByRole('button', { name: 'Autorizar selecionadas (1)' }));
+    expect(within(region).getByRole('group', { name: /Confirmar a autorização/ })).not.toHaveTextContent(
+      'Flow Logs',
+    );
+  });
+
   it('a API e o export do GuardDuty juntos: o aviso de que basta a API', async () => {
     const user = userEvent.setup();
     open([
@@ -513,6 +581,27 @@ describe('grupos do CloudWatch Logs', () => {
     const monitor = await screen.findByRole('region', { name: 'Fontes autorizadas' });
     expect(monitor).toHaveTextContent('/aplicacao/auditoria');
     expect(monitor).toHaveTextContent('Sensível');
+  });
+
+  it('antes e na confirmação: os alertas dos grupos demoram ao menos 10 min e só são atribuídos com uma conta só', async () => {
+    const user = userEvent.setup();
+    open([
+      sourceFixture('cloudwatch_log_group', {
+        name: '/aplicacao/auditoria',
+        details: { logGroup: '/aplicacao/auditoria', tagged: true, storedBytes: 1_000_000 },
+      }),
+    ]);
+    const region = await sourcesRegion();
+    const groups = group(region, /^Grupos do CloudWatch Logs/);
+    expect(groups).toHaveTextContent(AWS_SOURCE_COLLECTION_NOTES.cloudwatch_log_group ?? '');
+    await user.click(within(groups).getByRole('checkbox', { name: '/aplicacao/auditoria' }));
+    await user.click(within(region).getByRole('button', { name: 'Autorizar selecionadas (1)' }));
+    const confirmation = within(region).getByRole('group', { name: /Confirmar a autorização/ });
+    expect(confirmation).toHaveTextContent('Os alertas dos grupos de logs demoram um pouco mais.');
+    expect(confirmation).toHaveTextContent('pelo menos 10 minutos de atraso');
+    expect(confirmation).toHaveTextContent('fila de alertas sem dono, que só a Verax vê');
+    // O aviso do atraso não é o da confirmação explícita, que segue valendo.
+    expect(within(confirmation).getByRole('button', { name: 'Confirmar autorização' })).toBeDisabled();
   });
 
   it('mudar a escolha depois de confirmar desmarca a confirmação: ela vale para a lista que está na tela', async () => {
@@ -691,6 +780,72 @@ describe('fontes autorizadas: a saúde de cada uma, revogar e tentar de novo', (
       'Tentar de novo: VPC Flow Logs fl-0a1b',
     ]);
     expect(within(monitor).getAllByRole('button', { name: /^Revogar: / })).toHaveLength(10);
+  });
+
+  it('as fontes de bucket e os grupos de logs: o motivo que a coleta grava em cada estado, e o que cada tipo lê', async () => {
+    open([
+      authorizedSourceFixture('waf', 'configuring', { name: 'checkout-acl', stateCode: 'awaiting_apply' }),
+      authorizedSourceFixture('cloudtrail', 'waiting_events', { name: 'trilha-de-dados' }),
+      authorizedSourceFixture('vpc_flow_logs', 'collecting', {
+        name: 'fl-coletando',
+        health: {
+          lastSyncAt: minutesAgo(1),
+          lastEventAt: minutesAgo(9),
+          lastIngestedAt: minutesAgo(2),
+          lagSeconds: 7 * 60,
+          eventsLast24h: 52_300,
+          bytesLast24h: 700_000_000,
+        },
+      }),
+      authorizedSourceFixture('vpc_flow_logs', 'stalled', { name: 'fl-parado', stateCode: 'no_progress' }),
+      authorizedSourceFixture('vpc_flow_logs', 'ingestion_error', {
+        name: 'fl-mexico',
+        region: 'mx-central-1',
+        stateCode: 'region_unsupported',
+      }),
+      authorizedSourceFixture('cloudwatch_log_group', 'ingestion_error', {
+        name: '/aplicacao/auditoria',
+        stateCode: 'log_group_name_conflict',
+      }),
+      legacySourceFixture('exemplo-trilha-do-cadastro'),
+    ]);
+    const monitor = await monitorRegion();
+    expect(cells(rowOf(monitor, /checkout-acl/))[1]).toBe(
+      `Configurando o coletor${AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.awaiting_apply}`,
+    );
+    expect(cells(rowOf(monitor, /trilha-de-dados/))[1]).toBe('Configurada, ainda sem eventos');
+    // Coletando, com o atraso que o coletor mediu na última leitura.
+    expect(cells(rowOf(monitor, /fl-coletando/)).slice(1, 6)).toEqual([
+      'Coletando',
+      'há 9 minutos',
+      'há 1 minuto',
+      '7 min',
+      '52.300 eventos · 0,7 GB',
+    ]);
+    expect(cells(rowOf(monitor, /fl-parado/))[1]).toBe(
+      `Parada${AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.no_progress}`,
+    );
+    expect(cells(rowOf(monitor, /fl-mexico/))[1]).toBe(
+      `Falha de ingestão${AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.region_unsupported}`,
+    );
+    expect(cells(rowOf(monitor, /\/aplicacao\/auditoria/))[1]).toBe(
+      `Falha de ingestão${AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.log_group_name_conflict}`,
+    );
+    // Na linha de cada flow log e de cada grupo, o que o Verax lê e o que esperar; na trilha e no bucket do cadastro, não.
+    for (const name of [/fl-coletando/, /fl-parado/, /fl-mexico/]) {
+      expect(within(monitor).getByRole('rowheader', { name })).toHaveTextContent(
+        AWS_SOURCE_COLLECTION_NOTES.vpc_flow_logs ?? '',
+      );
+    }
+    expect(within(monitor).getByRole('rowheader', { name: /\/aplicacao\/auditoria/ })).toHaveTextContent(
+      AWS_SOURCE_COLLECTION_NOTES.cloudwatch_log_group ?? '',
+    );
+    expect(within(monitor).getByRole('rowheader', { name: /trilha-de-dados/ })).not.toHaveTextContent(
+      'tráfego recusado',
+    );
+    expect(within(monitor).getByRole('rowheader', { name: /Cadastrada manualmente/ })).not.toHaveTextContent(
+      'tráfego recusado',
+    );
   });
 
   it('revogar pede a confirmação; confirmada, a fonte volta para as disponíveis com a data da retirada', async () => {

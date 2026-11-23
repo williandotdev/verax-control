@@ -19,6 +19,8 @@ import {
   AWS_SOURCE_PERMISSION_CODES,
   AWS_SOURCE_STATE_CODES,
   AWS_SOURCE_STATES,
+  AWS_WAZUH_SOURCE_EXCLUSION_CODES,
+  AWS_WAZUH_SOURCE_STATE_CODES,
   type AwsOnboardingCheck,
   awsInfrastructureSummarySchema,
   CONSOLE_MANAGED_CODE,
@@ -48,12 +50,14 @@ import {
   AWS_PREFILL_PROBLEM_TEXTS,
   AWS_REGION_OPTIONS,
   AWS_SOURCE_AVAILABILITY_TEXTS,
+  AWS_SOURCE_COLLECTION_NOTES,
   AWS_SOURCE_KIND_TEXTS,
   AWS_SOURCE_LOGGING_STATE_LABELS,
   AWS_SOURCE_NOTE_TEXTS,
   AWS_SOURCE_PERMISSION_CODE_TEXTS,
   AWS_SOURCE_STATE_CODE_TEXTS,
   AWS_SOURCE_STATE_TEXTS,
+  AWS_WAZUH_SOURCE_STATE_CODE_TEXTS,
   awsCheckLabel,
   awsCheckText,
   awsDiscoveryErrorHint,
@@ -274,6 +278,10 @@ describe('textos do onboarding da AWS: todo código do contrato tem o texto dele
       if (isAwsCostNote(note)) expect(AWS_SOURCE_NOTE_TEXTS[note]).toMatch(/custo na AWS/);
     }
     expect(AWS_SOURCE_NOTE_TEXTS.high_volume).toMatch(/volume mensal do seu plano/);
+    // Autorizar um flow log lê os outros que gravam no mesmo bucket: a nota diz isso com todas as letras.
+    expect(AWS_SOURCE_NOTE_TEXTS.flow_logs_read_together).toBe(
+      'Ao autorizar este Flow Log, o Verax lê todos os Flow Logs desta conta e região que gravam no mesmo bucket.',
+    );
     expect(AWS_SOURCE_NOTE_TEXTS.covered_by_api).toMatch(/^Coberto pela API/);
     expect(awsPermissionDetailText(null)).toMatch(/ainda não foi conferida/);
     expect(awsPermissionDetailText('tag_missing')).toMatch(/etiqueta verax-control = leitura/);
@@ -281,6 +289,93 @@ describe('textos do onboarding da AWS: todo código do contrato tem o texto dele
     // A linha de um serviço desligado tem o tipo como nome: a tela mostra só o rótulo do tipo.
     expect(awsSourceName({ kind: 'inspector', name: 'inspector' })).toBe('');
     expect(awsSourceName({ kind: 'cloudtrail', name: 'management-events' })).toBe('management-events');
+  });
+
+  it('coleta das fontes de bucket e dos grupos de logs: todo motivo tem o texto dele, com o que fazer', () => {
+    expectTexts(AWS_WAZUH_SOURCE_STATE_CODES, AWS_WAZUH_SOURCE_STATE_CODE_TEXTS);
+    for (const code of AWS_WAZUH_SOURCE_STATE_CODES) {
+      const text = AWS_WAZUH_SOURCE_STATE_CODE_TEXTS[code];
+      // O que aconteceu e o que fazer (ou que não há o que fazer, ou que é com a Verax); nunca o código cru.
+      expect(text, code).toMatch(/O que fazer: |fale com a Verax|não é preciso fazer nada/);
+      expect(text, code).toMatch(/\.$/);
+      expect(text, code).not.toContain(code);
+    }
+    // Os motivos de a fonte ter ficado de fora da coleta dizem sempre o que fazer.
+    for (const code of AWS_WAZUH_SOURCE_EXCLUSION_CODES) {
+      expect(AWS_WAZUH_SOURCE_STATE_CODE_TEXTS[code], code).toMatch(/O que fazer: /);
+    }
+    expect(AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.log_group_name_conflict).toMatch(
+      /Outro cadastro deste servidor já lê um grupo com este nome nesta região, e só o primeiro autorizado é lido\./,
+    );
+    expect(AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.source_limit).toMatch(/200 fontes do S3 e 50 grupos/);
+    // Os dois avisos do servidor não pedem nada ao cliente além de falar com a Verax.
+    for (const code of ['aws_token_stale', 'wazuh_apply_failed'] as const) {
+      expect(AWS_WAZUH_SOURCE_STATE_CODE_TEXTS[code]).toMatch(
+        /do servidor, não da sua conta: fale com a Verax\.$/,
+      );
+    }
+
+    // Na linha da fonte: configurando, parada e com falha, cada uma com o motivo; o que a tela não conhece segue
+    // como "Tipo do erro".
+    expect(
+      awsSourceHealthText(authorizedSourceFixture('waf', 'configuring', { stateCode: 'awaiting_apply' })),
+    ).toEqual({
+      label: 'Configurando o coletor',
+      tone: 'progress',
+      detail: AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.awaiting_apply,
+    });
+    expect(awsSourceHealthText(authorizedSourceFixture('waf', 'configuring')).detail).toBeNull();
+    expect(awsSourceHealthText(authorizedSourceFixture('waf', 'waiting_events')).detail).toBeNull();
+    expect(
+      awsSourceHealthText(authorizedSourceFixture('vpc_flow_logs', 'stalled', { stateCode: 'no_progress' })),
+    ).toEqual({ label: 'Parada', tone: 'high', detail: AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.no_progress });
+    for (const code of [
+      ...AWS_WAZUH_SOURCE_EXCLUSION_CODES,
+      'aws_token_stale',
+      'wazuh_apply_failed',
+    ] as const) {
+      const health = awsSourceHealthText(
+        authorizedSourceFixture('cloudtrail', 'ingestion_error', { stateCode: code }),
+      );
+      expect(health, code).toEqual({
+        label: 'Falha de ingestão',
+        tone: 'critical',
+        detail: AWS_WAZUH_SOURCE_STATE_CODE_TEXTS[code],
+      });
+      expect(awsIngestionErrorText(code), code).not.toMatch(/Tipo do erro/);
+    }
+    expect(
+      awsSourceHealthText(
+        authorizedSourceFixture('cloudtrail', 'ingestion_error', { stateCode: 'motivo_novo' }),
+      ).detail,
+    ).toMatch(/Tipo do erro: motivo_novo\.$/);
+    // A conferência dos eventos repete o motivo da fonte e manda olhar a linha dela.
+    expect(awsCheckText(check('events', 'failed', 'region_unsupported')).text).toBe(
+      `${AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.region_unsupported} Veja qual fonte em "Fontes autorizadas".`,
+    );
+  });
+
+  it('flow logs e grupos de logs: o que é lido e o que esperar dos alertas, sem prometer mais', () => {
+    // Só o tráfego recusado é lido, e as detecções são duas regras.
+    expect(AWS_SOURCE_KIND_TEXTS.vpc_flow_logs.description).toBe(
+      'O tráfego de rede que as VPCs recusaram. O Verax não lê o tráfego aceito.',
+    );
+    expect(AWS_SOURCE_COLLECTION_NOTES.vpc_flow_logs).toMatch(/^Só o tráfego recusado é lido\./);
+    expect(AWS_SOURCE_COLLECTION_NOTES.vpc_flow_logs).toMatch(/duas regras: varredura de rede/);
+    expect(AWS_SOURCE_COLLECTION_NOTES.vpc_flow_logs).toMatch(/insistência em porta de administração remota/);
+    // Os alertas dos grupos de logs: o atraso e a atribuição só com uma conta, senão a fila da Verax.
+    expect(AWS_SOURCE_COLLECTION_NOTES.cloudwatch_log_group).toMatch(/pelo menos 10 minutos de atraso/);
+    expect(AWS_SOURCE_COLLECTION_NOTES.cloudwatch_log_group).toMatch(
+      /só são atribuídos a você quando uma única conta neste servidor tem grupos autorizados/,
+    );
+    expect(AWS_SOURCE_COLLECTION_NOTES.cloudwatch_log_group).toMatch(
+      /fila de alertas sem dono, que só a Verax vê/,
+    );
+    // Só esses dois tipos têm a observação.
+    expect(Object.keys(AWS_SOURCE_COLLECTION_NOTES).sort()).toEqual([
+      'cloudwatch_log_group',
+      'vpc_flow_logs',
+    ]);
   });
 
   it('saúde da fonte autorizada: textos honestos para cada estado', () => {

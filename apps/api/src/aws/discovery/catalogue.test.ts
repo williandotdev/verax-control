@@ -238,14 +238,15 @@ describe('VPC Flow Logs', () => {
     expect(isDefaultFlowLogFormat('${srcaddr} ${dstaddr}')).toBe(false);
   });
 
-  it('no S3, em texto e no formato padrão: disponível, com o aviso de volume', () => {
+  it('no S3, em texto e no formato padrão: disponível, com o aviso de volume e o de que a pasta é lida inteira', () => {
     const source = flowLogSource(flow(), 'sa-east-1', context);
     expect(source).toMatchObject({
       kind: 'vpc_flow_logs',
       region: 'sa-east-1',
       resourceId: 'fl-0aaa0000000000001',
       availability: 'available',
-      notes: ['high_volume'],
+      // Autorizar este flow log lê todos os da conta e da região que gravam no mesmo bucket.
+      notes: ['high_volume', 'flow_logs_read_together'],
       details: {
         flowLogId: 'fl-0aaa0000000000001',
         attachedTo: 'vpc-0aaa0000000000001',
@@ -304,7 +305,7 @@ describe('VPC Flow Logs', () => {
       'sa-east-1',
       context,
     );
-    expect(source?.notes).toEqual(['high_volume', 'additional_bucket_required']);
+    expect(source?.notes).toEqual(['high_volume', 'flow_logs_read_together', 'additional_bucket_required']);
     expect(source?.details.prefix).toBe(`vpc/AWSLogs/${ACCOUNT}/vpcflowlogs/sa-east-1/`);
   });
 });

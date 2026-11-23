@@ -1,0 +1,13 @@
+# Exporta até onde o Wazuh do nó já leu cada fonte da AWS (perfil standard; onboarding self-service;
+# infra/node/bin/wazuh-progress.sh): o sinal `progress` que o worker lê para mostrar o estado de cada fonte no painel.
+# Só leitura dos marcadores do módulo, dentro do contêiner do manager. Pelo verax-wazuh-progress.timer, a cada 5 min.
+# Sem Requires: com o Wazuh parado, o timer não o sobe, e o script sai sem fazer nada (o sinal anterior fica, com a
+# hora dele).
+[Unit]
+Description=Verax Control - marcadores da leitura da AWS pelo Wazuh
+After=verax-wazuh.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/verax/bin/wazuh-progress.sh
+TimeoutStartSec=120

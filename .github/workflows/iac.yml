@@ -224,6 +224,13 @@ jobs:
         # do CLI nunca vira "nenhuma conta"; o sinal `applied` diz ok ou error com a geração. Roda sem root e sem tocar
         # na máquina.
         run: bash infra/node/tests/wazuh-apply-test.sh
+      - name: Marcadores da leitura da AWS pelo Wazuh (wazuh-progress.sh com o Docker simulado e o exportador de verdade)
+        # Cenários de tests/wazuh-progress-test.sh: sem o Wazuh no ar, nada; com os bancos SQLite do módulo aws-s3, o
+        # sinal `progress` sai de uma vez (0440, grupo do worker) com o último objeto lido de cada fonte e o último
+        # evento de cada grupo, e os bancos ficam byte a byte como estavam; um banco travado ou ausente não é erro; a
+        # falha do exportador e uma saída grande demais ou fora do formato deixam o sinal anterior; o exportador chega
+        # ao contêiner pela entrada padrão, sem montar nem copiar nada. Roda sem root e sem tocar na máquina.
+        run: bash infra/node/tests/wazuh-progress-test.sh
       - name: VM própria do cliente (NODE_PLATFORM=vm; o instalador e o pacote com o release, o registro e o Docker simulados)
         # Cenários de tests/vm-install-test.sh (o verax-install.sh montado pelo node-release.sh, com o release e o plano
         # de controle falsos: o claim e o report, o node.conf byte a byte, o cofre local, o host e o porte, o pacote
@@ -627,6 +634,16 @@ jobs:
         if: steps.changes.outputs.run == 'true'
         working-directory: infra/wazuh
         run: bash scripts/test-rules.sh
+      - name: Fontes autorizadas da AWS no manager (a configuração gerada aceita pelo módulo e os marcadores lidos de volta, sem rede)
+        # Onboarding self-service da AWS, num manager avulso: o `wazuh-modulesd -t` aceita o ossec.conf que o gerador
+        # escreve para a lista de exemplo (trilha de conta e de organização, flow logs, export do GuardDuty, WAF por Web
+        # ACL, grupos do CloudWatch Logs) e recusa uma etiqueta desconhecida; cada entrada passa pelos validadores do
+        # próprio módulo; as regiões do gerador são as do módulo; e os marcadores que o código do módulo grava são lidos
+        # de volta pelo export-aws-progress.py. Uma atualização do Wazuh que mude as opções do módulo ou as tabelas dos
+        # marcadores derruba este passo.
+        if: steps.changes.outputs.run == 'true'
+        working-directory: infra/wazuh
+        run: bash scripts/test-aws-sources.sh
       - name: Profiles da AWS sem chave no manager (boto3 da imagem, sem rede, com a troca no STS interceptada)
         # O gerador escreve um profile por conta (papel derivado, token do Google do host, STS da região); o boto3 da
         # imagem usa o provedor de web identity (method), mesmo com as variáveis de outro papel no ambiente; a troca vai ao

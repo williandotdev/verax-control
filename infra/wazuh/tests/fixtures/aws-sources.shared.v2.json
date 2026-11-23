@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "accounts": [
+    {
+      "accountId": "111122223333",
+      "region": "sa-east-1",
+      "s3": [
+        {
+          "type": "cloudtrail",
+          "bucket": "trilha-da-organizacao",
+          "onlyLogsAfter": "2026-DEC-01",
+          "legacy": true
+        },
+        {
+          "type": "guardduty",
+          "bucket": "guardduty-da-organizacao",
+          "onlyLogsAfter": "2026-DEC-01",
+          "legacy": true
+        },
+        {
+          "type": "waf",
+          "bucket": "aws-waf-logs-da-organizacao",
+          "onlyLogsAfter": "2026-DEC-01",
+          "legacy": true
+        }
+      ],
+      "logGroups": []
+    },
+    {
+      "accountId": "444455556666",
+      "region": "us-east-1",
+      "s3": [
+        {
+          "type": "cloudtrail",
+          "bucket": "trilha-da-organizacao",
+          "onlyLogsAfter": "2026-OCT-15",
+          "legacy": true
+        },
+        {
+          "type": "guardduty",
+          "bucket": "guardduty-da-organizacao",
+          "onlyLogsAfter": "2026-OCT-15",
+          "legacy": true
+        },
+        {
+          "type": "waf",
+          "bucket": "aws-waf-logs-da-organizacao",
+          "onlyLogsAfter": "2026-OCT-15",
+          "legacy": true
+        }
+      ],
+      "logGroups": []
+    },
+    {
+      "accountId": "777788889999",
+      "region": "eu-west-1",
+      "s3": [
+        {
+          "type": "cloudtrail",
+          "bucket": "guardduty-777788889999",
+          "onlyLogsAfter": "2026-NOV-10",
+          "legacy": true
+        },
+        {
+          "type": "guardduty",
+          "bucket": "guardduty-777788889999",
+          "onlyLogsAfter": "2026-NOV-10",
+          "legacy": true
+        }
+      ],
+      "logGroups": []
+    }
+  ]
+}

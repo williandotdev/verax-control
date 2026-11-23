@@ -5,9 +5,10 @@
  * evento (o que veio do evento fica nos campos do achado).
  *
  * Cobre toda regra local com nível acima de 0 (`infra/wazuh/config/manager/rules`): as críticas da AWS (100300 a
- * 100324), as do papel de leitura do nó (100202 a 100205, PR-V4') e as correlações separadas por conta (80252, 80255
- * e 80443), mais o login com falha do Wazuh (80254), que o catálogo da AWS também lista. As demais regras do Wazuh
- * (o GuardDuty, cujo título vem da própria AWS, e o CloudTrail genérico) seguem com a descrição.
+ * 100324), as do papel de leitura do nó (100202 a 100205, PR-V4'), as correlações separadas por conta (80252, 80255
+ * e 80443) e as dos flow logs da VPC (100400 e 100401), mais o login com falha do Wazuh (80254), que o catálogo da
+ * AWS também lista. As demais regras do Wazuh (o GuardDuty, cujo título vem da própria AWS, e o CloudTrail genérico)
+ * seguem com a descrição.
  */
 export const AWS_RULE_TITLES: ReadonlyMap<string, string> = new Map([
   // Regras do Wazuh que o catálogo da AWS usa, e as correlações dele separadas por conta (verax_aws_rules.xml).
@@ -46,6 +47,9 @@ export const AWS_RULE_TITLES: ReadonlyMap<string, string> = new Map([
   ['100322', 'WAF desligado, desassociado ou sem log'],
   ['100323', 'Regras do WAF alteradas'],
   ['100324', 'Conta root usada para alterar a conta'],
+  // Correlações dos flow logs da VPC (verax_aws_flow_rules.xml; onboarding self-service da AWS).
+  ['100400', 'Possível varredura de rede vinda do mesmo endereço'],
+  ['100401', 'Insistência em porta de administração remota vinda do mesmo endereço'],
 ]);
 
 /** O título do achado: o fixo da regra, quando ela tem um; senão, a descrição que o Wazuh gravou no alerta. */

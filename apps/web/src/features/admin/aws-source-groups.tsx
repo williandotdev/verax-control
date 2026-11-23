@@ -11,7 +11,9 @@ import type { SourceRetry } from '@/features/admin/aws-hooks';
 import { useAwsAuthorizeSources } from '@/features/admin/aws-onboarding-api';
 import {
   AWS_SOURCE_AVAILABILITY_TEXTS,
+  AWS_SOURCE_COLLECTION_NOTES,
   AWS_SOURCE_KIND_TEXTS,
+  AWS_SOURCE_NOTE_TEXTS,
   awsOnboardingErrorText,
   awsSourceName,
   isAwsCostNote,
@@ -21,6 +23,7 @@ import {
   RetryButton,
   RetryError,
   SensitiveTag,
+  SourceCollectionNote,
   SourceLocation,
   SourceNotes,
   SourceRegion,
@@ -80,8 +83,10 @@ function sourceTags(source: AwsSource, sources: readonly AwsSource[]): ReactNode
 
 /**
  * A confirmação antes de autorizar: o que entra, que a coleta começa hoje (sem histórico), o aviso de volume para as
- * fontes de volume alto e, para os grupos do CloudWatch Logs, o aviso de dado pessoal com a confirmação explícita. Só
- * com ela marcada o pedido leva os grupos em `sensitiveSourceIds`, como a API exige.
+ * fontes de volume alto, o que a autorização de um flow log de fato lê (todos os que gravam no mesmo bucket, e só o
+ * tráfego recusado) e, para os grupos do CloudWatch Logs, o aviso de dado pessoal com a confirmação explícita e o que
+ * esperar dos alertas deles. Só com a confirmação marcada o pedido leva os grupos em `sensitiveSourceIds`, como a API
+ * exige.
  */
 function AuthorizeConfirmation({
   selected,
@@ -105,6 +110,9 @@ function AuthorizeConfirmation({
   const titleId = useId();
   const sensitive = selected.filter((source) => source.sensitive);
   const highVolume = selected.filter(isHighVolumeSource);
+  const flowLogs = selected.filter((source) => source.kind === 'vpc_flow_logs');
+  const readTogether = flowLogs.some((source) => source.notes.includes('flow_logs_read_together'));
+  const logGroups = selected.filter((source) => source.kind === 'cloudwatch_log_group');
   const duplicated =
     selected.some((source) => source.kind === 'guardduty') &&
     selected.some((source) => isCoveredByGuardDutyApi(source, sources));
@@ -136,6 +144,19 @@ function AuthorizeConfirmation({
           </p>
         </Notice>
       )}
+      {flowLogs.length > 0 && (
+        <Notice
+          tone="medium"
+          title={
+            readTogether
+              ? 'A autorização vale para todos os Flow Logs do mesmo bucket.'
+              : 'O que o Verax lê dos Flow Logs.'
+          }
+        >
+          {readTogether && <p>{AWS_SOURCE_NOTE_TEXTS.flow_logs_read_together}</p>}
+          <p>{AWS_SOURCE_COLLECTION_NOTES.vpc_flow_logs}</p>
+        </Notice>
+      )}
       {duplicated && (
         <Notice tone="low" title="A API e o export do GuardDuty trazem os mesmos achados.">
           <p>O Verax não duplica os achados, mas basta autorizar a API, que é a forma recomendada.</p>
@@ -158,6 +179,11 @@ function AuthorizeConfirmation({
             Confirmo que o Verax pode ler o conteúdo{' '}
             {sensitive.length === 1 ? 'deste grupo de logs' : `destes ${sensitive.length} grupos de logs`}
           </label>
+        </Notice>
+      )}
+      {logGroups.length > 0 && (
+        <Notice tone="low" title="Os alertas dos grupos de logs demoram um pouco mais.">
+          <p>{AWS_SOURCE_COLLECTION_NOTES.cloudwatch_log_group}</p>
         </Notice>
       )}
       {error ? (
@@ -284,6 +310,7 @@ export function AwsSourceGroups({
                   <p className="text-xs text-muted-foreground">
                     {AWS_SOURCE_KIND_TEXTS[source.kind].description}
                   </p>
+                  <SourceCollectionNote source={source} />
                   <SourceLocation source={source} />
                   {covered && !source.notes.includes('covered_by_api') && (
                     <p className="text-xs text-muted-foreground">

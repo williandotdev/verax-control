@@ -12,11 +12,11 @@ export const UNOWNED_REASON_LABELS: Readonly<Record<UnownedReason, { label: stri
   },
   unknown_source: {
     label: 'Origem não cadastrada',
-    hint: 'O bucket de log de onde o alerta veio não está em nenhuma conta. Cadastre o bucket na conta certa.',
+    hint: 'O bucket de log de onde o alerta veio não está em nenhuma conta. Cadastre o bucket na conta certa. No alerta de um grupo do CloudWatch Logs: nenhum cliente do nó tem grupo de logs autorizado.',
   },
   ambiguous_source: {
     label: 'Origem em mais de um cliente',
-    hint: 'O mesmo bucket de log está cadastrado em clientes diferentes. Deixe-o só no cliente dono.',
+    hint: 'O mesmo bucket de log está cadastrado em clientes diferentes. Deixe-o só no cliente dono. No alerta de um grupo do CloudWatch Logs: mais de um cliente do nó tem grupo autorizado, e o evento não diz de quem é; ou a coleta mudou há pouco (um grupo de outro cliente saiu ou entrou, o nó reiniciou) e ainda não dá para garantir de quem era o que foi coletado.',
   },
   conflicting_accounts: {
     label: 'Contas diferentes no evento',
@@ -24,7 +24,7 @@ export const UNOWNED_REASON_LABELS: Readonly<Record<UnownedReason, { label: stri
   },
   no_account: {
     label: 'Evento sem conta',
-    hint: 'O evento não cita conta nenhuma. Investigue a origem.',
+    hint: 'O evento não cita conta nenhuma. Investigue a origem. No alerta de um grupo do CloudWatch Logs: o cliente tem grupos autorizados em mais de uma conta, e o evento não diz de qual.',
   },
   not_aws: {
     label: 'Não veio de conta AWS',

@@ -10,6 +10,22 @@
 # 3. guarda de versão: toda regra de frequência dos arquivos da AWS do Wazuh está tratada aqui ou é de uma fonte que
 #    a Verax não coleta. Uma versão nova com outra correlação derruba o teste até ela ser avaliada.
 #
+# Flow logs da VPC (onboarding self-service; o tipo `vpcflow` do módulo e as correlações de
+# config/manager/rules/verax_aws_flow_rules.xml, 100400 e 100401):
+# 3a. cada registro chega com `aws.source: vpc` (é por ele que o sync dos alertas reconhece a fonte) e casa com a
+#     regra do Wazuh da ação dele (80401 no aceito, 80402 no rejeitado), as duas abaixo do corte dos alertas do nó
+#     (`log_alert_level` do ossec.conf): um registro sozinho nunca vira alerta. Uma versão nova que mude isso derruba
+#     o teste;
+# 3b. varredura (100400): 39 registros rejeitados do mesmo endereço não alertam; o 40º alerta uma vez, no nível 8, com
+#     o MITRE T1046, a conta e o endereço; a rajada que continua dentro do ignore (60 s) não alerta de novo; o tráfego
+#     aceito nunca conta; registros de dois endereços ou de duas contas não somam;
+# 3c. insistência em porta de administração remota (100401): 14 registros rejeitados do mesmo endereço para a porta 22
+#     (ou 3389) do mesmo destino não alertam; o 15º alerta uma vez, no nível 10, com o MITRE T1110; dentro do ignore,
+#     nada; a passada pela porta 22 de vários destinos, as duas portas misturadas, outra porta, o tráfego aceito e duas
+#     contas não somam; os registros da insistência não somam para a varredura;
+# 3d. guarda dos limites: os números das duas regras (nível, quantidade, janela e ignore) são os documentados, a faixa
+#     é a 100400 a 100499 e a mãe é só a 80402 (o registro rejeitado).
+#
 # Papel de leitura (verax_reader_rules.xml, que o render-manager-config.py gera do modelo com o IP de saída do nó; fase
 # 2, PR-V4'), com os eventos como o módulo aws-s3 os entrega:
 # 4. a leitura do próprio nó e a entrada dele no papel, vindas do IP do nó: nível 0 (100200 e 100201), também quando o
@@ -86,6 +102,19 @@ delete_objects() { # <conta>
 waf_block() { # <conta>
   printf '{"integration":"aws","aws":{"log_info":{"aws_account_alias":"","log_file":"waf/2026/11/01/w.gz","s3bucket":"aws-waf-logs-%s"},"timestamp":1793527200000,"formatVersion":1,"webaclId":"arn:aws:wafv2:sa-east-1:%s:regional/webacl/painel/0000","terminatingRuleId":"AWS-AWSManagedRulesCommonRuleSet","terminatingRuleType":"MANAGED_RULE_GROUP","action":"BLOCK","httpSourceName":"ALB","httpRequest":{"clientIp":"%s","country":"BR","headers":{"Host":"app.exemplo"},"uri":"/login","args":"","httpVersion":"HTTP/1.1","httpMethod":"POST","requestId":"1-0000"},"source":"waf"}}\n' \
     "$1" "$1" "$ATTACKER_IP"
+}
+
+# Um registro dos flow logs, como o tipo vpcflow do módulo o entrega: os 14 campos do formato padrão (o início e o fim já
+# em ISO 8601), `source: vpc` e a conta da pasta lida.
+vpc_flow() { # <conta> <ACCEPT|REJECT> [origem] [destino] [porta de destino] [porta de origem]
+  printf '{"integration":"aws","aws":{"log_info":{"aws_account_alias":"","log_file":"AWSLogs/%s/vpcflowlogs/sa-east-1/2026/11/01/f.log.gz","s3bucket":"fluxo-%s"},"version":"2","account_id":"%s","interface_id":"eni-0123456789abcdef0","srcaddr":"%s","dstaddr":"%s","srcport":"%s","dstport":"%s","protocol":"6","packets":"1","bytes":"40","start":"2026-11-01T10:00:00Z","end":"2026-11-01T10:01:00Z","action":"%s","log_status":"OK","source":"vpc","aws_account_id":"%s"}}\n' \
+    "$1" "$1" "$1" "${3:-$ATTACKER_IP}" "${4:-10.0.0.10}" "${6:-44321}" "${5:-443}" "$2" "$1"
+}
+
+# <n> registros, cada um de uma conexão (a porta de origem muda de um para o outro); o resto como no vpc_flow.
+flows() { # <n> <conta> <ACCEPT|REJECT> [origem] [destino] [porta de destino]
+  local i
+  for ((i = 0; i < $1; i++)); do vpc_flow "$2" "$3" "${4:-}" "${5:-}" "${6:-}" $((40000 + i)); done
 }
 
 repeat() { # <n> <gerador> <conta>
@@ -169,6 +198,109 @@ expect "4 + 4 em Web ACLs de contas diferentes: sem correlação" "" "$(fired 80
 expect "cada evento é um bloqueio (80442)" 8 "$(awk '$1 == 80442' <<<"$out" | wc -l | tr -d ' ')"
 out=$({ repeat 4 waf_block $ACCOUNT_A; repeat 4 waf_block $ACCOUNT_B; repeat 4 waf_block $ACCOUNT_A; } | logtest)
 expect "8 na mesma Web ACL: correlação na conta A" "$ACCOUNT_A" "$(fired 80443 "$out")"
+
+# --- flow logs da VPC (verax_aws_flow_rules.xml) ---
+
+# Por evento, "<regra> <nível> <MITRE> <conta> <origem> <alerta|sem-alerta>". Dentro do ignore de uma regra, o logtest
+# mostra a regra que casou, sem a linha "Alert to be generated": é ela que diz se o manager gravaria o alerta. (O manager
+# avulso roda com o ossec.conf da imagem, de corte 3: aqui a 80401 e a 80402 saem com "alerta"; no nó, o corte é 5.)
+logtest_alerts() {
+  docker exec -i "$NAME" /var/ossec/bin/wazuh-logtest 2>&1 | awk '
+    function flush() {
+      if (rule != "") print rule, level, (mitre == "" ? "-" : mitre), account, source, (alert ? "alerta" : "sem-alerta")
+      rule = ""; level = ""; mitre = ""; account = "-"; source = "-"; alert = 0
+    }
+    /\*\*Phase 1:/ { flush() }
+    /^[[:space:]]+aws\.aws_account_id: / { account = $2 }
+    /^[[:space:]]+aws\.srcaddr: / { source = $2 }
+    /^[[:space:]]+id: / { rule = $2 }
+    /^[[:space:]]+level: / { level = $2 }
+    /^[[:space:]]+mitre\.id: / { mitre = substr($0, index($0, ": ") + 2); gsub(/ /, "", mitre) }
+    /^\*\*Alert to be generated/ { alert = 1 }
+    END { flush() }' | tr -d "'[]"
+}
+count() { # <linha inteira> <saída do logtest_alerts>: quantos eventos saíram assim
+  grep -cxF -- "$1" <<<"$2" || true
+}
+rules_in() { # <saída do logtest_alerts>: as regras que casaram, sem repetição
+  awk '{ print $1 }' <<<"$1" | sort -u | paste -sd' ' -
+}
+OTHER_IP=203.0.113.51
+HOST=10.0.0.10
+scan="100400 8 T1046 $ACCOUNT_A $ATTACKER_IP"
+insistence="100401 10 T1110 $ACCOUNT_A $ATTACKER_IP"
+
+echo "== Flow logs da VPC (80401 e 80402): cada registro abaixo do corte dos alertas do nó"
+out=$({ flows 39 $ACCOUNT_A REJECT; flows 2 $ACCOUNT_A ACCEPT; } | logtest_alerts)
+expect "o registro rejeitado casa com a 80402, com a conta da pasta lida" 39 \
+  "$(count "80402 4 - $ACCOUNT_A $ATTACKER_IP alerta" "$out")"
+expect "o registro aceito casa com a 80401" 2 "$(count "80401 3 - $ACCOUNT_A $ATTACKER_IP alerta" "$out")"
+expect "39 rejeitados do mesmo endereço (abaixo do limite) não disparam mais nada" "80401 80402" "$(rules_in "$out")"
+alert_level=$(grep -oE '<log_alert_level>[0-9]+' config/manager/ossec.conf | grep -oE '[0-9]+')
+flow_levels=$(docker exec "$NAME" sh -c "grep -E '<rule id=\"8040[12]\"' /var/ossec/ruleset/rules/0350-amazon_rules.xml" |
+  grep -oE 'level="[0-9]+"' | grep -oE '[0-9]+' | sort -n | paste -sd' ' -)
+expect "as duas regras do Wazuh para os flow logs são dos níveis 3 e 4" "3 4" "$flow_levels"
+expect "e ficam abaixo do corte dos alertas do nó (log_alert_level)" 5 "$alert_level"
+
+echo "== Flow logs da VPC: varredura vinda do mesmo endereço (100400: 40 rejeitados em 120 s, nível 8, ignore de 60 s)"
+# Para qualquer destino e porta: metade num destino, metade noutro.
+out=$({ flows 20 $ACCOUNT_A REJECT '' "$HOST" 443; flows 20 $ACCOUNT_A REJECT '' 10.0.0.11 8080; } | logtest_alerts)
+expect "o 40º rejeitado do mesmo endereço alerta uma vez: nível 8, T1046, a conta e o endereço" 1 "$(count "$scan alerta" "$out")"
+expect "e é o último evento (os 39 de antes ficam na 80402)" "$scan alerta" "$(tail -n 1 <<<"$out")"
+out=$(flows 120 $ACCOUNT_A REJECT | logtest_alerts)
+expect "a rajada que continua (120 registros) dentro do ignore: um alerta só" 1 "$(count "$scan alerta" "$out")"
+expect "as outras duas vezes em que a regra casa não viram alerta" 2 "$(count "$scan sem-alerta" "$out")"
+out=$({ flows 100 $ACCOUNT_A ACCEPT; flows 39 $ACCOUNT_A REJECT; } | logtest_alerts)
+expect "o tráfego aceito nunca conta: 100 aceitos e 39 rejeitados não alertam" "80401 80402" "$(rules_in "$out")"
+out=$({ flows 20 $ACCOUNT_A REJECT; flows 20 $ACCOUNT_A REJECT "$OTHER_IP"; } | logtest_alerts)
+expect "20 + 20 de endereços diferentes: sem correlação" "80402" "$(rules_in "$out")"
+out=$({ flows 20 $ACCOUNT_A REJECT; flows 20 $ACCOUNT_B REJECT; } | logtest_alerts)
+expect "20 + 20 do mesmo endereço em contas diferentes: sem correlação" "80402" "$(rules_in "$out")"
+out=$({ flows 20 $ACCOUNT_A REJECT; flows 20 $ACCOUNT_B REJECT; flows 20 $ACCOUNT_A REJECT; } | logtest_alerts)
+expect "40 na mesma conta: correlação na conta A" "$scan alerta" "$(grep -E '^100400 ' <<<"$out")"
+
+echo "== Flow logs da VPC: insistência em porta de administração remota (100401: 15 rejeitados em 120 s, nível 10, ignore de 60 s)"
+out=$(flows 14 $ACCOUNT_A REJECT '' "$HOST" 22 | logtest_alerts)
+expect "14 rejeitados para a porta 22 do mesmo destino (abaixo do limite): sem correlação" "80402" "$(rules_in "$out")"
+out=$(flows 15 $ACCOUNT_A REJECT '' "$HOST" 22 | logtest_alerts)
+expect "o 15º para a porta 22 alerta uma vez: nível 10, T1110, a conta e o endereço" 1 "$(count "$insistence alerta" "$out")"
+expect "e é o último evento (os 14 de antes ficam na 80402)" "$insistence alerta" "$(tail -n 1 <<<"$out")"
+out=$(flows 15 $ACCOUNT_A REJECT '' "$HOST" 3389 | logtest_alerts)
+expect "o mesmo para a porta 3389" 1 "$(count "$insistence alerta" "$out")"
+out=$(flows 30 $ACCOUNT_A REJECT '' "$HOST" 22 | logtest_alerts)
+expect "a rajada que continua (30 registros) dentro do ignore: um alerta só" \
+  "1 1" "$(count "$insistence alerta" "$out") $(count "$insistence sem-alerta" "$out")"
+out=$(for last in $(seq 1 15); do vpc_flow $ACCOUNT_A REJECT '' "10.0.1.$last" 22 $((40000 + last)); done | logtest_alerts)
+expect "a porta 22 de 15 destinos diferentes não é insistência" "80402" "$(rules_in "$out")"
+out=$({ flows 8 $ACCOUNT_A REJECT '' "$HOST" 22; flows 7 $ACCOUNT_A REJECT '' "$HOST" 3389; } | logtest_alerts)
+expect "8 para a porta 22 e 7 para a 3389: as duas portas não somam" "80402" "$(rules_in "$out")"
+out=$({ flows 14 $ACCOUNT_A REJECT '' "$HOST" 443; flows 1 $ACCOUNT_A REJECT '' "$HOST" 22; } | logtest_alerts)
+expect "14 para outra porta e 1 para a 22: os de outra porta não contam" "80402" "$(rules_in "$out")"
+out=$(flows 15 $ACCOUNT_A REJECT '' "$HOST" 2222 | logtest_alerts)
+expect "15 para uma porta que não é de administração remota (2222): sem correlação" "80402" "$(rules_in "$out")"
+out=$({ flows 15 $ACCOUNT_A ACCEPT '' "$HOST" 22; flows 14 $ACCOUNT_A REJECT '' "$HOST" 22; } | logtest_alerts)
+expect "o tráfego aceito nunca conta: 15 aceitos e 14 rejeitados para a porta 22 não alertam" "80401 80402" "$(rules_in "$out")"
+out=$({ flows 8 $ACCOUNT_A REJECT '' "$HOST" 22; flows 7 $ACCOUNT_B REJECT '' "$HOST" 22; } | logtest_alerts)
+expect "8 + 7 em contas diferentes: sem correlação" "80402" "$(rules_in "$out")"
+out=$({ flows 8 $ACCOUNT_A REJECT '' "$HOST" 22; flows 7 $ACCOUNT_A REJECT "$OTHER_IP" "$HOST" 22; } | logtest_alerts)
+expect "8 + 7 de endereços diferentes: sem correlação" "80402" "$(rules_in "$out")"
+out=$(flows 60 $ACCOUNT_A REJECT '' "$HOST" 22 | logtest_alerts)
+expect "60 para a porta 22 do mesmo destino: só a insistência (os registros dela não somam para a varredura)" \
+  "100401 80402" "$(rules_in "$out")"
+
+echo "== Guarda dos limites das regras dos flow logs (os números documentados no arquivo, no README e na arquitetura)"
+flow_rules=config/manager/rules/verax_aws_flow_rules.xml
+expect "as duas regras, com o nível, a quantidade, a janela e o ignore documentados" \
+  '<rule id="100400" level="8" frequency="40" timeframe="120" ignore="60"> <rule id="100401" level="10" frequency="15" timeframe="120" ignore="60">' \
+  "$(grep -oE '<rule id="[0-9]+"[^>]*>' "$flow_rules" | sort | paste -sd' ' -)"
+flow_ids=$(grep -oE '<rule id="[0-9]+"' "$flow_rules" | grep -oE '[0-9]+')
+expect "os IDs são da faixa 100400 a 100499, sem repetição" "" \
+  "$(grep -vxE '1004[0-9]{2}' <<<"$flow_ids"; sort <<<"$flow_ids" | uniq -d)"
+expect "a mãe das duas é só o registro rejeitado (80402), e nenhuma regra do Wazuh é sobrescrita" \
+  "<if_matched_sid>80402</if_matched_sid> 2 0" \
+  "$(grep -oE '<if(_matched)?_sid>[^<]+</if(_matched)?_sid>' "$flow_rules" | sort -u | paste -sd' ' -) $(grep -c '<if_matched_sid>' "$flow_rules") $(grep -c 'overwrite=' "$flow_rules")"
+expect "cada uma só soma registros da mesma conta e do mesmo endereço de origem" "2 2" \
+  "$(grep -c '<same_field>aws.aws_account_id</same_field>' "$flow_rules") $(grep -c '<same_field>aws.srcaddr</same_field>' "$flow_rules")"
 
 echo "== Guarda de versão: correlações nos arquivos da AWS do Wazuh"
 found=$(docker exec "$NAME" sh -c "cd /var/ossec/ruleset/rules && cat ${AWS_RULE_FILES[*]}" |
@@ -564,4 +696,4 @@ if ((failures > 0)); then
   echo "$failures verificação(ões) falharam."
   exit 1
 fi
-echo "Correlações da AWS separadas por conta e regras do papel de leitura e regras críticas no nível certo."
+echo "Correlações da AWS separadas por conta, regras dos flow logs nos limites documentados e regras do papel de leitura e regras críticas no nível certo."

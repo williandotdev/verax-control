@@ -14,6 +14,7 @@ import {
   RetryButton,
   RetryError,
   SensitiveTag,
+  SourceCollectionNote,
   SourceLocation,
   SourceRegion,
 } from '@/features/admin/aws-source-parts';
@@ -148,6 +149,7 @@ export function AwsSourceMonitor({
                       {source.sensitive && <SensitiveTag />}
                     </p>
                     <SourceLocation source={source} />
+                    {!legacy && <SourceCollectionNote source={source} />}
                     {source.collectFrom !== null && (
                       <p className="text-xs text-muted-foreground">
                         Coleta desde {formatDay(source.collectFrom)}

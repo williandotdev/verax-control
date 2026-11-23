@@ -1,0 +1,25 @@
+[
+  {
+    "accountId": "444455556666",
+    "region": "us-east-1",
+    "onlyLogsAfter": "2026-OCT-15",
+    "cloudtrailBucket": "trilha-da-organizacao",
+    "guarddutyBucket": "guardduty-da-organizacao",
+    "wafBucket": "aws-waf-logs-da-organizacao"
+  },
+  {
+    "accountId": "111122223333",
+    "region": "sa-east-1",
+    "onlyLogsAfter": "2026-DEC-01",
+    "cloudtrailBucket": "trilha-da-organizacao",
+    "guarddutyBucket": "guardduty-da-organizacao",
+    "wafBucket": "aws-waf-logs-da-organizacao"
+  },
+  {
+    "accountId": "777788889999",
+    "region": "eu-west-1",
+    "onlyLogsAfter": "2026-NOV-10",
+    "cloudtrailBucket": "guardduty-777788889999",
+    "guarddutyBucket": "guardduty-777788889999"
+  }
+]

@@ -400,6 +400,7 @@ A escala de nível é a mesma em todas: 12 ou mais é crítica, 10 alta, 7 médi
 | 80200 a 80499   | Wazuh do nó (`0350-amazon_rules.xml`, do próprio Wazuh)                 | CloudTrail, GuardDuty e WAF; as correlações 80252, 80255 e 80443 sobrescritas para contar por conta (`verax_aws_rules.xml`)    |
 | 100200 a 100299 | Wazuh do nó (`verax_reader_rules.xml`, gerado do modelo com o IP do nó) | O papel de leitura da Verax no CloudTrail do cliente (PR-V4', passo "Coletar")                                                 |
 | 100300 a 100399 | Wazuh do nó (`verax_aws_critical_rules.xml`)                            | Regras críticas da AWS no CloudTrail do cliente (PR-V7): root, administrador, CloudTrail, GuardDuty, S3, grupo de segurança... |
+| 100400 a 100499 | Wazuh do nó (`verax_aws_flow_rules.xml`)                                | Correlações dos flow logs da VPC: a varredura (100400) e a insistência em porta de administração remota (100401)               |
 | 990101 a 990199 | Worker, sem Wazuh (`apps/api/src/gcp/gcp-rules.ts`)                     | Auditoria da GCP                                                                                                               |
 | 990201 a 990299 | Não usada                                                               | Era a do coletor próprio do CloudTrail, que saiu do plano; o subconjunto crítico do catálogo dela virou a faixa 100300         |
 | 990301 a 990399 | Worker, sem Wazuh (`apps/api/src/cloudflare/cloudflare-rules.ts`)       | Auditoria do Cloudflare                                                                                                        |
@@ -628,10 +629,12 @@ pede ao Google). Mudá-la exige atualizar a pilha de todos os clientes do nó.
      pasta do manager. Uma falha mantém o token anterior, que vale 1 hora: renovar a cada 10 min deixa 50 min de
      folga. Sem a pasta (o Wazuh fora do ar), não faz nada, e o `start.sh down` apaga a pasta.
    - **A lista das contas:** o CLI `wazuh-sources` (imagem da API, ambiente do worker, rede do banco; job do
-     `compose.wazuh.yaml`) imprime as contas AWS ativas que já passaram pela verificação (`ingestFrom`) e têm bucket:
-     ID, primeira região, `only_logs_after` (o `ingestFrom`) e os buckets. A conexão de agora não conta: um erro, uma
-     edição de bucket (que volta a conta a "aguardando") ou os erros que a própria coleta grava não tiram a conta do
-     manager nem o reiniciam; desativar a conta, sim. Nenhum valor é segredo.
+     `compose.wazuh.yaml`) imprime as contas AWS ativas que já passaram pela verificação (`ingestFrom`), cada uma com
+     o ID, a primeira região e as fontes autorizadas lidas pelo Wazuh (`AwsSource`): os buckets do cadastro (as linhas
+     `legacy`, com o `only_logs_after` do `ingestFrom`) e as fontes do onboarding self-service (seção "Onboarding AWS
+     self-service", "Coleta pelo Wazuh"). A conexão de agora não conta: um erro, uma edição de bucket (que volta a
+     conta a "aguardando") ou os erros que a própria coleta grava não tiram os buckets do cadastro do manager nem o
+     reiniciam; desativar a conta, sim. Nenhum valor é segredo.
    - **O gerador** (`render-manager-config.py`, job `manager-config`, sem rede), o único que escreve na pasta além do
      token: um profile por conta em `/root/.aws/config`, só com as chaves de uma lista (`role_arn` derivado do ID,
      `web_identity_token_file`, `role_session_name = verax-control-wazuh`, `region`, `sts_regional_endpoints =
@@ -653,8 +656,9 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
      `.path` de novo).
    - **Os sinais, sem segredo**, em `/run/verax/wazuh-signal` (root e o grupo do worker, 1770; montada com escrita só
      no worker, em `WAZUH_SIGNAL_DIR`): a tarefa `wazuh-config` do worker (a cada 30 s) grava a `generation` (o SHA-256
-     da lista que o CLI imprime) só quando ela muda; o host grava `applied` (`{generation, status ok|error, at}`) e
-     `aws-token` (`{tokenAt}`), e o bit t impede que o worker troque os dois. O worker grava em cada conta que o
+     da lista que o CLI imprime) só quando ela muda; o host grava `applied` (`{generation, status ok|error, at}`),
+     `aws-token` (`{tokenAt}`) e `progress` (até onde o módulo leu cada fonte; seção "Onboarding AWS self-service"), e
+     o bit t impede que o worker troque os três. O worker grava em cada conta que o
      manager lê o aviso da coleta, `aws_token_stale` (token sem renovar há mais de 40 min) ou `wazuh_apply_failed` (a
      lista de agora não foi aplicada), e o tira quando o problema passa (e da conta que saiu da coleta), com auditoria
      (`cloud_account.aws_collection`) na trilha de cada cliente.
@@ -777,9 +781,9 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
 _(em construção, em vários PRs. Feito no código: o template v2 do papel, com a descoberta e as três autorizações do
 cliente (PR-T); o contrato, o modelo de dados, o "Conectar" com validação automática, a descoberta e as rotas de
 autorização (PR-B); a coleta dos achados pelas APIs do GuardDuty, do Security Hub, do Inspector e do Access Analyzer
-(PR-C2). A construir: a coleta das fontes de S3 e do CloudWatch Logs pelo Wazuh (PR-C1) e a tela nova (PR-U). Até lá,
-uma fonte de S3 ou do CloudWatch Logs autorizada fica "aguardando o coletor", e a tela de Contas cloud segue a de
-antes.)_
+(PR-C2); a coleta das fontes de bucket e do CloudWatch Logs pelo Wazuh do nó, com a saúde de cada fonte (PR-C1); e a
+tela em Contas cloud, do "Conectar com AWS" à saúde de cada fonte (PR-U). Nada da coleta pelo Wazuh foi exercitado
+numa conta AWS de verdade: o que foi conferido é o que a imagem do Wazuh aceita e grava, sem rede.)_
 
 O cliente conecta a conta AWS sozinho: clica em "Conectar com AWS", cria a pilha do papel de leitura no CloudFormation
 e, a partir daí, o nó valida a conexão, descobre as fontes de log da conta e mostra o que pode ser coletado. O cliente
@@ -848,7 +852,7 @@ ganham regiões, nunca perdem).
 guarda se dá para ler de onde está (`availability`: disponível, serviço desligado, sem destino, destino ou formato que
 o nó não lê), a permissão da última sondagem (com a ação que faltou ou o motivo: `capability_off`, `tag_missing`,
 `kms_denied`, `bucket_denied`, `outside_awslogs_prefix`), as notas de custo e de pré-requisito, a autorização (quem,
-quando) e a saúde da coleta (vazia até os coletores existirem). Casos tratados: a trilha de organização (o ID da
+quando) e a saúde da coleta (gravada pelos coletores: o do Wazuh nas fontes de bucket e do CloudWatch Logs, o dos achados nas de API). Casos tratados: a trilha de organização (o ID da
 organização sai dos nomes de `AWSLogs/` no bucket), o prefixo antes de `AWSLogs/` (fora do que o papel lê, a não ser num
 bucket do cadastro), os flow logs com partições do Hive, em Parquet ou com campos fora do padrão (formato não lido), os
 que gravam no CloudWatch Logs (o grupo é oferecido), o WAF no Firehose (destino não lido) e no S3 (uma fonte por Web
@@ -856,6 +860,21 @@ ACL). A descoberta nunca apaga nem muda em silêncio uma fonte autorizada: a que
 inteiro) fica `source_missing`; a que perde a permissão, `permission_error`; a revogada fica revogada. Os buckets do
 cadastro anterior (`cloudtrailBucket`, `guarddutyBucket`, `wafBucket`) continuam valendo como antes e aparecem como
 linhas `origin = legacy`, autorizadas, espelhadas por `aws/onboarding/legacy-sources.ts`.
+
+**Nota dos flow logs lidos juntos (`flow_logs_read_together`):** toda fonte de flow logs que grava num bucket e dá
+para ler leva essa nota: autorizar um Flow Log lê todos os Flow Logs daquela conta e região que gravam no mesmo bucket
+(o módulo do Wazuh lê a pasta da conta e da região, e não um flow log só). O painel diz isso na linha da fonte e de
+novo na confirmação da autorização.
+
+**O que o painel diz da coleta pelo Wazuh (`apps/web/src/features/admin/aws-onboarding-labels.ts`):** a API manda só
+códigos, e cada motivo que a coleta grava numa fonte de bucket ou num grupo de logs tem o texto dele, com o que fazer
+(`AWS_WAZUH_SOURCE_STATE_CODE_TEXTS`, tipado contra `AWS_WAZUH_SOURCE_STATE_CODES`: um código novo não compila sem o
+texto): a configuração ainda não aplicada (`awaiting_apply`), a fonte parada (`no_progress`), os dois avisos do
+servidor e os sete motivos de a fonte ter ficado de fora da coleta; o que a tela não conhece aparece como "Tipo do
+erro". Na linha dos flow logs, antes e depois da autorização, o painel diz que só o tráfego recusado é lido e que as
+detecções vêm das duas regras ("Regras de Flow Logs"); na dos grupos do CloudWatch Logs, que os alertas aparecem com
+pelo menos 10 minutos de atraso e só são atribuídos quando uma única conta do servidor tem grupos autorizados ("Dono
+dos alertas do CloudWatch Logs").
 
 **Estado da fonte:** `available`, `needs_permission` ou `unavailable` antes da autorização; depois, `authorized`
 (aguardando o coletor), `configuring`, `waiting_events`, `collecting`, `stalled`, `permission_error` e
@@ -887,6 +906,216 @@ nunca guardado nem escrito à mão: `not_started`, `awaiting_authorization`, `au
 `template`, `discovery` e, das fontes autorizadas, `permission`, `collector_config`, `events`, `last_sync` e `lag`. A
 regra: nunca um "tudo certo" com um passo essencial pendente. A conta só está `collecting` quando toda fonte autorizada
 está coletando; com o papel removido, fica `disconnected`, e as fontes e as autorizações continuam lá.
+
+**Coleta pelo Wazuh (fontes de bucket e do CloudWatch Logs, `apps/api/src/aws/wazuh-sources.ts` e
+`infra/wazuh/scripts/render-manager-config.py`):** a lista que o CLI `wazuh-sources` imprime e a geração que a tarefa
+`wazuh-config` grava saem das fontes com a autorização valendo e método `s3` ou `cloudwatch`. O formato é o 2
+(`{"version": 2, "accounts": [{accountId, region, s3: [...], logGroups: [...]}]}`); o gerador recusa uma versão que não
+conhece e ainda aceita a lista simples de antes (a que uma API de versão anterior imprime durante uma atualização).
+
+- **Buckets do cadastro anterior** (`"legacy": true`): a configuração do manager é, byte a byte, a de antes (um teste
+  compara a saída do gerador com a do gerador anterior). Entram sempre, como entravam.
+- **Fontes descobertas:** cada leitura é exata, sem o módulo listar o bucket à procura de contas e regiões. A trilha, os
+  flow logs e o export do GuardDuty levam `aws_account_id` e `regions` (a trilha de organização, também
+  `aws_organization_id`; a de todas as regiões, as regiões habilitadas na conta pela última descoberta, que incluem
+  `us-east-1`, onde ficam os eventos dos serviços globais). O WAF leva o caminho de uma Web ACL
+  (`AWSLogs/<conta>/WAFLogs/<região ou cloudfront>/<nome>/`), montado no gerador dos campos conferidos (esse caminho
+  foi derivado do código do módulo, e não conferido com objetos de verdade). Os grupos do CloudWatch Logs viram um
+  serviço `cloudwatchlogs` por conta, região e dia de início. Cada fonte começa no dia da própria autorização
+  (`only_logs_after`), sem histórico.
+- **Nada é apagado na origem:** `remove_from_bucket no` em todo bucket e `remove_log_streams no` em todo serviço, sempre
+  escritos (e o papel nega qualquer escrita nos logs).
+- **O que entra no analysisd:** os flow logs com o tráfego aceito descartado no módulo (`discard_regex` em `ACCEPT`),
+  como o WAF já descarta o liberado: o aceito é a maior parte do volume e contaria no volume contratado. A lista e o
+  gerador aceitam `"traffic": "all"` por fonte; a escolha no painel ainda não existe. Nos grupos de logs, a linha em
+  JSON que se diz evento do próprio módulo (`"integration": "aws"`) é descartada: no analysisd ela seria lida como um
+  evento de bucket, e quem escreve no grupo forjaria um alerta do CloudTrail ou do GuardDuty.
+- **Tudo conferido duas vezes:** a API só põe na lista o que passa nos formatos fechados (bucket, região, ID da
+  organização, nome de Web ACL, prefixo e nome de grupo só com letras, números, ponto, hífen, sublinhado e barra), e o
+  gerador confere de novo, com escape de XML. Um valor fora disso no gerador recusa a lista inteira, e a configuração
+  do manager fica como está. A fonte que a API não consegue ler como está fica de fora da lista, com o motivo no
+  estado dela (`ingestion_error`): `unsupported_name` (o grupo com `#`, espaço ou vírgula: o módulo recusa o
+  argumento inteiro), `region_unsupported` (região fora das que o módulo 4.14.9 aceita), `organization_id_unknown`,
+  `custom_prefix_unsupported` (prefixo antes de `AWSLogs/` fora de um bucket do cadastro), `source_limit` (os tetos
+  por conta: 200 entradas de bucket e 50 grupos) e `log_group_name_conflict`.
+- **Leituras repetidas** saem uma vez só: duas fontes com o mesmo tipo, bucket, prefixo, conta e região (dois flow logs
+  da região no mesmo bucket) são uma leitura, desde a data mais antiga; a que o cadastro anterior já faz não sai de
+  novo.
+- **A fonte que perde a permissão ou some** (`permission_error` e `source_missing`, que a descoberta grava) sai da
+  lista até voltar, e a revogada sai de vez. Uma mudança da lista só reinicia o manager quando a configuração dele
+  muda.
+
+**Marcadores da leitura (sinal `progress`):** o worker não fala com o manager, e um alerta no indexer só existe para o
+evento que casou com uma regra. A prova de que o Wazuh leu uma fonte são os marcadores que o próprio módulo guarda em
+SQLite (`s3_cloudtrail.db`: uma tabela por tipo de bucket, uma linha por objeto lido; `aws_services.db`: os streams de
+cada grupo). A cada 5 min, o host (`infra/node/bin/wazuh-progress.sh`, pelo `verax-wazuh-progress.timer`) roda no
+contêiner do manager, com o Python do Wazuh e pela entrada padrão, o `infra/wazuh/scripts/export-aws-progress.py`: ele
+abre os bancos só para leitura (`mode=ro`), tolera o banco que não existe, o travado pelo módulo e a tabela ausente, e
+imprime um documento de uma linha (por tabela, `bucket_path`, conta e região: o último objeto lido, quando foi lido e o
+dia dele; por região e grupo: o horário do último evento e os streams), com teto de linhas e sem conteúdo de log. O
+host limita o tamanho (4 MiB), confere o começo e troca o arquivo `progress` de uma vez; o worker confere cada campo
+por schema e deixa de usar o sinal com mais de 20 min.
+
+**Saúde de cada fonte lida pelo Wazuh (`apps/api/src/aws/wazuh-source-health.ts`, na tarefa `wazuh-config`):**
+
+- `authorized` → `configuring` (`awaiting_apply`: na lista, e o host ainda não aplicou a lista de agora) →
+  `waiting_events` (aplicada, sem nada lido desde o início da coleta) → `collecting` (o módulo leu um objeto ou um
+  evento dela).
+- `lastIngestedAt` é quando o módulo leu o último objeto; `lastEventAt`, o horário do nome do objeto (ou o dia dele) ou
+  do último evento do grupo; `lagSeconds`, a diferença entre os dois, medida no último objeto lido. Não é "há quanto
+  tempo nada chega": uma conta quieta não fica atrasada. `lastSyncAt` é a última vez que o nó confirmou a fonte na
+  configuração que o manager roda, com o token em dia e o marcador dela lido (o módulo passa por todas as fontes a
+  cada 5 min e não registra cada passagem). No CloudWatch Logs, o módulo não guarda quando leu: vale o momento em que o
+  nó viu o marcador andar.
+- `stalled` (`no_progress`) só na trilha e nos flow logs: sem leitura há mais de 2 horas **e** com objeto novo, de mais
+  de 30 min, na pasta da conta (uma listagem de `MaxKeys = 1` por pasta de dia, a partir do último objeto lido, com a
+  sessão de leitura da conta e a trava de só leitura; no máximo uma por fonte a cada 30 min). Sem objeto novo, a
+  conta só está quieta. As outras fontes nunca ficam paradas por silêncio.
+- `ingestion_error`: a fonte ficou de fora da lista (o motivo é o código); o token do nó parou (`aws_token_stale`,
+  todas as fontes); ou a lista de agora não foi aplicada (`wazuh_apply_failed`) e a fonte ainda não tinha entrado no
+  manager. A que o manager já lia segue pelo marcador dela.
+- A gravação é pelo escopo do cliente da fonte, só se ela ainda estiver como foi lida. A trilha de auditoria
+  (`cloud_account.aws_source_collection`, ator sistema) só recebe a primeira coleta de cada fonte e a entrada e a saída
+  de um erro ou de uma parada; a espera e os horários de cada leitura não. Na célula, a tarefa não grava a saúde.
+
+**Regras de Flow Logs (`infra/wazuh/config/manager/rules/verax_aws_flow_rules.xml`, faixa 100400 a 100499):** o
+Wazuh só classifica cada registro dos flow logs (80401 no aceito, nível 3; 80402 no rejeitado, nível 4), abaixo do
+corte dos alertas do nó (`log_alert_level` 5), e não traz correlação para eles. As duas regras locais abaixo contam os
+registros rejeitados e são o que vira alerta e achado; as do Wazuh ficam como estão. **Os limites são estes, e é aqui
+que o responsável os ajusta** (o `infra/wazuh/scripts/test-rules.sh` confere cada número no `wazuh-logtest` da imagem
+do nó, e quem muda um limite muda o teste, o arquivo das regras, o README do Wazuh e esta tabela):
+
+| Regra  | Nível     | O que conta                                                                                                 | Limite      | Ignore | MITRE |
+| ------ | --------- | ----------------------------------------------------------------------------------------------------------- | ----------- | ------ | ----- |
+| 100400 | 8 (média) | Varredura: registros rejeitados da mesma conta e do mesmo endereço de origem, para qualquer destino e porta | 40 em 120 s | 60 s   | T1046 |
+| 100401 | 10 (alta) | Insistência em porta de administração remota: os mesmos, para o mesmo destino e a mesma porta, 22 ou 3389   | 15 em 120 s | 60 s   | T1110 |
+
+- **Cada registro é um fluxo**, e não um pacote: a AWS soma numa linha os pacotes do mesmo fluxo (origem, destino,
+  portas e protocolo) numa interface e numa janela de captura. 15 registros para a porta 22 são 15 conexões diferentes.
+- **Os 120 s contam a chegada ao analysisd**, e não o horário do tráfego: o módulo lê os objetos novos do bucket a cada
+  5 min e entrega os registros de cada objeto de uma vez. Na prática, o limite vale para o que uma leitura traz (uns 5 a
+  10 min de tráfego).
+- **Só o tráfego rejeitado conta** (a mãe das duas é a 80402): o aceito casa com a 80401 e, no nó, nem chega ao
+  analysisd.
+- **Cada regra só soma registros da mesma conta** (`aws.aws_account_id`), como as correlações por conta.
+- **A passada pela porta 22 de várias máquinas não é insistência** (o destino tem de ser o mesmo): conta para a
+  varredura. As portas 22 e 3389 não somam entre si, e os registros de uma insistência não somam para a varredura (o
+  Wazuh não conta de novo o registro que já entrou num alerta de nível igual ou maior).
+- **O ignore é da regra, e não do endereço** (é assim no Wazuh): nos 60 s depois de um alerta, uma segunda origem que
+  passe do limite também fica sem alerta dessa regra. Como uma leitura do bucket chega em segundos, o efeito é no máximo
+  um alerta de cada regra por leitura (a cada 5 min); a origem que continua volta a contar na leitura seguinte. É o
+  preço de uma rajada virar um alerta só. Sem o ignore, a mesma rajada daria um alerta a cada 40 (ou 15) registros, e o
+  achado continuaria um só.
+
+**Alertas das fontes novas:** os flow logs entram no sync da AWS (`aws.source = vpc`): o dono é decidido pelo bucket
+autorizado e pela conta da pasta lida (o `account_id` do registro é o dono da interface, que numa VPC compartilhada é
+outra conta). O alerta é sempre de uma das duas correlações, e o evento que vem nele é só o registro que fechou a
+contagem; por isso o achado não é do registro:
+
+- **A chave do achado** é a conta, o endereço de origem e a regra (`wazuh/<conta>/vpc:<endereço>:<regra>`): toda
+  rajada do mesmo endereço na mesma conta é o mesmo achado. Relida (o `--reparse`, um snapshot restaurado), a rajada
+  pode fechar noutro registro, e ainda assim cai na mesma chave.
+- **A versão** é a hora cheia (UTC) do início da janela do registro que fechou a contagem (o horário do tráfego, e não
+  o do alerta). A rajada do mesmo endereço em outra hora segue a regra de reincidência do GuardDuty (decisão de
+  04/11/2026): com o achado ainda não triado, só a versão avança (`lastSeenAt`); com ele já triado, vira um achado
+  novo, ligado ao original (`...:<regra>@<hora>`). É no máximo um achado em aberto por regra, conta e endereço, e uma
+  rajada da mesma hora já conhecida (ou de antes) não muda nada.
+- **O título** é o fixo do dicionário ("Possível varredura de rede vinda do mesmo endereço" e "Insistência em porta de
+  administração remota vinda do mesmo endereço"), a severidade vem do nível (média e alta), o MITRE vem da regra, o IP
+  do achado é o endereço de origem, e o recurso é a interface do registro que fechou a contagem. O destino e a porta
+  ficam no evento bruto do detalhe.
+- O alerta de um registro sozinho só existiria com o corte do nó abaixo de 5; se chegar, a chave dele é a identidade
+  do registro (a interface, a janela, a origem, o destino, o protocolo e a ação).
+
+O cadastro de buckets do sync soma os das fontes de bucket autorizadas (revogada a fonte, o bucket dela deixa de ser
+origem conhecida). Nos alertas de bucket, o dono sai do próprio evento: o bucket que o módulo leu e a conta da pasta
+(ou a do conteúdo, no GuardDuty e no WAF), conferidos com o cadastro na hora da leitura. Uma mudança no cadastro só
+tira o dono de um alerta (a fonte revogada vira `unknown_source`; a pasta da conta de outro cliente, `source_mismatch`),
+e nunca o entrega a outro cliente: para isso, a conta AWS citada no evento teria de estar cadastrada para ele.
+
+**Dono dos alertas do CloudWatch Logs (`apps/api/src/alerts/cloudwatch-ownership.ts`):** os eventos dos grupos de logs
+têm um sync próprio (tarefa `wazuh-cloudwatch-alerts`, fora da célula; nível 7 para cima, como os agentes). O módulo
+entrega a linha crua, sem conta nem grupo: nada no evento diz de quem ele é. As autorizações do momento da leitura
+também não dizem: quando um de dois clientes tira a autorização, o manager segue coletando o grupo dele até a
+configuração nova ser aplicada, e o que sobrou viraria dono de eventos do outro. **A regra: o alerta só é do cliente T,
+na conta A, se a configuração aplicada no manager só teve grupos de logs dessa conta desse cliente (ou nenhum) em todo o
+intervalo em que o alerta pode ter sido coletado. Na dúvida, não é de ninguém.** São duas condições:
+
+1. pelas autorizações de agora, um único cliente do nó tem grupo autorizado, numa única conta. Senão, a fila sem dono:
+   `ambiguous_source` com mais de um cliente, `no_account` com mais de uma conta do mesmo cliente, `unknown_source` sem
+   nenhum;
+2. a prova, gravada pela tarefa `wazuh-config` (a única que conhece a lista planejada e lê o sinal `applied` do host)
+   numa linha do banco (`CloudWatchAlertOwnership`: o dono, a geração que o manager roda, `since` e a última
+   conferência; sem `tenantId`, só o sistema a grava, e nenhuma rota a lê). Sem a prova, `ambiguous_source`.
+
+A prova, a cada conferência (30 s):
+
+- **nasce** quando o sinal `applied` diz ok para a geração da lista planejada de agora e essa lista tem grupos de logs
+  de no máximo um dono. `since` é a hora dessa conferência (ou a do sinal, se for mais tarde);
+- **continua**, com o mesmo `since`, enquanto cada conferência seguinte, a no máximo 5 min da anterior, mostra o manager
+  numa geração conferida (a do registro ou a planejada de agora) e a lista planejada com no máximo esse dono. A geração
+  aplicada atrás da planejada não a derruba (as duas são do mesmo dono). O registro sem dono (nenhuma configuração
+  aplicada teve grupo de logs) vira do primeiro dono que aparecer, sem recomeçar: antes dele não havia de quem coletar.
+  É o cliente que autoriza o primeiro grupo num nó já no ar, e os alertas da primeira leitura já são dele;
+- **cai**, e só volta nascendo de novo, com outro `since`: no instante em que a lista **planejada** passa a ter grupos
+  de mais de um dono (antes de ela chegar ao manager, e antes de a geração nova ir para o host); quando o dono
+  planejado é outro (um cliente sai e outro entra depois: nada do que foi coletado para o primeiro passa para o
+  segundo); quando o sinal some (o nó reiniciou), sai do formato ou cita uma geração que a tarefa não conferiu, com ok
+  ou com erro (o host aplicou uma lista que o worker não planejou); e quando a tarefa fica mais de 5 min sem conferir
+  (o worker parado não viu o que o host aplicou; o timer do host aplica a cada 15 min).
+
+O sync só atribui o alerta cujo horário está **entre `since` mais 15 min e a última conferência menos 10 min**:
+
+| Folga              | Quanto | O que cobre                                                                                                                                                                                                                                                                              |
+| ------------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Margem, no começo  | 15 min | O que a configuração anterior ainda pode entregar depois de trocada: o módulo lê os grupos a cada 5 min, a troca reinicia o manager e espera o healthcheck dele (até 3 min; com a volta da configuração anterior, mais 3), e o analysisd ainda esvazia a fila. 5 + 6 min, com 4 de folga |
+| Espera, no fim     | 10 min | O atraso do sinal: o host só grava o `applied` depois de reiniciar o manager e esperar o healthcheck (até 3 + 3 min), e o timer dele pode aplicar uma lista que o worker ainda não planejou (uma autorização desfeita em menos de 30 s). Nesse meio tempo o manager já roda a lista nova |
+| Entre conferências | 5 min  | O worker parado: sem conferir por mais que isso, a tarefa não sabe o que o host aplicou, e a prova recomeça                                                                                                                                                                              |
+
+- **O alerta novo demais** (mais novo que a última conferência menos 10 min) não é decidido ainda: não vira achado nem
+  vai para a fila, e a execução seguinte o relê. Todo achado do CloudWatch Logs aparece, então, pelo menos 10 min
+  depois do alerta. Se a prova cair nesse intervalo, ele vai para a fila.
+- **A primeira decisão vale.** O alerta que já está na fila sem dono nunca vira achado numa releitura, mesmo que passe
+  a caber numa prova; e o que já virou achado não ganha uma linha na fila quando a sobreposição o relê sem a prova.
+- **Só linha de grupo de logs:** o evento de bucket que passa do tamanho que o analysisd lê chega cortado, não é
+  decodificado e fica sem `data.integration`; pelo começo do texto (o envelope do módulo, `{"integration": "aws"`), o
+  sync o reconhece e o manda para a fila como inválido, em vez de atribuí-lo ao dono dos grupos. No Wazuh 4.14.9 esse
+  evento não casa com regra nenhuma (conferido no `wazuh-logtest`); a conferência é para uma regra futura.
+- **Os relógios:** o horário do alerta é o campo `timestamp` do documento no indexer (o relógio do manager, quando o
+  analysisd gerou o alerta; o mesmo campo que ordena e pagina a leitura do sync). `since` e a última conferência são do
+  relógio do worker, e `since` nunca fica antes da hora do sinal do host. No nó, os três estão na mesma máquina; a
+  margem e a espera absorvem uma diferença de minutos.
+- **O que isso custa:** depois de cada queda da prova (o nó reiniciado, o worker parado por mais de 5 min, outro
+  cliente com grupo de logs no nó), os alertas dos 15 min seguintes ao renascimento vão para a fila sem dono e não
+  voltam. O cliente único do nó dedicado, com a prova de pé desde antes do primeiro grupo, não perde nada.
+- **O que a prova supõe:** com o worker no ar, a tarefa lê o sinal ao menos uma vez entre duas trocas de configuração
+  do host (cada troca reinicia o manager e espera o healthcheck dele; a tarefa confere a cada 30 s). O sinal não tem
+  um número de sequência: duas trocas entre duas conferências não seriam vistas.
+
+**Limites conhecidos da coleta pelo Wazuh:**
+
+- **Flow logs: só duas detecções, e no máximo um alerta de cada uma por leitura** (o ignore da regra não separa os
+  endereços; ver "Regras de Flow Logs"). Dois endereços que passem do limite na mesma leitura dão um alerta só; o
+  outro aparece numa leitura seguinte, se continuar. Só o tráfego rejeitado é lido: a escolha de ler também o aceito
+  (`"traffic": "all"`) existe na lista e no gerador, e não no painel.
+- **Autorizar um Flow Log lê todos os Flow Logs daquela conta e região que gravam no mesmo bucket:** o módulo lista os
+  flow logs da região (`ec2:DescribeFlowLogs`) e lê, na pasta da conta e da região naquele bucket (e prefixo), os
+  objetos de cada um, e não só os do flow log autorizado. O flow log que grava em outro bucket não é lido. A fonte
+  leva a nota `flow_logs_read_together`, para o painel avisar antes da autorização, e revogar um dos flow logs não
+  para a leitura enquanto outro do mesmo bucket continuar autorizado.
+- **Grupos do CloudWatch Logs:** o marcador do módulo é por região, grupo e stream, sem a conta: o mesmo nome na mesma
+  região em duas contas do nó só é lido na primeira autorizada (a outra fica `log_group_name_conflict`). Um grupo
+  negado ou apagado faz o módulo parar a leitura dos grupos seguintes da mesma conta e região até a descoberta tirar a
+  fonte da lista (no máximo um dia, ou no "Tentar de novo"). O alerta não diz de que grupo veio, e por isso só é
+  atribuído com a prova do dono ("Dono dos alertas do CloudWatch Logs"): o achado sai pelo menos 10 min depois do
+  alerta, e os alertas dos 15 min seguintes a uma queda da prova ficam na fila sem dono.
+- **Trilha de conta e de organização no mesmo bucket, para a mesma conta:** o marcador do módulo é o mesmo para as duas
+  pastas, e a leitura de uma pode pular objetos da outra. Autorize só uma das duas.
+- **Export do GuardDuty de várias regiões no mesmo bucket:** pelo código do módulo, o marcador do tipo `guardduty` é
+  por bucket e conta, sem a região; depois da primeira passagem, só a última região em ordem alfabética continua
+  avançando (vale também para o bucket do cadastro anterior). O caminho recomendado para o GuardDuty é a API (PR-C2).
+- **O marcador só aparece quando o módulo termina a leitura do bucket:** numa primeira leitura longa, a fonte fica em
+  "aguardando eventos" até o fim dela.
 
 **Achados pela API (tarefa `aws-findings` do worker, `apps/api/src/aws/findings/`):** as fontes lidas por API
 (`guardduty`, `security_hub`, `inspector` e `access_analyzer`) são coletadas pelo worker, sem o Wazuh, pela mesma

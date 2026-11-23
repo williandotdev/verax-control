@@ -21,6 +21,7 @@ import {
   type CellTenantState,
 } from '@verax/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { syncLegacyAwsSources } from '../src/aws/onboarding/legacy-sources.js';
 import { findWazuhSourceRows } from '../src/aws/wazuh-sources.js';
 import {
   CellCommands,
@@ -776,7 +777,7 @@ describe('canal da célula, lado do nó (CE-05)', () => {
   describe('tenant.collection_pause', () => {
     it('a pausa tira as contas do cliente da coleta, sem mudar o estado; retomar as devolve', async () => {
       const { controlPlaneId, tenantId } = await cellTenant();
-      await prisma.cloudAccount.create({
+      const account = await prisma.cloudAccount.create({
         data: {
           tenantId,
           provider: 'aws',
@@ -787,6 +788,8 @@ describe('canal da célula, lado do nó (CE-05)', () => {
           ingestFrom: new Date('2026-11-01T00:00:00.000Z'),
         },
       });
+      // A lista do Wazuh sai das fontes da conta: o bucket do cadastro com a linha dele, como a API o grava.
+      await syncLegacyAwsSources(prisma.forTenant(tenantId), account.id);
       expect(await findWazuhSourceRows(prisma, [tenantId])).toHaveLength(1);
       const pause = { ...envelope(controlPlaneId), kind: 'tenant.collection_pause' as const };
       expect(await commands().apply({ ...pause, paused: true, reason: 'runaway_volume' })).toEqual({

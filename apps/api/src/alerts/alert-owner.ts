@@ -7,10 +7,13 @@ import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
  * Regra: o alerta é do cliente quando **duas** origens independentes concordam.
  * 1. O bucket de onde o Wazuh leu o evento está cadastrado para aquela fonte, e só por esse cliente. O Wazuh lê cada
  *    bucket com o papel da conta que o cadastrou (T4.6), então o bucket diz de onde o evento veio.
- * 2. O evento cita uma única conta, cadastrada para o mesmo cliente. No CloudTrail, a conta é a da pasta
- *    `AWSLogs/<conta>` (fixada na leitura) e precisa ser uma das contas que cadastraram aquele bucket. No GuardDuty e
- *    no WAF, a conta vem do conteúdo do evento, que o cliente controla: um cliente que forjasse um evento com a conta
- *    de outro esbarra na regra 1.
+ * 2. O evento cita uma única conta, cadastrada para o mesmo cliente. No CloudTrail e nos flow logs da VPC, a conta é a
+ *    da pasta `AWSLogs/<conta>` (fixada na leitura) e precisa ser uma das contas que cadastraram aquele bucket. No
+ *    GuardDuty e no WAF, a conta vem do conteúdo do evento, que o cliente controla: um cliente que forjasse um evento
+ *    com a conta de outro esbarra na regra 1.
+ *
+ * O cadastro são os buckets da conta (`cloudtrailBucket` e os outros dois) e os das fontes que o cliente autorizou no
+ * onboarding self-service (`AwsSource`): a mesma conta pode ter mais de um bucket por fonte.
  *
  * Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `admin_verax` vê, com o motivo.
  */
@@ -18,20 +21,29 @@ import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
 export interface RegisteredAwsAccount {
   tenantId: string;
   accountId: string;
-  /** Buckets de log cadastrados no conector, por fonte (os mesmos da lista de contas do Wazuh, T4.6). */
+  /**
+   * Buckets de log da conta, por fonte (os mesmos da lista de contas do Wazuh, T4.6). A conta com mais de um bucket da
+   * mesma fonte (duas trilhas, um flow log por região) entra uma vez por bucket.
+   */
   buckets: Partial<Record<AwsSource, string>>;
 }
+
+/** As fontes em que o módulo fixa a conta da pasta lida (`aws.aws_account_id`): a conta do evento é a de quem leu. */
+const FOLDER_SOURCES: readonly AwsSource[] = ['cloudtrail', 'vpc'];
 
 export type UnownedReason =
   /** Fora do formato esperado (inclusive um campo de conta inválido). */
   | 'invalid_alert'
   /** Não veio do módulo aws-s3 (ex.: alerta do próprio manager). */
   | 'not_aws'
-  /** Bucket de origem não cadastrado para aquela fonte. */
+  /** Bucket de origem não cadastrado para aquela fonte. No CloudWatch Logs: nenhum cliente com grupo autorizado. */
   | 'unknown_source'
-  /** O mesmo bucket cadastrado por clientes diferentes. */
+  /**
+   * O mesmo bucket cadastrado por clientes diferentes. No CloudWatch Logs: mais de um cliente com grupo autorizado, ou
+   * um só, sem a prova de que o manager só coletou os grupos dele quando o alerta foi gerado (`cloudwatch-ownership.ts`).
+   */
   | 'ambiguous_source'
-  /** O evento não cita conta. */
+  /** O evento não cita conta. No CloudWatch Logs: o cliente tem grupos autorizados em mais de uma conta. */
   | 'no_account'
   /** O evento cita contas diferentes. */
   | 'conflicting_accounts'
@@ -114,8 +126,9 @@ export function resolveAlertOwner(alert: WazuhAwsAlert, directory: AccountDirect
   const tenantId = directory.tenantOf(accountId);
   if (tenantId === null) return unowned('unknown_account', accounts);
   if (tenantId !== bucketOwner.tenantId) return unowned('source_mismatch', accounts);
-  // No CloudTrail a pasta lida é a da conta que cadastrou o bucket (T4.6); outra conta ali é sinal de problema.
-  if (alert.source === 'cloudtrail' && !bucketOwner.accounts.has(accountId)) {
+  // No CloudTrail e nos flow logs, a pasta lida é a da conta que cadastrou o bucket (T4.6); outra conta ali é sinal
+  // de problema.
+  if (FOLDER_SOURCES.includes(alert.source) && !bucketOwner.accounts.has(accountId)) {
     return unowned('source_mismatch', accounts);
   }
   return { owned: true, tenantId, accountId };

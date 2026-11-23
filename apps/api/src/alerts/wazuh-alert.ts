@@ -8,8 +8,12 @@ import { z } from 'zod';
  * API usa, cada um conferido no formato; o resto do documento não é guardado (o detalhe do achado relê o evento no
  * indexer, saneado). Formatos conferidos no código do módulo aws-s3 do Wazuh 4.14.9:
  * - o evento original da AWS fica em `data.aws`, com `source` e `log_info.s3bucket` (o bucket que o módulo leu);
- * - só o CloudTrail ganha `aws_account_id`, a conta da pasta `AWSLogs/<conta>` lida. No GuardDuty e no WAF, a conta
- *   vem do próprio evento, que o cliente controla (por isso a T5.2 cruza com o bucket de origem);
+ * - o CloudTrail e os flow logs da VPC ganham `aws_account_id`, a conta da pasta `AWSLogs/<conta>` lida. No GuardDuty
+ *   e no WAF, a conta vem do próprio evento, que o cliente controla (por isso a T5.2 cruza com o bucket de origem);
+ * - nos flow logs (`source: vpc`), cada registro vira um evento com os 14 campos do formato padrão, e o módulo troca o
+ *   início e o fim (`start`, `end`) pelo horário em ISO 8601. O `account_id` do registro é o dono da interface, que
+ *   numa VPC compartilhada é outra conta e, numa interface criada por um serviço da AWS, vem como `unknown`: não
+ *   decide de quem é o alerta;
  * - listas de um elemento viram o próprio elemento (os acessos aceitam os dois);
  * - o decoder JSON do analysisd grava cada campo de `data.aws` como texto (conferido no wazuh-logtest do 4.14.9): o
  *   inteiro que cabe em 32 bits sai como o próprio número (`"22"`, `"8"`), os outros números com seis casas
@@ -17,9 +21,21 @@ import { z } from 'zod';
  *   `"false"`. Os números lidos aqui aceitam esse texto e o número em si, e os dois dão o mesmo valor.
  */
 
-/** As fontes que o módulo aws-s3 coleta (infra/wazuh/scripts/render-manager-config.py). */
-export const AWS_SOURCES = ['cloudtrail', 'guardduty', 'waf'] as const;
+/**
+ * As fontes que o módulo aws-s3 coleta de buckets (infra/wazuh/scripts/render-manager-config.py), pelo `aws.source` de
+ * cada evento: `vpc` é o dos flow logs (o tipo `vpcflow` do módulo).
+ */
+export const AWS_SOURCES = ['cloudtrail', 'guardduty', 'waf', 'vpc'] as const;
 export type AwsSource = (typeof AWS_SOURCES)[number];
+
+/**
+ * As correlações dos flow logs da VPC (`infra/wazuh/config/manager/rules/verax_aws_flow_rules.xml`): a varredura
+ * vinda do mesmo endereço (100400) e a insistência em porta de administração remota (100401). Um registro sozinho
+ * nunca vira alerta (as regras do Wazuh para ele ficam abaixo do corte do nó); o alerta é da contagem, e o evento que
+ * vem nele é só o registro que a fechou. Por isso a identidade do achado não é a do registro: é o endereço de origem
+ * (`flowCorrelationSchema`).
+ */
+export const VPC_FLOW_CORRELATION_RULES: readonly string[] = ['100400', '100401'];
 
 export interface WazuhAwsAlert {
   /** ID do alerta no Wazuh. Muda a cada leitura do mesmo evento; o detalhe do achado busca o evento bruto por ele. */
@@ -28,7 +44,9 @@ export interface WazuhAwsAlert {
    * Identidade do evento na própria AWS, montada só com campos do log original (`NATIVE_ID`):
    * - CloudTrail: `eventID`;
    * - GuardDuty: `id` do achado e, na sondagem de porta, `/<IP>:<porta>` de quem sondou;
-   * - WAF: `<timestamp>/<clientIp>/<requestId>`.
+   * - WAF: `<timestamp>/<clientIp>/<requestId>`;
+   * - flow logs da VPC: a interface, o início da janela, a origem, o destino, o protocolo e a ação do registro; nas
+   *   correlações (`VPC_FLOW_CORRELATION_RULES`), só o endereço de origem.
    * Repete-se quando o mesmo evento volta ao indexer (snapshot restaurado, `--reparse`, achado do GuardDuty
    * atualizado), por isso é a base da chave do achado. Ausente ou fora do formato, a chave usa o `id` do alerta.
    */
@@ -48,7 +66,7 @@ export interface WazuhAwsAlert {
   /** Contas citadas no evento (sem repetição). `null` quando algum campo de conta está fora do formato. */
   accounts: string[] | null;
   region?: string;
-  /** Nome do evento: `eventName` do CloudTrail, `type` do GuardDuty, ação e regra do WAF. */
+  /** Nome do evento: `eventName` do CloudTrail, `type` do GuardDuty, ação e regra do WAF, ação do flow log. */
   eventName?: string;
   /** Severidade dada pela própria AWS (GuardDuty, de 0 a 10). */
   awsSeverity?: number;
@@ -58,12 +76,15 @@ export interface WazuhAwsAlert {
    * versão; é este horário que diz se a versão relida é a mesma ou uma nova. O `service.eventLastSeen` não entra:
    * ora um, ora outro, as versões seriam comparadas por horários de natureza diferente, e uma versão nova cujo
    * `eventLastSeen` ficasse atrás do `updatedAt` da anterior cairia como antiga.
+   *
+   * Nas correlações dos flow logs da VPC, a versão é a hora cheia (UTC) do registro que fechou a contagem: a rajada
+   * do mesmo endereço em outra hora é a atividade nova do mesmo achado, e segue a mesma regra de reincidência.
    */
   lastSeenAt?: string;
   /**
    * Só no GuardDuty, com id nativo: o `id` do achado sozinho. Na sondagem de porta, o `nativeId` leva o IP e a porta
    * do item, e este campo fica só com o achado inteiro: a reincidência é dele, uma por versão, por mais itens que o
-   * wodle separe.
+   * wodle separe. Nas correlações dos flow logs da VPC, o endereço de origem (igual ao `nativeId`).
    */
   findingId?: string;
   actor: {
@@ -74,7 +95,7 @@ export interface WazuhAwsAlert {
     accessKeyId?: string;
     ip?: string;
   };
-  /** Recurso afetado, como `tipo:identificador` (ex.: `s3:meu-bucket`, `ec2:i-0abc`). */
+  /** Recurso afetado, como `tipo:identificador` (ex.: `s3:meu-bucket`, `ec2:i-0abc`, `eni:eni-0abc`). */
   resource?: string;
 }
 
@@ -233,6 +254,9 @@ export function accountsOf(source: AwsSource, aws: Record<string, unknown>): str
   const arns: { value: unknown; service: string }[] = [];
   if (source === 'cloudtrail') {
     plain.push(aws['aws_account_id'], aws['recipientAccountId']);
+  } else if (source === 'vpc') {
+    // Só a conta da pasta lida. O `account_id` do registro (o dono da interface) não entra: ver o cabeçalho.
+    plain.push(aws['aws_account_id']);
   } else if (source === 'guardduty') {
     plain.push(aws['accountId']);
     arns.push({ value: aws['arn'], service: 'guardduty' });
@@ -330,10 +354,28 @@ function wafDetails(aws: Record<string, unknown>): Partial<WazuhAwsAlert> {
   };
 }
 
+const INTERFACE_ID = /^eni-[0-9a-f]{8,32}$/;
+/** A região de um flow log, pela pasta do objeto lido (`…/vpcflowlogs/<região>/…`): o registro não a traz. */
+const FLOW_LOG_REGION = /\/vpcflowlogs\/([a-z0-9-]{1,32})\//;
+
+function vpcFlowDetails(aws: Record<string, unknown>): Partial<WazuhAwsAlert> {
+  const file = text(at(aws, 'log_info', 'log_file'), 1024);
+  const region = file === undefined ? undefined : FLOW_LOG_REGION.exec(file)?.[1];
+  const networkInterface = matching(aws['interface_id'], INTERFACE_ID, 64);
+  return {
+    region: matching(region, REGION),
+    eventName: matching(aws['action'], /^[A-Z]{1,16}$/, 16),
+    // Quem abriu a conexão; o destino é a interface da conta.
+    actor: { ip: ip(aws['srcaddr']) },
+    resource: networkInterface && `eni:${networkInterface}`,
+  };
+}
+
 const DETAILS: Record<AwsSource, (aws: Record<string, unknown>) => Partial<WazuhAwsAlert>> = {
   cloudtrail: cloudTrailDetails,
   guardduty: guardDutyDetails,
   waf: wafDetails,
+  vpc: vpcFlowDetails,
 };
 
 /**
@@ -362,10 +404,14 @@ const portProbeDetailSchema = z
   })
   .transform((detail) => `${detail.remoteIpDetails.ipAddressV4}:${detail.localPortDetails.port}`);
 
-/** O id nativo e, só no GuardDuty, o `id` do achado inteiro (igual ao nativo fora da sondagem de porta). */
+/**
+ * O id nativo e, só no GuardDuty, o `id` do achado inteiro (igual ao nativo fora da sondagem de porta). Nas correlações
+ * dos flow logs, também a versão do achado (`lastSeenAt`), que nas outras fontes sai dos detalhes do evento.
+ */
 interface NativeIdentity {
   nativeId: string;
   findingId?: string;
+  lastSeenAt?: string;
 }
 
 /**
@@ -380,6 +426,10 @@ interface NativeIdentity {
  *   (em milissegundos) é o do WAF, e o IP é o da conexão que a AWS recebeu: nenhum dos dois vem de cabeçalho. Com 13
  *   dígitos, o horário passa de 32 bits e chega do Wazuh com seis casas (`"1793527200000.000000"`); no id, vai o
  *   inteiro.
+ * - Flow logs da VPC: o registro não tem id. A AWS junta numa linha só os pacotes de um mesmo fluxo (origem, destino,
+ *   portas e protocolo) numa interface, numa janela e com uma ação: esses campos identificam o registro
+ *   (`<interface>/<início>/<origem>-<porta>/<destino>-<porta>/<protocolo>/<ação>`). O registro sem tráfego (`NODATA`,
+ *   com traços no lugar dos endereços) fica sem id nativo.
  */
 const NATIVE_ID: Record<AwsSource, z.ZodType<NativeIdentity>> = {
   cloudtrail: z.object({ eventID: nativeIdSchema }).transform((event) => ({ nativeId: event.eventID })),
@@ -399,10 +449,63 @@ const NATIVE_ID: Record<AwsSource, z.ZodType<NativeIdentity>> = {
     .transform(({ timestamp, httpRequest }) => ({
       nativeId: `${timestamp}/${httpRequest.clientIp}/${httpRequest.requestId}`,
     })),
+  vpc: z
+    .object({
+      interface_id: z.string().regex(INTERFACE_ID),
+      // O início da janela, como o módulo o grava (ISO 8601 em UTC, ao segundo).
+      start: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/),
+      srcaddr: ipSchema,
+      dstaddr: ipSchema,
+      srcport: unsignedSchema(65_535),
+      dstport: unsignedSchema(65_535),
+      protocol: unsignedSchema(255),
+      action: z.string().regex(/^[A-Z]{1,16}$/),
+    })
+    .transform((flow) => ({
+      nativeId: [
+        flow.interface_id,
+        flow.start,
+        `${flow.srcaddr}-${flow.srcport}`,
+        `${flow.dstaddr}-${flow.dstport}`,
+        flow.protocol,
+        flow.action,
+      ].join('/'),
+    })),
 };
 
 function nativeIdOf(source: AwsSource, aws: Record<string, unknown>): NativeIdentity | undefined {
   const parsed = NATIVE_ID[source].safeParse(aws);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** O começo da hora (UTC) de um horário ISO 8601 já normalizado (`2026-11-01T10:07:31.000Z`). */
+const hourOf = (iso: string): string => `${iso.slice(0, 13)}:00:00.000Z`;
+
+/**
+ * A identidade de um alerta de correlação dos flow logs da VPC (`VPC_FLOW_CORRELATION_RULES`), só com campos do
+ * registro que fechou a contagem:
+ * - o achado é a regra, a conta e o **endereço de origem** (a regra e a conta entram na chave, em `wazuhFindingKey`):
+ *   toda rajada do mesmo endereço na mesma conta é o mesmo achado, seja qual for o registro que a fechou. Com a
+ *   identidade do registro, cada alerta viraria um achado, e a mesma rajada relida (o `--reparse`, um snapshot
+ *   restaurado) fecharia noutro registro e duplicaria;
+ * - a versão é a **hora cheia** (UTC) do início da janela desse registro. Reler a mesma rajada cai na mesma hora (ou
+ *   numa anterior à última conhecida) e não muda nada. A rajada em outra hora segue a regra de reincidência do
+ *   GuardDuty (`FindingStore.recur`): com o achado ainda não triado, só a versão avança; com ele já triado, vira um
+ *   achado novo, ligado ao original. É no máximo um achado em aberto por regra, conta e endereço.
+ * O horário é o do tráfego, e não o do alerta (que muda a cada leitura). Sem o endereço ou o horário no formato, o
+ * alerta fica sem id nativo, e a chave usa o `id` do alerta.
+ */
+const flowCorrelationSchema = z
+  .object({ srcaddr: ipSchema, start: eventTimeSchema })
+  .transform(({ srcaddr, start }) => ({ nativeId: srcaddr, findingId: srcaddr, lastSeenAt: hourOf(start) }));
+
+function identityOf(
+  source: AwsSource,
+  ruleId: string,
+  aws: Record<string, unknown>,
+): NativeIdentity | undefined {
+  if (source !== 'vpc' || !VPC_FLOW_CORRELATION_RULES.includes(ruleId)) return nativeIdOf(source, aws);
+  const parsed = flowCorrelationSchema.safeParse(aws);
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -464,7 +567,7 @@ export function parseWazuhAlert(document: unknown): ParsedAlert {
   }
 
   const details = DETAILS[source](aws);
-  const identity = nativeIdOf(source, aws);
+  const identity = identityOf(source, rule.id, aws);
   return {
     ok: true,
     alert: {
@@ -489,7 +592,7 @@ export function parseWazuhAlert(document: unknown): ParsedAlert {
       region: details.region,
       eventName: details.eventName,
       awsSeverity: details.awsSeverity,
-      lastSeenAt: details.lastSeenAt,
+      lastSeenAt: identity?.lastSeenAt ?? details.lastSeenAt,
       actor: details.actor ?? {},
       resource: details.resource,
     },

@@ -2,6 +2,7 @@ import {
   AWS_ONBOARDING_CHECK_CODES,
   AWS_SOURCE_PERMISSION_CODES,
   AWS_SOURCE_STATE_CODES,
+  AWS_WAZUH_SOURCE_STATE_CODES,
   type AwsCredentialMode,
   type AwsDiscoveryService,
   type AwsDiscoveryStatus,
@@ -23,6 +24,7 @@ import {
   type AwsSourceState,
   CONSOLE_MANAGED_CODE,
   isAwsConnectionWarningCode,
+  type WazuhSourceStateCode,
 } from '@verax/shared';
 import type { Severity } from '@/design/severity';
 import { ApiRequestError } from '@/lib/api-client';
@@ -396,7 +398,7 @@ export const AWS_SOURCE_KIND_TEXTS: Readonly<Record<AwsSourceKind, KindText>> = 
   },
   vpc_flow_logs: {
     label: 'VPC Flow Logs',
-    description: 'O tráfego de rede aceito e recusado nas VPCs.',
+    description: 'O tráfego de rede que as VPCs recusaram. O Verax não lê o tráfego aceito.',
   },
   waf: {
     label: 'WAF (log da Web ACL)',
@@ -476,8 +478,55 @@ export const AWS_SOURCE_STATE_CODE_TEXTS: Readonly<Record<(typeof AWS_SOURCE_STA
   };
 
 /**
- * Por que a leitura de uma fonte autorizada está falhando (`ingestion_error`): o limite de requisições (`throttled`) ou
- * o nome do erro que a AWS deu. O coletor só marca a falha depois de três leituras seguidas com erro, e continua
+ * Os motivos que a coleta das fontes de bucket e dos grupos do CloudWatch Logs grava (`AWS_WAZUH_SOURCE_STATE_CODES`):
+ * a espera pela configuração, a fonte parada, os dois avisos do servidor e por que uma fonte autorizada ficou de fora
+ * da coleta. Cada um diz o que aconteceu e o que fazer.
+ */
+export const AWS_WAZUH_SOURCE_STATE_CODE_TEXTS: Readonly<Record<WazuhSourceStateCode, string>> = {
+  awaiting_apply:
+    'A fonte já entrou na configuração da coleta, e o servidor do Verax ainda não a aplicou. Leva alguns minutos: não é preciso fazer nada.',
+  no_progress:
+    'O bucket tem arquivos novos há mais de 30 minutos, e o Verax não lê nada desta fonte há mais de 2 horas. O que fazer: clique em Tentar de novo, para o Verax conferir a permissão; se continuar, fale com a Verax.',
+  aws_token_stale:
+    'O servidor do Verax não está renovando a credencial com que lê a AWS, e a leitura desta fonte parou. O problema é do servidor, não da sua conta: fale com a Verax.',
+  wazuh_apply_failed:
+    'O servidor do Verax não conseguiu aplicar a configuração da coleta com esta fonte, e ela ainda não começou a ser lida. O problema é do servidor, não da sua conta: fale com a Verax.',
+  invalid_details:
+    'O que a descoberta guardou desta fonte não basta para lê-la (falta o bucket ou a data de início da coleta). O que fazer: clique em Descobrir de novo, em "O que encontramos"; se continuar, retire a autorização e autorize de novo.',
+  unsupported_name:
+    'O nome desta fonte tem um caractere que o coletor não aceita: espaço, vírgula ou # no nome do grupo de logs, ou algo fora de letras, números, ponto, hífen e sublinhado no nome da Web ACL ou no prefixo. O que fazer: retire a autorização; a fonte só pode ser lida com outro nome na AWS.',
+  region_unsupported:
+    'Esta fonte fica numa região da AWS que o coletor desta versão não lê. O que fazer: se você precisa desta região, fale com a Verax; senão, retire a autorização.',
+  organization_id_unknown:
+    'É uma trilha de organização, e o Verax não achou o ID da organização no bucket (a pasta AWSLogs/o-…). O que fazer: confira se a trilha já gravou algum arquivo e clique em Descobrir de novo, em "O que encontramos".',
+  custom_prefix_unsupported:
+    'Os arquivos desta fonte ficam atrás de um prefixo antes de AWSLogs/, num bucket que não está em "Avançado: buckets fora do padrão". O que fazer: cadastre o bucket lá e atualize a pilha.',
+  source_limit:
+    'Esta conta passou do limite de fontes lidas (200 fontes do S3 e 50 grupos do CloudWatch Logs), e esta ficou de fora. O que fazer: retire a autorização de uma fonte de que você não precisa mais.',
+  log_group_name_conflict:
+    'Outro cadastro deste servidor já lê um grupo com este nome nesta região, e só o primeiro autorizado é lido. O que fazer: retire a autorização deste grupo, ou a do outro.',
+};
+
+function isWazuhSourceStateCode(code: string): code is WazuhSourceStateCode {
+  return (AWS_WAZUH_SOURCE_STATE_CODES as readonly string[]).includes(code);
+}
+
+/**
+ * O que o cliente precisa saber de como um tipo de fonte é coletado, além do que ela traz: nos flow logs, que só o
+ * tráfego recusado é lido e de onde saem as detecções; nos grupos do CloudWatch Logs, o atraso dos alertas e quando
+ * eles são atribuídos. Aparece na linha da fonte, antes e depois da autorização.
+ */
+export const AWS_SOURCE_COLLECTION_NOTES: Readonly<Partial<Record<AwsSourceKind, string>>> = {
+  vpc_flow_logs:
+    'Só o tráfego recusado é lido. As detecções vêm de duas regras: varredura de rede (muitas conexões recusadas do mesmo endereço) e insistência em porta de administração remota (SSH, na 22, e RDP, na 3389).',
+  cloudwatch_log_group:
+    'Os alertas destes logs aparecem com pelo menos 10 minutos de atraso, e só são atribuídos a você quando uma única conta neste servidor tem grupos autorizados. Fora disso, vão para a fila de alertas sem dono, que só a Verax vê.',
+};
+
+/**
+ * Por que a leitura de uma fonte autorizada está falhando (`ingestion_error`): o limite de requisições (`throttled`),
+ * um dos motivos da coleta das fontes de bucket e dos grupos de logs (`AWS_WAZUH_SOURCE_STATE_CODE_TEXTS`) ou o nome do
+ * erro que a AWS deu. O coletor de achados só marca a falha depois de três leituras seguidas com erro, e continua
  * tentando sozinho. Os nomes que não estão aqui aparecem como "Tipo do erro", nunca como mensagem da AWS.
  */
 const INTERNAL_ERROR =
@@ -503,6 +552,7 @@ export function awsIngestionErrorText(code: string | null): string {
   if (code === null)
     return 'A leitura desta fonte falhou nas últimas tentativas. O Verax continua tentando sozinho.';
   if (code === 'throttled') return AWS_SOURCE_STATE_CODE_TEXTS.throttled;
+  if (isWazuhSourceStateCode(code)) return AWS_WAZUH_SOURCE_STATE_CODE_TEXTS[code];
   if (Object.hasOwn(INGESTION_ERROR_TEXTS, code)) return INGESTION_ERROR_TEXTS[code] ?? '';
   return `A leitura desta fonte falhou nas últimas tentativas. O Verax continua tentando sozinho. Tipo do erro: ${code}.`;
 }
@@ -592,7 +642,10 @@ export function awsSourceHealthText(source: AwsSource): { label: string; tone: T
     case 'stalled':
       return {
         ...base,
-        detail: 'Esta fonte entrega eventos o tempo todo, e parou de entregar há mais de 2 horas.',
+        detail:
+          code === 'no_progress'
+            ? AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.no_progress
+            : 'Esta fonte entrega eventos o tempo todo, e parou de entregar há mais de 2 horas.',
       };
     case 'source_missing':
       // O serviço desligado e a fonte que sumiu têm o texto deles; os outros motivos são os da descoberta (o log
@@ -607,6 +660,11 @@ export function awsSourceHealthText(source: AwsSource): { label: string; tone: T
           : `${AWS_SOURCE_STATE_CODE_TEXTS.not_found} Tipo do erro: ${code}.`,
       };
     default:
+      // A fonte na configuração da coleta que o servidor ainda não aplicou diz isso; os outros motivos são os do
+      // contrato.
+      if (code !== null && isWazuhSourceStateCode(code)) {
+        return { ...base, detail: AWS_WAZUH_SOURCE_STATE_CODE_TEXTS[code] };
+      }
       return {
         ...base,
         detail:
@@ -627,6 +685,8 @@ export const AWS_SOURCE_NOTE_TEXTS: Readonly<Record<AwsSourceNote, string>> = {
   aws_cost_flow_logs: 'Ligar os VPC Flow Logs tem custo na AWS, pelo volume gravado.',
   aws_cost_waf_logging: 'Ligar o log da Web ACL tem custo na AWS, pelo volume gravado.',
   high_volume: 'Volume alto: pode aumentar o volume mensal do seu plano.',
+  flow_logs_read_together:
+    'Ao autorizar este Flow Log, o Verax lê todos os Flow Logs desta conta e região que gravam no mesmo bucket.',
   tag_required: 'Só é lido com a etiqueta verax-control = leitura no grupo.',
   stack_update_required: 'Precisa da pilha atualizada, com a autorização deste tipo ligada.',
   additional_bucket_required:

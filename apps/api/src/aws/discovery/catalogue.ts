@@ -345,8 +345,13 @@ export function flowLogSource(
   return {
     ...base,
     availability: readable ? 'available' : 'unsupported_format',
-    // Volume alto por natureza: conta no volume contratado.
-    notes: ['high_volume', ...bucketNotes('vpc_flow_logs', bucket, customPrefix, context)],
+    // Volume alto por natureza: conta no volume contratado. E a leitura é da pasta da conta e da região naquele
+    // bucket, e não de um flow log só (o módulo aws-s3 do Wazuh): autorizado um, os outros que gravam ali vêm junto.
+    notes: [
+      'high_volume',
+      ...(readable ? (['flow_logs_read_together'] as const) : []),
+      ...bucketNotes('vpc_flow_logs', bucket, customPrefix, context),
+    ],
     details: {
       ...common,
       destinationType: 's3',

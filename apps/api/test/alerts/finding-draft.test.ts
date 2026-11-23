@@ -349,7 +349,7 @@ describe('leitura incremental (T5.3)', () => {
         filter: [
           { range: { timestamp: { gte: '2026-11-01T11:20:00.000Z' } } },
           { term: { 'data.integration': 'aws' } },
-          { terms: { 'data.aws.source': ['cloudtrail', 'guardduty', 'waf'] } },
+          { terms: { 'data.aws.source': ['cloudtrail', 'guardduty', 'waf', 'vpc'] } },
           { range: { 'rule.level': { gte: 5 } } },
           // Só os do manager, onde o módulo aws-s3 roda: um agente com log de cara da AWS fica de fora.
           { term: { 'agent.id': '000' } },

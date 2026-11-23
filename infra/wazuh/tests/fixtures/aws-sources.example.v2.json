@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "accounts": [
+    {
+      "accountId": "111122223333",
+      "region": "sa-east-1",
+      "s3": [
+        {
+          "type": "cloudtrail",
+          "bucket": "verax-control-cloudtrail-111122223333-sa-east-1",
+          "onlyLogsAfter": "2026-NOV-01",
+          "legacy": true
+        },
+        {
+          "type": "guardduty",
+          "bucket": "verax-control-guardduty-111122223333-sa-east-1",
+          "onlyLogsAfter": "2026-NOV-01",
+          "legacy": true
+        },
+        {
+          "type": "waf",
+          "bucket": "aws-waf-logs-verax-control-111122223333-sa-east-1",
+          "onlyLogsAfter": "2026-NOV-01",
+          "legacy": true
+        }
+      ],
+      "logGroups": []
+    },
+    {
+      "accountId": "444455556666",
+      "region": "us-east-1",
+      "s3": [
+        {
+          "type": "cloudtrail",
+          "bucket": "trilha-existente-444455556666",
+          "onlyLogsAfter": "2026-OCT-15",
+          "legacy": true
+        }
+      ],
+      "logGroups": []
+    }
+  ]
+}

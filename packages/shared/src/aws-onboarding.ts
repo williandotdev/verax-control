@@ -186,7 +186,11 @@ export function isAwsSourceActiveState(state: AwsSourceState): boolean {
   return (AWS_SOURCE_ACTIVE_STATES as readonly string[]).includes(state);
 }
 
-/** O motivo do estado, quando há um: o coletor que ainda não existe para a fonte, o tipo ainda não coletado etc. */
+/**
+ * O motivo do estado, quando há um: o coletor que ainda não existe para a fonte, o tipo ainda não coletado etc. Os que
+ * a coleta pelo Wazuh grava nas fontes de bucket e do CloudWatch Logs (a lista ainda não aplicada, a fonte parada, o
+ * motivo de ela ter ficado de fora da lista) estão em `aws-wazuh-sources.ts` (`AWS_WAZUH_SOURCE_STATE_CODES`).
+ */
 export const AWS_SOURCE_STATE_CODES = [
   /** `authorized`: a autorização está gravada, e o coletor ainda não começou a ler. */
   'awaiting_collector',
@@ -215,6 +219,8 @@ export type AwsSourceLoggingState = (typeof AWS_SOURCE_LOGGING_STATES)[number];
  * do cliente: os de custo dizem que ligar o serviço é cobrado pela AWS.
  * - `aws_cost_*`: ligar o serviço (ou criar a trilha, os flow logs, o logging do WAF) tem custo na AWS;
  * - `high_volume`: fonte de volume alto (flow logs, um grupo grande), que conta no volume contratado;
+ * - `flow_logs_read_together`: autorizar um flow log da VPC lê todos os flow logs daquela conta e região que gravam no
+ *   mesmo bucket (o módulo do Wazuh lê a pasta da conta e da região, e não um flow log só);
  * - `tag_required`: o grupo de logs só é lido com a tag `verax-control = leitura`;
  * - `stack_update_required`: o papel é de um template anterior, ou a capacidade do tipo está desligada;
  * - `additional_bucket_required`: o bucket precisa entrar nos buckets adicionais da pilha (prefixo antes de `AWSLogs/`);
@@ -234,6 +240,7 @@ export const AWS_SOURCE_NOTES = [
   'aws_cost_flow_logs',
   'aws_cost_waf_logging',
   'high_volume',
+  'flow_logs_read_together',
   'tag_required',
   'stack_update_required',
   'additional_bucket_required',
