@@ -4,6 +4,7 @@ export * from './agents.js';
 export * from './alert-exceptions.js';
 export * from './audit.js';
 export * from './cell-protocol.js';
+export * from './aws-onboarding.js';
 export * from './aws-reader.js';
 export * from './cloud-accounts.js';
 export * from './cloud-credentials.js';

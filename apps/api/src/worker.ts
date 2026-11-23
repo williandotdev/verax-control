@@ -185,7 +185,9 @@ async function awsConnectionSetup(
  * verificada a cada 15 min, com a trilha, o export do GuardDuty e a permissão demais uma vez por dia (PR-V5'). A
  * conferência real só liga com `NODE_SA_UNIQUE_ID` (`awsConnectionSetup`), e com ela entra a tarefa `aws-inventory`
  * (a cada 5 min olha as contas; cada conta já verificada é inventariada uma vez por dia, PR-14', e a postura nativa sai
- * da mesma coleta, PR-15').
+ * da mesma coleta, PR-15'). Com ela, no nó dedicado, entra também a tarefa `aws-discovery` (onboarding self-service): a
+ * cada 30 s executa as descobertas pedidas (pelo "Conectar", pelo painel e uma por dia por conta) e responde as
+ * sondagens de permissão das fontes. Na célula, a descoberta fica de fora até a coleta da AWS existir lá.
  *
  * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
  * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos
@@ -298,7 +300,10 @@ async function main(): Promise<void> {
     // Conexão da AWS: a API só grava o pedido do "Verificar"; o worker, o único contêiner com o metadata, responde e,
     // sem pedido, confere de novo as contas já verificadas.
     aws = await awsConnectionSetup(loaded, prisma, logger);
-    const awsCheck = new AwsCheck(prisma, aws.checker);
+    // Onboarding self-service: as tags do papel e a descoberta das fontes só no nó dedicado. Na célula compartilhada, a
+    // coleta da AWS ainda não foi construída (CE-11/CE-12), e a conferência segue como antes.
+    const awsOnboarding = config.NODE_MODE !== 'cell';
+    const awsCheck = new AwsCheck(prisma, aws.checker, { onboarding: awsOnboarding });
     tasks.push({
       name: 'aws-check',
       intervalMs: AWS_CHECK_INTERVAL_MS,
@@ -335,6 +340,19 @@ async function main(): Promise<void> {
         budgetMs: inventory.AWS_INVENTORY_BUDGET_MS,
         run: (signal) => sync.runOnce(signal),
       });
+      // Descoberta das fontes de log (onboarding self-service): pela mesma sessão, só com chamadas de leitura. Os
+      // clientes dos serviços que ela lê (CloudWatch Logs, WAF, Security Hub, Inspector...) só são carregados aqui.
+      if (awsOnboarding) {
+        const discovery = await import('./aws/discovery/discovery-job.js');
+        const { sdkDiscoveryClients } = await import('./aws/discovery/sdk-clients.js');
+        const discover = new discovery.AwsDiscovery(prisma, aws.credentials, sdkDiscoveryClients);
+        tasks.push({
+          name: 'aws-discovery',
+          intervalMs: discovery.AWS_DISCOVERY_TICK_MS,
+          budgetMs: discovery.AWS_DISCOVERY_BUDGET_MS,
+          run: (signal) => discover.runOnce(signal),
+        });
+      }
     }
 
     // Wazuh do nó (perfil standard): a geração das contas AWS para o host aplicar no manager, e o estado da coleta que o

@@ -25,6 +25,7 @@ import { assertLogOriginsFree, LogOriginTaken, type LogOrigins } from '../cloud-
 import { type AuditEntry, AuditService } from '../common/audit/audit.service.js';
 import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
+import { syncLegacyAwsSources } from '../aws/onboarding/legacy-sources.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { VaultKeyring } from '../credentials/credential-keys.js';
 import { CredentialRejected, CredentialSourceUnavailable } from '../credentials/credential-check.js';
@@ -322,6 +323,8 @@ async function applyAccount(
       if (isUniqueViolation(error)) throw new SourceFailure('account_exists_panel');
       throw error;
     }
+    // Os buckets do console aparecem como fontes da conta (onboarding self-service), como os do painel.
+    if (spec.provider === 'aws') await syncLegacyAwsSources(db, row.id, now);
     await audit.write(
       tx,
       auditEntry(tenantId, {
@@ -360,6 +363,7 @@ async function applyAccount(
     },
     select: accountSelect,
   });
+  if (spec.provider === 'aws') await syncLegacyAwsSources(db, existing.id, now);
   const beforeState = auditState(existing, ctx.node);
   const afterState = auditState(row, ctx.node);
   const { updatedAt: _beforeAt, ...beforeCompared } = beforeState;

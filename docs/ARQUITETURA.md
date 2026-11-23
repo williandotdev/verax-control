@@ -771,6 +771,120 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
 | Na célula, o cliente A cadastra o ID da conta de B antes dele (409 para B, negação de serviço)                                           | Mensagem genérica no 409; depois (CE-23), a unicidade só entre contas verificadas: a verificada vence e as duplicadas não verificadas são desativadas                                                                                                                                                                 |
 | Na saída do cliente, o papel segue na conta dele                                                                                         | Roteiro: "Revoke active sessions" e apagar a pilha; sem o papel, o nó não entra                                                                                                                                                                                                                                       |
 
+## Onboarding AWS self-service
+
+_(em construção, em vários PRs. Feito no código: o template v2 do papel, com a descoberta e as três autorizações do
+cliente (PR-T); o contrato, o modelo de dados, o "Conectar" com validação automática, a descoberta e as rotas de
+autorização (PR-B). A construir: a coleta das fontes autorizadas pelo Wazuh e pelas APIs de achados (PR-C1 e PR-C2) e a
+tela nova (PR-U). Até lá, uma fonte autorizada fica "aguardando o coletor", e a tela de Contas cloud segue a de antes.)_
+
+O cliente conecta a conta AWS sozinho: clica em "Conectar com AWS", cria a pilha do papel de leitura no CloudFormation
+e, a partir daí, o nó valida a conexão, descobre as fontes de log da conta e mostra o que pode ser coletado. O cliente
+não digita bucket, ARN, região, detector nem grupo de logs: escolhe e autoriza. Decisões do responsável (22/11/2026):
+sem bucket nem conta AWS da Verax no caminho; nenhum log descartado por plano (o volume é controlado pela data de
+início, pelos tetos de quantidade e pela desautorização a qualquer momento); nós dedicados primeiro (na célula, a coleta
+da AWS ainda não existe, e a descoberta fica desligada); na VM própria do cliente, a conta continua lida com a chave do
+usuário IAM de leitura, e o resto é igual.
+
+**Regras de segurança:**
+
+- **A Verax nunca cria nem altera nada na conta do cliente.** A descoberta só faz chamadas `Describe*`, `Get*`, `List*`
+  e `BatchGet*`. Além da política do papel (só leitura, com as negações explícitas), os clientes da AWS da descoberta
+  têm uma trava própria (`apps/api/src/aws/discovery/read-only.ts`): qualquer outro comando é recusado antes de sair
+  para a rede. Ligar um serviço (GuardDuty, Security Hub, Inspector, uma trilha, flow logs, o logging do WAF) é sempre do
+  cliente; as fontes desligadas aparecem com o aviso de que ligar tem custo na AWS.
+- **A API não fala com a AWS.** Ela grava pedidos (o "Conectar", a descoberta manual, a sondagem de uma fonte); quem
+  entra no papel é o worker, o único processo do nó com a identidade. As credenciais passam por `AwsReaderCredentials`
+  (o papel sem chave ou, na VM própria, a chave do cofre), a mesma sessão da conferência da conexão e do inventário.
+- **Só nomes e configuração.** A descoberta não lê conteúdo de log. A sondagem de um bucket lê o nome de um objeto e 1
+  byte dele (para provar a chave KMS), e nada é guardado. Dos erros da AWS, só o nome (nunca a mensagem).
+- **Isolamento por cliente:** `AwsDiscoveryRun` e `AwsSource` têm `tenantId`, entram no escopo do cliente e têm chave
+  estrangeira composta com a conta (o banco recusa a linha de um cliente na conta de outro). O painel só alcança a conta
+  e as fontes do cliente da sessão (o resto é 404).
+- **Fontes sensíveis:** um grupo do CloudWatch Logs pode trazer dado de aplicação. Só é lido com a tag
+  `verax-control = leitura` (posta pelo cliente) e só é autorizado citado um a um na confirmação
+  (`sensitiveSourceIds`): não existe "autorizar tudo" para eles.
+- **Toda escrita é auditada** na trilha do cliente, com quem, quando e o quê: `cloud_account.aws_connect`,
+  `aws_discovery_request`, `aws_source_authorized`, `aws_source_revoked` e `aws_source_retry` (pelo usuário);
+  `aws_check`, `aws_template` e `aws_discovery` (pelo sistema). Na conta que a Verax cadastrou pelo console, o
+  cadastro continua do console (409 `CONSOLE_MANAGED`), e conectar, descobrir e autorizar são do cliente.
+
+**Conectar e validar (`POST /v1/cloud-accounts/:id/aws/connect`, tarefa `aws-check`):** o "Conectar" grava o
+`awsConnectRequestedAt` e o pedido de verificação com o mesmo horário. Nesse pedido, a tarefa `aws-check` tem uma janela
+de 60 min em que a entrada recusada e o token recusado só dizem que o papel ainda não existe (a pilha está sendo criada;
+o nó não enxerga a pilha, só sabe que ainda não entrou): o pedido fica pendente, com tentativas a 20 s, 40 s e depois a
+cada 60 s. Fechada a janela sem o papel, o erro gravado é `authorization_timeout` ("tentar de novo" abre outra janela).
+Um erro que não é a falta do papel (outra conta, um bucket negado) é gravado na hora; o "Verificar" comum segue com a
+janela de 10 min. Depois de uma conferência sem erro, no pedido e uma vez por dia, a tarefa lê as tags do papel
+(`iam:GetRole` no próprio papel; na VM própria, `iam:GetUser` no usuário de leitura): a versão do template e as
+capacidades (`discovery`, `service-logs`, `findings`, `log-groups`). Sem tags, é o template v1, só com a descoberta.
+Na primeira entrada, no "Conectar" e quando as tags mudam, ela pede a descoberta da conta.
+
+**Descoberta (tarefa `aws-discovery` do worker, `apps/api/src/aws/discovery/`):** a cada 30 s, sob concessão no banco,
+executa os pedidos pendentes (do "Conectar", do painel e um por dia por conta, pelo `CollectorCursor` do fluxo
+`aws_discovery`). No máximo uma execução pendente ou em curso por conta; a manual, no máximo uma a cada 5 min. Toda
+execução começa lendo as tags do papel (`aws/reader-tags.ts`), e são elas que valem até o fim, não as gravadas na
+conta: quem atualizou a pilha e pediu a descoberta vê as fontes liberadas na hora. As tags vão para a conta junto com o
+resultado (a mudança entra na trilha, `aws_template`). A leitura recusada é o template v1; se a recusa for de uma
+sessão que deixou de valer, nada mais é lido, a execução falha e a conta fica como está. Com a leitura sem resposta
+(uma falha passageira), valem as gravadas, e a falha fica no registro da execução (`iam × global × código`). Para a
+conta: as regiões habilitadas (`DescribeRegions`) e, em cada uma, com teto de chamadas simultâneas e de tempo por
+chamada, as trilhas, os flow logs, as Web ACLs e o logging delas, os detectores do GuardDuty e os exports, o Security
+Hub, o Inspector, os analisadores do Access Analyzer, os grupos do CloudWatch Logs (com a tag), o Config e os load
+balancers; e o retrato da infraestrutura (instâncias, security groups, buckets, RDS, load balancers), reusando os
+coletores do inventário. Cada leitura é isolada por serviço e região: a permissão negada, a região que recusa a sessão,
+o limite de requisições e o tempo esgotado viram um registro (`serviço × região × código`), e a execução termina
+`partial`, que é um resultado válido. Depois, a permissão de cada fonte é sondada: a listagem do prefixo exato e 1 byte
+de um objeto (S3), uma listagem de 1 item (APIs), ou a tag e uma listagem de 1 stream (grupos de logs). As regiões com
+recurso ou fonte vão para `awsDiscoveredRegions` e, na conta cadastrada pelo painel, entram nas monitoradas (que só
+ganham regiões, nunca perdem).
+
+**Fontes (`AwsSource`):** uma linha por conta, tipo, região (ou `global`) e recurso. Tipos coletados: `cloudtrail`,
+`vpc_flow_logs`, `waf` e `guardduty_export` (S3); `guardduty`, `security_hub`, `inspector` e `access_analyzer` (API);
+`cloudwatch_log_group` (CloudWatch, sensível). Descobertos e ainda não coletados: `config` e `elb_logs`. Cada linha
+guarda se dá para ler de onde está (`availability`: disponível, serviço desligado, sem destino, destino ou formato que
+o nó não lê), a permissão da última sondagem (com a ação que faltou ou o motivo: `capability_off`, `tag_missing`,
+`kms_denied`, `bucket_denied`, `outside_awslogs_prefix`), as notas de custo e de pré-requisito, a autorização (quem,
+quando) e a saúde da coleta (vazia até os coletores existirem). Casos tratados: a trilha de organização (o ID da
+organização sai dos nomes de `AWSLogs/` no bucket), o prefixo antes de `AWSLogs/` (fora do que o papel lê, a não ser num
+bucket do cadastro), os flow logs com partições do Hive, em Parquet ou com campos fora do padrão (formato não lido), os
+que gravam no CloudWatch Logs (o grupo é oferecido), o WAF no Firehose (destino não lido) e no S3 (uma fonte por Web
+ACL). A descoberta nunca apaga nem muda em silêncio uma fonte autorizada: a que some (num escopo que a execução leu por
+inteiro) fica `source_missing`; a que perde a permissão, `permission_error`; a revogada fica revogada. Os buckets do
+cadastro anterior (`cloudtrailBucket`, `guarddutyBucket`, `wafBucket`) continuam valendo como antes e aparecem como
+linhas `origin = legacy`, autorizadas, espelhadas por `aws/onboarding/legacy-sources.ts`.
+
+**Estado da fonte:** `available`, `needs_permission` ou `unavailable` antes da autorização; depois, `authorized`
+(aguardando o coletor), `configuring`, `waiting_events`, `collecting`, `stalled`, `permission_error` e
+`ingestion_error`; `source_missing` e `revoked`. A autorização (`POST …/aws/sources/authorize`) só vale para a fonte
+disponível, de tipo coletado, com a permissão conferida e que não repete um bucket do cadastro; a coleta começa no dia
+da autorização (sem histórico). Tudo ou nada: uma fonte recusada recusa o pedido. Tetos por conta: 50 grupos do
+CloudWatch Logs e 200 fontes de S3 autorizados.
+
+**"Tentar de novo" numa fonte (`POST …/aws/sources/:sourceId/retry`):** a API só grava o pedido; quem responde é a
+tarefa `aws-discovery`, na execução seguinte. O cliente pede a sondagem depois de mudar algo na conta dele, então a
+resposta sai do que a AWS diz agora, e nunca do que a última descoberta gravou: (1) as tags do papel são lidas de novo
+(`aws/reader-tags.ts`, a mesma leitura da conferência da conexão) e gravadas na conta, e a capacidade ligada numa
+atualização da pilha vale na hora (a mudança entra na trilha e pede uma descoberta, para as outras fontes); (2) a
+própria fonte é lida de novo (`discovery/source-reading.ts`, com as mesmas leituras e a mesma classificação da
+descoberta, só do tipo e da região dela): o destino, o prefixo, o formato, o estado do serviço e, no grupo de logs, a
+tag (`ListTagsForResource`); (3) só então a permissão é sondada, e o resultado é gravado com as regras da descoberta
+para uma fonte conhecida. No grupo de logs, a leitura das tags negada é a permissão que falta
+(`logs:ListTagsForResource`), e não a tag. A fonte que não está mais lá (apagada, desligada, ou com o log num destino
+que vira outro tipo de fonte) só desfaz o pedido e pede uma descoberta da conta, que é quem tira ou marca a linha. A
+conta que não entra no papel, a leitura recusada e a sondagem que não termina só desfazem o pedido. Essa descoberta é
+pedida pelo sistema e não entra no limite de 5 min da manual; o que a contém é o resto: no máximo uma execução pendente
+ou em curso por conta, e no máximo um "Tentar de novo" a cada 30 s por fonte (429 `SOURCE_RETRY_RATE_LIMITED`; o
+horário do último pedido fica em `lastProbeRequestAt`, que a resposta não desfaz).
+
+**Estado da conta (`GET …/aws/onboarding`):** derivado pela API a cada leitura (`aws/onboarding/onboarding-state.ts`),
+nunca guardado nem escrito à mão: `not_started`, `awaiting_authorization`, `authenticated`, `discovering`,
+`awaiting_sources`, `configuring`, `collecting`, `partial`, `permission_error`, `ingestion_failure`, `disconnected` e
+`authorization_timeout`. Junto vão as conferências, cada uma com situação, código e horário: `assume_role`, `identity`,
+`template`, `discovery` e, das fontes autorizadas, `permission`, `collector_config`, `events`, `last_sync` e `lag`. A
+regra: nunca um "tudo certo" com um passo essencial pendente. A conta só está `collecting` quando toda fonte autorizada
+está coletando; com o papel removido, fica `disconnected`, e as fontes e as autorizações continuam lá.
+
 ## Ativos e Postura da AWS
 
 _(fase 2: o inventário de Ativos (PR-14') e a postura nativa com 18 checagens (PR-15') estão feitos no código, numa

@@ -15,6 +15,7 @@ import type {
   AwsCheckOutcome,
   AwsCheckTarget,
   AwsConnectionChecker,
+  AwsReaderFacts,
 } from '../src/aws/aws-connection-check.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import type { Prisma } from '../src/generated/prisma/client.js';
@@ -54,6 +55,23 @@ class FakeAwsChecker implements AwsConnectionChecker {
     const answer = this.answers.get(target.accountId);
     if (answer !== undefined) return answer(target);
     return { ok: true, warnings: [], ...(target.daily && { daily: { warnings: [] } }) };
+  }
+}
+
+/** A conferência falsa que também lê as tags do papel: uma resposta por conta AWS, e cada leitura anotada. */
+class FakeTaggedChecker extends FakeAwsChecker {
+  readonly factsCalls: string[] = [];
+  private readonly facts = new Map<string, AwsReaderFacts | null | Error>();
+
+  tag(awsAccountId: string, facts: AwsReaderFacts | null | Error) {
+    this.facts.set(awsAccountId, facts);
+  }
+
+  readerFacts(target: AwsCheckTarget): Promise<AwsReaderFacts | null> {
+    this.factsCalls.push(target.accountId);
+    const answer = this.facts.get(target.accountId);
+    if (answer instanceof Error) return Promise.reject(answer);
+    return Promise.resolve(answer ?? null);
   }
 }
 
@@ -460,5 +478,145 @@ describe('aws-check sem pedido: a cada 15 min, as diárias e as tentativas espa�
       .set('Cookie', admin.cookie)
       .expect(200);
     expect(read.body).toMatchObject({ connection: 'connected', connectionError: null });
+  });
+
+  describe('as tags do papel, uma vez por dia (onboarding self-service)', () => {
+    const V2: AwsReaderFacts = {
+      templateVersion: 2,
+      capabilities: ['discovery', 'service-logs', 'findings', 'log-groups'],
+    };
+    const factsOf = (id: string) =>
+      prisma.cloudAccount.findUniqueOrThrow({
+        where: { id },
+        select: { awsTemplateVersion: true, awsCapabilities: true, awsCapabilitiesCheckedAt: true },
+      });
+    const templateAudit = (id: string) =>
+      prisma.auditLog.findMany({ where: { action: 'cloud_account.aws_template', resourceId: id } });
+    const runsOf = (id: string) => prisma.awsDiscoveryRun.findMany({ where: { cloudAccountId: id } });
+
+    it('a conta de antes do onboarding ganha a versão do template e uma descoberta na primeira conferência diária', async () => {
+      const tenant = await createTenant(app, 'Cliente Demo A (tags diárias)');
+      const account = await verifiedAccount(tenant);
+      const clock = clockAt(new Date('2026-11-05T10:00:00.000Z'));
+      const checker = new FakeTaggedChecker(clock.now);
+      // O papel de antes do template v2: sem tags.
+      checker.tag(account.accountId, { templateVersion: 1, capabilities: ['discovery'] });
+      const task = new AwsCheck(prisma, checker, { now: clock.now, tenantIds: [tenant] });
+
+      expect(await task.recheck()).toMatchObject({ checked: 1, daily: 1, changed: 0 });
+      expect(await factsOf(account.id)).toEqual({
+        awsTemplateVersion: 1,
+        awsCapabilities: ['discovery'],
+        awsCapabilitiesCheckedAt: clock.now(),
+      });
+      const [entry] = await templateAudit(account.id);
+      expect(entry).toMatchObject({
+        actorType: 'system',
+        tenantId: tenant,
+        outcome: 'success',
+        before: { awsTemplateVersion: null, awsCapabilities: [] },
+        after: { awsTemplateVersion: 1, awsCapabilities: ['discovery'] },
+      });
+      expect((await runsOf(account.id)).map((run) => [run.trigger, run.status, run.tenantId])).toEqual([
+        ['scheduled', 'pending', tenant],
+      ]);
+      // A conexão não mudou: nada na trilha da conferência.
+      expect(await auditOf(account.id)).toEqual([]);
+
+      // Nas conferências de 15 em 15 min, as tags não são lidas.
+      for (let round = 0; round < 3; round += 1) {
+        clock.advance(AWS_RECHECK_INTERVAL_MS);
+        await task.recheck();
+      }
+      expect(checker.factsCalls).toEqual([account.accountId]);
+    });
+
+    it('no dia seguinte: sem mudança, só o horário da leitura; com a pilha atualizada, a mudança é auditada e pede outra descoberta', async () => {
+      const tenant = await createTenant(app, 'Cliente Demo A (pilha atualizada)');
+      const first = new Date('2026-11-05T10:00:00.000Z');
+      const account = await verifiedAccount(tenant, {
+        awsTemplateVersion: 1,
+        awsCapabilities: ['discovery'],
+        awsCapabilitiesCheckedAt: new Date('2026-11-04T10:00:00.000Z'),
+      });
+      const clock = clockAt(first);
+      const checker = new FakeTaggedChecker(clock.now);
+      checker.tag(account.accountId, { templateVersion: 1, capabilities: ['discovery'] });
+      const task = new AwsCheck(prisma, checker, { now: clock.now, tenantIds: [tenant] });
+
+      await task.recheck();
+      expect(await factsOf(account.id)).toMatchObject({
+        awsTemplateVersion: 1,
+        awsCapabilitiesCheckedAt: first,
+      });
+      expect(await templateAudit(account.id)).toEqual([]);
+      expect(await runsOf(account.id)).toEqual([]);
+
+      // O cliente atualiza a pilha para o template v2.
+      checker.tag(account.accountId, V2);
+      clock.advance(AWS_DAILY_CHECK_INTERVAL_MS);
+      await task.recheck();
+      expect(await factsOf(account.id)).toEqual({
+        awsTemplateVersion: 2,
+        awsCapabilities: V2.capabilities,
+        awsCapabilitiesCheckedAt: clock.now(),
+      });
+      expect(await templateAudit(account.id)).toHaveLength(1);
+      expect((await templateAudit(account.id))[0]).toMatchObject({
+        before: { awsTemplateVersion: 1, awsCapabilities: ['discovery'] },
+        after: { awsTemplateVersion: 2, awsCapabilities: V2.capabilities },
+      });
+      expect(await runsOf(account.id)).toHaveLength(1);
+
+      // A mesma lista em outra ordem não é mudança.
+      checker.tag(account.accountId, {
+        templateVersion: 2,
+        capabilities: ['log-groups', 'findings', 'service-logs', 'discovery'],
+      });
+      clock.advance(AWS_DAILY_CHECK_INTERVAL_MS);
+      await task.recheck();
+      expect(await templateAudit(account.id)).toHaveLength(1);
+      expect(await runsOf(account.id)).toHaveLength(1);
+    });
+
+    it('as tags que não puderam ser lidas (ou a leitura que falha) deixam o gravado; com a conferência com erro, nem são lidas', async () => {
+      const tenant = await createTenant(app, 'Cliente Demo A (tags sem leitura)');
+      const stored = {
+        awsTemplateVersion: 2,
+        awsCapabilities: ['discovery', 'findings'],
+        awsCapabilitiesCheckedAt: new Date('2026-11-04T10:00:00.000Z'),
+      };
+      const unread = await verifiedAccount(tenant, stored);
+      const failing = await verifiedAccount(tenant, stored);
+      const refused = await verifiedAccount(tenant, stored);
+      const clock = clockAt(new Date('2026-11-05T10:00:00.000Z'));
+      const checker = new FakeTaggedChecker(clock.now);
+      checker.tag(unread.accountId, null);
+      checker.tag(failing.accountId, new Error('falha inesperada'));
+      checker.tag(refused.accountId, V2);
+      checker.respond(refused.accountId, { ok: false, code: 'account_mismatch', retryable: false });
+      const task = new AwsCheck(prisma, checker, { now: clock.now, tenantIds: [tenant] });
+
+      expect(await task.recheck()).toMatchObject({ checked: 3, changed: 1 });
+      for (const account of [unread, failing, refused]) expect(await factsOf(account.id)).toEqual(stored);
+      expect(checker.factsCalls.sort()).toEqual([unread.accountId, failing.accountId].sort());
+      expect(await runsOf(unread.id)).toEqual([]);
+    });
+
+    it('a conferência que não lê tags (os nós sem a identidade) não grava nada disso', async () => {
+      const tenant = await createTenant(app, 'Cliente Demo A (sem tags)');
+      const account = await verifiedAccount(tenant);
+      const clock = clockAt(new Date('2026-11-05T10:00:00.000Z'));
+      const task = new AwsCheck(prisma, new FakeAwsChecker(clock.now), {
+        now: clock.now,
+        tenantIds: [tenant],
+      });
+      await task.recheck();
+      expect(await factsOf(account.id)).toEqual({
+        awsTemplateVersion: null,
+        awsCapabilities: [],
+        awsCapabilitiesCheckedAt: null,
+      });
+    });
   });
 });

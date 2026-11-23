@@ -92,6 +92,8 @@ describe(`migration ${MIGRATION}`, () => {
         'CloudAccount_aws_check_fields_check',
         // O do aviso da coleta pelo Wazuh do nó (PR-V4', migration 20261109130000_aws_collection_error).
         'CloudAccount_aws_collection_error_check',
+        // As colunas do onboarding self-service só na conta AWS (migration 20261124120000_aws_onboarding).
+        'CloudAccount_aws_onboarding_check',
         // A revisão do console só na conta do console (migration 20261122120000_control_plane_sync).
         'CloudAccount_control_plane_revision_check',
         'CloudAccount_gcp_sinkWriterIdentity_check',

@@ -20,7 +20,12 @@ import {
 } from '@verax/shared';
 import { z } from 'zod';
 import type { AwsCredentialIdentity } from '../inventory/read-only-session.js';
-import type { AwsCheckOutcome, AwsCheckTarget, AwsConnectionChecker } from './aws-connection-check.js';
+import type {
+  AwsCheckOutcome,
+  AwsCheckTarget,
+  AwsConnectionChecker,
+  AwsReaderFacts,
+} from './aws-connection-check.js';
 import {
   AWS_CLIENT_OPTIONS,
   AwsConnectionError,
@@ -33,6 +38,7 @@ import {
   STS_FALLBACK_REGION,
 } from './web-identity.js';
 import { isIamUserArn } from './aws-key-check.js';
+import { readReaderFacts } from './reader-tags.js';
 
 /**
  * A conferência real da conexão da AWS (fase 2, PR-V5'; a interface e a tarefa são do PR-V3'). Cada chamada é uma
@@ -66,6 +72,11 @@ import { isIamUserArn } from './aws-key-check.js';
  * - tempo esgotado, 5xx e limite: `aws_unavailable` (pode passar); qualquer outro: `check_unavailable` (pode passar).
  * Uma falha depois da entrada no papel descarta a sessão guardada da conta: a próxima conferência entra de novo (uma
  * sessão revogada pelo "Revoke active sessions" não fica em uso até vencer).
+ *
+ * As tags do papel (`readerFacts`, onboarding self-service): um `iam:GetRole` no próprio papel, pela sessão da conta,
+ * que a tarefa `aws-check` pede depois de uma conferência sem erro, no "Verificar" e uma vez por dia. As tags dizem a
+ * versão do template e as capacidades ligadas; negado (o template v1 não dava essa permissão) ou sem tags, é a v1, só
+ * com a descoberta. Na VM própria, as mesmas tags ficam no usuário IAM de leitura, lidas com `iam:GetUser` nele mesmo.
  *
  * Na VM própria do cliente (`NODE_PLATFORM=vm`), a sessão é a chave do usuário IAM de leitura, do cofre
  * (`vault-key-credentials.ts`; `ReaderSession.principal` é `iam_user`), e só muda quem a AWS vê: o `GetCallerIdentity`
@@ -151,7 +162,6 @@ const destinationsSchema = z.array(
   }),
 );
 const evaluationsSchema = z.array(z.object({ EvalDecision: z.string().optional() }));
-
 /** Um bucket a conferir e a primeira fonte que o usa (a fonte vai com o erro). */
 interface BucketToCheck {
   name: string;
@@ -392,6 +402,29 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
         retryable: error.retryable,
         ...(error.source !== undefined && { source: error.source }),
       };
+    } finally {
+      clients?.destroy();
+    }
+  }
+
+  /**
+   * A versão do template e as capacidades do papel, pelas tags dele (`iam:GetRole` no próprio papel, uma chamada). Na
+   * VM própria do cliente, as tags são as do usuário IAM de leitura (`iam:GetUser` sem nome: o dono da chave). A
+   * leitura negada (o template v1 não a permitia) ou sem tags é a v1; uma falha passageira, ou a sessão que não abriu,
+   * devolve null (o gravado na conta fica). A leitura em si é a de `reader-tags.ts`, a mesma do "Tentar de novo".
+   */
+  async readerFacts(target: AwsCheckTarget, signal: AbortSignal): Promise<AwsReaderFacts | null> {
+    let clients: CheckClients | null = null;
+    try {
+      const region = regionsOf(target)[0] ?? STS_FALLBACK_REGION;
+      const session = await this.#credentials.session(target.accountId, region, signal);
+      const iam = new CheckClients(this.#clients, session.credentials.identity());
+      clients = iam;
+      return await readReaderFacts(iam.iam(), session.principal, signal);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (error instanceof AwsConnectionError) return null;
+      throw error;
     } finally {
       clients?.destroy();
     }

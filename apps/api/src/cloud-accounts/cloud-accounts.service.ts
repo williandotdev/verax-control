@@ -30,6 +30,7 @@ import {
   RESET_CONNECTION,
   toAccount,
 } from './cloud-account-data.js';
+import { syncLegacyAwsSources } from '../aws/onboarding/legacy-sources.js';
 import { assertLogOriginsFree, type LogOrigins } from './log-origins.js';
 
 // A credencial e as tarefas do worker importam daqui desde antes da extração para `cloud-account-data.ts`.
@@ -149,6 +150,8 @@ export class CloudAccountsService {
       }
       throw error;
     }
+    // Os buckets do cadastro aparecem como fontes da conta (onboarding self-service), já autorizadas.
+    if (input.provider === 'aws') await syncLegacyAwsSources(db, row.id);
     const account = toAccount(row, this.node);
     this.audit.describe({
       action: 'cloud_account.create',
@@ -214,6 +217,8 @@ export class CloudAccountsService {
       },
       select: accountSelect,
     });
+    // Um bucket que entrou, mudou ou saiu: as fontes da conta acompanham o cadastro.
+    if (input.buckets !== undefined) await syncLegacyAwsSources(this.prisma.scoped(), id);
     const after = toAccount(row, this.node);
     this.audit.describe({
       action: 'cloud_account.update',

@@ -122,6 +122,8 @@ export const AWS_CONNECTION_ERROR_HINTS: Readonly<Record<AwsConnectionErrorCode,
   region_disabled:
     'O STS da região da conta está desligado. O Verax entrou pelo de us-east-1, mas a coleta usa o da região: religue-o no console do IAM (Account settings, Security Token Service) ou fale com a Verax.',
   account_mismatch: 'O papel respondeu de outra conta AWS. Confira o ID da conta cadastrada.',
+  authorization_timeout:
+    'O papel de leitura não apareceu nesta conta em 60 minutos. Confira no CloudFormation se a pilha verax-control-reader terminou de ser criada e conecte a conta de novo.',
   bucket_missing: 'não existe nesta conta. Confira o nome do bucket com a Verax.',
   bucket_denied:
     'o papel não lista ou não lê os objetos. Confira se o ARN dele está em LogBucketArns da pilha (atualize a pilha) e, num bucket de outra conta, a política do bucket.',

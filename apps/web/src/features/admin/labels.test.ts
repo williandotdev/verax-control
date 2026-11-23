@@ -61,6 +61,13 @@ describe('explicação do erro e do aviso da conexão da AWS (PR-V5)', () => {
     expect(awsConnectionErrorHint('trust_denied')).toMatch(/^A AWS recusou a entrada no papel/);
   });
 
+  it('o fim da janela do "Conectar com AWS" tem explicação: a pilha não terminou, conectar de novo', () => {
+    expect(AWS_CONNECTION_ERROR_CODES).toContain('authorization_timeout');
+    expect(awsConnectionErrorHint('authorization_timeout')).toMatch(/pilha verax-control-reader.*de novo/);
+    // Só o código exato: não é erro de bucket, então não leva fonte.
+    expect(awsConnectionErrorHint('authorization_timeout:waf')).toBeNull();
+  });
+
   it('o que não é código da AWS fica sem explicação (o painel mostra só o tipo)', () => {
     for (const value of [
       'AccessDenied',
