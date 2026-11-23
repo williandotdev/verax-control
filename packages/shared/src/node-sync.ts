@@ -92,6 +92,7 @@ export function respondsTo(capabilities: readonly string[], capability: NodeSync
  * - `credential_kind_not_allowed`: o tipo de credencial não vale na plataforma do nó;
  * - `credential_unreadable`: o envelope não abre (versão da chave ausente, outra amarração);
  * - `credential_rejected_<motivo>`: a origem recusou a credencial na conferência;
+ * - `deleted_in_panel`: o cliente excluiu a conta no painel dele; o nó só a cadastra de novo com uma revisão maior;
  * - `source_unavailable`: a origem não respondeu (o nó tenta de novo, com espera crescente);
  * - `internal_error`: qualquer outra falha (detalhe só no log do nó).
  */
@@ -112,6 +113,7 @@ export const NODE_SYNC_SOURCE_CODES = [
   'credential_rejected_not_yet_valid',
   'credential_rejected_no_account_access',
   'credential_rejected_wrong_identity',
+  'deleted_in_panel',
   'source_unavailable',
   'internal_error',
 ] as const;

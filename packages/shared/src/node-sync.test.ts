@@ -152,6 +152,8 @@ describe('sincronização do nó: constantes', () => {
 
   it('os códigos por fonte e por usuário', () => {
     expect(NODE_SYNC_SOURCE_CODES).toContain('source_unavailable');
+    // A conta do console que o cliente excluiu no painel: o relato falha com este código até uma revisão maior.
+    expect(NODE_SYNC_SOURCE_CODES).toContain('deleted_in_panel');
     expect(NODE_SYNC_SOURCE_CODES.filter((code) => code.startsWith('credential_rejected_'))).toEqual([
       'credential_rejected_invalid',
       'credential_rejected_inactive',

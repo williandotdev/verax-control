@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AWS_COLLECTION_ERROR_CODES,
   cloudAccountCreateSchema,
+  cloudAccountDeleteSchema,
   cloudAccountRefSchema,
   cloudAccountSchema,
   cloudAccountUpdateSchema,
@@ -273,6 +274,20 @@ describe('provedores: AWS, GCP e Cloudflare', () => {
     expect(fieldsOutsideProvider('gcp', update)).toEqual(['regions', 'zones']);
     expect(fieldsOutsideProvider('cloudflare', update)).toEqual(['regions']);
     expect(fieldsOutsideProvider('gcp', cloudAccountUpdateSchema.parse({ status: 'inactive' }))).toEqual([]);
+  });
+
+  it('a exclusão pede só o ID da conta digitado, e nada mais', () => {
+    expect(cloudAccountDeleteSchema.parse({ confirmAccountId: '111111111111' })).toEqual({
+      confirmAccountId: '111111111111',
+    });
+    for (const body of [
+      {},
+      { confirmAccountId: '' },
+      { confirmAccountId: 'x'.repeat(33) },
+      { confirmAccountId: '111111111111', permanent: true },
+    ]) {
+      expect(cloudAccountDeleteSchema.safeParse(body).success).toBe(false);
+    }
   });
 });
 
