@@ -5,10 +5,10 @@ import {
   type AwsOnboardingState,
   type CloudAccount,
 } from '@verax/shared';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
-import { ALL_AWS_AUTHORIZATIONS, type AwsAuthorizationChoice } from '@/features/admin/aws-connect';
+import { useAwsChoice } from '@/features/admin/aws-choice';
 import { AwsConnectPanel, AwsWaitingPanel } from '@/features/admin/aws-connect-panel';
 import { AwsDiscoveryResults } from '@/features/admin/aws-discovery-results';
 import { useSourceRetry } from '@/features/admin/aws-hooks';
@@ -106,12 +106,18 @@ function ReconnectPanel({ account, canWrite }: { account: CloudAccount; canWrite
  * "Conectar com AWS" (ou, na VM própria do cliente, os passos da chave de leitura), a pilha, o que a descoberta
  * encontrou, as fontes para autorizar e a saúde das autorizadas. O que aparece em cada momento sai do estado que a API
  * manda (`GET …/aws/onboarding`), relido sozinho enquanto uma mudança é esperada; a tela nunca adianta um passo.
+ *
+ * As autorizações marcadas também saem dele: a tela começa com a escolha que a API guardou (`storedAuthorizationChoice`)
+ * e só passa a valer a que o cliente mudar aqui. Recarregada ou reaberta, ela devolve as mesmas caixas, e o arquivo
+ * baixado de novo é o mesmo: nunca volta sozinha para as três ligadas. A gravação da escolha é uma só para a tela
+ * inteira (`useAwsChoice`): um pedido de cada vez, e o arquivo sempre com a escolha que a API confirmou.
  */
 export function AwsOnboardingSection({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
   const query = useAwsOnboarding(account.id);
-  const [choice, setChoice] = useState<AwsAuthorizationChoice>(ALL_AWS_AUTHORIZATIONS);
+  // O que as caixas mostram, a escolha que a API confirmou e a gravação entre as duas.
+  const choice = useAwsChoice(account.id, query.data);
   // Um pedido de conferência para a conta inteira: a fonte muda de lista quando a resposta chega.
-  const retry = useSourceRetry(account.id);
+  const retry = useSourceRetry(account.id, query.data?.discoveryAvailable ?? true);
   useAccountListRefresh(query.data);
   const { refetch } = query;
   useOnboardingRefresh(
@@ -133,20 +139,14 @@ export function AwsOnboardingSection({ account, canWrite }: { account: CloudAcco
   const discovered = onboarding.discovery.run !== null || onboarding.discovery.lastCompletedAt !== null;
   const waitingForStack = state === 'awaiting_authorization' && onboarding.connect.waitingUntil !== null;
   const connectPanel = (again: boolean) => (
-    <AwsConnectPanel
-      account={account}
-      canWrite={canWrite}
-      choice={choice}
-      onChoiceChange={setChoice}
-      again={again}
-    />
+    <AwsConnectPanel account={account} canWrite={canWrite} choice={choice} again={again} />
   );
   const keySteps = (
     <AwsKeySteps
       account={account}
       canWrite={canWrite}
-      choice={choice}
-      onChoiceChange={setChoice}
+      choice={choice.shown}
+      onChoiceChange={choice.pick}
       state={state}
     />
   );
@@ -171,13 +171,7 @@ export function AwsOnboardingSection({ account, canWrite }: { account: CloudAcco
         <ReconnectPanel account={account} canWrite={canWrite} />
       )}
       {!keyMode && waitingForStack && (
-        <AwsWaitingPanel
-          account={account}
-          onboarding={onboarding}
-          canWrite={canWrite}
-          choice={choice}
-          onChoiceChange={setChoice}
-        />
+        <AwsWaitingPanel account={account} onboarding={onboarding} canWrite={canWrite} choice={choice} />
       )}
 
       {/* Depois do que há para fazer agora (conectar, criar a pilha): o que o Verax conferiu, passo a passo. */}

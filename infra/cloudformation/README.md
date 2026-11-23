@@ -191,7 +191,8 @@ bucket além do padrão.
 
 - **Uma autorização:** atualize a pilha com o parâmetro dela em `false` (no console, _Update stack_ → _Use existing
   template_ e troque o valor; ou o comando da CLI, abaixo). A permissão sai da política, e a etiqueta do papel passa a
-  dizer o que ficou.
+  dizer o que ficou. No painel, o bloco "Atualize a pilha" entrega o arquivo já com a escolha nova; ao trocar o
+  arquivo pelo console, confira o parâmetro na tela dos parâmetros, porque o console mantém o valor que a pilha tinha.
 - **Um grupo de log:** tire a etiqueta `verax-control` dele (comando acima). Não é preciso mexer na pilha.
 - **Um bucket adicional:** tire o ARN dele de `LogBucketArns` e atualize a pilha.
 - **Tudo:** apague a pilha (seção "Como desconectar"). Sem o papel, o nó não entra mais na conta.
@@ -251,7 +252,8 @@ GuardDuty, use a região do detector.
    baixado e avance. O console guarda o arquivo num bucket `cf-templates-…` que ele cria na sua conta: é o
    comportamento padrão do CloudFormation.
 3. Dê o nome `verax-control-reader` à pilha e **revise os parâmetros**, que já vêm preenchidos: quem entra no papel e
-   o que ele pode ler. Mude o que quiser.
+   o que ele pode ler. Mude o que quiser: vale o que fica na pilha. Se uma autorização ficar diferente do que você
+   marcou no painel, a tela "Pilha na AWS" avisa e mostra a diferença.
 4. Avance até a revisão, marque _I acknowledge that AWS CloudFormation might create IAM resources with custom names_
    e clique em _Submit_. A pilha fica pronta em 1 ou 2 minutos.
 5. Volte ao painel do Verax Control. Ele confere a conexão sozinho; se preferir, clique em **Verificar conexão**, na

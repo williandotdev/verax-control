@@ -3,6 +3,7 @@ import {
   AWS_READER_AUDIENCE,
   AWS_READER_AUTHORIZATIONS,
   AWS_READER_CAPABILITY_PARAMETERS,
+  type AwsOnboarding,
   type AwsReaderAuthorization,
   type AwsReaderCapability,
   awsReaderDeployCommand,
@@ -47,7 +48,69 @@ export function authorizationChoiceOf(capabilities: readonly AwsReaderCapability
 
 /** As capacidades da escolha, na ordem do catálogo: a descoberta sempre, e as autorizações ligadas. */
 export function capabilitiesOfChoice(choice: AwsAuthorizationChoice): AwsReaderCapability[] {
-  return ['discovery', ...AWS_READER_AUTHORIZATIONS.filter((authorization) => choice[authorization])];
+  return ['discovery', ...chosenAuthorizations(choice)];
+}
+
+/**
+ * As autorizações ligadas na escolha, como vão para a API no "Conectar" e no "Verificar" (sem a descoberta, que vale
+ * sempre): é o que fica gravado como a escolha do cliente.
+ */
+export function chosenAuthorizations(choice: AwsAuthorizationChoice): AwsReaderAuthorization[] {
+  return AWS_READER_AUTHORIZATIONS.filter((authorization) => choice[authorization]);
+}
+
+/** O que a escolha inicial e o aviso de diferença leem do estado da conta. */
+type ChoiceFacts = Pick<AwsOnboarding, 'connect' | 'template'>;
+
+/** As etiquetas do papel foram lidas, e são do modelo atual (o único que tem as três autorizações)? */
+function readsCurrentTemplate({ template }: ChoiceFacts): boolean {
+  return template.checkedAt !== null && template.version !== null && !template.outdated;
+}
+
+/**
+ * A escolha com que a tela começa, para ela nunca marcar mais do que o cliente escolheu:
+ * 1. a que ele confirmou por último aqui (a gravada no "Conectar" ou no "Verificar" depois de atualizar a pilha);
+ * 2. sem escolha gravada, o que o papel já tem (as etiquetas dele, no modelo atual);
+ * 3. sem nenhuma das duas (a conta nova, ou a pilha do modelo anterior, que não tinha autorizações), as três do padrão
+ *    do modelo.
+ */
+export function storedAuthorizationChoice(onboarding: ChoiceFacts): AwsAuthorizationChoice {
+  if (onboarding.connect.capabilities !== null) return authorizationChoiceOf(onboarding.connect.capabilities);
+  if (readsCurrentTemplate(onboarding)) return authorizationChoiceOf(onboarding.template.capabilities);
+  return ALL_AWS_AUTHORIZATIONS;
+}
+
+/** O que separa o que o papel tem na AWS do que o cliente escolheu no painel. */
+export interface AwsAuthorizationMismatch {
+  /** Ligadas no papel sem terem sido escolhidas aqui: o papel concede mais do que a escolha. */
+  extra: AwsReaderAuthorization[];
+  /** Escolhidas aqui e desligadas no papel. */
+  missing: AwsReaderAuthorization[];
+}
+
+/**
+ * A diferença entre as autorizações que o papel tem (as etiquetas dele) e as que o cliente escolheu no painel; null sem
+ * diferença, ou sem como comparar: nenhuma escolha gravada, as etiquetas ainda não lidas, lidas antes do último
+ * "Conectar" (são da pilha de antes) ou de um modelo anterior (que já tem o aviso próprio).
+ */
+export function authorizationMismatch(onboarding: ChoiceFacts): AwsAuthorizationMismatch | null {
+  const { connect, template } = onboarding;
+  if (connect.capabilities === null || !readsCurrentTemplate(onboarding)) return null;
+  if (
+    connect.requestedAt !== null &&
+    template.checkedAt !== null &&
+    template.checkedAt < connect.requestedAt
+  ) {
+    return null;
+  }
+  const chosen = connect.capabilities;
+  const extra = AWS_READER_AUTHORIZATIONS.filter(
+    (authorization) => template.capabilities.includes(authorization) && !chosen.includes(authorization),
+  );
+  const missing = AWS_READER_AUTHORIZATIONS.filter(
+    (authorization) => chosen.includes(authorization) && !template.capabilities.includes(authorization),
+  );
+  return extra.length === 0 && missing.length === 0 ? null : { extra, missing };
 }
 
 /** O que a conta diz do nó e dos buckets cadastrados: o que entra na pilha. */

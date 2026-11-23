@@ -274,6 +274,7 @@ export function PermissionFix({
  * O botão "Verificar de novo" de uma fonte: pede à API que leia a fonte de novo na AWS, agora (a etiqueta posta no
  * grupo, a autorização ligada na pilha, o destino corrigido). Com o pedido ainda sem resposta, diz que está
  * conferindo; depois, fica desligado pelos segundos que faltam do intervalo de 30 s por fonte, com a contagem no rótulo.
+ * Onde o servidor não confere uma fonte a pedido (`retry.available`), o botão não aparece: o clique só seria recusado.
  */
 export function RetryButton({
   source,
@@ -284,6 +285,7 @@ export function RetryButton({
   retry: SourceRetry;
   label?: string;
 }) {
+  if (!retry.available) return null;
   // O pedido gravado e ainda não respondido pelo servidor: repetir não muda nada.
   const requested = source.probeRequestedAt !== null;
   const seconds = retry.secondsLeft(source.id);

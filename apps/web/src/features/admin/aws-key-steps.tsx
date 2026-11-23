@@ -14,7 +14,11 @@ import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { useCloudCredential } from '@/features/admin/admin-api';
-import { type AwsAuthorizationChoice, capabilitiesOfChoice } from '@/features/admin/aws-connect';
+import {
+  type AwsAuthorizationChoice,
+  capabilitiesOfChoice,
+  chosenAuthorizations,
+} from '@/features/admin/aws-connect';
 import { AwsAuthorizationChoices } from '@/features/admin/aws-connect-panel';
 import { useAwsVerify } from '@/features/admin/aws-onboarding-api';
 import { awsOnboardingErrorText } from '@/features/admin/aws-onboarding-labels';
@@ -105,7 +109,7 @@ export function AwsKeySteps({
           />
         </li>
         <li className="space-y-2">
-          <AwsKeyVerify account={account} canWrite={canWrite} state={state} />
+          <AwsKeyVerify account={account} canWrite={canWrite} state={state} choice={choice} />
         </li>
       </ol>
       <p className="text-xs text-muted-foreground">
@@ -119,15 +123,18 @@ export function AwsKeySteps({
 /**
  * O "Verificar" da chave: o pedido vai para o servidor, o único que usa a chave. Antes da primeira verificação, o botão
  * fica aqui, junto dos passos; depois, o resultado e o botão ficam em "Situação da conexão", como nas outras contas.
+ * O pedido leva as autorizações marcadas acima (as das políticas mostradas), que ficam gravadas como a escolha.
  */
 function AwsKeyVerify({
   account,
   canWrite,
   state,
+  choice,
 }: {
   account: CloudAccount;
   canWrite: boolean;
   state: AwsOnboardingState;
+  choice: AwsAuthorizationChoice;
 }) {
   const verify = useAwsVerify(account.id);
   const active = account.status === 'active';
@@ -143,7 +150,11 @@ function AwsKeyVerify({
           O resultado e o botão estão em &ldquo;Situação da conexão&rdquo;.
         </p>
       ) : canWrite && active ? (
-        <Button type="button" onClick={() => verify.mutate()} disabled={verify.isPending}>
+        <Button
+          type="button"
+          onClick={() => verify.mutate(chosenAuthorizations(choice))}
+          disabled={verify.isPending}
+        >
           Verificar conexão
         </Button>
       ) : canWrite ? (

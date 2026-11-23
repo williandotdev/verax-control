@@ -1,5 +1,7 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Req } from '@nestjs/common';
 import {
+  type AwsConnect,
+  awsConnectSchema,
   type AwsOnboarding,
   awsSourceIdSchema,
   type AwsSourcesAuthorize,
@@ -31,13 +33,17 @@ export class AwsOnboardingController {
 
   /**
    * "Conectar com AWS": o nó passa a tentar a entrada no papel por até 60 min, enquanto o cliente cria a pilha.
-   * Responde na hora (202); o painel acompanha pelo estado da conta.
+   * Responde na hora (202); o painel acompanha pelo estado da conta. O corpo é opcional: com ele, as autorizações que o
+   * cliente marcou no painel ficam gravadas (só a escolha, para a tela devolvê-la; não é permissão).
    */
   @Post(':id/aws/connect')
   @HttpCode(HttpStatus.ACCEPTED)
   @RequirePermission('cloud_accounts:write')
-  connect(@Param('id', { schema: accountIdSchema }) id: string): Promise<AwsOnboarding> {
-    return this.onboarding.connect(id);
+  connect(
+    @Param('id', { schema: accountIdSchema }) id: string,
+    @Body({ schema: awsConnectSchema.optional() }) body: AwsConnect | undefined,
+  ): Promise<AwsOnboarding> {
+    return this.onboarding.connect(id, body);
   }
 
   /** Pede uma descoberta das fontes da conta (202): no máximo uma por vez, e uma manual a cada 5 min. */

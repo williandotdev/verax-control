@@ -11,6 +11,7 @@ import {
   AWS_SOURCE_LEGACY_RESOURCE,
   AWS_SOURCE_NONE_RESOURCE,
   AWS_SOURCE_RETRY_INTERVAL_MS,
+  awsConnectSchema,
   type AwsCredentialMode,
   type AwsDiscoveryError,
   type AwsDiscoveryRun,
@@ -22,6 +23,7 @@ import {
   type AwsOnboardingErrorCode,
   awsOnboardingSchema,
   type AwsOnboardingState,
+  type AwsReaderAuthorization,
   type AwsReaderCapability,
   type AwsSource,
   type AwsSourceDetails,
@@ -36,6 +38,7 @@ import {
   LOG_SOURCES,
   type LogSource,
   parseAwsConnectionError,
+  sortAwsChosenCapabilities,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
@@ -97,6 +100,11 @@ export const DEMO_AWS_COLLECTOR_MS = {
 export interface AwsFake {
   scenario: AwsFakeScenario;
   connectRequestedAt: string | null;
+  /**
+   * As autorizações que o cliente confirmou por último no painel (no "Conectar" ou no "Verificar" depois de atualizar a
+   * pilha); null sem escolha gravada. Na demonstração, a pilha "criada" sai com elas.
+   */
+  chosenCapabilities: AwsReaderAuthorization[] | null;
   templateVersion: number | null;
   capabilities: AwsReaderCapability[];
   capabilitiesCheckedAt: string | null;
@@ -809,13 +817,18 @@ function enterRole(account: CloudAccount, fake: AwsFake, now: number, connect: b
     updatedAt: iso(now),
   });
   // A demonstração não tem uma pilha de verdade: toda verificação que dá certo acha o papel no modelo atual, com as
-  // três autorizações (como se a pilha tivesse acabado de ser criada ou atualizada pelos passos da tela). Mudou o que o
-  // papel pode ler, a descoberta roda de novo, como na API.
+  // autorizações que o cliente escolheu na tela (como se a pilha tivesse acabado de ser criada ou atualizada pelos
+  // passos dela); sem escolha gravada, com as três. Mudou o que o papel pode ler, a descoberta roda de novo, como na
+  // API.
+  const chosen = fake.chosenCapabilities;
+  const capabilities = AWS_READER_CAPABILITIES.filter(
+    (capability) => capability === 'discovery' || chosen === null || chosen.includes(capability),
+  );
   const changed =
     fake.templateVersion !== AWS_READER_TEMPLATE_VERSION ||
-    fake.capabilities.length !== AWS_READER_CAPABILITIES.length;
+    fake.capabilities.join(' ') !== capabilities.join(' ');
   fake.templateVersion = AWS_READER_TEMPLATE_VERSION;
-  fake.capabilities = [...AWS_READER_CAPABILITIES];
+  fake.capabilities = capabilities;
   fake.capabilitiesCheckedAt = iso(now);
   syncLegacySources(account, fake, now);
   if (first || connect || changed || fake.run === null) {
@@ -1010,6 +1023,7 @@ function emptyFake(accountId: string): AwsFake {
   return {
     scenario: scenarioOf(accountId),
     connectRequestedAt: null,
+    chosenCapabilities: null,
     templateVersion: null,
     capabilities: [],
     capabilitiesCheckedAt: null,
@@ -1378,8 +1392,16 @@ function check(
   status: AwsOnboardingCheckStatus,
   code: string | null = null,
   checkedAt: string | null = null,
+  /** As fontes que deixam a conferência assim (`sourceIds`); sem nenhuma, o campo não vai. */
+  sources: readonly AwsSource[] = [],
 ): AwsOnboardingCheck {
-  return { id, status, code, checkedAt };
+  return {
+    id,
+    status,
+    code,
+    checkedAt,
+    ...(sources.length > 0 && { sourceIds: sources.map((source) => source.id) }),
+  };
 }
 
 /** As linhas dos buckets do cadastro levam a permissão que a conferência da conexão provou (`legacyPermission`). */
@@ -1461,52 +1483,69 @@ function deriveOnboarding(
       check('lag', 'skipped'),
     );
   } else {
-    const denied = authorized.find(
+    const denied = authorized.filter(
       (source) => source.state === 'permission_error' || source.permission === 'missing',
     );
-    const awaitingCollector = authorized.some((source) => AWAITING_COLLECTOR_STATES.includes(source.state));
-    const failing = authorized.find(
+    const [firstDenied] = denied;
+    const unchecked = authorized.filter((source) => source.permission === 'unknown');
+    const awaiting = authorized.filter((source) => AWAITING_COLLECTOR_STATES.includes(source.state));
+    const awaitingCollector = awaiting.length > 0;
+    const failing = authorized.filter(
       (source) => source.state === 'ingestion_error' || source.state === 'stalled',
     );
-    const synced = authorized.map((source) => source.health.lastSyncAt);
-    const oldest = synced.every((at) => at !== null) ? ([...synced].sort()[0] ?? null) : null;
-    const lags = authorized.flatMap((source) =>
-      source.health.lagSeconds === null ? [] : [source.health.lagSeconds],
-    );
+    const [firstFailing] = failing;
+    const notCollecting = authorized.filter((source) => source.state !== 'collecting');
+    const neverSynced = authorized.filter((source) => source.health.lastSyncAt === null);
+    const oldest =
+      neverSynced.length === 0
+        ? ([...authorized.map((source) => source.health.lastSyncAt)].sort()[0] ?? null)
+        : null;
+    const unmeasured = authorized.filter((source) => source.health.lagSeconds === null);
+    const stalled = authorized.filter((source) => source.state === 'stalled');
     const late = authorized.filter(
       (source) => source.health.lagSeconds !== null && source.health.lagSeconds > AWS_LAG_LIMIT_SECONDS,
     );
     checks.push(
       bucketError
-        ? check('permission', 'failed', connectionCode)
-        : denied !== undefined
-          ? check('permission', 'failed', denied.permissionDetail ?? denied.stateCode)
-          : authorized.some((source) => source.permission === 'unknown')
-            ? check('permission', 'pending')
+        ? check('permission', 'failed', connectionCode, null, denied)
+        : firstDenied !== undefined
+          ? check('permission', 'failed', firstDenied.permissionDetail ?? firstDenied.stateCode, null, denied)
+          : unchecked.length > 0
+            ? check('permission', 'pending', null, null, unchecked)
             : check('permission', 'ok'),
       account.collectionError != null
         ? check('collector_config', 'failed', account.collectionError)
         : awaitingCollector
-          ? check('collector_config', 'pending', 'awaiting_collector')
+          ? check('collector_config', 'pending', 'awaiting_collector', null, awaiting)
           : check('collector_config', 'ok'),
-      failing !== undefined
-        ? check('events', 'failed', failing.stateCode ?? failing.state)
-        : authorized.every((source) => source.state === 'collecting')
+      firstFailing !== undefined
+        ? check('events', 'failed', firstFailing.stateCode ?? firstFailing.state, null, failing)
+        : notCollecting.length === 0
           ? check('events', 'ok')
-          : check('events', 'pending', awaitingCollector ? 'awaiting_collector' : 'waiting_events'),
-      oldest !== null ? check('last_sync', 'ok', null, oldest) : check('last_sync', 'pending', 'no_data'),
+          : check(
+              'events',
+              'pending',
+              awaitingCollector ? 'awaiting_collector' : 'waiting_events',
+              null,
+              notCollecting,
+            ),
+      oldest !== null
+        ? check('last_sync', 'ok', null, oldest)
+        : check('last_sync', 'pending', 'no_data', null, neverSynced),
       // A fonte contínua sem eventos está parada; a de achados com a leitura atrasada só está sem ser lida.
-      authorized.some((source) => source.state === 'stalled')
-        ? check('lag', 'failed', 'stalled')
+      stalled.length > 0
+        ? check('lag', 'failed', 'stalled', null, stalled)
         : late.length > 0
           ? check(
               'lag',
               'failed',
               late.every((source) => source.method === 'api') ? 'sync_delayed' : 'stalled',
+              null,
+              late,
             )
-          : lags.length === authorized.length
+          : unmeasured.length === 0
             ? check('lag', 'ok')
-            : check('lag', 'pending', 'no_data'),
+            : check('lag', 'pending', 'no_data', null, unmeasured),
     );
   }
 
@@ -1592,7 +1631,11 @@ export function awsOnboardingView(
     cloudAccountId: account.id,
     state: derived.state,
     credentialMode,
-    connect: { requestedAt: fake.connectRequestedAt, waitingUntil: derived.waitingUntil },
+    connect: {
+      requestedAt: fake.connectRequestedAt,
+      waitingUntil: derived.waitingUntil,
+      capabilities: fake.chosenCapabilities,
+    },
     checks: derived.checks,
     template: {
       version: fake.templateVersion,
@@ -1601,6 +1644,8 @@ export function awsOnboardingView(
       checkedAt: fake.capabilitiesCheckedAt,
     },
     discovery: { run: fake.run, lastCompletedAt: fake.lastCompletedAt, regions: fake.discoveredRegions },
+    // A demonstração é um servidor dedicado: descobre as fontes sozinha.
+    discoveryAvailable: true,
     infrastructure: fake.lastCompletedAt === null ? null : fake.infrastructure,
     sources,
     updatedAt: updatedAt ?? account.updatedAt,
@@ -1608,6 +1653,35 @@ export function awsOnboardingView(
 }
 
 // --- As rotas ---
+
+/**
+ * O corpo, opcional, do "Conectar" e do "Verificar" (`awsConnectSchema`): as autorizações que o cliente marcou. Null no
+ * corpo fora do contrato (a API responde 400); sem corpo, nenhuma escolha (`{}`).
+ */
+export async function readAwsChoice(
+  request: Request,
+): Promise<{ capabilities?: AwsReaderAuthorization[] } | null> {
+  const text = await request.text();
+  if (text.trim() === '') return {};
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = awsConnectSchema.safeParse(json);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Grava a escolha das autorizações da conta, na ordem do catálogo, como a API. */
+export function storeAwsChoice(
+  store: AwsOnboardingStore,
+  account: CloudAccount,
+  capabilities: readonly AwsReaderAuthorization[] | undefined,
+): void {
+  if (capabilities === undefined) return;
+  awsFakeOf(store, account).chosenCapabilities = sortAwsChosenCapabilities(capabilities);
+}
 
 const url = (path: string): string => `${API_URL}${path}`;
 const problem = (status: number, message: string, code?: string) =>
@@ -1653,13 +1727,17 @@ export function createAwsOnboardingHandlers({ store, findAccount, credentialMode
     }),
 
     // "Conectar com AWS": grava o pedido do "Conectar" e o da verificação com o mesmo horário; o pendente não renova.
-    http.post(url('/v1/cloud-accounts/:id/aws/connect'), ({ params, request }) => {
+    // Com as autorizações marcadas na tela, a escolha é gravada junto (também no pedido ainda pendente).
+    http.post(url('/v1/cloud-accounts/:id/aws/connect'), async ({ params, request }) => {
       const found = load(params['id'], request);
       if (!found.ok) return found.error;
       const { account } = found;
+      const input = await readAwsChoice(request);
+      if (input === null) return problem(400, 'Dados inválidos');
       const refused = inactive(account, 'Reative o monitoramento antes de conectar a conta.');
       if (refused) return refused;
       const fake = awsFakeOf(store, account);
+      storeAwsChoice(store, account, input.capabilities);
       if (!isConnectRequest(account, fake)) {
         const now = new Date().toISOString();
         fake.connectRequestedAt = now;

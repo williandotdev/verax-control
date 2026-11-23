@@ -53,16 +53,29 @@ const SIGNAL_MAX_BYTES = 4096;
 
 const generationPattern = /^[0-9a-f]{64}$/;
 /**
+ * O número de sequência do sinal `applied`: quantas vezes o host trocou a configuração do manager
+ * (`infra/node/bin/wazuh-apply.sh` o guarda em disco e só o aumenta). Opcional só para o sinal de um host de versão
+ * anterior, durante a atualização do nó: os avisos da coleta seguem valendo com ele, e a prova do dono dos alertas do
+ * CloudWatch Logs não (`alerts/cloudwatch-ownership.ts`).
+ */
+const appliedSeqSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional();
+/**
  * O resultado da última tentativa do host: a geração da lista que ele aplicou (ou tentou aplicar), ou null só com erro,
  * quando a lista nem chegou ao gerador (o CLI `wazuh-sources` falhou no host).
  */
-const appliedSchema = z.union([
+export const appliedSchema = z.union([
   z.strictObject({
     generation: z.string().regex(generationPattern),
     status: z.enum(['ok', 'error']),
     at: z.iso.datetime(),
+    seq: appliedSeqSchema,
   }),
-  z.strictObject({ generation: z.null(), status: z.literal('error'), at: z.iso.datetime() }),
+  z.strictObject({
+    generation: z.null(),
+    status: z.literal('error'),
+    at: z.iso.datetime(),
+    seq: appliedSeqSchema,
+  }),
 ]);
 export type AppliedSignal = z.infer<typeof appliedSchema>;
 /** A última renovação do token do Google no host. Só a hora: o token nunca sai da pasta dele. */
@@ -214,7 +227,8 @@ interface CollectionRow {
  *   o manager de fato roda (o sinal `applied`) só tem grupos de logs de uma conta de um cliente. É a única tarefa que
  *   sabe os donos da lista planejada e o que o host aplicou; o sync desses alertas só atribui com essa prova. A prova
  *   cai nesta execução, antes de a geração nova ser gravada para o host, quando a lista planejada passa a ter grupos
- *   de mais de um dono.
+ *   de mais de um dono; e cai quando o número de sequência do sinal (`seq`, as trocas da configuração do manager)
+ *   salta, ou não vem.
  *
  * O worker só escreve esse sinal sem segredo: quem escreve a configuração do manager e os profiles da AWS é só o gerador
  * (decisão R1 do plano), e o token do Google fica com o host.
@@ -276,7 +290,15 @@ export class WazuhConfig {
             now: this.now(),
             generation,
             owners: plannedLogGroupOwners(plan.sources),
-            applied: applied === INVALID ? null : applied,
+            applied:
+              applied === INVALID || applied === null
+                ? null
+                : {
+                    generation: applied.generation,
+                    status: applied.status,
+                    at: applied.at,
+                    seq: applied.seq ?? null,
+                  },
           });
     const written = await this.writeGeneration(generation);
 

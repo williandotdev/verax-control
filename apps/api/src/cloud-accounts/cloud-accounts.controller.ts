@@ -12,6 +12,8 @@ import {
   Req,
 } from '@nestjs/common';
 import {
+  type AwsConnect,
+  awsConnectSchema,
   type CloudAccount,
   type CloudAccountCreate,
   cloudAccountCreateSchema,
@@ -81,11 +83,18 @@ export class CloudAccountsController {
    * "Verificar" a conta AWS (fase 2, PR-V3'): pede ao worker que confira a entrada no papel de leitura sem chave e a
    * leitura dos buckets. Responde na hora (202) com a conta, a conexão em "aguardando" e o pedido pendente
    * (`checkRequestedAt`); o painel acompanha pela conta até o worker gravar "conectada" ou o código do erro.
+   *
+   * O corpo é opcional, o mesmo do "Conectar com AWS" (`awsConnectSchema`): depois de atualizar a pilha (ou, na VM
+   * própria, a política do usuário de leitura) pelo painel, o "Verificar" leva as autorizações que o cliente marcou, e
+   * elas ficam gravadas como a escolha dele (só a escolha: o que o papel pode ler vem das tags dele).
    */
   @Post(':id/aws/verify')
   @HttpCode(HttpStatus.ACCEPTED)
   @RequirePermission('cloud_accounts:write')
-  verifyAws(@Param('id', { schema: accountIdSchema }) id: string): Promise<CloudAccount> {
-    return this.accounts.requestAwsCheck(id);
+  verifyAws(
+    @Param('id', { schema: accountIdSchema }) id: string,
+    @Body({ schema: awsConnectSchema.optional() }) body: AwsConnect | undefined,
+  ): Promise<CloudAccount> {
+    return this.accounts.requestAwsCheck(id, body);
   }
 }

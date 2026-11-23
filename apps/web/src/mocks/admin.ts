@@ -58,6 +58,8 @@ import {
   type AwsOnboardingStore,
   createAwsOnboardingHandlers,
   demoAwsOnboardingStore,
+  readAwsChoice,
+  storeAwsChoice,
 } from './aws-onboarding';
 import {
   DEMO_ACCOUNTS,
@@ -895,18 +897,22 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       return HttpResponse.json(account);
     }),
     // "Verificar" a conta AWS, como a API: grava o pedido (a conexão volta a aguardar) e responde na hora (202); o
-    // pedido pendente não é renovado. Quem responde é o "worker" da demonstração, na leitura da lista.
-    http.post(url('/v1/cloud-accounts/:id/aws/verify'), ({ params, request }) => {
+    // pedido pendente não é renovado. Quem responde é o "worker" da demonstração, na leitura da lista. Com as
+    // autorizações marcadas na tela (depois de atualizar a pilha), a escolha é gravada junto.
+    http.post(url('/v1/cloud-accounts/:id/aws/verify'), async ({ params, request }) => {
       const scope = scoped('cloud_accounts:write', request);
       if (!scope.ok) return scope.error;
       const account = listOf(store.accounts, scope.tenantId).find(
         (candidate) => candidate.id === params['id'],
       );
       if (!account) return problem(404, 'Conta não encontrada');
+      const input = await readAwsChoice(request);
+      if (input === null) return problem(400, 'Dados inválidos');
       if (account.provider !== 'aws') return problem(400, 'Só uma conta AWS é verificada assim.');
       if (account.status !== 'active') {
         return problem(400, 'Reative o monitoramento antes de verificar a conta.');
       }
+      storeAwsChoice(store.awsOnboarding, account, input.capabilities);
       if (account.checkRequestedAt === null) {
         const now = new Date().toISOString();
         Object.assign(account, {

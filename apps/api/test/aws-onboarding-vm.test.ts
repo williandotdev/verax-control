@@ -64,6 +64,8 @@ describe('onboarding self-service da AWS na VM própria do cliente (chave de lei
       state: 'authenticated',
       credentialMode: 'access_key',
       template: { version: 1, capabilities: ['discovery'], outdated: true },
+      // A descoberta roda na VM própria como no nó com o papel.
+      discoveryAvailable: true,
     });
     expect(onboarding.checks.find((check) => check.id === 'template')).toMatchObject({
       status: 'failed',

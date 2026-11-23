@@ -73,8 +73,13 @@ describe('onboarding self-service da AWS na célula compartilhada', () => {
     });
     const base = `/v1/cloud-accounts/${cloud.id}/aws`;
     const onboarding = awsOnboardingSchema.parse((await call('get', `${base}/onboarding`).expect(200)).body);
-    // Honesto: autenticada, com a descoberta por pedir (ela não roda aqui).
-    expect(onboarding).toMatchObject({ state: 'authenticated', discovery: { run: null } });
+    // Honesto: autenticada, com a descoberta por pedir (ela não roda aqui), e a resposta já diz que não adianta
+    // pedir: o painel não oferece "Descobrir de novo" nem "Tentar de novo" para explicar a recusa depois do clique.
+    expect(onboarding).toMatchObject({
+      state: 'authenticated',
+      discovery: { run: null },
+      discoveryAvailable: false,
+    });
 
     expect((await call('post', `${base}/discovery`).expect(409)).body).toMatchObject({
       code: 'DISCOVERY_UNAVAILABLE',

@@ -556,6 +556,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
           awsTemplateVersion: true,
           awsCapabilities: true,
           awsCapabilitiesCheckedAt: true,
+          awsChosenCapabilities: true,
         },
       });
     const runsOf = (id: string) =>
@@ -576,9 +577,11 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
         cloudAccountId: account.id,
         state: 'not_started',
         credentialMode: 'role',
-        connect: { requestedAt: null, waitingUntil: null },
+        // Nenhuma escolha gravada ainda; e este nó descobre as fontes sozinho.
+        connect: { requestedAt: null, waitingUntil: null, capabilities: null },
         template: { version: null, capabilities: [], outdated: false, checkedAt: null },
         discovery: { run: null, lastCompletedAt: null, regions: [] },
+        discoveryAvailable: true,
         infrastructure: null,
         sources: [],
       });
@@ -635,6 +638,321 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
           awsConnectRequestedAt: requestedAt.toISOString(),
         },
       });
+    });
+
+    it('a escolha das autorizações vai no "Conectar", fica gravada e volta na leitura (a tela recarregada a devolve)', async () => {
+      const account = await awsAccount(adminA);
+      // Em qualquer ordem no pedido; guardada e devolvida na ordem do catálogo.
+      const first = await connect(adminA, account.id)
+        .send({ capabilities: ['log-groups', 'service-logs'] })
+        .expect(202);
+      expect(awsOnboardingSchema.parse(first.body).connect.capabilities).toEqual([
+        'service-logs',
+        'log-groups',
+      ]);
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('service-logs log-groups');
+      // Outra leitura (a tela recarregada, ou quem só lê) traz a mesma escolha, e não as três de volta.
+      for (const session of [adminA, sessions.get('leitura') as TestSession]) {
+        expect((await onboardingOf(session, account.id)).connect.capabilities).toEqual([
+          'service-logs',
+          'log-groups',
+        ]);
+      }
+      // É só a escolha: o que o papel pode ler continua vindo das tags dele, ainda não lidas.
+      expect((await connectRow(account.id)).awsCapabilities).toEqual([]);
+      expect((await onboardingOf(adminA, account.id)).template.capabilities).toEqual([]);
+      expect(await entryOf(first)).toMatchObject({
+        action: 'cloud_account.aws_connect',
+        outcome: 'success',
+        before: { chosenCapabilities: null },
+        after: { chosenCapabilities: ['service-logs', 'log-groups'] },
+      });
+
+      // Nenhuma das três também é uma escolha (só a descoberta), diferente de "nunca escolheu".
+      const none = await awsAccount(adminA);
+      const empty = await connect(adminA, none.id).send({ capabilities: [] }).expect(202);
+      expect(awsOnboardingSchema.parse(empty.body).connect.capabilities).toEqual([]);
+      expect((await connectRow(none.id)).awsChosenCapabilities).toBe('');
+    });
+
+    it('no pedido ainda pendente, a escolha nova é gravada sem renovar a janela; sem corpo, a escolha fica', async () => {
+      const account = await awsAccount(adminA);
+      const requestedAt = await (async () => {
+        await connect(adminA, account.id)
+          .send({ capabilities: ['findings'] })
+          .expect(202);
+        return (await connectRow(account.id)).checkRequestedAt as Date;
+      })();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      // O cliente mudou as caixas enquanto esperava a pilha e baixou o arquivo de novo.
+      const changed = await connect(adminA, account.id)
+        .send({ capabilities: ['findings', 'service-logs'] })
+        .expect(202);
+      const onboarding = awsOnboardingSchema.parse(changed.body);
+      expect(onboarding.connect).toEqual({
+        requestedAt: requestedAt.toISOString(),
+        waitingUntil: new Date(requestedAt.getTime() + AWS_CONNECT_WINDOW_MS).toISOString(),
+        capabilities: ['service-logs', 'findings'],
+      });
+      expect(await connectRow(account.id)).toMatchObject({
+        checkRequestedAt: requestedAt,
+        awsConnectRequestedAt: requestedAt,
+        awsChosenCapabilities: 'service-logs findings',
+      });
+      expect(await entryOf(changed)).toMatchObject({
+        before: { checkRequestedAt: requestedAt.toISOString(), chosenCapabilities: ['findings'] },
+        after: {
+          checkRequestedAt: requestedAt.toISOString(),
+          chosenCapabilities: ['service-logs', 'findings'],
+        },
+      });
+
+      // Sem corpo (o "Conectar de novo" das conferências), com o corpo vazio ou sem o campo: a escolha fica.
+      await connect(adminA, account.id).expect(202);
+      await connect(adminA, account.id).send({}).expect(202);
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('service-logs findings');
+      // E num "Conectar" novo (a janela fechou e o cliente tenta de novo), também.
+      await prisma.cloudAccount.update({
+        where: { id: account.id },
+        data: { connection: 'error', connectionError: 'authorization_timeout', checkRequestedAt: null },
+      });
+      const again = awsOnboardingSchema.parse((await connect(adminA, account.id).expect(202)).body);
+      expect(again).toMatchObject({
+        state: 'awaiting_authorization',
+        connect: { capabilities: ['service-logs', 'findings'] },
+      });
+    });
+
+    /**
+     * Dois pedidos da mesma conta com o primeiro ainda no caminho: é o cliente mudando as caixas em seguida. A linha
+     * da conta fica presa por uma transação do teste; o primeiro pedido para nela, e só então o segundo sai. Solta a
+     * linha, os dois terminam. Cada passo espera o pedido entrar na fila da linha (ou 2 s: sem a trava da conta, o
+     * pedido que não grava nada nem entra na fila, e responde com a leitura de antes).
+     */
+    async function nearlyTogether(
+      id: string,
+      first: () => request.Test,
+      second: () => request.Test,
+    ): Promise<[request.Response, request.Response]> {
+      let sent: [Promise<request.Response>, Promise<request.Response>] | undefined;
+      await prisma.$transaction(
+        async (tx) => {
+          const holder = await tx.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+          const pid = holder[0]?.pid ?? 0;
+          await tx.$queryRaw`SELECT 1 FROM "CloudAccount" WHERE "id" = ${id}::uuid FOR UPDATE`;
+          // Quantas sessões esperam por esta, direto ou atrás de outra que espera.
+          const queued = async (count: number) => {
+            for (let attempt = 0; attempt < 40; attempt += 1) {
+              const rows = await tx.$queryRaw<{ count: number }[]>`
+                WITH RECURSIVE blocked(pid) AS (
+                  SELECT a.pid FROM pg_stat_activity a WHERE ${pid}::int = ANY(pg_blocking_pids(a.pid))
+                  UNION
+                  SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid = ANY(pg_blocking_pids(a.pid))
+                )
+                SELECT count(*)::int AS count FROM blocked`;
+              if ((rows[0]?.count ?? 0) >= count) return;
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+          };
+          const one = first().then((response) => response);
+          await queued(1);
+          const two = second().then((response) => response);
+          await queued(2);
+          sent = [one, two];
+        },
+        { timeout: 20_000, maxWait: 10_000 },
+      );
+      if (sent === undefined) throw new Error('os pedidos não saíram');
+      return Promise.all(sent);
+    }
+    const ALL_THREE = ['service-logs', 'findings', 'log-groups'];
+    const WITHOUT_GROUPS = ['service-logs', 'findings'];
+
+    it('"Conectar": desligar e ligar de volta em seguida grava as duas escolhas, uma depois da outra, e vale a última', async () => {
+      const account = await awsAccount(adminA);
+      await connect(adminA, account.id).send({ capabilities: ALL_THREE }).expect(202);
+      const requestedAt = (await connectRow(account.id)).checkRequestedAt as Date;
+
+      // O primeiro pedido desliga os grupos de logs; o segundo, com o primeiro ainda no caminho, liga de volta.
+      const [off, on] = await nearlyTogether(
+        account.id,
+        () => connect(adminA, account.id).send({ capabilities: WITHOUT_GROUPS }),
+        () => connect(adminA, account.id).send({ capabilities: ALL_THREE }),
+      );
+      expect([off.status, on.status]).toEqual([202, 202]);
+      // A resposta de cada um traz o que ficou gravado depois dele.
+      expect(awsOnboardingSchema.parse(off.body).connect.capabilities).toEqual(WITHOUT_GROUPS);
+      expect(awsOnboardingSchema.parse(on.body).connect.capabilities).toEqual(ALL_THREE);
+      // Vale a do último pedido: a de antes dele não fica gravada por cima.
+      expect(await connectRow(account.id)).toMatchObject({
+        awsChosenCapabilities: 'service-logs findings log-groups',
+        checkRequestedAt: requestedAt,
+        awsConnectRequestedAt: requestedAt,
+      });
+      expect((await onboardingOf(adminA, account.id)).connect.capabilities).toEqual(ALL_THREE);
+      // A trilha conta a ordem em que foram gravadas: o antes do segundo é o que o primeiro deixou.
+      expect(await entryOf(off)).toMatchObject({
+        before: { chosenCapabilities: ALL_THREE },
+        after: { chosenCapabilities: WITHOUT_GROUPS },
+      });
+      expect(await entryOf(on)).toMatchObject({
+        before: { chosenCapabilities: WITHOUT_GROUPS },
+        after: { chosenCapabilities: ALL_THREE },
+      });
+    });
+
+    it('"Verificar" com a escolha: desligar e ligar de volta em seguida também termina na última', async () => {
+      const account = await awsAccount(adminA);
+      await connect(adminA, account.id).send({ capabilities: ALL_THREE }).expect(202);
+
+      const [off, on] = await nearlyTogether(
+        account.id,
+        () => verify(adminA, account.id).send({ capabilities: WITHOUT_GROUPS }),
+        () => verify(adminA, account.id).send({ capabilities: ALL_THREE }),
+      );
+      expect([off.status, on.status]).toEqual([202, 202]);
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('service-logs findings log-groups');
+      expect((await onboardingOf(adminA, account.id)).connect.capabilities).toEqual(ALL_THREE);
+      expect(await entryOf(off)).toMatchObject({
+        before: { chosenCapabilities: ALL_THREE },
+        after: { chosenCapabilities: WITHOUT_GROUPS },
+      });
+      expect(await entryOf(on)).toMatchObject({
+        before: { chosenCapabilities: WITHOUT_GROUPS },
+        after: { chosenCapabilities: ALL_THREE },
+      });
+    });
+
+    it('dois "Conectar" ao mesmo tempo com escolhas diferentes: fica a de um dos dois, inteira, e a mesma de novo não muda nada', async () => {
+      const account = await awsAccount(adminA);
+      await connect(adminA, account.id).send({ capabilities: ALL_THREE }).expect(202);
+      const one = ['findings'];
+      const other = ['service-logs', 'log-groups'];
+
+      const responses = await Promise.all([
+        connect(adminA, account.id)
+          .send({ capabilities: one })
+          .then((response) => response),
+        connect(adminA, account.id)
+          .send({ capabilities: other })
+          .then((response) => response),
+      ]);
+      expect(responses.map((response) => response.status)).toEqual([202, 202]);
+      // Cada resposta traz a escolha do próprio pedido: é o que estava gravado quando ele terminou.
+      expect(awsOnboardingSchema.parse(responses[0].body).connect.capabilities).toEqual(one);
+      expect(awsOnboardingSchema.parse(responses[1].body).connect.capabilities).toEqual(other);
+      // Ficou a de um dos dois, nunca uma mistura.
+      const stored = (await connectRow(account.id)).awsChosenCapabilities;
+      expect(['findings', 'service-logs log-groups']).toContain(stored);
+      // Um rodou depois do outro: um partiu da escolha original, e o outro, do que o primeiro deixou.
+      const entries = await Promise.all(responses.map((response) => entryOf(response)));
+      const befores = entries.map(
+        (entry) => (entry.before as { chosenCapabilities: string[] }).chosenCapabilities,
+      );
+      const last = stored === 'findings' ? 0 : 1;
+      expect(befores[1 - last]).toEqual(ALL_THREE);
+      expect(befores[last]).toEqual(last === 0 ? other : one);
+
+      // O mesmo pedido de novo: o valor fica, a resposta o traz, e a trilha não mostra mudança.
+      const final = stored === 'findings' ? one : other;
+      const again = await connect(adminA, account.id).send({ capabilities: final }).expect(202);
+      expect(awsOnboardingSchema.parse(again.body).connect.capabilities).toEqual(final);
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe(stored);
+      const entry = await entryOf(again);
+      expect(entry.before).toEqual(entry.after);
+    });
+
+    it('o corpo do "Conectar" é estrito: a descoberta, um nome de fora, a repetição e campo a mais dão 400, sem gravar', async () => {
+      const account = await awsAccount(adminA);
+      for (const body of [
+        { capabilities: ['discovery'] },
+        { capabilities: ['discovery', 'findings'] },
+        { capabilities: ['findings', 'findings'] },
+        { capabilities: ['resposta'] },
+        { capabilities: 'findings' },
+        { capabilities: null },
+        { capabilities: ['findings'], templateVersion: 2 },
+        { awsCapabilities: ['findings'] },
+      ]) {
+        await connect(adminA, account.id).send(body).expect(400);
+      }
+      expect(await connectRow(account.id)).toMatchObject({
+        checkRequestedAt: null,
+        awsConnectRequestedAt: null,
+        awsChosenCapabilities: null,
+      });
+    });
+
+    it('A não grava a escolha na conta de B (404), e quem não administra não a grava (403)', async () => {
+      const ofB = await awsAccount(adminB);
+      await connect(adminB, ofB.id)
+        .send({ capabilities: ['findings'] })
+        .expect(202);
+      await connect(adminA, ofB.id).send({ capabilities: [] }).expect(404);
+      await verify(adminA, ofB.id).send({ capabilities: [] }).expect(404);
+      expect((await connectRow(ofB.id)).awsChosenCapabilities).toBe('findings');
+      // A leitura de A não alcança a escolha de B.
+      await get(adminA, `/v1/cloud-accounts/${ofB.id}/aws/onboarding`).expect(404);
+
+      const account = await awsAccount(adminA);
+      for (const role of ['analista_cliente', 'leitura'] as const) {
+        await connect(sessions.get(role) as TestSession, account.id)
+          .send({ capabilities: [] })
+          .expect(403);
+        await verify(sessions.get(role) as TestSession, account.id)
+          .send({ capabilities: [] })
+          .expect(403);
+      }
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBeNull();
+    });
+
+    it('o "Verificar" depois de atualizar a pilha leva a escolha nova: gravada com o antes e o depois, mesmo com um pedido pendente', async () => {
+      const account = await awsAccount(adminA);
+      await connect(adminA, account.id)
+        .send({ capabilities: ['service-logs'] })
+        .expect(202);
+      const checker = new FakeTaggedChecker();
+      await new AwsCheck(prisma, checker, { onboarding: true }).runOnce();
+      expect(await connectRow(account.id)).toMatchObject({ connection: 'connected', checkRequestedAt: null });
+
+      // O cliente ligou os achados em "Atualize a pilha" e clicou em "Verificar de novo".
+      const updated = await verify(adminA, account.id)
+        .send({ capabilities: ['service-logs', 'findings'] })
+        .expect(202);
+      expect(cloudAccountSchema.parse(updated.body)).toMatchObject({ connection: 'waiting' });
+      const pendingAt = (await connectRow(account.id)).checkRequestedAt as Date;
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('service-logs findings');
+      expect((await onboardingOf(adminA, account.id)).connect.capabilities).toEqual([
+        'service-logs',
+        'findings',
+      ]);
+      expect(await entryOf(updated)).toMatchObject({
+        action: 'cloud_account.aws_verify',
+        outcome: 'success',
+        before: { connection: 'connected', chosenCapabilities: ['service-logs'] },
+        after: { connection: 'waiting', chosenCapabilities: ['service-logs', 'findings'] },
+      });
+
+      // Com o pedido pendente, só a escolha muda: o pedido não é renovado.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await verify(adminA, account.id).send({ capabilities: [] }).expect(202);
+      expect(await connectRow(account.id)).toMatchObject({
+        checkRequestedAt: pendingAt,
+        awsChosenCapabilities: '',
+      });
+      // O "Verificar" de sempre, sem corpo, não toca na escolha e não a põe na trilha.
+      const plain = await verify(adminA, account.id).expect(202);
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('');
+      const entry = await entryOf(plain);
+      expect(entry.before).not.toHaveProperty('chosenCapabilities');
+      expect(entry.after).not.toHaveProperty('chosenCapabilities');
+      // Estrito como o do "Conectar".
+      await verify(adminA, account.id)
+        .send({ capabilities: ['discovery'] })
+        .expect(400);
+      await verify(adminA, account.id).send({ capabilities: [], extra: true }).expect(400);
+      expect((await connectRow(account.id)).awsChosenCapabilities).toBe('');
     });
 
     it('um "Verificar" pendente vira o pedido do "Conectar" (a janela conta do clique)', async () => {

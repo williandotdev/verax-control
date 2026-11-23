@@ -74,8 +74,8 @@ Bundle do Wazuh single-node (manager e indexer 4.14.9, sem dashboard). Roda em d
 Dois serviços do systemd: o `verax-node` (`start.sh up`: a guarda do metadata, os arquivos de ambiente e a pilha da
 aplicação: banco, API, worker e túnel) e, depois dele, o `verax-wazuh` (`start.sh wazuh-up`), nesta ordem:
 `certs-init`, `security-init`, o indexer (espera o healthcheck), o `security-admin.sh`, o `configure-indexer.sh`, o
-`infra/node/bin/wazuh-apply.sh` (o `ossec.conf` do nó; no PR-W1, sem contas AWS), o manager (espera o healthcheck), o
-`smoke-test.sh` e a conferência de que manager e indexer não alcançam o servidor de metadados da VM (sem isso, os dois
+`infra/node/bin/wazuh-apply.sh` (o `ossec.conf` do nó, com as fontes da AWS do banco), o manager (espera o healthcheck),
+o `smoke-test.sh` e a conferência de que manager e indexer não alcançam o servidor de metadados da VM (sem isso, os dois
 param e o serviço falha). Serviços separados de propósito: uma falha do Wazuh fica no `verax-wazuh`, e o banco, a API,
 o worker, o túnel e o backup diário seguem no ar. `sudo systemctl restart verax-node` reinicia os dois e sobe o
 `verax-wazuh` de novo mesmo quando ele tinha falhado (drop-in `verax-node.service.d/wazuh.conf`, com `Wants=`, que o
@@ -179,11 +179,12 @@ cliente"; no EC2:
 - **TLS:** o certificado do indexer é emitido para esse nome, e o certificado público da CA é publicado no parâmetro
   `indexer_ca_parameter` a cada deploy. A API valida a cadeia e o nome; não existe opção de pular a validação.
 
-## Contas AWS dos clientes (CloudTrail, GuardDuty e WAF)
+## Contas AWS dos clientes (CloudTrail, Flow Logs, GuardDuty, WAF e CloudWatch Logs)
 
-No nó de cliente (fase 2, PR-V4'), o manager lê os buckets de cada conta com o papel de leitura sem chave
-(`verax-control-reader`, `infra/cloudformation`), com o token que o Google assina para a conta de serviço do nó. O
-desenho inteiro está em `docs/ARQUITETURA.md` ("Por que papel sem chave", passo "Coletar"); aqui, o que é deste bundle.
+No nó de cliente (fase 2, PR-V4'), o manager lê os buckets e os grupos de logs autorizados de cada conta com o papel
+de leitura sem chave (`verax-control-reader`, `infra/cloudformation`), com o token que o Google assina para a conta de
+serviço do nó. O desenho inteiro está em `docs/ARQUITETURA.md` ("Por que papel sem chave", passo "Coletar", e
+"Onboarding AWS self-service", "Coleta pelo Wazuh"); aqui, o que é deste bundle.
 
 A lista das contas vem do banco do nó: o CLI `wazuh-sources` da API imprime as contas AWS ativas que já passaram pela
 verificação, cada uma com a conta, a primeira região e as fontes autorizadas que o Wazuh lê. Nada nela é segredo. O
@@ -219,6 +220,12 @@ ele muda e, se o manager não ficar saudável em 180 s, devolve a configuração
 juntos em `<config>/.prev`, que o init da imagem não copia; o token do Google fica como o host o deixou) com
 `VERAX_MANAGER_CONFIG_ROLLBACK=1`. O `scripts/test-aws-profile.sh` (no CI) confere
 na imagem, sem rede, que o boto3 do manager entra no papel por esses profiles.
+
+No fim de cada execução, o `wazuh-apply.sh` grava para o worker o sinal `applied` (`/run/verax/wazuh-signal/applied`,
+sem segredo): a geração da lista (o SHA-256 dela), `ok` ou `error`, a hora e `seq`, o número de sequência das trocas
+da configuração que o manager roda. O contador fica no disco do nó (`/var/lib/verax/wazuh-apply/seq`) e aumenta antes
+de cada reinício do manager com outra configuração (o da volta à anterior também); o worker usa o salto do número
+para saber que perdeu uma troca (`docs/ARQUITETURA.md`, "Dono dos alertas do CloudWatch Logs").
 
 O `scripts/test-aws-sources.sh` confere, também na imagem e sem rede, o que as fontes do onboarding self-service
 combinam com o módulo: o leitor de configuração do Wazuh (`wazuh-modulesd -t`) aceita o `ossec.conf` gerado para a

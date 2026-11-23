@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   AWS_DISCOVERY_STATUSES,
   AWS_DISCOVERY_TRIGGERS,
+  AWS_READER_AUTHORIZATIONS,
   AWS_READER_CAPABILITIES,
   AWS_SOURCE_AVAILABILITIES,
   AWS_SOURCE_KINDS,
@@ -35,6 +36,10 @@ const RETRY_LIMIT = '20261124130000_aws_source_retry_limit';
 const FLOW_NOTE = '20261124140000_aws_source_note_flow_logs';
 /** E a da prova do dono dos alertas do CloudWatch Logs: uma tabela nova, do sistema. */
 const OWNERSHIP = '20261124150000_cloudwatch_alert_ownership';
+/** E a da escolha do cliente no "Conectar": uma coluna na conta, com o CHECK dela. */
+const CHOSEN = '20261124160000_aws_chosen_capabilities';
+/** E a do número de sequência do sinal `applied` na prova do dono: uma coluna, com o CHECK dela. */
+const APPLIED_SEQ = '20261124170000_cloudwatch_ownership_applied_seq';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -78,8 +83,14 @@ function listedAfter(definition: string, marker: string): string[] {
 
 describe(`migration ${MIGRATION}`, () => {
   it('só acrescenta, ela e a do limite do "Tentar de novo", que vem depois: nada é apagado nem reescrito', () => {
-    expect(migrations.slice(migrations.indexOf(MIGRATION) + 1)).toEqual([RETRY_LIMIT, FLOW_NOTE, OWNERSHIP]);
-    for (const name of [MIGRATION, RETRY_LIMIT, OWNERSHIP]) {
+    expect(migrations.slice(migrations.indexOf(MIGRATION) + 1)).toEqual([
+      RETRY_LIMIT,
+      FLOW_NOTE,
+      OWNERSHIP,
+      CHOSEN,
+      APPLIED_SEQ,
+    ]);
+    for (const name of [MIGRATION, RETRY_LIMIT, OWNERSHIP, CHOSEN, APPLIED_SEQ]) {
       const sql = sqlOf(name);
       expect(sql, name).not.toMatch(/\bDROP\b|DELETE FROM|^\s*UPDATE\b|\bTRUNCATE\b|ALTER COLUMN/im);
       // Os buckets cadastrados continuam nas colunas da conta.
@@ -127,6 +138,25 @@ describe(`migration ${MIGRATION}`, () => {
     ]);
     // Não é dado do cliente: sem `tenantId` (o escopo do cliente nunca a alcança) e sem chave estrangeira.
     expect(statements).not.toMatch(/"tenantId"|FOREIGN KEY|REFERENCES/);
+  });
+
+  it('a da escolha do "Conectar" e a do número de sequência só acrescentam uma coluna vazia e o CHECK dela', () => {
+    const statements = (name: string) =>
+      sqlOf(name)
+        .split('\n')
+        .filter((line) => line.trim().length > 0 && !line.startsWith('--'))
+        .join('\n')
+        .match(/^(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE)\b.*$/gm);
+    // Sem valor obrigatório nem padrão: as linhas que já existem ficam como estão (null).
+    expect(statements(CHOSEN)).toEqual([
+      'ALTER TABLE "CloudAccount" ADD COLUMN     "awsChosenCapabilities" VARCHAR(64);',
+      'ALTER TABLE "CloudAccount" ADD CONSTRAINT "CloudAccount_aws_chosen_capabilities_check" CHECK (',
+    ]);
+    expect(statements(APPLIED_SEQ)).toEqual([
+      'ALTER TABLE "CloudWatchAlertOwnership" ADD COLUMN     "appliedSeq" BIGINT;',
+      'ALTER TABLE "CloudWatchAlertOwnership" ADD CONSTRAINT "CloudWatchAlertOwnership_applied_seq_check" CHECK (',
+    ]);
+    for (const name of [CHOSEN, APPLIED_SEQ]) expect(sqlOf(name), name).not.toMatch(/NOT NULL|DEFAULT/);
   });
 
   describe('banco novo (o banco de teste, migrado do zero)', () => {
@@ -255,6 +285,55 @@ describe(`migration ${MIGRATION}`, () => {
           [awsId],
         ),
       ).rejects.toThrow(/CloudAccount_aws_onboarding_check/);
+    });
+
+    it('a escolha do "Conectar": só na conta AWS, só as três autorizações, sem repetir e na ordem do catálogo', async () => {
+      const set = (id: string, value: string | null) =>
+        client.query(`UPDATE "CloudAccount" SET "awsChosenCapabilities" = $2 WHERE "id" = $1`, [id, value]);
+      // Toda combinação das autorizações do contrato, na ordem dele, vale (a vazia também: só a descoberta).
+      const combinations = AWS_READER_AUTHORIZATIONS.reduce<string[][]>(
+        (all, authorization) => [...all, ...all.map((chosen) => [...chosen, authorization])],
+        [[]],
+      );
+      expect(combinations).toHaveLength(8);
+      for (const chosen of combinations) await set(awsId, chosen.join(' '));
+      await set(awsId, null);
+      for (const value of [
+        'discovery',
+        'discovery findings',
+        'findings service-logs',
+        'findings findings',
+        'findings,log-groups',
+        'findings ',
+        ' findings',
+        'service-logs  findings',
+        'resposta',
+      ]) {
+        await expect(set(awsId, value), value).rejects.toThrow(/CloudAccount_aws_chosen_capabilities_check/);
+      }
+      await expect(set(gcpId, 'findings')).rejects.toThrow(/CloudAccount_aws_chosen_capabilities_check/);
+      await expect(set(gcpId, '')).rejects.toThrow(/CloudAccount_aws_chosen_capabilities_check/);
+      await set(gcpId, null);
+    });
+
+    it('o número de sequência da prova do dono: vazio ou a partir de zero', async () => {
+      const id = `mig-${randomBytes(6).toString('hex')}`;
+      const insert = (appliedSeq: string | null) =>
+        client.query(
+          `INSERT INTO "CloudWatchAlertOwnership" ("id", "generation", "since", "confirmedAt", "updatedAt", "appliedSeq")
+           VALUES ($1, $2, now(), now(), now(), $3)
+           ON CONFLICT ("id") DO UPDATE SET "appliedSeq" = EXCLUDED."appliedSeq"`,
+          [id, 'a'.repeat(64), appliedSeq],
+        );
+      try {
+        await insert(null);
+        await insert('0');
+        // Cabe o contador que começa na hora do host, em segundos, por muitos anos.
+        await insert('9007199254740991');
+        await expect(insert('-1')).rejects.toThrow(/CloudWatchAlertOwnership_applied_seq_check/);
+      } finally {
+        await client.query('DELETE FROM "CloudWatchAlertOwnership" WHERE "id" = $1', [id]);
+      }
     });
 
     it('a fonte recusa valor fora do contrato', async () => {

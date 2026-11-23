@@ -6,6 +6,7 @@ import {
   AWS_MAX_SOURCES_PER_ACCOUNT,
   AWS_SOURCE_KIND_INFO,
   AWS_SOURCE_RETRY_INTERVAL_MS,
+  type AwsConnect,
   type AwsOnboarding,
   type AwsOnboardingErrorCode,
   type AwsSourceKind,
@@ -18,6 +19,11 @@ import {
   requestAwsDiscovery,
 } from '../aws/discovery/discovery-runs.js';
 import { entersRole } from '../aws/onboarding/account-access.js';
+import {
+  lockAwsAccountRow,
+  parseChosenCapabilities,
+  serializeChosenCapabilities,
+} from '../aws/onboarding/chosen-capabilities.js';
 import { deriveAwsOnboarding } from '../aws/onboarding/onboarding-state.js';
 import {
   accountCapabilities,
@@ -55,17 +61,19 @@ const ACCOUNT_SELECT = {
   awsCapabilities: true,
   awsCapabilitiesCheckedAt: true,
   awsDiscoveredRegions: true,
+  awsChosenCapabilities: true,
   updatedAt: true,
 } as const satisfies Prisma.CloudAccountSelect;
 type AccountRow = Prisma.CloudAccountGetPayload<{ select: typeof ACCOUNT_SELECT }>;
 
-/** O que a trilha guarda do "Conectar": a conexão e os dois pedidos, antes e depois. */
+/** O que a trilha guarda do "Conectar": a conexão, os dois pedidos e a escolha das autorizações, antes e depois. */
 function connectState(row: AccountRow) {
   return {
     connection: row.connection,
     connectionError: row.connectionError,
     checkRequestedAt: row.checkRequestedAt?.toISOString() ?? null,
     awsConnectRequestedAt: row.awsConnectRequestedAt?.toISOString() ?? null,
+    chosenCapabilities: parseChosenCapabilities(row.awsChosenCapabilities),
   };
 }
 
@@ -134,32 +142,55 @@ export class AwsOnboardingService {
    * "aguardando". A tarefa `aws-check` passa a tentar a entrada no papel por até 60 min (o cliente está criando a
    * pilha) e, na primeira que der certo, lê as tags do papel e pede a descoberta. Um "Conectar" ainda pendente não é
    * renovado: clicar de novo não adia o fim da janela.
+   *
+   * Com as autorizações que o cliente marcou no painel (`capabilities`), a escolha é gravada junto, também no pedido
+   * ainda pendente (o cliente mudou as caixas enquanto esperava a pilha e baixou o arquivo de novo): é o que a tela
+   * devolve depois de recarregada. Sem elas, a escolha gravada fica como está. A escolha nunca dá permissão: o que o
+   * papel pode ler vem das tags dele.
+   *
+   * A escolha do pedido é a verdade: é gravada como veio (na ordem do catálogo), com a linha da conta presa
+   * (`lockAwsAccountRow`), e nunca decidida por uma leitura de antes. Dois pedidos quase juntos terminam com a escolha
+   * de um dos dois, a do último a ser gravado; o mesmo pedido de novo não muda nada; e a resposta de cada um traz o que
+   * ficou gravado depois dele. O antes e o depois da trilha são lidos com a linha presa: só mostram mudança quando o
+   * valor gravado mudou.
    */
-  async connect(id: string): Promise<AwsOnboarding> {
+  async connect(id: string, input: AwsConnect = {}): Promise<AwsOnboarding> {
     this.audit.describe({
       action: 'cloud_account.aws_connect',
       resourceType: 'cloud_account',
       resourceId: id,
     });
+    const inactive = 'Reative o monitoramento antes de conectar a conta.';
+    const account = await this.find(id);
+    this.assertActive(account, inactive);
+    // Daqui até o fim da transação, só este pedido lê e grava o "Conectar" e a escolha desta conta.
+    await lockAwsAccountRow(this.prisma.db(), account);
     const before = await this.find(id);
-    this.assertActive(before, 'Reative o monitoramento antes de conectar a conta.');
+    this.assertActive(before, inactive);
     const pendingConnect =
       before.checkRequestedAt !== null &&
       before.awsConnectRequestedAt !== null &&
       before.checkRequestedAt.getTime() === before.awsConnectRequestedAt.getTime();
     const now = new Date();
-    const row = pendingConnect
-      ? before
-      : await this.prisma.scoped().cloudAccount.update({
-          where: { id },
-          data: {
-            connection: 'waiting',
-            connectionError: null,
-            checkRequestedAt: now,
-            awsConnectRequestedAt: now,
-          },
-          select: ACCOUNT_SELECT,
-        });
+    const chosen =
+      input.capabilities === undefined ? undefined : serializeChosenCapabilities(input.capabilities);
+    const row =
+      pendingConnect && chosen === undefined
+        ? before
+        : await this.prisma.scoped().cloudAccount.update({
+            where: { id },
+            data: {
+              ...(!pendingConnect && {
+                connection: 'waiting',
+                connectionError: null,
+                checkRequestedAt: now,
+                awsConnectRequestedAt: now,
+              }),
+              // Gravada como veio, sem comparar com a de antes: a mesma de novo deixa o valor como está.
+              ...(chosen !== undefined && { awsChosenCapabilities: chosen }),
+            },
+            select: ACCOUNT_SELECT,
+          });
     this.audit.describe({ before: connectState(before), after: connectState(row) });
     return this.view(row);
   }
@@ -340,9 +371,17 @@ export class AwsOnboardingService {
     if (account.status !== 'active') throw new ApiError(HttpStatus.BAD_REQUEST, message);
   }
 
+  /**
+   * Este nó descobre as fontes sozinho? Na célula compartilhada, ainda não (a tarefa `aws-discovery` não roda lá). A
+   * resposta diz isso ao painel (`discoveryAvailable`), que deixa de oferecer o que `assertDiscovers` recusaria.
+   */
+  private get discovers(): boolean {
+    return !this.sharedCell;
+  }
+
   /** A descoberta e a sondagem precisam de um nó que as execute e de uma conta em que o nó entra. */
   private assertDiscovers(account: AccountRow): void {
-    if (this.sharedCell) {
+    if (!this.discovers) {
       throw refusal(
         HttpStatus.CONFLICT,
         'A descoberta das fontes ainda não está disponível neste ambiente.',
@@ -499,6 +538,7 @@ export class AwsOnboardingService {
       connect: {
         requestedAt: current.awsConnectRequestedAt?.toISOString() ?? null,
         waitingUntil: derived.waitingUntil?.toISOString() ?? null,
+        capabilities: parseChosenCapabilities(current.awsChosenCapabilities),
       },
       checks: derived.checks,
       template: {
@@ -512,6 +552,7 @@ export class AwsOnboardingService {
         lastCompletedAt: completed?.finishedAt?.toISOString() ?? null,
         regions: current.awsDiscoveredRegions.slice(0, 64),
       },
+      discoveryAvailable: this.discovers,
       infrastructure: completed === null ? null : runSummary(completed.summary),
       sources: rows.map((row) => toSource(row, current)),
       updatedAt: updatedAt.toISOString(),

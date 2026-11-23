@@ -226,6 +226,11 @@ describe('fontes de log', () => {
     expect(within(form).getByRole('note')).toHaveTextContent(
       'No ambiente da Verax, a AWS é lida pelo papel sem chave: não há chave a colar.',
     );
+    // Os buckets digitados são só para as exceções: o resto o servidor descobre, e o cliente autoriza no painel.
+    expect(form).toHaveTextContent(
+      'Os buckets são só para as exceções. O servidor descobre sozinho os logs que a AWS grava em AWSLogs/<conta>/',
+    );
+    expect(form).toHaveTextContent('Cadastre aqui só o bucket fora desse padrão');
 
     // A conferência da tela: a conta com 12 dígitos e a região no formato.
     await user.type(within(form).getByLabelText('ID da conta AWS'), '4444');
@@ -280,6 +285,19 @@ describe('fontes de log', () => {
     const detail = await openSource(user, region, 'AWS 111111111111');
     const stack = within(detail).getByRole('region', { name: 'Papel de leitura da AWS (CloudFormation)' });
     expect(within(stack).queryByRole('note')).not.toBeInTheDocument();
+    // Quem opera sabe que o caminho do cliente é o botão do painel, e que este bloco é o manual.
+    expect(stack).toHaveTextContent(
+      'O cliente conecta pelo painel dele: em Contas cloud, o botão “Conectar com AWS” baixa o modelo já preenchido e abre o CloudFormation.',
+    );
+    expect(stack).toHaveTextContent('O que está abaixo é o caminho manual');
+    // As três autorizações do comando, explicadas numa linha.
+    expect(stack).toHaveTextContent(
+      'O comando leva as três autorizações ligadas: ReadAwsServiceLogs (os logs que a AWS grava no S3, em AWSLogs/), ReadSecurityFindings (os achados do GuardDuty, do Security Hub, do Inspector e do Access Analyzer) e ReadTaggedLogGroups (os grupos do CloudWatch Logs que o cliente marcar).',
+    );
+    const command = within(stack).getByLabelText('Comando da AWS CLI', { selector: 'pre' });
+    for (const flag of ['ReadAwsServiceLogs=true', 'ReadSecurityFindings=true', 'ReadTaggedLogGroups=true']) {
+      expect(command).toHaveTextContent(flag);
+    }
 
     const copies: [string, string][] = [
       ['Nome da pilha', 'verax-control-reader'],
@@ -310,6 +328,32 @@ describe('fontes de log', () => {
     expect(message).toContain(`   NodeServiceAccountId: ${FAKE_NODE_SERVICE_ACCOUNT_ID}`);
     expect(message).toContain(`   NodeEgressIps: ${FAKE_EGRESS_IPS.join(',')}`);
     expect(message).toContain('Ou, pela AWS CLI, na pasta do modelo:');
+    // A mensagem começa pelo caminho do painel; a pilha à mão vem depois, com as três autorizações explicadas.
+    expect(message).toContain(
+      'O jeito mais simples é pelo painel do Verax Control: em Contas cloud, abra a conta 111111111111 e clique em "Conectar com AWS".',
+    );
+    expect(message).toContain('Se preferir criar a pilha à mão, pelo console da AWS:');
+    expect(message).toContain(
+      '   ReadAwsServiceLogs, ReadSecurityFindings e ReadTaggedLogGroups: as três autorizações',
+    );
+    expect(message).toContain('Nada é coletado até você autorizar cada fonte no painel.');
+    expect(message.indexOf('pelo painel do Verax Control')).toBeLessThan(
+      message.indexOf('1. Abra o CloudFormation'),
+    );
+  });
+
+  it('a fonte da AWS sem bucket cadastrado: o parâmetro vazio diz que os logs em AWSLogs/ são descobertos pelo servidor', async () => {
+    const state = stateAt();
+    const sync = state.logSources.tenants.get(ACTIVE_ID);
+    const source = [...(sync?.sources.values() ?? [])].find((item) => item.spec.accountId === '111111111111');
+    if (source === undefined || source.spec.provider !== 'aws') throw new Error('fonte de exemplo ausente');
+    source.spec = { ...source.spec, buckets: {} };
+    const { user } = renderConsole(`/clientes/${ACTIVE_ID}`, state);
+    const detail = await openSource(user, await logSources(), 'AWS 111111111111');
+    const stack = within(detail).getByRole('region', { name: 'Papel de leitura da AWS (CloudFormation)' });
+    expect(stack).toHaveTextContent(
+      'LogBucketArnsVazio: nenhum bucket fora do padrão cadastrado. Os logs gravados em AWSLogs/ são descobertos pelo servidor.',
+    );
   });
 
   it('a pilha com valores diferentes dos que o servidor informou: o aviso antes de mandar', async () => {

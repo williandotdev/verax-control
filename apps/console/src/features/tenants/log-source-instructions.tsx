@@ -21,6 +21,10 @@ import {
  * modelo do CloudFormation, os parâmetros, o comando e o link do console); na VM do cliente, as chaves de leitura que
  * ele cria (o usuário IAM ou a conta de serviço da GCP); no Cloudflare, o link do token de leitura e os IPs do filtro.
  * Os valores vêm do cp-admin (`awsStack`, `readKeys`, `cloudflareToken`): nada aqui é segredo.
+ *
+ * Na AWS, o caminho do cliente é o botão "Conectar com AWS" do painel dele (o onboarding self-service: o arquivo já
+ * preenchido, a descoberta das fontes e a autorização de cada uma). O bloco daqui é o caminho manual, para a pilha
+ * criada fora do painel, e os buckets do cadastro são só para as exceções (fora de `AWSLogs/`).
  */
 
 type Clip = ReturnType<typeof useClipboard>;
@@ -156,8 +160,14 @@ function AwsStackBlock({ accountId, stack }: { accountId: string; stack: AwsStac
     <Block label="Papel de leitura da AWS (CloudFormation)">
       <p className="text-sm">
         A AWS é lida sem chave: o cliente cria na conta dele o papel de leitura com o modelo do
-        CloudFormation, e o servidor da Verax entra nele com a identidade do Google. Baixe o modelo, anexe e
-        mande a mensagem.
+        CloudFormation, e o servidor da Verax entra nele com a identidade do Google.
+      </p>
+      <p className="text-sm">
+        <strong className="font-semibold">O cliente conecta pelo painel dele:</strong> em Contas cloud, o
+        botão &ldquo;Conectar com AWS&rdquo; baixa o modelo já preenchido e abre o CloudFormation. Criada a
+        pilha, o servidor confere a conexão, descobre as fontes de log da conta, e o cliente escolhe as que
+        autoriza, sem digitar bucket. O que está abaixo é o caminho manual, para quem cria a pilha fora do
+        painel: baixe o modelo, anexe e mande a mensagem.
       </p>
       {stack.mismatch && (
         <Warning>
@@ -192,12 +202,21 @@ function AwsStackBlock({ accountId, stack }: { accountId: string; stack: AwsStac
         )}
         <ValueRow label="Audience" value={stack.audience} clip={clip} />
         {stack.bucketArns.length === 0 ? (
-          <EmptyRow label="LogBucketArns">Vazio (a fonte não tem bucket cadastrado).</EmptyRow>
+          <EmptyRow label="LogBucketArns">
+            Vazio: nenhum bucket fora do padrão cadastrado. Os logs gravados em AWSLogs/ são descobertos pelo
+            servidor.
+          </EmptyRow>
         ) : (
           <ValueRow label="LogBucketArns" value={listText(stack.bucketArns)} clip={clip} />
         )}
       </dl>
       <CodeBlock label="Comando da AWS CLI" text={stack.deployCommand} clip={clip} />
+      <p className="text-xs text-muted-foreground">
+        O comando leva as três autorizações ligadas: ReadAwsServiceLogs (os logs que a AWS grava no S3, em
+        AWSLogs/), ReadSecurityFindings (os achados do GuardDuty, do Security Hub, do Inspector e do Access
+        Analyzer) e ReadTaggedLogGroups (os grupos do CloudWatch Logs que o cliente marcar). Para desligar
+        uma, o cliente troca true por false, ou escolhe no painel.
+      </p>
       <div className="flex flex-wrap items-center gap-4">
         {template !== undefined && (
           <a

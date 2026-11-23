@@ -151,6 +151,7 @@ export function sourceFacts(
 ): OnboardingSourceFacts {
   const { permission, permissionDetail, state, stateCode } = legacyPermission(row, account);
   return {
+    id: row.id,
     state: state as AwsSourceState,
     stateCode,
     method: row.method as AwsSourceMethod,

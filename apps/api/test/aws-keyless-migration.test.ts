@@ -90,6 +90,8 @@ describe(`migration ${MIGRATION}`, () => {
     it('sem o CHECK do ExternalId, com o das colunas da AWS, e o cofre com o token do Cloudflare e as chaves da VM própria', async () => {
       expect(await checks(client)).toEqual([
         'CloudAccount_aws_check_fields_check',
+        // A escolha gravada do "Conectar com AWS", só na conta AWS (migration 20261124160000_aws_chosen_capabilities).
+        'CloudAccount_aws_chosen_capabilities_check',
         // O do aviso da coleta pelo Wazuh do nó (PR-V4', migration 20261109130000_aws_collection_error).
         'CloudAccount_aws_collection_error_check',
         // As colunas do onboarding self-service só na conta AWS (migration 20261124120000_aws_onboarding).

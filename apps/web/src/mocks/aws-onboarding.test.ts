@@ -615,3 +615,97 @@ describe('recusas, como as da API', () => {
     expect(DEMO_ACCOUNTS.beta).toBe('777788889999');
   });
 });
+
+describe('a escolha das autorizações, as conferências com as fontes e a descoberta disponível', () => {
+  it('a escolha do "Conectar" fica gravada, volta em toda leitura, e a pilha da demonstração sai com ela', async () => {
+    start();
+    const account = await create('246813579135');
+    expect((await view(account.id)).connect.capabilities).toBeNull();
+    // Em qualquer ordem no pedido; guardada na ordem do catálogo.
+    const requested = await write(account.id, 'connect', { capabilities: ['findings', 'service-logs'] });
+    expect(requested.connect.capabilities).toEqual(['service-logs', 'findings']);
+    // O pedido pendente não é renovado, mas a escolha nova é gravada (o cliente mudou as caixas na espera).
+    const changed = await write(account.id, 'connect', { capabilities: ['service-logs'] });
+    expect(changed.connect).toEqual({ ...requested.connect, capabilities: ['service-logs'] });
+    // Sem corpo, a escolha fica.
+    expect((await write(account.id, 'connect')).connect.capabilities).toEqual(['service-logs']);
+    pass(DEMO_AWS_CONNECT_DELAY_MS);
+    const connected = await view(account.id);
+    // A pilha "criada" tem a descoberta e só o que foi escolhido: nunca as três por conta própria.
+    expect(connected.template).toMatchObject({ version: 2, capabilities: ['discovery', 'service-logs'] });
+    expect(connected.connect.capabilities).toEqual(['service-logs']);
+    // Fora do contrato: 400, como na API.
+    for (const body of [
+      { capabilities: ['discovery'] },
+      { capabilities: ['findings', 'findings'] },
+      { extra: 1 },
+    ]) {
+      await expect(write(account.id, 'connect', body)).rejects.toMatchObject({ status: 400 });
+    }
+    expect((await view(account.id)).connect.capabilities).toEqual(['service-logs']);
+  });
+
+  it('o "Verificar" com a escolha nova (depois de atualizar a pilha) a grava, e a pilha da demonstração a acompanha', async () => {
+    start();
+    const account = await create('246813579136');
+    await write(account.id, 'connect', { capabilities: ['service-logs'] });
+    pass(DEMO_AWS_CONNECT_DELAY_MS);
+    await view(account.id);
+    await api.post(
+      path(account.id, 'verify'),
+      { capabilities: ['service-logs', 'log-groups'] },
+      cloudAccountSchema,
+    );
+    expect((await view(account.id)).connect.capabilities).toEqual(['service-logs', 'log-groups']);
+    pass(DEMO_AWS_CHECK_DELAY_MS);
+    expect((await view(account.id)).template.capabilities).toEqual([
+      'discovery',
+      'service-logs',
+      'log-groups',
+    ]);
+    // O "Verificar" sem corpo não toca na escolha; fora do contrato, 400.
+    await api.post(path(account.id, 'verify'), undefined, cloudAccountSchema);
+    expect((await view(account.id)).connect.capabilities).toEqual(['service-logs', 'log-groups']);
+    await expect(
+      api.post(path(account.id, 'verify'), { capabilities: ['discovery'] }, cloudAccountSchema),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('as conferências das fontes citam as fontes que as seguram, pelos IDs da própria conta', async () => {
+    start();
+    const alfa = await view(ALFA);
+    const idsOf = (predicate: (source: AwsOnboarding['sources'][number]) => boolean) =>
+      alfa.sources
+        .filter(
+          (source) => source.authorization.authorizedAt !== null && source.authorization.revokedAt === null,
+        )
+        .filter(predicate)
+        .map((source) => source.id)
+        .sort();
+    const cited = (id: (typeof AWS_ONBOARDING_CHECK_IDS)[number]) =>
+      [...(checkOf(alfa, id)?.sourceIds ?? [])].sort();
+    // A permissão: todas as negadas; os eventos: as com erro de ingestão ou paradas; o atraso: as paradas.
+    expect(cited('permission')).toEqual(
+      idsOf((source) => source.state === 'permission_error' || source.permission === 'missing'),
+    );
+    expect(cited('permission').length).toBeGreaterThan(0);
+    expect(cited('events')).toEqual(
+      idsOf((source) => source.state === 'ingestion_error' || source.state === 'stalled'),
+    );
+    expect(cited('lag')).toEqual(idsOf((source) => source.state === 'stalled'));
+    expect(cited('collector_config')).toEqual(
+      idsOf((source) => source.state === 'authorized' || source.state === 'configuring'),
+    );
+    // As quatro primeiras nunca citam fonte.
+    for (const id of ['assume_role', 'identity', 'template', 'discovery'] as const) {
+      expect(checkOf(alfa, id)?.sourceIds).toBeUndefined();
+    }
+    const known = new Set(alfa.sources.map((source) => source.id));
+    for (const check of alfa.checks) for (const id of check.sourceIds ?? []) expect(known.has(id)).toBe(true);
+  });
+
+  it('a demonstração descobre as fontes sozinha: a resposta diz isso em toda conta', async () => {
+    start();
+    for (const id of [ALFA, HOMOLOGACAO]) expect((await view(id)).discoveryAvailable).toBe(true);
+  });
+});

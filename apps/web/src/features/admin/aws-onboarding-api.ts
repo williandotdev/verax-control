@@ -1,7 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  type AwsConnect,
   type AwsOnboarding,
   awsOnboardingSchema,
+  type AwsReaderAuthorization,
   type AwsSource,
   type AwsSourcesAuthorize,
   cloudAccountSchema,
@@ -89,6 +91,7 @@ export function awsOnboardingPollInterval(
 }
 
 const onboardingKey = (accountId: string) => ['aws-onboarding', accountId] as const;
+const connectKey = (accountId: string) => ['aws-connect', accountId] as const;
 const path = (accountId: string, rest: string) =>
   `/v1/cloud-accounts/${encodeURIComponent(accountId)}/aws/${rest}`;
 
@@ -109,9 +112,14 @@ const ACCOUNT_LIST_KEYS = ['admin-cloud-accounts', 'cloud-accounts'] as const;
  * Uma escrita do onboarding: a resposta é o estado novo da conta, e é ela que a tela passa a mostrar. Uma leitura que
  * estava no caminho é cancelada antes, para não devolver à tela o estado de antes da escrita.
  */
-function useOnboardingWrite<TInput>(accountId: string, write: (input: TInput) => Promise<AwsOnboarding>) {
+function useOnboardingWrite<TInput>(
+  accountId: string,
+  write: (input: TInput) => Promise<AwsOnboarding>,
+  mutationKey?: readonly string[],
+) {
   const queryClient = useQueryClient();
   return useMutation({
+    ...(mutationKey !== undefined && { mutationKey }),
     mutationFn: write,
     onSuccess: async (onboarding) => {
       await queryClient.cancelQueries({ queryKey: onboardingKey(accountId) });
@@ -121,9 +129,32 @@ function useOnboardingWrite<TInput>(accountId: string, write: (input: TInput) =>
   });
 }
 
-/** "Conectar com AWS": o servidor passa a tentar a entrada no papel por até 60 min. */
+/**
+ * O corpo do "Conectar" e do "Verificar": as autorizações que o cliente marcou, quando o clique as confirma (a API as
+ * guarda como a escolha dele); sem elas, nenhum corpo, e a escolha gravada fica como está.
+ */
+function choiceBody(capabilities: AwsReaderAuthorization[] | void): AwsConnect | undefined {
+  return capabilities === undefined ? undefined : { capabilities };
+}
+
+/**
+ * "Conectar com AWS": o servidor passa a tentar a entrada no papel por até 60 min. Com as autorizações marcadas na
+ * tela, elas ficam gravadas: a tela recarregada devolve as mesmas caixas e o mesmo arquivo.
+ */
 export const useAwsConnect = (accountId: string) =>
-  useOnboardingWrite(accountId, () => api.post(path(accountId, 'connect'), undefined, awsOnboardingSchema));
+  useOnboardingWrite(
+    accountId,
+    (capabilities: AwsReaderAuthorization[] | void) =>
+      api.post(path(accountId, 'connect'), choiceBody(capabilities), awsOnboardingSchema),
+    connectKey(accountId),
+  );
+
+/**
+ * Há um "Conectar" desta conta no caminho, saído de qualquer parte da tela (ou de uma tela que já fechou)? Enquanto
+ * houver, a escolha gravada pode estar para mudar: nada que dependa dela sai da tela.
+ */
+export const useAwsConnecting = (accountId: string): boolean =>
+  useIsMutating({ mutationKey: connectKey(accountId) }) > 0;
 
 /** Pede outra descoberta das fontes (no máximo uma a cada 5 min). */
 export const useAwsDiscovery = (accountId: string) =>
@@ -157,12 +188,14 @@ export const useAwsRetrySource = (accountId: string) =>
 
 /**
  * "Verificar conexão": o pedido de sempre (`POST …/aws/verify`), que responde com a conta. O estado do onboarding é
- * relido em seguida, junto das listas de contas.
+ * relido em seguida, junto das listas de contas. Depois de atualizar a pilha (ou a política do usuário de leitura)
+ * pela tela, o pedido leva as autorizações marcadas ali: passam a ser a escolha gravada do cliente.
  */
 export function useAwsVerify(accountId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post(path(accountId, 'verify'), undefined, cloudAccountSchema),
+    mutationFn: (capabilities: AwsReaderAuthorization[] | void) =>
+      api.post(path(accountId, 'verify'), choiceBody(capabilities), cloudAccountSchema),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: onboardingKey(accountId) });
       for (const key of ACCOUNT_LIST_KEYS) void queryClient.invalidateQueries({ queryKey: [key] });

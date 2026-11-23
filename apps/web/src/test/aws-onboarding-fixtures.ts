@@ -189,7 +189,7 @@ export function onboardingFixture(
     cloudAccountId,
     state,
     credentialMode: 'role',
-    connect: { requestedAt: null, waitingUntil: null },
+    connect: { requestedAt: null, waitingUntil: null, capabilities: null },
     checks: outside
       ? checksFixture({ assume_role: { status: 'pending', code: 'not_requested' } })
       : checksFixture(CONNECTED_CHECKS),
@@ -199,6 +199,7 @@ export function onboardingFixture(
     discovery: discovered
       ? { run: runFixture(), lastCompletedAt: ago(30), regions: ['sa-east-1', 'us-east-1'] }
       : { run: null, lastCompletedAt: null, regions: [] },
+    discoveryAvailable: true,
     infrastructure: discovered ? INFRASTRUCTURE_FIXTURE : null,
     sources: [],
     updatedAt: FIXTURE_NOW,

@@ -215,7 +215,8 @@ function DiscoveryErrors({ onboarding }: { onboarding: AwsOnboarding }) {
 /**
  * "O que encontramos": quando a descoberta rodou e como terminou, o retrato da infraestrutura, os serviços
  * identificados e, na descoberta parcial, o que ficou de fora e por quê. "Descobrir de novo" pede outra execução (a API
- * aceita uma a cada 5 min; a recusa é explicada aqui).
+ * aceita uma a cada 5 min; a recusa é explicada aqui). Onde o servidor não descobre as fontes sozinho
+ * (`discoveryAvailable` da API), o botão não aparece: a tela diz isso, em vez de oferecer o que seria recusado.
  */
 export function AwsDiscoveryResults({
   account,
@@ -264,7 +265,13 @@ export function AwsDiscoveryResults({
           </p>
         </Notice>
       )}
-      {canWrite && (
+      {!onboarding.discoveryAvailable && (
+        <p className="text-sm text-muted-foreground">
+          Neste ambiente, o Verax ainda não descobre as fontes de log sozinho: não há como pedir a descoberta
+          por aqui.
+        </p>
+      )}
+      {canWrite && onboarding.discoveryAvailable && (
         <div className="space-y-1">
           <Button
             type="button"

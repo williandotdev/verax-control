@@ -6223,3 +6223,297 @@ note?, confirmSlug}` → `{amendmentId, state, hosting, hostingChanged, nodeLimi
   `reveal-access.test.tsx` (novo) e o e2e `console.spec.ts` (axe nos dois temas).
 - **Manual:** num cliente de teste em "Esperando a conexão", mostrar a senha pelo console, conferir que o link do
   e-mail diz "senha já revelada" e que a versão do `vx-<slug>-admin-bootstrap` foi destruída.
+
+## Onboarding AWS self-service, parte 1: o modelo 2 do papel de leitura (PR #169) ⚠️ altera `infra/`
+
+- **Pedido (22/11/2026, decisões do responsável):** o cliente conecta a AWS sozinho, sem digitar bucket, ARN, região
+  nem grupo de logs, e escolhe o que autoriza. Sem bucket nem conta AWS da Verax no caminho e sem link de criação
+  rápida; nós dedicados primeiro; nada bloqueado por plano. As seis partes entram na branch de integração
+  `integracao/aws-onboarding`, e não na `main`: nada vai para a produção sem a autorização do responsável. O desenho
+  inteiro está em `docs/ARQUITETURA.md`, "Onboarding AWS self-service".
+- **O que mudou:** o template `infra/cloudformation/verax-control-reader.yaml` passa ao modelo 2. O papel é o mesmo
+  no essencial (nome, caminho, sem chave, a confiança só no token do Google do nó, uma política que também é o limite
+  de permissões). Três autorizações que o cliente liga ou desliga na pilha, ligadas por padrão: `ReadAwsServiceLogs`
+  (os objetos em `AWSLogs/<conta>/` de qualquer bucket, e `kms:Decrypt` só pelo S3), `ReadSecurityFindings` (os
+  achados do GuardDuty, do Security Hub, do Inspector e do Access Analyzer) e `ReadTaggedLogGroups` (só os grupos do
+  CloudWatch Logs com a etiqueta `verax-control = leitura`). A descoberta e a postura ficam sempre ligadas, só com
+  `Describe*`, `Get*` e `List*`. As etiquetas do papel (`verax-control:template = 2` e `verax-control:capabilities`)
+  dizem ao nó o modelo e o que foi autorizado. A negação por IP ganhou a exceção `aws:ViaAWSService` (o S3 pedindo ao
+  KMS a chave de um objeto), e há duas negações novas (`NuncaAlterarOutrasFontes` e
+  `NuncaTrocarAsPropriasEtiquetas`). Os buckets digitados ficam como "buckets adicionais, fora do padrão AWSLogs".
+  Uma pilha do modelo 1 atualizada com este arquivo continua lendo o que lia.
+- **Arquivos:** `infra/cloudformation/verax-control-reader.yaml`, `verax-control-reader.policy.json`,
+  `guard/verax-control-reader.guard` e `.tests.yaml`, `tests/test_reader.py`, `README.md` e `GUIA-NO.md`;
+  `packages/shared/src/aws-reader.ts` (`prefillReaderTemplate`: grava os valores do nó como `Default` dos parâmetros
+  e não muda mais nenhuma linha; as constantes do modelo; `parseReaderRoleTags`; o comando da CLI com as três
+  autorizações) e `read-keys.ts` (as políticas do usuário IAM da VM própria com as ações novas), com os testes;
+  `apps/console/src/mocks/fake-log-sources.ts`; `apps/web/src/pages/admin/cloud-accounts-page.tsx`.
+- **Dependências:** nenhuma.
+- **Testes:** cfn-lint 1.59.0 no template e em três amostras preenchidas, limpo; cfn-guard 3.2.1, 91 casos; checkov
+  (cloudformation), 43 ok e nenhuma falha; testes Python do template, 107 (eram 85: cada autorização ligada e
+  desligada gera ou omite exatamente os blocos dela, nenhuma ação fora de uma lista explícita de leitura, os padrões
+  do S3, a etiqueta dos grupos, as etiquetas do papel e o tamanho das políticas no pior caso, 5.250 de 6.144
+  caracteres); shared 466; API sem banco 506; web 564; console 144; plano de controle 1156.
+- **Teste manual (não feito: precisa de uma conta AWS de teste):** os três comportamentos do IAM que não dá para
+  provar sem a AWS: `logs:GetLogEvents` avaliando a etiqueta do grupo (o stream não tem etiqueta própria); a condição
+  `s3:prefix` com o valor vazio, pelo CloudFormation; e a leitura de um objeto com SSE-KMS sob a negação por IP. São as
+  conferências H-03, H-04 e H-05 do `docs/runbooks/homologacao-onboarding-aws.md`, e as três bloqueiam a produção.
+- **Riscos:** tudo em `infra/cloudformation/` é permissão concedida na conta AWS do cliente (revisar linha a linha);
+  com `ReadAwsServiceLogs`, o papel vê os nomes do primeiro nível de qualquer bucket da conta e os IDs de conta e de
+  organização em `AWSLogs/` (só nomes); o `*` do IAM casa também com a `/`.
+- **Pendente para a produção:** a homologação numa conta AWS de teste; os clientes com a pilha do modelo 1 atualizam
+  quando quiserem (nada muda para quem não atualiza).
+
+## Onboarding AWS self-service, parte 2: o backend do nó: conectar, descoberta e autorização de fontes (PR #170) ⚠️ migration nova e dependências novas
+
+- **O que mudou:** o backend do onboarding, no nó.
+  - **Conectar:** `POST /v1/cloud-accounts/:id/aws/connect` marca o pedido, e a tarefa `aws-check` passa a tentar
+    entrar no papel sem ninguém clicar em "Verificar": por 60 min, "o papel ainda não existe" não é erro final (o nó
+    tenta de novo a 20 s, 40 s e depois a cada 60 s); depois, `authorization_timeout`. Na primeira entrada, o nó lê as
+    etiquetas do próprio papel (`iam:GetRole`; na VM própria, `iam:GetUser`) e pede a descoberta sozinho.
+  - **Descoberta (tarefa `aws-discovery`, só leitura):** percorre as regiões ativas e cataloga as trilhas, os VPC
+    Flow Logs, o WAF, o GuardDuty, o Security Hub, o Inspector, o Access Analyzer, os grupos do CloudWatch Logs, o
+    Config, os balanceadores e o RDS. Os clientes do SDK da descoberta só aceitam `Describe*`, `Get*`, `List*` e
+    `BatchGet*` (qualquer outro comando lança erro antes de ir à rede); cada consulta é isolada por serviço e região
+    (um acesso negado vira um registro, e a execução termina `partial`); a permissão de cada fonte é provada com uma
+    leitura barata (no S3, uma listagem no prefixo exato e 1 byte de um objeto, que prova o KMS). Nada é criado nem
+    alterado na AWS.
+  - **Estado e rotas:** `GET …/aws/onboarding` (o estado derivado e as nove conferências: `assume_role`, `identity`,
+    `template`, `discovery`, `permission`, `collector_config`, `events`, `last_sync` e `lag`; nunca um sucesso
+    genérico com etapa essencial pendente); `POST …/aws/discovery` (uma execução ativa por conta, e 5 min entre as
+    manuais); `POST …/aws/sources/authorize` (tudo ou nada; o grupo do CloudWatch Logs só com a confirmação por ID; a
+    coleta começa no dia da autorização, sem histórico); `POST …/aws/sources/:id/revoke` e `…/retry`. Tudo auditado; a
+    conta ou a fonte de outro cliente responde 404.
+  - **Modelo de dados:** migrations `20261124120000_aws_onboarding` e `20261124130000_aws_source_retry_limit`, só de
+    acréscimo: `AwsDiscoveryRun` e `AwsSource` (por cliente, com chave estrangeira composta com a conta e CHECK nos
+    enumerados) e as colunas novas de `CloudAccount`. Os buckets digitados viram fontes `legacy`, já autorizadas, e
+    seguem funcionando igual.
+- **Arquivos:** `apps/api/src/aws/discovery/` (catálogo, clientes, a trava de só leitura, as sondagens, a tarefa e o
+  armazenamento), `aws/onboarding/` (o estado, a visão, as fontes do cadastro), `aws/aws-check.ts`,
+  `aws/reader-tags.ts`, `aws/web-identity-checker.ts`, `cloud-accounts/aws-onboarding.{controller,service}.ts`,
+  `worker.ts`, `prisma/schema.prisma` e as duas migrations; `packages/shared/src/aws-onboarding.ts` (o contrato
+  estrito); os testes em `apps/api/test/aws-*.test.ts` e `test/aws/discovery/`; `docs/ARQUITETURA.md`.
+- **Dependências (aprovadas pelo responsável em 22/11/2026):** oito clientes do SDK da AWS em `apps/api`, todos na
+  versão 3.1161.0, a mesma dos que já existiam: `@aws-sdk/client-securityhub`, `client-inspector2`,
+  `client-accessanalyzer`, `client-cloudwatch-logs`, `client-wafv2`, `client-rds`,
+  `client-elastic-load-balancing-v2` e `client-config-service`. Transitivas, pela resolução do pnpm e dentro da regra
+  de 24 h: `@aws-sdk/middleware-sdk-rds@3.972.73`, que traz uma segunda cópia de `@aws-sdk/core@3.981.1`,
+  `@aws-sdk/types@3.975.1`, `@aws-sdk/xml-builder@3.972.43`, `@smithy/core@3.41.0` e `@smithy/types@4.20.0`.
+- **Testes:** API com Postgres, 169 arquivos e 2429 testes; shared 483; web 565; console 144; plano de controle 1156.
+  Entre os novos: a descoberta completa e a parcial, contas sem CloudTrail, GuardDuty ou Security Hub, o acesso negado
+  por serviço, várias regiões, o bucket com KMS negado, a trilha de organização, os flow logs em formato Hive, os
+  destinos do WAF, os grupos com e sem etiqueta, a janela do "Conectar" e o tempo esgotado, a revogação, o isolamento
+  entre clientes, e cada chamada da descoberta conferida contra a lista de ações que a política do papel concede.
+  Nenhum teste chama a AWS.
+- **Teste manual (não feito):** `docs/runbooks/homologacao-onboarding-aws.md`, H-01, H-02 e H-06 a H-10.
+- **Riscos:** os códigos de erro de um serviço desligado e os tetos da descoberta numa conta grande só se confirmam
+  numa conta de verdade; cada leitura da descoberta aparece no CloudTrail do cliente.
+- **Pendente para a produção:** a homologação; na célula compartilhada a descoberta fica desligada (CE-11 e CE-12).
+
+## Onboarding AWS self-service, parte 3: os coletores de achados pelas APIs (PR #171)
+
+- **O que mudou:** a tarefa `aws-findings` do worker lê, a cada 5 min, as fontes de achados autorizadas e não
+  revogadas, sem nenhuma infraestrutura no cliente. Nunca roda na célula.
+  - **GuardDuty** (`ListFindings` por `updatedAt` e `GetFindings`): a mesma chave do caminho pelo S3, então o achado
+    lido pela API e pelo export vira um só. **Security Hub** (`GetFindings` por `UpdatedAt`, só os ativos e em aberto,
+    no limite de 3 chamadas por segundo): não repete o que vem do GuardDuty ou do Inspector quando a fonte própria
+    está coletando na mesma conta e região. **Inspector** (`ListFindings`, ativos): inclui os críticos, que as regras
+    de fábrica do Wazuh não acusam. **Access Analyzer** (`ListFindingsV2` por analisador, ativos).
+  - **Cursor por fonte** (`CollectorCursor`): janela com sobreposição de 10 min; a página é gravada antes de o cursor
+    andar (uma queda no meio relê só a página em curso); no máximo 10 páginas por fonte por execução; a primeira
+    leitura começa 24 h antes do dia da autorização.
+  - **Sem duplicar:** a chave única `[source, sourceEventId]`; o achado atualizado na origem só move `lastSeenAt` (e
+    a severidade). **Dono:** o cliente da conta que leu; o achado que cita outra conta só fica com ele se essa conta
+    também for dele, senão vai para a fila sem dono.
+  - **Saúde da fonte:** `collecting` depois da primeira leitura com sucesso, mesmo sem achado; `permission_error`
+    com a ação que falta; `ingestion_error` na terceira falha seguida; `source_missing` com o serviço desligado depois
+    da autorização. Uma fonte de achados nunca fica "parada" por não ter achado novo.
+  - **Volume:** medido no uso do plano (chave `aws`), só o achado novo ou atualizado. Nada é bloqueado por plano.
+- **Arquivos:** `apps/api/src/aws/findings/` (os quatro coletores, as chaves, as regras da faixa 990501 a 990599, a
+  saúde, o limitador e a tarefa), `alerts/finding-draft.ts`, `finding-store.ts` e `wazuh-alert.ts`, `worker.ts`;
+  `packages/shared/src/aws-onboarding.ts`, `findings.ts` e `tower.ts`; `apps/web/src/features/findings/` (a origem
+  nova no detalhe e nos rótulos); `apps/api/test/aws-findings.test.ts` e `test/aws/findings/`; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma além das da parte 2.
+- **Testes:** 82 novos. Os 33 de integração usam clientes falsos do SDK e Postgres: a paginação, o cursor com
+  sobreposição, a deduplicação (o GuardDuty nos dois sentidos), a espera por limite de chamadas, o acesso negado, o
+  serviço desligado, a conta vazia, várias regiões, a retomada depois de uma queda, a revogação, o isolamento entre
+  clientes e a conta divergente indo para a fila sem dono. A suíte inteira da API (2500) passou antes do rebase sobre
+  a integração; depois dele, a checagem de tipos e os 261 testes dos coletores, da descoberta e do onboarding.
+- **Teste manual (não feito):** H-16 a H-20 do roteiro de homologação (os achados de exemplo do GuardDuty só na conta
+  de teste).
+- **Riscos e pendências:** o Security Hub v2 (OCSF) fica de fora; o achado arquivado ou resolvido na origem só deixa
+  de ser lido (o estado no painel continua de quem tria); a detecção do serviço desligado pelo código de erro é
+  presumida; a deduplicação do Security Hub não cruza com o export do GuardDuty pelo S3; cada tentativa recusada é
+  uma linha de acesso negado no CloudTrail do cliente (por isso o recuo de 15 min a 6 h).
+
+## Onboarding AWS self-service, parte 4: a tela em Contas cloud (PR #172)
+
+- **O que mudou:** a tela nova de Contas cloud → AWS no painel (`apps/web`), mais duas funções puras no
+  `packages/shared`.
+  - **Antes de conectar:** o cadastro só com o ID da conta e a região principal (os buckets digitados ficam em
+    "Avançado: buckets fora do padrão"); "O que você autoriza", com as três autorizações, o que cada uma libera e não
+    libera, e a descoberta sempre ligada; o botão **Conectar com AWS**, que num clique baixa o YAML com os valores do
+    nó já gravados como padrão, abre o CloudFormation em outra aba e avisa o backend. Com um valor do nó faltando, não
+    sai arquivo quebrado: a tela diz o que pedir à Verax. A alternativa manual fica recolhida.
+  - **Depois do clique:** os passos pelo estado real da API, nunca otimista (com o aviso de que a Verax não enxerga a
+    pilha enquanto ela é criada e o tempo restante da janela); as nove conferências, com o texto de cada código e o
+    "tentar de novo" de cada uma; "Pilha na AWS" (a versão do modelo e as autorizações, e "Atualize a pilha" com o
+    arquivo e os passos); "O que encontramos" ("não lido" em vez de zero, e o que a descoberta parcial deixou de
+    fora); as fontes agrupadas (disponíveis; sem permissão, com a correção exata; não habilitadas na AWS, com o aviso
+    de custo; ainda não coletadas); os grupos do CloudWatch Logs com busca, seleção um a um, aviso de dado sensível
+    e confirmação; o aviso de volume antes de autorizar Flow Logs e grupos de logs; e "Fontes autorizadas" (o
+    estado, o último evento, a última leitura, o atraso, o volume, revogar e tentar de novo).
+  - **Demonstração (`pnpm dev:mock`):** um simulador com estado cobre todos os estados, as conferências e os tipos de
+    fonte, com a passagem do tempo simulada.
+- **Arquivos:** `apps/web/src/features/admin/aws-*.ts(x)` (a seção, o "Conectar", os passos, a pilha, a descoberta,
+  as fontes, os grupos de logs, os rótulos e os ganchos), `command-block.tsx`, `credential-step.tsx`,
+  `pages/admin/cloud-accounts-page.tsx`, `mocks/aws-onboarding.ts` e `mocks/admin.ts`, `test/aws-onboarding-*`, os
+  e2e `aws-onboarding.mock.spec.ts`, `aws-buckets.mock.spec.ts` e `pages.mock.spec.ts`;
+  `packages/shared/src/aws-reader.ts` e `read-keys.ts`.
+- **Dependências:** nenhuma.
+- **Testes:** web 694 (129 novos, de tela, rótulos e simulador); shared 485; e2e do projeto `mock`, 160 de 160, com a
+  jornada do onboarding nos dois temas e o axe; o download do modelo sem preencher segue conferido byte a byte; a
+  varredura do bundle, limpa. Um teste instável de outra página (`history.mock.spec.ts`) foi corrigido na causa.
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`, Contas cloud → a conta AWS de demonstração: conectar,
+  esperar a descoberta, autorizar e revogar fontes, nos dois temas.
+- **Pendências (fechadas na parte 6):** a resposta não trazia as autorizações escolhidas no clique (ao recarregar, a
+  tela voltava às três ligadas), e as conferências `permission`, `events` e `lag` traziam o código, e não a fonte.
+
+## Onboarding AWS self-service, parte 5: a coleta pelo Wazuh (PR #173) ⚠️ migrations novas e altera `infra/` e `.github/`
+
+- **O que mudou:** as fontes de bucket e os grupos do CloudWatch Logs autorizados passam a ser lidos pelo Wazuh do
+  nó, e cada fonte ganha a saúde da coleta.
+  - **Lista e gerador:** a lista do CLI `wazuh-sources` sai das fontes com a autorização valendo, no formato 2
+    (`{"version": 2, "accounts": [...]}`); a lista simples de antes segue aceita, e os buckets do cadastro saem byte a
+    byte como antes. O `render-manager-config.py` gera a trilha, os flow logs e o export do GuardDuty com a pasta
+    exata (`aws_account_id`, `regions` e, na trilha de organização, `aws_organization_id`), o WAF com o caminho da
+    Web ACL, os flow logs sem o tráfego aceito e os grupos de logs num serviço `cloudwatchlogs` por conta, região e
+    data de início. Tudo só lido (`remove_from_bucket` e `remove_log_streams` em `no`), com `only_logs_after` por
+    fonte e os tetos de 200 fontes de bucket e 50 grupos por conta.
+  - **Marcadores (sinal `progress`):** o `export-aws-progress.py` roda no contêiner do manager e só lê os bancos em
+    que o módulo guarda o que já leu; o host o chama a cada 5 min (`wazuh-progress.sh`, com o timer novo).
+  - **Saúde de cada fonte** (`aws/wazuh-source-health.ts`): `authorized` → `configuring` → `waiting_events` →
+    `collecting`, com a leitura, o evento mais recente e o atraso; `stalled` só na trilha e nos flow logs (sem leitura
+    há mais de 2 h e com objeto novo, de mais de 30 min, na origem); `ingestion_error` com o motivo.
+  - **Regras de Flow Logs** (`verax_aws_flow_rules.xml`, faixa 100400 a 100499): a varredura (100400, média: 40
+    registros rejeitados em 120 s do mesmo endereço) e a insistência em porta de administração remota (100401, alta:
+    15 para o mesmo destino e a mesma porta, 22 ou 3389). Autorizar um Flow Log lê todos os da conta e região que
+    gravam no mesmo bucket (a nota `flow_logs_read_together`, migration `20261124140000_aws_source_note_flow_logs`).
+  - **Alertas:** os dos flow logs entram no sync da AWS, com o dono pelo bucket autorizado e pela conta da pasta
+    lida; os dos grupos de logs têm um sync próprio (`wazuh-cloudwatch-alerts`, do nível 7 para cima).
+  - **Dono dos alertas do CloudWatch Logs (correção de isolamento da revisão):** o evento chega sem conta e sem
+    grupo, então o alerta só é do cliente quando a configuração **aplicada** no manager só teve grupos de uma conta
+    dele em todo o intervalo em que o alerta pode ter sido coletado (`alerts/cloudwatch-ownership.ts`, tabela
+    `CloudWatchAlertOwnership`, migration `20261124150000_cloudwatch_alert_ownership`). Na dúvida, fila sem dono.
+  - **Painel:** os textos do que a coleta grava (os motivos de cada estado, as observações dos flow logs e dos grupos
+    de logs, as confirmações).
+- **Arquivos:** `infra/wazuh/scripts/render-manager-config.py`, `export-aws-progress.py`, `test-aws-sources.sh`,
+  `test-rules.sh` e `ci-test.sh`, `config/manager/rules/verax_aws_flow_rules.xml`, `tests/` e `README.md`;
+  `infra/node/bin/wazuh-progress.sh` e `install.sh`, `systemd/wazuh/verax-wazuh-progress.{service,timer}`,
+  `tests/wazuh-progress-test.sh`; `.github/workflows/iac.yml` (os dois testes novos); `apps/api/src/aws/wazuh-*.ts`,
+  `alerts/cloudwatch-*.ts`, `alerts/alert-owner.ts`, `alert-sync.ts`, `finding-draft.ts`, `wazuh-alert.ts`,
+  `worker.ts` e as duas migrations; `packages/shared/src/aws-wazuh-sources.ts`; `apps/web` (os rótulos e a
+  demonstração); `docs/ARQUITETURA.md` e `docs/runbooks/onboarding-cliente.md`.
+- **Dependências:** nenhuma.
+- **Testes:** os Python do gerador e do exportador (79 em `infra/wazuh/tests`); na imagem fixada do manager, sem
+  rede, `test-aws-sources.sh` (o `wazuh-modulesd -t` aceita o `ossec.conf` gerado e recusa uma etiqueta desconhecida,
+  cada entrada passa pelos validadores do módulo, e os marcadores que o módulo grava são lidos de volta) e
+  `test-rules.sh` (cada limite das duas regras, no `wazuh-logtest`); `wazuh-progress-test.sh` e `wazuh-apply-test.sh`
+  com o Docker simulado; na API, a lista, os marcadores, a saúde (unitários e com Postgres), os alertas dos flow
+  logs e dos grupos de logs, a prova do dono (unitária e com Postgres e um relógio só) e o contrato entre a API e o
+  gerador (`wazuh-contract.test.ts`). A contagem da suíte inteira está na parte 6.
+- **Teste manual (não feito):** H-11 a H-15 e H-21 do roteiro de homologação.
+- **Riscos:** o caminho do WAF por Web ACL foi derivado do código do módulo, e não de objetos de verdade; todo achado
+  do CloudWatch Logs sai pelo menos 10 min depois do alerta, e depois de cada queda da prova os alertas dos 15 min
+  seguintes ficam na fila sem dono; os eventos dos grupos chegam crus, e só as regras genéricas do Wazuh valem para
+  eles; o manager reinicia uma vez na atualização do nó (as regras novas).
+- **Pendente para a produção:** a homologação; a versão do nó (o pacote leva os scripts e as regras) e a promoção
+  para a frota.
+
+## Onboarding AWS self-service, parte 6: acabamento e documentação ⚠️ migrations novas e altera `infra/` e `.github/`
+
+- **Pedido:** fechar as lacunas que as partes anteriores registraram, documentar o conjunto num lugar só e deixar o
+  roteiro de homologação pronto. É a última parte antes do PR da integração para a `main`.
+- **O que mudou:**
+  - **A escolha do "Conectar" fica gravada.** `POST /v1/cloud-accounts/:id/aws/connect` aceita um corpo opcional e
+    estrito, `{capabilities}` (as três autorizações opcionais); a escolha vai para a coluna nova
+    `CloudAccount.awsChosenCapabilities` (migration `20261124160000_aws_chosen_capabilities`: só acrescenta, aceita
+    vazio e tem CHECK do formato) e volta em `connect.capabilities` do `GET …/aws/onboarding`. O painel manda as
+    caixas no clique, traz de volta as caixas e o "Baixar o arquivo de novo" depois de recarregar, e avisa quando as
+    etiquetas do papel não são a escolha ("A pilha na AWS não está como você escolheu aqui", com o que está ligado a
+    mais e o que está desligado; vale o que está na AWS).
+  - **`discoveryAvailable`** no `GET …/aws/onboarding` (falso na célula compartilhada): o painel não oferece o
+    "Descobrir de novo" que a API recusaria.
+  - **As fontes de cada conferência:** `permission`, `events`, `lag`, `collector_config` e `last_sync` ganham
+    `sourceIds` (opcional). O painel mostra as fontes da conferência como links para a linha de cada uma em "Fontes
+    autorizadas", com a linha em destaque.
+  - **O número de sequência do sinal `applied`** (o risco que a parte 5 deixou registrado na prova do dono dos
+    alertas do CloudWatch Logs: duas trocas da configuração do manager entre duas conferências pareciam uma só). O
+    `wazuh-apply.sh` conta cada troca do que o manager roda num contador que fica no disco do nó
+    (`/var/lib/verax/wazuh-apply/seq`) e o grava no sinal; a prova só continua com o mesmo número ou com o seguinte,
+    ok e para uma geração conferida. Qualquer outro salto, e o sinal sem o número, derrubam a prova. A coluna
+    `CloudWatchAlertOwnership.appliedSeq` vem na migration `20261124170000_cloudwatch_ownership_applied_seq`.
+  - **Console do responsável:** só texto. As fontes de log da AWS dizem que o cliente conecta pelo botão "Conectar
+    com AWS" do painel, que bucket digitado é só para a exceção, e o que são as três autorizações. Nada muda no plano
+    de controle.
+  - **Sobras:** um tipo sem uso no contrato, o rótulo da auditoria com "autorizações" e dois comentários.
+- **Desvio do pedido:** o `POST …/aws/verify` também aceita o mesmo corpo opcional. É por ele que a escolha feita no
+  bloco "Atualize a pilha" (e, na VM própria, no passo das políticas) é gravada: sem isso, depois de uma atualização
+  deliberada da pilha o aviso de diferença ficaria aceso para sempre.
+- **Correção da revisão (a escolha gravada fora de ordem):** marcar e desmarcar caixas em seguida, na espera pela
+  pilha, mandava vários "Conectar" ao mesmo tempo, e a API decidia o que gravar por uma leitura de antes: podia ficar
+  gravada uma escolha que o cliente já tinha desfeito, e o arquivo baixado depois sairia diferente da última escolha.
+  Na API, o "Conectar" e o "Verificar" prendem a linha da conta (`lockAwsAccountRow`) e gravam a escolha do pedido
+  como veio: vale a do último pedido gravado. No painel (`features/admin/aws-choice.ts`), um pedido de cada vez, com
+  a última escolha; o arquivo e o comando só saem com a escolha que a API confirmou (no "Conectar com AWS", o arquivo
+  é baixado depois da resposta); a gravação que falha fica à vista, com "Tentar de novo", e as caixas não voltam
+  sozinhas. Testes que caem sem a correção: três na API com Postgres (a linha presa por uma transação do teste, para
+  o segundo pedido sair com o primeiro no caminho) e sete no painel.
+- **Documentação:** `docs/ARQUITETURA.md` ganha a seção "Onboarding AWS self-service" (o fluxo, o template v2, o
+  modelo de dados, os estados e as nove conferências, a descoberta e a trava de só leitura, os coletores, os limites e
+  o controle de volume, o isolamento entre clientes, o que não está coberto e a tabela "O que foi conferido onde"), e
+  as partes antigas que diziam outra coisa foram acertadas; `docs/runbooks/onboarding-cliente.md` ganha a seção 4.1
+  (o que o cliente faz, o que a Verax acompanha, a correção de cada motivo de falta de permissão, a pilha do modelo 1
+  para o 2, a revogação, o caminho manual e a VM própria); `docs/runbooks/homologacao-onboarding-aws.md` (novo) tem 25
+  conferências numeradas para uma conta AWS de teste com o nó de homologação, os custos e a limpeza, e o checklist de
+  produção; os READMEs de `infra/wazuh` e `infra/cloudformation` acompanham (só texto).
+- **Arquivos:** `packages/shared/src/aws-onboarding.ts` (e o teste); `apps/api/prisma/schema.prisma` e as duas
+  migrations; `apps/api/src/aws/onboarding/chosen-capabilities.ts` (novo), `onboarding-state.ts` e
+  `onboarding-view.ts`; `cloud-accounts/aws-onboarding.{controller,service}.ts` e
+  `cloud-accounts.{controller,service}.ts`; `alerts/cloudwatch-ownership.ts`; `aws/wazuh-config.ts`; os testes
+  `aws-connect`, `aws-onboarding`, `aws-onboarding-cell`, `aws-onboarding-vm`, `aws-onboarding-migration`,
+  `aws-keyless-migration`, `aws-source-alert-sync`, `cloudwatch-alert-ownership`, `wazuh-config` e `wazuh-contract`;
+  `apps/web/src/features/admin/aws-*.ts(x)` (o "Conectar", a pilha, as conferências, a descoberta e a tabela das
+  fontes), `aws-reader-template.test.ts` (novo), `features/audit/labels.ts`, `mocks/aws-onboarding.ts` e
+  `mocks/admin.ts`, e o e2e `aws-onboarding.mock.spec.ts`; `apps/console/src/features/tenants/log-source-*.ts(x)`.
+- **Infraestrutura e CI (revisar linha a linha):** `infra/node/bin/wazuh-apply.sh` (o contador e o campo `seq` do
+  sinal) e `infra/node/tests/wazuh-apply-test.sh`; `.github/workflows/painel.yml` (uma linha: o
+  `infra/cloudformation/verax-control-reader.yaml` no filtro de caminhos, porque o painel serve esse arquivo e uma
+  mudança só nele não publicava a demonstração de novo); `infra/wazuh/README.md` e `infra/cloudformation/README.md`
+  (só texto).
+- **Dependências:** nenhuma.
+- **Testes:** `pnpm lint`, `format:check` e `typecheck` (todos os pacotes), limpos. Shared, 29 arquivos e 514
+  testes. API com Postgres, 181 arquivos e 2687 testes (na rodada final, dois arquivos caíram no erro conhecido do
+  worker do vitest no Windows, código 3221226505, e passaram rodados de novo). Web, 56 arquivos e 724 testes; o
+  build com a varredura do bundle; os e2e `aws-onboarding.mock.spec.ts` e `aws-buckets.mock.spec.ts`, 11 de 11 (um
+  novo: a escolha desligada no clique sai no arquivo, bate com a pilha lida e volta na tela reaberta). Console, 22
+  arquivos e 145 testes, o build e o e2e (30 de 30). `wazuh-apply-test.sh` (101 verificações) e
+  `wazuh-progress-test.sh` (36) num
+  contêiner Linux; `shellcheck -x -S style` limpo nos dois arquivos alterados; os testes Python do template (107) e o
+  cfn-lint, porque o README que eles leem mudou; os do gerador do Wazuh (79). Cada lacuna tem teste que cai sem a
+  mudança (conferido tirando a mudança: 30 testes da API na escolha, nas fontes das conferências e no
+  `discoveryAvailable`; 6 na continuidade da prova; 12 no painel; o do filtro do workflow). Não rodados aqui: os
+  testes na imagem do manager (`test-aws-sources.sh`, `test-rules.sh`, `test-aws-profile.sh`), que este PR não toca, e
+  a suíte do plano de controle, também não tocado (só a checagem de tipos).
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`: desmarcar uma autorização, conectar, fechar e abrir a conta
+  (a escolha volta); numa conferência com problema, seguir o link até a fonte. **Não feito, e bloqueia a produção:**
+  o roteiro `docs/runbooks/homologacao-onboarding-aws.md` numa conta AWS de teste, com o nó de homologação.
+- **Riscos:** a contagem é por reinício do manager, então uma aplicação que derruba o manager e volta à anterior
+  (duas trocas) derruba a prova, e os alertas dos grupos de logs dos 15 min seguintes vão para a fila sem dono; o
+  contador perdido recomeça da hora do host; entre a instalação do pacote novo do nó e o reinício dos contêineres, o
+  worker anterior trata o sinal com o campo novo como fora do formato (o contrato é estrito): por instantes, a lista
+  aparece como ainda não aplicada, e a prova do dono cai; o script interrompido entre reiniciar o manager e gravar o
+  sinal deixa o sinal anterior por até 15 min.
+- **Pendente para a produção:** a homologação (as conferências H-03, H-04 e H-05, do IAM, são bloqueio); o merge da
+  integração na `main` (decisão do responsável); a versão do nó e a promoção para a frota, nessa ordem (o checklist
+  está no fim do roteiro de homologação). Os clientes com a pilha do modelo 1 atualizam quando quiserem.

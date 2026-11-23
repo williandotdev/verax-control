@@ -7,6 +7,7 @@ import {
   AWS_MAX_SOURCES_PER_ACCOUNT,
   AWS_ONBOARDING_CHECK_IDS,
   AWS_ONBOARDING_CHECK_STATUSES,
+  AWS_ONBOARDING_SOURCE_CHECK_IDS,
   AWS_ONBOARDING_STATES,
   AWS_SOURCE_ACTIVE_STATES,
   AWS_SOURCE_AVAILABILITIES,
@@ -19,6 +20,7 @@ import {
   AWS_SOURCE_STATES,
   type AwsOnboarding,
   type AwsSource,
+  awsConnectSchema,
   awsDiscoveryRunSchema,
   awsInfrastructureSummarySchema,
   awsOnboardingSchema,
@@ -31,10 +33,12 @@ import {
   isAwsSourcePermissionDetail,
   isAwsSourceRegion,
   isAwsTemplateOutdated,
+  sortAwsChosenCapabilities,
 } from './aws-onboarding.js';
 import {
   AWS_CONNECTION_ERROR_CODES,
   AWS_LOG_GROUP_TAG,
+  AWS_READER_AUTHORIZATIONS,
   AWS_READER_CAPABILITIES,
   AWS_READER_TEMPLATE_VERSION,
 } from './aws-reader.js';
@@ -87,7 +91,7 @@ function onboarding(overrides: Partial<AwsOnboarding> = {}): AwsOnboarding {
     cloudAccountId: uuid(9),
     state: 'awaiting_sources',
     credentialMode: 'role',
-    connect: { requestedAt: NOW, waitingUntil: null },
+    connect: { requestedAt: NOW, waitingUntil: null, capabilities: null },
     checks: AWS_ONBOARDING_CHECK_IDS.map((id) => ({ id, status: 'skipped', code: null, checkedAt: null })),
     template: { version: 2, capabilities: ['discovery', 'findings'], outdated: false, checkedAt: NOW },
     discovery: {
@@ -105,6 +109,7 @@ function onboarding(overrides: Partial<AwsOnboarding> = {}): AwsOnboarding {
       lastCompletedAt: NOW,
       regions: ['sa-east-1'],
     },
+    discoveryAvailable: true,
     infrastructure: null,
     sources: [source()],
     updatedAt: NOW,
@@ -469,6 +474,99 @@ describe('descoberta e resposta do onboarding', () => {
     ).toBe(false);
     const tooMany = Array.from({ length: AWS_MAX_SOURCES_PER_ACCOUNT + 1 }, () => source());
     expect(awsOnboardingSchema.safeParse({ ...onboarding(), sources: tooMany }).success).toBe(false);
+  });
+
+  it('a resposta diz se o nó descobre as fontes sozinho: o campo é obrigatório e só aceita sim ou não', () => {
+    expect(awsOnboardingSchema.parse(onboarding({ discoveryAvailable: false })).discoveryAvailable).toBe(
+      false,
+    );
+    const { discoveryAvailable: _discoveryAvailable, ...without } = onboarding();
+    expect(awsOnboardingSchema.safeParse(without).success).toBe(false);
+    expect(awsOnboardingSchema.safeParse({ ...onboarding(), discoveryAvailable: 'sim' }).success).toBe(false);
+  });
+
+  it('a escolha gravada do "Conectar": null, ou as autorizações marcadas (nunca a descoberta, sem repetir)', () => {
+    const connect = (capabilities: unknown) =>
+      awsOnboardingSchema.safeParse({ ...onboarding(), connect: { ...onboarding().connect, capabilities } });
+    for (const chosen of [null, [], ['findings'], [...AWS_READER_AUTHORIZATIONS]]) {
+      expect(connect(chosen).success).toBe(true);
+    }
+    for (const chosen of [
+      undefined,
+      ['discovery'],
+      ['discovery', 'findings'],
+      ['findings', 'findings'],
+      ['resposta'],
+      'findings',
+      [...AWS_READER_AUTHORIZATIONS, 'findings'],
+    ]) {
+      expect(connect(chosen).success).toBe(false);
+    }
+  });
+
+  it('as conferências das fontes podem citar as fontes que as deixam pendentes ou com falha, pelo ID', () => {
+    expect(AWS_ONBOARDING_SOURCE_CHECK_IDS).toEqual([
+      'permission',
+      'collector_config',
+      'events',
+      'last_sync',
+      'lag',
+    ]);
+    const withSources = (sourceIds: unknown) =>
+      awsOnboardingSchema.safeParse({
+        ...onboarding(),
+        checks: onboarding().checks.map((check) =>
+          check.id === 'permission' ? { ...check, status: 'failed', code: 'tag_missing', sourceIds } : check,
+        ),
+      });
+    expect(withSources([uuid(1)]).success).toBe(true);
+    expect(withSources([uuid(1), uuid(2)]).success).toBe(true);
+    // Sem fonte a citar, o campo não vem: a lista vazia é recusada, como um ID fora do formato.
+    expect(withSources([]).success).toBe(false);
+    expect(withSources(['fonte-1']).success).toBe(false);
+    expect(withSources(uuid(1)).success).toBe(false);
+    expect(
+      withSources(Array.from({ length: AWS_MAX_SOURCES_PER_ACCOUNT + 1 }, (_, index) => uuid(index))).success,
+    ).toBe(false);
+  });
+});
+
+describe('pedido do "Conectar" (e do "Verificar"): a escolha das autorizações', () => {
+  it('o corpo é opcional e estrito: sem nada, ou com as autorizações escolhidas (a lista vazia é uma escolha)', () => {
+    for (const body of [
+      {},
+      { capabilities: [] },
+      { capabilities: ['service-logs'] },
+      { capabilities: ['log-groups', 'findings'] },
+      { capabilities: [...AWS_READER_AUTHORIZATIONS] },
+    ]) {
+      expect(awsConnectSchema.safeParse(body).success).toBe(true);
+    }
+    // A descoberta vale sempre e não é uma escolha; nada fora do catálogo, repetido ou a mais.
+    for (const body of [
+      { capabilities: ['discovery'] },
+      { capabilities: ['discovery', 'findings'] },
+      { capabilities: ['findings', 'findings'] },
+      { capabilities: ['resposta'] },
+      { capabilities: 'findings' },
+      { capabilities: null },
+      { capabilities: ['findings'], all: true },
+      { capabilities: [...AWS_READER_AUTHORIZATIONS, 'findings'] },
+      { templateVersion: 2 },
+      [],
+      'findings',
+      null,
+    ]) {
+      expect(awsConnectSchema.safeParse(body).success).toBe(false);
+    }
+  });
+
+  it('a escolha é guardada na ordem do catálogo, qualquer que seja a ordem em que chega', () => {
+    expect(sortAwsChosenCapabilities(['log-groups', 'service-logs'])).toEqual(['service-logs', 'log-groups']);
+    expect(sortAwsChosenCapabilities([])).toEqual([]);
+    expect(sortAwsChosenCapabilities([...AWS_READER_AUTHORIZATIONS].reverse())).toEqual([
+      ...AWS_READER_AUTHORIZATIONS,
+    ]);
   });
 });
 

@@ -2,7 +2,8 @@
 
 Roteiro da equipe da Verax para colocar um cliente novo em monitoramento. Vale para qualquer cliente e não depende de
 nenhuma ferramenta além deste repositório. As etapas marcadas como _em construção_ entram com as próximas entregas da
-arquitetura (`docs/ARQUITETURA.md`).
+arquitetura (`docs/ARQUITETURA.md`). A conta AWS é conectada pelo próprio cliente, no painel (seção 4.1); o roteiro
+para homologar esse fluxo numa conta AWS de teste é o `docs/runbooks/homologacao-onboarding-aws.md`.
 
 ## 1. Diagnóstico da conta (somente leitura)
 
@@ -35,14 +36,22 @@ ExternalId, nem a do nó na AWS**, que ficaram fora do caminho.
 - A AWS do cliente é lida por um **papel IAM de leitura sem chave** (`verax-control-reader`), que o próprio cliente
   cria com o template `infra/cloudformation/verax-control-reader.yaml`. Só o nó dele entra no papel, com um token de
   até 1 hora que o Google assina para a conta de serviço do nó, e só a partir do IP de saída do nó. Não existe chave
-  para criar, copiar, guardar ou trocar, nem ExternalId. O papel lê só os buckets S3 do CloudTrail, do export do
-  GuardDuty e, se o cliente quiser, do WAF.
-- O CloudWatch Logs, o Security Hub e o Inspector ficam fora da v1, inclusive no que o diagnóstico (seção 2) mostrar
-  deles. Não há venda assistida: a primeira venda só acontece depois do provisionamento automático (fase 3).
+  para criar, copiar, guardar ou trocar, nem ExternalId.
+- **Quem conecta é o cliente, pelo painel** (o onboarding self-service, seção 4.1): o botão "Conectar com AWS" baixa
+  o template já preenchido e abre o CloudFormation; depois, o nó descobre sozinho as fontes de log da conta, e o
+  cliente autoriza as que quer. Ele escolhe, na pilha, três autorizações: os logs que a AWS grava no S3 (CloudTrail,
+  VPC Flow Logs, WAF e o export do GuardDuty), os achados de segurança (GuardDuty, Security Hub, Inspector e Access
+  Analyzer, pelas APIs) e os grupos do CloudWatch Logs que ele marcar com uma tag. Ninguém digita bucket, ARN, região
+  nem nome de grupo.
+- A Verax nunca liga nem altera nada na conta do cliente. O que o diagnóstico (seção 2) mostrar desligado continua
+  desligado até o cliente decidir, e ligar tem custo na AWS.
+- Não há venda assistida: a primeira venda só acontece depois do provisionamento automático (fase 3).
 
 Na reunião:
 
-- Confirme a lista final de fontes: os buckets do CloudTrail, do export do GuardDuty e do WAF, e as chaves KMS deles.
+- Combine o que o cliente vai autorizar (as três autorizações e, depois da descoberta, as fontes): pese o volume dos
+  flow logs e dos grupos de logs, e lembre que log de aplicação pode ter dado pessoal. Só os buckets fora do padrão
+  `AWSLogs/<conta>/` (um prefixo próprio, um bucket central) precisam ser digitados, com as chaves KMS deles.
 - Avise o que o cliente vai ver: o IAM Access Analyzer mostra o papel com acesso externo federado (esperado: papel com
   credencial temporária é o que a AWS recomenda), e o CloudTrail registra cada entrada (`AssumeRoleWithWebIdentity`)
   com o ID da conta de serviço do nó. Se a organização dele usa uma RCP de perímetro de dados que nega a federação de
@@ -67,7 +76,8 @@ Na reunião:
    Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax, e o worker não confere a conexão
    (o "Verificar" responde `check_unavailable`). Na partida, o worker confere que o token do Google do nó é dessa
    conta de serviço: se o log do worker disser que não é, corrija o `NODE_SA_UNIQUE_ID` antes de passar o valor ao
-   cliente. Sem o `NODE_EGRESS_IPS`, a conferência diária de permissão demais fica de fora. O IP de saída também entra
+   cliente. Sem o `NODE_EGRESS_IPS`, a conferência diária de permissão demais fica de fora, e o painel não monta o
+   arquivo da pilha do "Conectar com AWS". O IP de saída também entra
    nas regras locais do Wazuh do nó (a leitura do próprio nó não vira alerta; a mesma sessão de outro IP vira nível
    12), e o audience é o que o host pede ao Google a cada 10 min. Depois do deploy, no nó, o `verax-aws-token.timer`,
    o `verax-wazuh-apply.timer` e o `verax-wazuh-progress.timer` aparecem em `systemctl list-timers`, e o
@@ -109,137 +119,312 @@ Na reunião:
    não desativa nada: o painel mostra "acima do limite do plano", e só os próximos cadastros são recusados. O volume
    do mês acima do plano não bloqueia nada: a coleta continua e nenhum log é descartado.
 
-6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta, as regiões e os **buckets de log** (opcionais
-   no cadastro): um por fonte, o da trilha do CloudTrail, o do export do GuardDuty e o do WAF (`aws-waf-logs-*`, exigência
-   da AWS), pelo nome ou pelo ARN (`arn:aws:s3:::<nome>`, como as saídas `TrailBucketArn` e `GuardDutyBucketArn` da
-   pilha). O painel confere as regras de nome do S3 e recusa um bucket que já é de outro cliente. Depois do cadastro,
-   a lista muda no detalhe da conta, em **Buckets de log** (quem só lê vê a lista, sem o formulário). O detalhe mostra
-   o passo a passo que o administrador do cliente segue no console da AWS dele (`infra/cloudformation/README.md`):
-   - **Baixar o template:** o painel serve o próprio `verax-control-reader.yaml` do repositório, sem nada preenchido;
-   - no CloudFormation, _Create stack_ → _Upload a template file_, a pilha `verax-control-reader` com os três valores
-     do nó que a tela mostra (o ID da conta de serviço, o IP de saída e o audience, que já vem preenchido), o
-     `LogBucketArns` com os ARNs dos buckets cadastrados e as chaves KMS em `LogKmsKeyArns`; a tela também traz o
-     comando da CLI, que cria a pilha ou atualiza a que já existe;
-   - **Verificar conexão:** o painel pede ao worker do nó que entre no papel, confira a conta e leia 1 byte de um
-     objeto de cada bucket (o que prova também a chave KMS). Na mesma verificação, ele confere se uma trilha ligada
-     grava no bucket do CloudTrail, se o GuardDuty exporta para o bucket dele e se o papel não ganhou permissão além
-     da leitura. A resposta chega em até 30 s; se o papel recém-criado ainda não valer no IAM, o worker tenta de novo,
-     espaçado, por até 10 min. Cada erro diz o que conferir (pilha ainda não criada, valor errado, papel feito pelo
-     assistente "Web identity → Google" do console, SCP ou RCP, bucket sem acesso, com qual fonte, ou chave KMS).
-   - **Depois de conectada,** o worker confere sozinho a cada 15 min, e as conferências da trilha, do export e da
-     permissão demais uma vez por dia. Trilha parada, export ausente, permissão demais ou STS da região desligado
-     aparecem como **aviso**: a conta continua conectada e a coleta segue. Um erro (papel recusado, bucket sem acesso)
-     aparece na conta, e ela volta a conectada sozinha quando o cliente corrige.
+6. **Conta AWS:** quem conecta é o cliente, pelo painel dele. O que ele faz, o que a Verax acompanha e como ler cada
+   estado estão na seção 4.1, logo abaixo.
 
-   **Mudar os buckets depois:** salve a lista nova em **Buckets de log**. Se os nomes mudaram, o painel avisa que falta
-   atualizar a pilha (o `LogBucketArns` e o comando da CLI já trazem a lista nova; um bucket novo com SSE-KMS pede
-   também a chave em `LogKmsKeyArns`), a conexão volta a "Aguardando" e um "Verificar" pendente é descartado. Nada é
-   conferido na AWS sozinho enquanto a conta aguarda: depois de atualizar a pilha, o cliente clica em **Verificar
-   conexão**, e a conferência de 15 em 15 min volta com a conta conectada. Trocar só a fonte de um bucket (os mesmos
-   nomes) não mexe na pilha nem na conexão.
+### 4.1 Conta AWS: o onboarding self-service
 
-   Cada conferência aparece no CloudTrail do cliente: uma entrada `AssumeRoleWithWebIdentity` por hora (com o ID da
-   conta de serviço do nó) e as leituras da sessão `verax-control-reader/verax-control-worker`, todas de leitura.
+O desenho, as regras e os limites estão em `docs/ARQUITETURA.md` ("Onboarding AWS self-service"). O passo a passo do
+cliente no console da AWS, com cada permissão explicada, é o `infra/cloudformation/README.md`. Nada disto foi
+exercitado numa conta AWS de verdade antes da homologação (`docs/runbooks/homologacao-onboarding-aws.md`).
 
-   **Coleta (PR-V4'):** na primeira verificação bem-sucedida, a conta entra no Wazuh do nó em até 1 min (só o manager
-   reinicia; o painel segue no ar), lendo os logs desde o dia anterior. Editar os buckets não tira a conta do Wazuh: o
-   bucket novo entra em seguida, e um bucket cadastrado depois é lido desde esse mesmo dia (avise o cliente se o bucket
-   novo tiver meses de log, porque a leitura conta no medidor do plano). No CloudTrail do cliente, a coleta aparece
-   como a sessão `verax-control-reader/verax-control-wazuh`. No nó, `journalctl -u verax-wazuh-apply` mostra cada
-   aplicação e `cat /run/verax/wazuh-signal/applied` o último resultado. No painel, o estado da coleta aparece ao lado
-   da conexão, e os dois avisos dele são do nó, não da conta do cliente: `aws_token_stale` (o nó não renova o token do
-   Google; veja o journal do `verax-aws-token`) e `wazuh_apply_failed` (a configuração nova não subiu, e o manager
-   segue com a anterior; veja o do `verax-wazuh-apply`).
+**Antes do cliente, no nó:** as linhas `NODE_EGRESS_IPS` e `NODE_SA_UNIQUE_ID` do `node.conf` (item 2). Sem elas, o
+painel não monta o arquivo da pilha (a tela diz "peça à Verax") e o worker não confere a conexão.
 
-   **Fontes autorizadas no onboarding self-service:** cada fonte de bucket ou do CloudWatch Logs que o cliente
-   autoriza entra na mesma lista do manager, em até 1 min, e começa a ser lida no dia da autorização (sem histórico).
-   O estado de cada uma no painel sai dos marcadores do próprio Wazuh, que o host exporta a cada 5 min:
-   `journalctl -u verax-wazuh-progress` mostra cada exportação, e `sudo cat /run/verax/wazuh-signal/progress` o último
-   retrato (por bucket, conta e região: o último objeto lido e quando; por grupo de logs: o último evento). Só nomes de
-   bucket, de objeto e de grupo: nenhum conteúdo de log. O que cada estado quer dizer:
-   - "configurando": a fonte está na lista, e o nó ainda não a aplicou (veja o `verax-wazuh-apply`);
-   - "aguardando eventos": aplicada, e o Wazuh ainda não leu nada dela. Numa fonte nova, o marcador só aparece quando
-     o módulo termina a primeira leitura do bucket;
-   - "coletando": o Wazuh leu um objeto (ou um evento do grupo) desde a autorização;
-   - "parada" (só a trilha e os flow logs): o bucket tem objeto novo há mais de 30 min e o Wazuh não lê nada dela há
-     mais de 2 horas. Veja `docker logs` do manager (`/var/ossec/logs/ossec.log`, linhas `wm_aws`) e a permissão da
-     fonte ("Tentar de novo" no painel);
-   - "erro de ingestão": o motivo vem junto. `aws_token_stale` e `wazuh_apply_failed` são do nó (acima); os outros
-     dizem por que a fonte ficou de fora da lista (um nome com caractere que o Wazuh recusa, uma região que ele não
-     conhece, a trilha de organização sem o ID da organização, o teto de fontes da conta, ou um grupo de logs com o
-     mesmo nome e região de outra conta do nó).
+#### O que o cliente faz
 
-   Se o sinal `progress` parar de ser atualizado (o timer parado, o manager fora do ar), o painel deixa de mudar o
-   estado das fontes depois de 20 min, sem marcar nenhuma como parada: `systemctl status verax-wazuh-progress.timer`.
+1. **Cadastra a conta**, em Contas cloud → Cadastrar conta → AWS: só o ID da conta (12 dígitos) e a região principal.
+   Os buckets ficam recolhidos em "Avançado: buckets fora do padrão" e só servem para as exceções (abaixo).
+2. **Escolhe o que autoriza**, em "O que você autoriza": a descoberta vale sempre, e as três autorizações vêm
+   marcadas (os logs que a AWS grava no S3, os achados de segurança e os grupos do CloudWatch Logs que ele marcar). A
+   escolha fica gravada: a tela recarregada devolve as mesmas caixas e o mesmo arquivo.
+3. **Clica em "Conectar com AWS".** O painel abre o CloudFormation em outra aba e baixa o arquivo
+   `verax-control-reader-<conta>.yaml`, já com os valores do nó e a escolha dele. O arquivo só sai depois de a
+   escolha ser gravada: se a tela mostrar um erro no lugar, nenhum arquivo foi baixado, e é só clicar de novo. Lá no
+   CloudFormation: _Create stack_ → _Upload a template file_, o nome `verax-control-reader`, avançar sem mudar os
+   valores, marcar a confirmação de IAM e criar. Leva 1 ou 2 minutos.
+4. **Espera, sem clicar em nada.** O nó tenta entrar no papel por até 60 min. Quando a pilha termina, a tela avança
+   sozinha: a autenticação, a descoberta (segundos a poucos minutos) e a lista das fontes.
+5. **Autoriza as fontes**, em "Fontes de log": marca as que quer e confirma. Os grupos do CloudWatch Logs são
+   escolhidos um a um, com uma confirmação a mais (log de aplicação pode ter dado pessoal), e só aparecem como
+   disponíveis depois de ele pôr a tag no grupo, com o comando que a tela mostra:
+   `aws logs tag-resource --resource-arn '<arn do grupo>' --tags verax-control=leitura`. A coleta de cada fonte
+   começa no dia da autorização, sem histórico.
+6. **Acompanha**, em "Fontes autorizadas": o estado, o último evento, a última leitura, o atraso e o volume de cada
+   fonte. "Revogar" tira uma fonte da coleta a qualquer momento.
 
-   **Grupos do CloudWatch Logs:** o evento de um grupo chega sem a conta e sem o grupo, e só vira achado do cliente
-   com a prova de que o manager só coletou grupos dele (um cliente só, numa conta só, na configuração aplicada). O
-   achado aparece pelo menos 10 min depois do alerta. Depois de o nó reiniciar, de o worker ficar mais de 5 min parado
-   ou de outro cliente autorizar um grupo de logs no mesmo nó, a prova recomeça: os alertas dos 15 min seguintes vão
-   para a fila sem dono ("Origem em mais de um cliente") e ficam lá. No log do worker, a tarefa `wazuh-config` diz o
-   estado da prova a cada execução (`cloudWatch`: `owner`, `empty` ou `unproven`); a regra inteira está em
-   `docs/ARQUITETURA.md` ("Dono dos alertas do CloudWatch Logs").
+O que avisar ao cliente antes: a Verax nunca liga nada na conta dele (GuardDuty, Security Hub, Inspector, uma trilha,
+flow logs e o logging do WAF têm custo na AWS, e a decisão é dele); autorizar um Flow Log lê todos os Flow Logs
+daquela conta e região que gravam no mesmo bucket; e flow logs e grupos de logs podem aumentar o volume do plano
+(nada é bloqueado por plano, e nenhum log é descartado).
 
-   **Flow logs da VPC:** só o tráfego rejeitado é lido, e um registro sozinho nunca vira alerta. O que aparece no
-   painel são duas detecções, as duas contadas por conta e por endereço de origem: "Possível varredura de rede vinda do
-   mesmo endereço" (média: 40 registros rejeitados em 120 s) e "Insistência em porta de administração remota vinda do
-   mesmo endereço" (alta: 15 registros rejeitados em 120 s para a porta 22 ou 3389 do mesmo destino). Cada endereço dá
-   no máximo um achado em aberto por detecção; a rajada seguinte só vira outro achado depois de o primeiro ser triado.
-   Os limites, o que cada número quer dizer e como mudá-los estão em `infra/wazuh/README.md` ("Regras de Flow Logs").
-   Avise o cliente, na autorização, que autorizar um Flow Log lê todos os Flow Logs daquela conta e região que gravam
-   no mesmo bucket.
+#### O que a Verax acompanha
 
-   **Medidor e saúde (PR-V6):** a cada 5 min, o worker lê os contadores do analysisd (usuário `verax_stats` da API do
-   manager, só leitura) e soma o volume no uso do cliente (fonte `aws`, a página Plano e uso). Com a conta conectada e os
-   eventos da AWS parados há mais de 2 h, a Torre do cliente mostra **Sem logs novos da AWS** e o administrador dele
-   recebe um e-mail (`aws_ingestion_stalled`, um por parada; os eventos de volta rearmam). O que conferir: a conexão e a
-   "Coleta no nó" no detalhe da conta, a trilha e o export ainda gravando no bucket (no console da AWS), e no nó as
-   linhas `aws-s3` do log do manager (como ler, em `infra/wazuh/README.md`, seção "Nó de cliente") e o log do worker
-   (`wazuh-usage` no relatório da tarefa: `read` diz se a API do manager respondeu). Um nó atende um cliente só: se a
-   Torre da equipe da Verax mostrar **Medidor da AWS parado neste nó**, há conta AWS ativa de mais de um cliente (ou os
-   agentes do Wazuh de outro cliente) no nó; tire a que sobra, e o medidor volta na leitura seguinte (o volume do
-   intervalo ambíguo não é medido para ninguém).
+O estado da conta aparece em "Situação da conexão" (o mesmo que `GET /v1/cloud-accounts/:id/aws/onboarding` devolve
+em `state`). A tela nunca diz "tudo certo" com um passo pendente.
 
-   **Ativos (inventário):** depois da primeira verificação bem-sucedida, o worker faz o inventário da conta (usuários
-   IAM e chaves, buckets S3 e, nas regiões cadastradas, instâncias EC2 e security groups) em até 5 min, e depois uma
-   vez por dia, pela mesma sessão do papel (as leituras aparecem no CloudTrail na mesma sessão `verax-control-worker`,
-   na casa de uma centena por conta e por dia). A conta com erro na entrada do papel não é inventariada até voltar a
-   conectada; erro só de bucket não atrapalha. O que o operador vê:
-   - em **Ativos e identidades**, a faixa **Coleta parcial** diz que parte ficou de fora em qual conta e o código da
-     AWS (`AccessDenied`, `UnauthorizedOperation`: a política do papel foi mexida ou uma SCP da organização nega o
-     serviço ou a região; `AuthFailure`: região desligada ou fora do opt-in). O resto do inventário vale. Peça ao
-     cliente para conferir a política do papel (a pilha atual) e as SCPs; a próxima coleta, em até 24 h, tenta de
-     novo;
-   - inventário parado (a data "Inventário atualizado há…" fica velha): no banco do nó, `SyncState` com o nome
-     `aws-inventory` (último erro da tarefa) e `CollectorCursor` do fluxo `aws_inventory` da conta (`lastErrorKind`,
-     `failures` e `nextRunAt`). `aws_unavailable` é a AWS fora ou limitando (tenta de novo em 30 min, dobrando até
-     6 h); `inventory_refused`, nenhuma parte lida (sessão revogada no console ou política sem as leituras de Ativos);
-     um código de conexão (`trust_denied`, `token_invalid`) aparece também em Contas cloud;
-   - cliente sem conta AWS: Postura e Ativos mostram "em breve" (GCP e Cloudflare ainda não têm postura nem
-     inventário).
+| Na tela                          | `state`                  | O que quer dizer                                                                                  | O que fazer                                                                                                          |
+| -------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Não conectada                    | `not_started`            | Ninguém pediu a conexão (ou ela recomeçou: outra lista de buckets, a conta reativada)             | O cliente clica em "Conectar com AWS"; se a pilha já existe, em "Verificar conexão"                                  |
+| Aguardando autorização na AWS    | `awaiting_authorization` | O nó está tentando entrar no papel. Ele não vê a pilha sendo criada: só sabe que ainda não entrou | Esperar. A tela mostra o tempo que falta da janela de 60 min                                                         |
+| Tempo esgotado                   | `authorization_timeout`  | O papel não apareceu em 60 min                                                                    | Conferir no CloudFormation se a pilha terminou (ou falhou) e clicar em "Conectar de novo"                            |
+| Desconectada                     | `disconnected`           | A AWS recusa a entrada (a pilha foi apagada ou alterada), ou o nó não consegue conferir           | Ver a conferência "Entrada no papel de leitura": o código diz o quê. As fontes e as autorizações continuam guardadas |
+| Autenticação validada            | `authenticated`          | Entrou no papel; a descoberta ainda não terminou nenhuma vez (ou a primeira falhou inteira)       | Esperar a descoberta; se falhou, "Rodar a descoberta de novo"                                                        |
+| Descoberta em andamento          | `discovering`            | A primeira descoberta está na fila ou rodando                                                     | Esperar                                                                                                              |
+| Aguardando autorização de fontes | `awaiting_sources`       | A descoberta terminou, e nada está autorizado                                                     | O cliente escolhe e autoriza                                                                                         |
+| Configurando coletores           | `configuring`            | Há fonte autorizada, e nenhuma coleta começou                                                     | Esperar: as fontes de bucket entram no manager em até 1 min, e as de achados são lidas em até 5 min                  |
+| Coletando eventos                | `collecting`             | Toda fonte autorizada está sendo lida                                                             | Nada. Com "com pendências" no título, uma conferência ainda espera                                                   |
+| Parcialmente operacional         | `partial`                | Só parte das fontes autorizadas está coletando                                                    | Ver quais em "Fontes autorizadas" (as conferências apontam a linha)                                                  |
+| Erro de permissão                | `permission_error`       | Uma fonte autorizada (ou um bucket do cadastro) não pode ser lida                                 | A correção exata está na linha da fonte (tabela "Falta de permissão", abaixo)                                        |
+| Falha de ingestão                | `ingestion_failure`      | A coleta de uma fonte falha, ou o nó não aplica a configuração da coleta                          | O motivo está na linha da fonte. `aws_token_stale` e `wazuh_apply_failed` são do nó, não da conta do cliente         |
 
-   **Postura (nativa):** sai da mesma coleta do inventário (a mesma tarefa, a mesma sessão, a mesma hora), com o
-   catálogo próprio de 18 checagens (IAM, política de senha, security groups, EC2 e EBS, S3, CloudTrail e GuardDuty).
-   Além do que o inventário já leu, são cerca de 10 leituras a mais por conta e por dia no CloudTrail do cliente
-   (`GetAccountPasswordPolicy`, `GetPublicAccessBlock` do S3 Control, `GetEbsEncryptionByDefault`, `ListDetectors`,
-   `GetDetector`, `DescribeTrails` e `GetTrailStatus`), todas já na política do papel. O que o operador vê:
-   - em **Postura cloud**, a nota de cada conta, a tabela **O que a nota confere** (cada checagem aprovada,
-     reprovada, não lida ou não se aplica) e o que corrigir, com o comando da CLI já com o recurso;
-   - a faixa **Varredura parcial** diz que leitura a AWS recusou em qual conta (`AccessDenied`,
-     `UnauthorizedOperation`: política do papel ou SCP; `AuthFailure`: região desligada). As checagens que dependem dela
-     ficam **não lidas**: fora da nota e nunca aprovadas, então a nota não sobe por falta de leitura. Peça ao cliente
-     para conferir a política do papel e as SCPs; a próxima varredura tenta de novo. Uma trilha da organização vista da
-     conta-membro pode ter o estado recusado (`TrailNotFoundException` ou `AccessDeniedException`): sem outra trilha
-     multirregião gravando na conta, a checagem do CloudTrail fica não lida, não reprovada. O código `truncated` é o
-     teto de 1.000 itens por tipo (security groups de uma região, buckets, usuários, instâncias): os itens além dele não
-     foram conferidos, e as checagens deles ficam não lidas (uma reprovação achada nos conferidos continua valendo);
-   - varredura parada: é a mesma tarefa e o mesmo cursor do inventário (acima). Uma falha passageira numa leitura da
-     postura para a coleta inteira, sem gravar nem o retrato nem a varredura, e a tarefa recua do mesmo jeito;
-   - no relatório da tarefa (o log do worker), `postureScans` e `posturePartial` contam as varreduras gravadas e as
-     parciais, sem nenhum dado da conta.
+**As nove conferências** ("Conferências da conexão"), cada uma com Certo, Pendente, Com problema ou Não se aplica, o
+motivo e, quando há, o botão de tentar de novo. As cinco últimas trazem um link para a linha de cada fonte que as
+segura, em "Fontes autorizadas" (a linha apontada fica em destaque):
 
-   **Desconectar:** desative o monitoramento da conta no painel; o cliente usa "Revoke active sessions" no papel (corta
-   as sessões já emitidas, de até 1 hora) e apaga a pilha. Não há chave para apagar.
+| Conferência                      | `id`               | O que confere                                                    | Quando falha ou espera                                                                                                                                                                            |
+| -------------------------------- | ------------------ | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Entrada no papel de leitura      | `assume_role`      | O `AssumeRoleWithWebIdentity` do nó no papel do cliente          | `awaiting_stack` (dentro da janela), `verifying` (um "Verificar" comum, até 10 min), ou o código da conexão: `trust_denied`, `token_invalid`, `authorization_timeout` (a lista dos erros, abaixo) |
+| Conta e papel conferidos         | `identity`         | A sessão é da conta cadastrada e do papel `verax-control-reader` | `account_mismatch`: o ID cadastrado não é o da conta em que a pilha foi criada                                                                                                                    |
+| Modelo da pilha e autorizações   | `template`         | As tags do papel: a versão do template e as autorizações         | `template_outdated` (pilha do modelo 1: "Atualize a pilha"), `template_unreadable` (a tag da versão não é um número)                                                                              |
+| Descoberta das fontes            | `discovery`        | A última descoberta                                              | Certo com `partial`: alguma leitura ficou de fora ("O que encontramos" diz qual). Com problema: a descoberta inteira falhou                                                                       |
+| Permissão das fontes autorizadas | `permission`       | A última sondagem de cada fonte autorizada                       | O motivo é o `permissionDetail` da fonte (tabela abaixo)                                                                                                                                          |
+| Configuração dos coletores       | `collector_config` | As fontes entraram no coletor delas                              | `awaiting_collector` (ainda não entraram); `aws_token_stale` ou `wazuh_apply_failed` (o aviso do nó inteiro)                                                                                      |
+| Chegada de eventos               | `events`           | Toda fonte autorizada está coletando                             | `waiting_events` (configurada, sem evento ainda); `stalled`/`no_progress` (a trilha ou os flow logs pararam); `throttled` ou o nome do erro da AWS (achados)                                      |
+| Última leitura das fontes        | `last_sync`        | Toda fonte autorizada já foi lida, com o horário da mais antiga  | `no_data`: alguma ainda não foi lida                                                                                                                                                              |
+| Atraso da coleta                 | `lag`              | Nenhuma fonte com mais de 2 horas de atraso                      | `stalled` (fonte contínua parada); `sync_delayed` (uma fonte de achados há mais de 2 h sem leitura que dê certo)                                                                                  |
+
+**Erros da entrada no papel** (o texto de cada um está na tela; o que conferir):
+
+- `trust_denied`: a pilha não existe, foi apagada, tem outro `NodeServiceAccountId`, outro audience ou outro
+  `NodeEgressIps` (o IP de saída do nó é o `terraform output nat_ip`), ou o papel foi criado pelo assistente "Web
+  identity → Google" do console (que grava o audience no lugar errado). Uma SCP ou uma RCP da organização que negue a
+  federação do Google dá o mesmo erro: o cliente inclui `accounts.google.com` na RCP ou marca o papel como exceção.
+- `token_invalid`: a AWS recusou o token do nó. Passa sozinho; se não passar, veja o `verax-aws-token` e o log do
+  worker.
+- `account_mismatch`: o ID cadastrado no painel não é o da conta em que a pilha foi criada.
+- `region_disabled` (aviso): o STS da região da conta está desligado; o worker entrou por us-east-1, e o Wazuh usa o
+  da região. O cliente religa em IAM → Account settings.
+- `check_unavailable`, `metadata_unavailable`, `idp_unavailable`, `aws_unavailable`: do nó, do Google ou da AWS, e
+  passam sozinhos; se não passarem, veja o log do worker.
+- `bucket_denied:<fonte>`, `kms_denied:<fonte>`, `bucket_missing:<fonte>`: de um bucket do cadastro (fora do padrão).
+
+#### Falta de permissão: a correção de cada motivo
+
+O motivo fica na fonte (`permissionDetail`), e a tela mostra a correção na linha dela, com o botão "Verificar de
+novo" (ou "Tentar de novo", nas autorizadas), que faz o nó ler a fonte na AWS na hora. Um pedido a cada 30 s por
+fonte.
+
+| `permissionDetail`               | O que aconteceu                                                                       | O que o cliente faz                                                                                                                                                         |
+| -------------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `capability_off`                 | A autorização do tipo da fonte está desligada na pilha                                | Liga em "Pilha na AWS" → "Atualize a pilha" (abaixo) e clica em "Verificar de novo"                                                                                         |
+| `tag_missing`                    | O grupo de logs não tem a tag `verax-control = leitura`                               | Roda o comando da tela (`aws logs tag-resource … --tags verax-control=leitura`) e clica em "Verificar de novo"                                                              |
+| `kms_denied`                     | O papel lista o bucket, mas a chave KMS não decifra para ele                          | Inclui na política da chave a declaração que a tela mostra (`kms:Decrypt` para o papel, só pelo S3). Numa chave de outra conta, é a política dela que precisa citar o papel |
+| `bucket_denied`                  | O bucket não deixa o papel listar nem ler (em geral, o bucket central de outra conta) | Inclui o papel (`arn:aws:iam::<conta>:role/verax/verax-control-reader`) na política do bucket                                                                               |
+| `bucket_missing`                 | O bucket de destino não existe mais                                                   | Corrige o destino do log na AWS                                                                                                                                             |
+| `outside_awslogs_prefix`         | Os objetos ficam atrás de um prefixo antes de `AWSLogs/`                              | Cadastra o bucket em "Avançado: buckets fora do padrão" e atualiza a pilha (o `LogBucketArns` sai com ele)                                                                  |
+| `probe_failed`                   | A AWS não respondeu à sondagem                                                        | "Verificar de novo"; a descoberta seguinte também tenta                                                                                                                     |
+| Uma ação do IAM (`serviço:Ação`) | A AWS negou essa ação                                                                 | Atualiza a pilha para o modelo atual; se já está atual, uma SCP da organização nega a ação (a decisão é dele)                                                               |
+| _(vazio)_                        | A permissão ainda não foi conferida                                                   | "Verificar de novo"                                                                                                                                                         |
+
+**Descoberta parcial.** "O que encontramos" lista cada leitura que ficou de fora (o serviço, a região e o motivo).
+`AccessDenied`/`UnauthorizedOperation`: a pilha é de um modelo anterior, ou uma SCP nega o serviço ou a região.
+`AuthFailure`/`UnrecognizedClientException`: a região está desligada ou fora do opt-in. `Truncated`: a conta passou
+do teto de itens daquele tipo na região (500 flow logs, 500 grupos de logs, 200 Web ACLs, 100 load balancers). O
+resto da conta foi lido; o que ficou de fora pode esconder uma fonte. Corrigido o motivo, "Descobrir de novo" (uma
+manual a cada 5 min); a descoberta também roda sozinha uma vez por dia.
+
+#### Atualizar a pilha: do modelo 1 para o 2, e ligar ou desligar uma autorização
+
+Uma conta conectada antes do onboarding self-service tem a pilha do modelo 1: continua lendo os buckets do cadastro
+como antes, e a tela mostra "Modelo: versão 1 (anterior)" e "Atualize a pilha". **Não há prazo:** o cliente só
+precisa atualizar quando quiser a descoberta completa e as autorizações novas.
+
+1. Em "Pilha na AWS", o cliente marca como a pilha deve ficar e clica em "Baixar o arquivo da pilha" (o modelo
+   atual, com os valores do nó e a escolha).
+2. No CloudFormation, abre a pilha `verax-control-reader` → _Update stack_ → _Replace existing template_ → _Upload a
+   template file_ e envia o arquivo.
+3. **Na tela dos parâmetros, confere o valor de cada autorização:** numa atualização, o console mantém o valor que a
+   pilha já tinha, e não o do arquivo. A tela do painel diz como cada parâmetro deve ficar. Pela CLI, o comando de
+   "Prefere a CLI?" já leva os valores (`aws cloudformation deploy … --parameter-overrides …`).
+4. Marca a confirmação de IAM, envia e, quando a pilha terminar, clica em "Verificar de novo". O nó relê as tags do
+   papel na hora e pede outra descoberta.
+
+Se as tags lidas não forem a escolha do cliente, "Pilha na AWS" mostra o aviso "A pilha na AWS não está como você
+escolheu aqui", dizendo o que a pilha concede a mais e o que está desligado. Vale sempre o que está na AWS: o nó só lê
+o que a pilha permite. O cliente atualiza a pilha de novo (o bloco já vem com a escolha dele) ou, se a pilha está como
+ele quer, marca as caixas como ela está e clica em "Verificar de novo".
+
+Desligar uma autorização tira a permissão na hora: as fontes daquele tipo passam a "Erro de permissão"
+(`capability_off`) na leitura seguinte e saem da coleta até a autorização voltar. Nada é apagado.
+
+#### As fontes na coleta
+
+Cada fonte de bucket ou do CloudWatch Logs que o cliente autoriza entra na lista do manager do Wazuh do nó em até
+1 min (só o manager reinicia; o painel segue no ar) e começa a ser lida no dia da autorização. O estado de cada uma
+sai dos marcadores do próprio Wazuh, que o host exporta a cada 5 min. As fontes de achados (GuardDuty, Security Hub,
+Inspector e Access Analyzer) são lidas pelo worker, a cada 5 min, sem o Wazuh.
+
+- "Aguardando o coletor iniciar" e "Configurando o coletor": a fonte está autorizada, e o coletor dela ainda não a
+  leu. Numa fonte de bucket ou num grupo de logs, a lista ainda não foi aplicada no manager (`awaiting_apply`; veja o
+  `verax-wazuh-apply`);
+- "Configurada, ainda sem eventos": aplicada, e o Wazuh ainda não leu nada dela. Numa fonte nova, o marcador só
+  aparece quando o módulo termina a primeira leitura do bucket;
+- "Coletando": o Wazuh leu um objeto (ou um evento do grupo) desde a autorização. Numa fonte de achados, a última
+  leitura deu certo, mesmo sem achado nenhum ("Sincronizada, sem achados novos");
+- "Parada" (só a trilha e os flow logs): o bucket tem objeto novo há mais de 30 min, e o Wazuh não lê nada dela há
+  mais de 2 horas. Veja o log do manager (`/var/ossec/logs/ossec.log`, linhas `wm_aws`) e a permissão da fonte
+  ("Tentar de novo"). Uma fonte de achados nunca fica parada por não ter achado;
+- "Erro de permissão": a tabela acima;
+- "Falha de ingestão": o motivo vem junto. `aws_token_stale` e `wazuh_apply_failed` são do nó (abaixo); `throttled`
+  ou o nome de um erro da AWS, numa fonte de achados, depois de três leituras seguidas com erro (o worker continua
+  tentando, com recuo); os outros dizem por que a fonte ficou de fora da lista do Wazuh (`unsupported_name`,
+  `region_unsupported`, `organization_id_unknown`, `custom_prefix_unsupported`, `source_limit`,
+  `log_group_name_conflict`, `invalid_details`: o texto de cada um, com o que fazer, está na tela);
+- "Não encontrada na conta": a fonte autorizada sumiu da conta (apagada, o serviço desligado). A linha e a
+  autorização ficam; se a fonte voltar, "Tentar de novo".
+
+**Grupos do CloudWatch Logs:** o evento de um grupo chega sem a conta e sem o grupo, e só vira achado do cliente com
+a prova de que o manager só coletou grupos dele (um cliente só, numa conta só, na configuração aplicada). O achado
+aparece pelo menos 10 min depois do alerta. Depois de o worker ficar mais de 5 min parado, de outro cliente autorizar
+um grupo de logs no mesmo nó, de uma aplicação da configuração que derrubou o manager ou de duas aplicações seguidas
+sem o worker ver, a prova recomeça: os alertas dos 15 min seguintes vão para a fila sem dono ("Origem em mais de um
+cliente") e ficam lá. No log do worker, a tarefa `wazuh-config` diz o estado da prova a cada execução (`cloudWatch`:
+`owner`, `empty` ou `unproven`); a regra inteira está em `docs/ARQUITETURA.md` ("Dono dos alertas do CloudWatch
+Logs").
+
+**Flow logs da VPC:** só o tráfego rejeitado é lido, e um registro sozinho nunca vira alerta. O que aparece no painel
+são duas detecções, as duas contadas por conta e por endereço de origem: "Possível varredura de rede vinda do mesmo
+endereço" (média: 40 registros rejeitados em 120 s) e "Insistência em porta de administração remota vinda do mesmo
+endereço" (alta: 15 registros rejeitados em 120 s para a porta 22 ou 3389 do mesmo destino). Cada endereço dá no
+máximo um achado em aberto por detecção; a rajada seguinte só vira outro achado depois de o primeiro ser triado. Os
+limites, o que cada número quer dizer e como mudá-los estão em `infra/wazuh/README.md` ("Regras de Flow Logs").
+
+**GuardDuty pelos dois caminhos:** a API é a forma recomendada, e o export para o S3 aparece como "coberto pela API".
+Com os dois autorizados, o mesmo achado vira um só.
+
+**No nó, onde olhar:**
+
+- `journalctl -u verax-wazuh-apply` mostra cada aplicação da lista, e `sudo cat /run/verax/wazuh-signal/applied`, o
+  último resultado: a geração, `ok` ou `error`, a hora e o número de sequência (`seq`), que aumenta a cada troca da
+  configuração do manager (o contador fica em `/var/lib/verax/wazuh-apply/seq`; não o apague nem o edite: sem ele, a
+  contagem recomeça da hora do nó, e a prova do dono dos alertas do CloudWatch Logs recomeça junto);
+- `journalctl -u verax-wazuh-progress` mostra cada exportação dos marcadores, e
+  `sudo cat /run/verax/wazuh-signal/progress`, o último retrato (por bucket, conta e região: o último objeto lido e
+  quando; por grupo de logs: o último evento). Só nomes de bucket, de objeto e de grupo: nenhum conteúdo de log. Se o
+  sinal parar de ser atualizado (o timer parado, o manager fora do ar), o painel deixa de mudar o estado das fontes
+  depois de 20 min, sem marcar nenhuma como parada: `systemctl status verax-wazuh-progress.timer`;
+- `aws_token_stale`: o nó não renova o token do Google (`journalctl -u verax-aws-token`); `wazuh_apply_failed`: a
+  configuração nova não subiu, e o manager segue com a anterior (`journalctl -u verax-wazuh-apply`);
+- o log do worker traz o relatório de cada tarefa, só com contagens e códigos: `aws-check`, `aws-discovery`,
+  `aws-findings` e `wazuh-config`. No banco do nó, `AwsDiscoveryRun` (cada execução da descoberta, com o que ficou de
+  fora), `AwsSource` (cada fonte, com o estado e a saúde) e `CollectorCursor` (os fluxos `aws_discovery` e
+  `aws_findings_*`: `lastErrorKind`, `failures` e `nextRunAt`);
+- no CloudTrail do cliente, tudo é leitura: uma entrada `AssumeRoleWithWebIdentity` por hora (com o ID da conta de
+  serviço do nó), as leituras da sessão `verax-control-reader/verax-control-worker` (a conferência, a descoberta, as
+  sondagens, os achados, o inventário e a postura) e as da `verax-control-reader/verax-control-wazuh` (a coleta).
+
+#### Caminho manual: a CLI, o template sem preencher e os buckets fora do padrão
+
+Continua valendo, para o cliente que cria a pilha fora do painel (pela CLI, pelo Terraform dele, numa esteira):
+
+- em "Alternativa manual (sem o arquivo preenchido)", a tela mostra o link "Baixar o template" (o
+  `verax-control-reader.yaml` do repositório, sem nada preenchido), os valores a digitar, com cópia (o ID da conta de
+  serviço do nó, o IP de saída, o audience, as três autorizações e, se houver, o `LogBucketArns`), e o comando da CLI
+  (`aws cloudformation deploy`), que cria a pilha ou atualiza a que já existe;
+- criada a pilha, o cliente clica em "Já criei a pilha: conectar" (o nó passa a conferir sozinho, como no botão
+  principal);
+- no console do responsável (Fontes de log do cliente), o bloco "Papel de leitura da AWS (CloudFormation)" traz o
+  mesmo modelo, os parâmetros, o comando e a mensagem pronta para mandar ao cliente
+  (`docs/runbooks/console-do-responsavel.md`).
+
+**Buckets fora do padrão** ("Avançado: buckets fora do padrão", no cadastro e no detalhe da conta): um por fonte, o
+da trilha do CloudTrail, o do export do GuardDuty e o do WAF, pelo nome ou pelo ARN. Só para o que a AWS não grava em
+`AWSLogs/<conta>/` (um prefixo antes de `AWSLogs/`, um bucket central com a pasta de várias contas, entregas do
+Firehose): o resto o nó descobre sozinho. O painel confere as regras de nome do S3 e recusa um bucket que já é de
+outro cliente. Cada bucket vira uma fonte "Cadastrada manualmente", já autorizada, lida desde a primeira verificação
+da conta, e muda só por ali. Salvar outra lista de nomes volta a conexão para "Não conectada" e descarta um
+"Verificar" pendente: o cliente atualiza a pilha (o `LogBucketArns` já sai com a lista nova; um bucket novo com
+SSE-KMS pede também a chave em `LogKmsKeyArns`, quando a leitura dos logs da AWS está desligada) e clica em
+"Verificar conexão". Um bucket incluído depois é lido desde o início da coleta da conta (avise o cliente se ele tiver
+meses de log: a leitura conta no medidor do plano).
+
+#### Na VM própria do cliente: a chave de leitura
+
+Na VM própria (`NODE_PLATFORM=vm`), o nó não tem identidade do Google, e a conta continua lida com a chave de um
+usuário IAM só de leitura, cifrada no cofre do nó (`docs/runbooks/instalacao-no-cliente.md`). Não há pilha nem
+"Conectar com AWS": em "Chave de leitura e políticas do usuário", o cliente escolhe as mesmas três autorizações, cria
+as duas políticas e o usuário com os comandos da tela, cola a chave e clica em "Verificar conexão". Dali em diante, a
+descoberta, as fontes, a autorização e a saúde são as mesmas. Para mudar o que está autorizado, "Usuário de leitura
+na AWS" → "Mudar o que está autorizado" traz a política nova e os comandos (uma versão nova da política e as tags do
+usuário). A recomendação é trocar a chave a cada 90 dias.
+
+#### Revogação
+
+Tudo vale em instantes, também para a sessão que o nó já tem aberta (a AWS confere a política a cada chamada):
+
+| O que o cliente quer tirar | Como                                                                                                                     | O que acontece no painel                                                                                                                            |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Uma fonte                  | "Revogar", na linha dela em "Fontes autorizadas"                                                                         | A fonte sai da coleta (do manager, em até 1 min; dos achados, na leitura seguinte). O que já foi coletado fica, e nada é apagado na origem          |
+| Um grupo de logs           | Tira a tag: `aws logs untag-resource --resource-arn <arn> --tag-keys verax-control`                                      | Na leitura seguinte, a fonte fica "Erro de permissão" (`tag_missing`) e sai da coleta                                                               |
+| Uma autorização inteira    | Atualiza a pilha com o parâmetro dela em `false` ("Atualize a pilha")                                                    | As fontes daquele tipo ficam `capability_off` e saem da coleta; as outras seguem                                                                    |
+| Um bucket fora do padrão   | Tira o bucket do cadastro e atualiza a pilha                                                                             | A fonte "Cadastrada manualmente" some                                                                                                               |
+| Tudo                       | Desativa o monitoramento da conta no painel; no IAM, _Revoke active sessions_ no papel; no CloudFormation, apaga a pilha | A conta fica "Desconectada" (`trust_denied`). As fontes e as autorizações continuam guardadas, para uma reconexão; sem o papel, o nó não entra mais |
+
+Na VM própria: desativar o monitoramento (a chave sai do cofre do nó) e desativar e apagar a chave no IAM.
+
+#### Medidor, saúde, Ativos e Postura
+
+**Medidor e saúde:** a cada 5 min, o worker lê os contadores do analysisd (usuário `verax_stats` da API do
+manager, só leitura) e soma o volume no uso do cliente (fonte `aws`, a página Plano e uso). Com a conta conectada e os
+eventos da AWS parados há mais de 2 h, a Torre do cliente mostra **Sem logs novos da AWS** e o administrador dele
+recebe um e-mail (`aws_ingestion_stalled`, um por parada; os eventos de volta rearmam). O que conferir: a situação da conexão e o estado
+de cada fonte no detalhe da conta, a trilha e o export ainda gravando no bucket (no console da AWS), e no nó as
+linhas `aws-s3` do log do manager (como ler, em `infra/wazuh/README.md`, seção "Nó de cliente") e o log do worker
+(`wazuh-usage` no relatório da tarefa: `read` diz se a API do manager respondeu). Um nó atende um cliente só: se a
+Torre da equipe da Verax mostrar **Medidor da AWS parado neste nó**, há conta AWS ativa de mais de um cliente (ou os
+agentes do Wazuh de outro cliente) no nó; tire a que sobra, e o medidor volta na leitura seguinte (o volume do
+intervalo ambíguo não é medido para ninguém).
+
+**Ativos (inventário):** depois da primeira verificação bem-sucedida, o worker faz o inventário da conta (usuários
+IAM e chaves, buckets S3 e, nas regiões cadastradas, instâncias EC2 e security groups) em até 5 min, e depois uma
+vez por dia, pela mesma sessão do papel (as leituras aparecem no CloudTrail na mesma sessão `verax-control-worker`,
+na casa de uma centena por conta e por dia). A conta com erro na entrada do papel não é inventariada até voltar a
+conectada; erro só de bucket não atrapalha. O que o operador vê:
+
+- em **Ativos e identidades**, a faixa **Coleta parcial** diz que parte ficou de fora em qual conta e o código da
+  AWS (`AccessDenied`, `UnauthorizedOperation`: a política do papel foi mexida ou uma SCP da organização nega o
+  serviço ou a região; `AuthFailure`: região desligada ou fora do opt-in). O resto do inventário vale. Peça ao
+  cliente para conferir a política do papel (a pilha atual) e as SCPs; a próxima coleta, em até 24 h, tenta de
+  novo;
+- inventário parado (a data "Inventário atualizado há…" fica velha): no banco do nó, `SyncState` com o nome
+  `aws-inventory` (último erro da tarefa) e `CollectorCursor` do fluxo `aws_inventory` da conta (`lastErrorKind`,
+  `failures` e `nextRunAt`). `aws_unavailable` é a AWS fora ou limitando (tenta de novo em 30 min, dobrando até
+  6 h); `inventory_refused`, nenhuma parte lida (sessão revogada no console ou política sem as leituras de Ativos);
+  um código de conexão (`trust_denied`, `token_invalid`) aparece também em Contas cloud;
+- cliente sem conta AWS: Postura e Ativos mostram "em breve" (GCP e Cloudflare ainda não têm postura nem
+  inventário).
+
+**Postura (nativa):** sai da mesma coleta do inventário (a mesma tarefa, a mesma sessão, a mesma hora), com o
+catálogo próprio de 18 checagens (IAM, política de senha, security groups, EC2 e EBS, S3, CloudTrail e GuardDuty).
+Além do que o inventário já leu, são cerca de 10 leituras a mais por conta e por dia no CloudTrail do cliente
+(`GetAccountPasswordPolicy`, `GetPublicAccessBlock` do S3 Control, `GetEbsEncryptionByDefault`, `ListDetectors`,
+`GetDetector`, `DescribeTrails` e `GetTrailStatus`), todas já na política do papel. O que o operador vê:
+
+- em **Postura cloud**, a nota de cada conta, a tabela **O que a nota confere** (cada checagem aprovada,
+  reprovada, não lida ou não se aplica) e o que corrigir, com o comando da CLI já com o recurso;
+- a faixa **Varredura parcial** diz que leitura a AWS recusou em qual conta (`AccessDenied`,
+  `UnauthorizedOperation`: política do papel ou SCP; `AuthFailure`: região desligada). As checagens que dependem dela
+  ficam **não lidas**: fora da nota e nunca aprovadas, então a nota não sobe por falta de leitura. Peça ao cliente
+  para conferir a política do papel e as SCPs; a próxima varredura tenta de novo. Uma trilha da organização vista da
+  conta-membro pode ter o estado recusado (`TrailNotFoundException` ou `AccessDeniedException`): sem outra trilha
+  multirregião gravando na conta, a checagem do CloudTrail fica não lida, não reprovada. O código `truncated` é o
+  teto de 1.000 itens por tipo (security groups de uma região, buckets, usuários, instâncias): os itens além dele não
+  foram conferidos, e as checagens deles ficam não lidas (uma reprovação achada nos conferidos continua valendo);
+- varredura parada: é a mesma tarefa e o mesmo cursor do inventário (acima). Uma falha passageira numa leitura da
+  postura para a coleta inteira, sem gravar nem o retrato nem a varredura, e a tarefa recua do mesmo jeito;
+- no relatório da tarefa (o log do worker), `postureScans` e `posturePartial` contam as varreduras gravadas e as
+  parciais, sem nenhum dado da conta.
 
 ## 5. Projeto GCP do cliente (sem acesso ao projeto)
 

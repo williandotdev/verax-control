@@ -1,5 +1,6 @@
 import {
   AWS_ONBOARDING_CHECK_IDS,
+  AWS_ONBOARDING_SOURCE_CHECK_IDS,
   AWS_ONBOARDING_STATES,
   awsOnboardingCheckSchema,
   type AwsOnboardingCheckId,
@@ -34,8 +35,14 @@ function account(overrides: Partial<OnboardingAccountFacts> = {}): OnboardingAcc
   };
 }
 
+/** Um ID de fonte por número, no formato do contrato (os testes que citam fontes escolhem o número). */
+const sourceId = (n: number) => `018f0000-0000-7000-8000-${String(n).padStart(12, '0')}`;
+let nextSource = 1000;
+
 function source(overrides: Partial<OnboardingSourceFacts> = {}): OnboardingSourceFacts {
+  nextSource += 1;
   return {
+    id: sourceId(nextSource),
     state: 'available',
     stateCode: null,
     permission: 'granted',
@@ -72,6 +79,11 @@ const statusOf = (derived: ReturnType<typeof deriveAwsOnboarding>) =>
   >;
 const codeOf = (derived: ReturnType<typeof deriveAwsOnboarding>, id: AwsOnboardingCheckId) =>
   derived.checks.find((check) => check.id === id)?.code ?? null;
+/** As fontes que cada conferência cita (só as que citam alguma). */
+const sourcesOf = (derived: ReturnType<typeof deriveAwsOnboarding>) =>
+  Object.fromEntries(
+    derived.checks.flatMap((check) => (check.sourceIds === undefined ? [] : [[check.id, check.sourceIds]])),
+  ) as Partial<Record<AwsOnboardingCheckId, string[]>>;
 
 describe('estado da conexão da conta AWS: a tabela das regras', () => {
   const cases: [string, Partial<OnboardingFacts>, AwsOnboardingState][] = [
@@ -585,6 +597,171 @@ describe('conferências', () => {
       'failed',
       'guardduty:ListFindings',
     ]);
+  });
+});
+
+describe('as fontes que deixam cada conferência pendente ou com falha (sourceIds)', () => {
+  it('sem fonte autorizada, ou com tudo coletando, nenhuma conferência cita fonte', () => {
+    for (const sources of [
+      [],
+      [source(), source({ state: 'needs_permission', permission: 'missing' })],
+      [collecting(), collecting()],
+    ]) {
+      expect(sourcesOf(deriveAwsOnboarding(facts({ sources })))).toEqual({});
+    }
+    // As quatro primeiras (a entrada no papel, a identidade, o template e a descoberta) nunca citam.
+    const derived = deriveAwsOnboarding(
+      facts({ account: account({ awsTemplateVersion: 1 }), sources: [authorized({ id: sourceId(1) })] }),
+    );
+    expect(Object.keys(sourcesOf(derived)).sort()).toEqual(
+      [...AWS_ONBOARDING_SOURCE_CHECK_IDS].filter((id) => id !== 'permission').sort(),
+    );
+  });
+
+  it('a permissão: todas as fontes negadas (não só a primeira); por conferir, as que faltam conferir', () => {
+    const denied = deriveAwsOnboarding(
+      facts({
+        sources: [
+          collecting({ id: sourceId(1) }),
+          collecting({
+            id: sourceId(2),
+            state: 'permission_error',
+            permission: 'missing',
+            permissionDetail: 'kms_denied',
+          }),
+          collecting({ id: sourceId(3), permission: 'missing', permissionDetail: 'tag_missing' }),
+          // A que não está autorizada não entra, mesmo sem a permissão.
+          source({ id: sourceId(4), state: 'needs_permission', permission: 'missing' }),
+        ],
+      }),
+    );
+    expect([statusOf(denied).permission, codeOf(denied, 'permission')]).toEqual(['failed', 'kms_denied']);
+    expect(sourcesOf(denied).permission).toEqual([sourceId(2), sourceId(3)]);
+
+    const unknown = deriveAwsOnboarding(
+      facts({
+        sources: [collecting({ id: sourceId(1) }), collecting({ id: sourceId(2), permission: 'unknown' })],
+      }),
+    );
+    expect(statusOf(unknown).permission).toBe('pending');
+    expect(sourcesOf(unknown).permission).toEqual([sourceId(2)]);
+  });
+
+  it('o bucket do cadastro negado: cita a linha dele quando ela está na lista; sem ela, nenhuma', () => {
+    const bucketDenied = account({ connection: 'error', connectionError: 'bucket_denied:waf' });
+    const withRow = deriveAwsOnboarding(
+      facts({
+        account: bucketDenied,
+        sources: [
+          collecting({ id: sourceId(1) }),
+          // Como `legacyPermission` devolve a linha do bucket que a conferência da conexão recusou.
+          authorized({
+            id: sourceId(2),
+            state: 'permission_error',
+            stateCode: 'bucket_denied',
+            permission: 'missing',
+            permissionDetail: 'bucket_denied',
+          }),
+        ],
+      }),
+    );
+    expect([statusOf(withRow).permission, codeOf(withRow, 'permission')]).toEqual([
+      'failed',
+      'bucket_denied',
+    ]);
+    expect(sourcesOf(withRow).permission).toEqual([sourceId(2)]);
+    const withoutRow = deriveAwsOnboarding(
+      facts({ account: bucketDenied, sources: [collecting({ id: sourceId(1) })] }),
+    );
+    expect(statusOf(withoutRow).permission).toBe('failed');
+    expect(sourcesOf(withoutRow).permission).toBeUndefined();
+    expect(sourcesOf(deriveAwsOnboarding(facts({ account: bucketDenied }))).permission).toBeUndefined();
+  });
+
+  it('o coletor, os eventos, a leitura e o atraso: cada conferência cita só as fontes que a seguram', () => {
+    const derived = deriveAwsOnboarding(
+      facts({
+        sources: [
+          collecting({ id: sourceId(1) }),
+          authorized({ id: sourceId(2) }),
+          authorized({ id: sourceId(3), state: 'configuring', stateCode: 'awaiting_apply' }),
+          authorized({ id: sourceId(4), state: 'waiting_events', stateCode: null, lastSyncAt: later(20) }),
+        ],
+      }),
+    );
+    expect(statusOf(derived)).toMatchObject({
+      collector_config: 'pending',
+      events: 'pending',
+      last_sync: 'pending',
+      lag: 'pending',
+    });
+    expect(sourcesOf(derived)).toEqual({
+      // Só as que ainda esperam o coletor.
+      collector_config: [sourceId(2), sourceId(3)],
+      // Todas as que ainda não coletam.
+      events: [sourceId(2), sourceId(3), sourceId(4)],
+      // As que nunca foram lidas.
+      last_sync: [sourceId(2), sourceId(3)],
+      // As que ainda não têm medida de atraso.
+      lag: [sourceId(2), sourceId(3), sourceId(4)],
+    });
+  });
+
+  it('a falha: as fontes com erro de ingestão ou paradas nos eventos; as paradas (ou as atrasadas) no atraso', () => {
+    const failing = deriveAwsOnboarding(
+      facts({
+        sources: [
+          collecting({ id: sourceId(1) }),
+          collecting({ id: sourceId(2), state: 'ingestion_error', stateCode: 'throttled' }),
+          collecting({ id: sourceId(3), state: 'stalled', stateCode: 'no_progress' }),
+          collecting({ id: sourceId(4), lagSeconds: AWS_LAG_LIMIT_SECONDS + 1 }),
+        ],
+      }),
+    );
+    expect([statusOf(failing).events, codeOf(failing, 'events')]).toEqual(['failed', 'throttled']);
+    expect(sourcesOf(failing).events).toEqual([sourceId(2), sourceId(3)]);
+    // Com uma parada, o atraso cita a parada; a atrasada só aparece quando nenhuma está parada.
+    expect([codeOf(failing, 'lag'), sourcesOf(failing).lag]).toEqual(['stalled', [sourceId(3)]]);
+    const late = deriveAwsOnboarding(
+      facts({
+        sources: [
+          collecting({ id: sourceId(1) }),
+          collecting({ id: sourceId(4), method: 'api', lagSeconds: AWS_LAG_LIMIT_SECONDS + 1 }),
+        ],
+      }),
+    );
+    expect([codeOf(late, 'lag'), sourcesOf(late).lag]).toEqual(['sync_delayed', [sourceId(4)]]);
+  });
+
+  it('o aviso do nó inteiro não cita fonte: a configuração não aplicada é do servidor, não de uma fonte', () => {
+    const node = deriveAwsOnboarding(
+      facts({
+        account: account({ collectionError: 'wazuh_apply_failed' }),
+        sources: [collecting({ id: sourceId(1) }), authorized({ id: sourceId(2) })],
+      }),
+    );
+    expect([statusOf(node).collector_config, codeOf(node, 'collector_config')]).toEqual([
+      'failed',
+      'wazuh_apply_failed',
+    ]);
+    expect(sourcesOf(node).collector_config).toBeUndefined();
+  });
+
+  it('toda conferência com fontes citadas segue o contrato, e os IDs são os das fontes da própria conta', () => {
+    const sources = [
+      collecting({ id: sourceId(1) }),
+      authorized({ id: sourceId(2), permission: 'unknown' }),
+      collecting({ id: sourceId(3), state: 'stalled' }),
+    ];
+    const derived = deriveAwsOnboarding(facts({ sources }));
+    const known = new Set(sources.map((item) => item.id));
+    for (const check of derived.checks) {
+      expect(awsOnboardingCheckSchema.safeParse(check).success).toBe(true);
+      for (const id of check.sourceIds ?? []) expect(known.has(id)).toBe(true);
+      if (check.sourceIds !== undefined) {
+        expect(AWS_ONBOARDING_SOURCE_CHECK_IDS as readonly string[]).toContain(check.id);
+      }
+    }
   });
 });
 

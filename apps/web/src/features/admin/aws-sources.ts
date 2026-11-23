@@ -12,6 +12,14 @@ import {
  * `packages/shared/src/aws-onboarding.ts`): a tela nunca decide sozinha que uma fonte está autorizada ou coletando.
  */
 
+/**
+ * O `id` da linha de uma fonte em "Fontes autorizadas": é para onde as conferências da conexão apontam a fonte que as
+ * deixa pendentes ou com falha (`sourceIds`).
+ */
+export function awsAuthorizedSourceAnchor(sourceId: string): string {
+  return `aws-autorizada-${sourceId}`;
+}
+
 /** A autorização da fonte está valendo (autorizada e não retirada)? */
 export function isAuthorizedSource(source: Pick<AwsSource, 'authorization'>): boolean {
   return source.authorization.authorizedAt !== null && source.authorization.revokedAt === null;

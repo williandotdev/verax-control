@@ -545,6 +545,20 @@ describe('onboarding self-service da AWS: estado, descoberta manual e autorizaç
         last_sync: ['pending', 'no_data'],
         lag: ['pending', 'no_data'],
       });
+      // Cada conferência pendente cita as fontes que a seguram (os IDs das duas autorizadas, e só elas).
+      const cited = Object.fromEntries(
+        onboarding.checks.map((check) => [check.id, [...(check.sourceIds ?? [])].sort()]),
+      );
+      const both = [detector.id, trail.id].sort();
+      expect(cited).toMatchObject({
+        assume_role: [],
+        discovery: [],
+        permission: [],
+        collector_config: both,
+        events: both,
+        last_sync: both,
+        lag: both,
+      });
       for (const id of [detector.id, trail.id]) {
         const row = await sourceRow(id);
         expect(row).toMatchObject({
