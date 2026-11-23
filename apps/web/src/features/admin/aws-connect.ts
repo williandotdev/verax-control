@@ -95,9 +95,35 @@ export function prefilledReaderTemplate(
   }
 }
 
-/** O comando da CLI que cria ou atualiza a pilha, com as autorizações escolhidas (`awsReaderDeployCommand`). */
-export function awsDeployCommand(account: AwsStackAccount, choice: AwsAuthorizationChoice): string {
-  return awsReaderDeployCommand(awsStackValues(account, choice));
+/**
+ * O nome do arquivo preenchido desta conta: o que "Conectar com AWS", "Baixar o arquivo de novo" e "Baixar o arquivo da
+ * pilha" gravam (o mesmo de `prefilledReaderTemplate`). Null com o ID da conta fora do formato: aí nenhum arquivo é
+ * montado.
+ */
+export function awsStackFileName(account: Pick<CloudAccount, 'accountId'>): string | null {
+  try {
+    return awsReaderPrefilledFileName(account.accountId);
+  } catch (error) {
+    if (error instanceof AwsReaderPrefillError) return null;
+    throw error;
+  }
+}
+
+/**
+ * O comando da CLI que cria ou atualiza a pilha, com as autorizações escolhidas (`awsReaderDeployCommand`).
+ * `templateFile` é o nome do arquivo que o painel ao lado do comando baixa, para o comando copiado ler o arquivo que o
+ * cliente tem na pasta: o preenchido (`awsStackFileName`) onde o botão baixa o arquivo preenchido; sem ele, o do
+ * repositório (a alternativa manual, que baixa o template sem nada preenchido).
+ */
+export function awsDeployCommand(
+  account: AwsStackAccount,
+  choice: AwsAuthorizationChoice,
+  templateFile: string | null = null,
+): string {
+  return awsReaderDeployCommand(
+    awsStackValues(account, choice),
+    templateFile === null ? {} : { templateFile },
+  );
 }
 
 /** O valor (`true` ou `false`) de cada parâmetro de autorização, na ordem do template. */

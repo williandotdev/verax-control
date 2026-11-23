@@ -119,6 +119,11 @@ test.describe('onboarding self-service da AWS (modo mock)', () => {
         'href',
         CONSOLE_URL,
       );
+      // Quem prefere a CLI: o comando lê o arquivo que o botão baixou, pelo nome dele.
+      await waiting.getByText('Prefere a CLI?').click();
+      await expect(waiting.getByText(/^aws cloudformation deploy/)).toContainText(
+        `--template-file ${download.suggestedFilename()} `,
+      );
       expect(await violations(page)).toEqual([]);
 
       // Sem clique nenhum: a pilha "fica pronta", o Verax entra, descobre a conta e espera a escolha das fontes.

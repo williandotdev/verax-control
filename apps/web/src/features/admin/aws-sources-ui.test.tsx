@@ -893,6 +893,11 @@ describe('na VM própria do cliente (a chave de leitura)', () => {
     expect(steps).toHaveTextContent(
       "'Key=verax-control:capabilities,Value=discovery service-logs findings log-groups'",
     );
+    // Aqui nada é baixado: o cliente salva cada política com o nome que o bloco dela dá, e os comandos leem esses nomes.
+    for (const file of ['verax-control-reader.json', 'verax-control-guardrails.json']) {
+      expect(within(steps).getByRole('button', { name: `Copiar a política ${file}` })).toBeInTheDocument();
+      expect(steps).toHaveTextContent(`--policy-document file://${file}`);
+    }
     // Desligar uma autorização tira a declaração dela da política e do valor da etiqueta.
     await user.click(within(steps).getByRole('checkbox', { name: 'Achados de segurança' }));
     expect(steps).not.toHaveTextContent('"Sid": "LerAchadosDeSeguranca"');
@@ -941,6 +946,11 @@ describe('na VM própria do cliente (a chave de leitura)', () => {
     expect(reader).toHaveTextContent('aws iam create-policy-version --policy-arn');
     expect(reader).toHaveTextContent('aws iam tag-user --user-name verax-control-reader');
     expect(reader).not.toHaveTextContent('CloudFormation');
+    // O comando lê o arquivo com o nome que o bloco da política dá.
+    expect(
+      within(reader).getByRole('button', { name: 'Copiar a política verax-control-reader.json' }),
+    ).toBeInTheDocument();
+    expect(reader).toHaveTextContent('--policy-document file://verax-control-reader.json --set-as-default');
     expect(
       within(screen.getByRole('list', { name: 'Conferências da conexão' })).getAllByRole('listitem')[0],
     ).toHaveTextContent('Leitura com a chave de acesso');

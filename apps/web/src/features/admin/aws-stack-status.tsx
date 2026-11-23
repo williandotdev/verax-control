@@ -20,11 +20,14 @@ import {
   authorizationParameters,
   type AwsAuthorizationChoice,
   awsConsoleRegion,
-  awsDeployCommand,
   capabilitiesOfChoice,
   downloadTextFile,
 } from '@/features/admin/aws-connect';
-import { AwsAuthorizationChoices, StackFileProblem } from '@/features/admin/aws-connect-panel';
+import {
+  AwsAuthorizationChoices,
+  PrefilledStackCli,
+  StackFileProblem,
+} from '@/features/admin/aws-connect-panel';
 import { useAwsStackFile } from '@/features/admin/aws-hooks';
 import { useAwsVerify } from '@/features/admin/aws-onboarding-api';
 import { AWS_AUTHORIZATION_TEXTS, awsOnboardingErrorText } from '@/features/admin/aws-onboarding-labels';
@@ -159,15 +162,10 @@ function UpdateStack({
           Verificar de novo, abaixo.
         </li>
       </ol>
-      <details className="space-y-1 text-sm">
-        <summary className="cursor-pointer">Prefere a CLI?</summary>
-        <p className="text-xs text-muted-foreground">
-          No terminal ou no AWS CloudShell, na pasta do arquivo do modelo (o da alternativa manual, sem nada
-          preenchido, também serve). O comando atualiza a pilha que já existe, com as autorizações escolhidas
-          acima:
-        </p>
-        <CommandBlock command={awsDeployCommand(account, choice)} label="Copiar o comando da CLI" />
-      </details>
+      <PrefilledStackCli account={account} choice={choice} stack={stack}>
+        O comando atualiza a pilha que já existe e leva os valores deste ambiente e as autorizações escolhidas
+        acima: numa atualização, a AWS mantém o valor anterior de todo parâmetro que o comando não informa.
+      </PrefilledStackCli>
       <VerifyAfterUpdate account={account} waiting={waiting} />
     </div>
   );

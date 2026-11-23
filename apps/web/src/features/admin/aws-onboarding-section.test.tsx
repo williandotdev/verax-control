@@ -87,6 +87,10 @@ function watchBrowser() {
   return { events, downloads, opened, revoke };
 }
 
+/** O arquivo que o comando da CLI lê (`--template-file`). */
+const templateFileOf = (command: HTMLElement): string | undefined =>
+  / --template-file (\S+) /.exec(command.textContent)?.[1];
+
 /** As linhas do arquivo que não estão no template do repositório. */
 function changedLines(filled: string): string[] {
   const original = new Set(READER_TEMPLATE_TEXT.split('\n'));
@@ -175,6 +179,17 @@ describe('Conectar com AWS', () => {
     expect(await browser.downloads[1]?.blob.text()).toBe(text);
     expect(browser.opened).toHaveBeenCalledTimes(1);
     expect(fake.calls).toHaveLength(1);
+
+    // A CLI da espera lê o arquivo que este painel baixa, pelo nome, e leva a escolha (os achados desligados).
+    const cli = within(waiting).getByText(/^aws cloudformation deploy/);
+    expect(browser.downloads[1]?.name).toBe('verax-control-reader-111111111111.yaml');
+    expect(templateFileOf(cli)).toBe(browser.downloads[1]?.name);
+    expect(waiting).toHaveTextContent(
+      'na pasta do arquivo baixado aqui (verax-control-reader-111111111111.yaml)',
+    );
+    expect(cli).toHaveTextContent('NodeServiceAccountId=123456789012345678901');
+    expect(cli).toHaveTextContent('ReadSecurityFindings=false');
+    expect(cli).toHaveTextContent('ReadTaggedLogGroups=true');
   });
 
   it('valor do nó faltando: nenhum arquivo quebrado, só o que pedir à Verax; a alternativa manual leva os marcadores', async () => {
@@ -259,6 +274,9 @@ describe('Conectar com AWS', () => {
     // A CLI acompanha as caixas: desligar os grupos de logs muda o comando.
     const command = within(panel).getByText(/^aws cloudformation deploy/);
     expect(command).toHaveTextContent('ReadTaggedLogGroups=true');
+    // E lê o arquivo que o link deste bloco baixa: o template do repositório, sem nada preenchido.
+    expect(templateFileOf(command)).toBe(link.getAttribute('download'));
+    expect(templateFileOf(command)).toBe('verax-control-reader.yaml');
     await user.click(within(panel).getByRole('checkbox', { name: 'Grupos do CloudWatch Logs marcados' }));
     expect(within(panel).getByText(/^aws cloudformation deploy/)).toHaveTextContent(
       'ReadTaggedLogGroups=false',
@@ -601,9 +619,21 @@ describe('pilha na AWS: a versão do modelo e as autorizações', () => {
     const falses = (value: string) => value.split("    Default: 'false'").length - 1;
     expect(falses(text)).toBe(falses(READER_TEMPLATE_TEXT));
     expect(browser.opened).not.toHaveBeenCalled();
-    expect(within(stack).getByText(/^aws cloudformation deploy/)).toHaveTextContent(
-      'ReadSecurityFindings=true',
+    // A CLI lê o arquivo que o botão acabou de baixar, pelo nome, e continua levando os valores e as autorizações:
+    // numa atualização, a AWS manteria os valores anteriores da pilha.
+    const command = within(stack).getByText(/^aws cloudformation deploy/);
+    expect(browser.downloads[0]?.name).toBe('verax-control-reader-111111111111.yaml');
+    expect(templateFileOf(command)).toBe(browser.downloads[0]?.name);
+    expect(stack).toHaveTextContent(
+      'na pasta do arquivo baixado aqui (verax-control-reader-111111111111.yaml)',
     );
+    expect(stack).not.toHaveTextContent('alternativa manual');
+    expect(command).toHaveTextContent('NodeServiceAccountId=123456789012345678901');
+    expect(command).toHaveTextContent('NodeEgressIps=203.0.113.10/32');
+    expect(command).toHaveTextContent('ReadAwsServiceLogs=true');
+    expect(command).toHaveTextContent('ReadSecurityFindings=true');
+    expect(command).toHaveTextContent('ReadTaggedLogGroups=true');
+    expect(command).toHaveTextContent('LogBucketArns=""');
     await user.click(within(stack).getByRole('button', { name: 'Verificar de novo' }));
     await waitFor(() => expect(fake.calls.map((call) => call.route)).toEqual(['verify']));
   });
@@ -646,6 +676,30 @@ describe('pilha na AWS: a versão do modelo e as autorizações', () => {
     // Só os grupos de logs continuam desligados.
     expect(falses(text)).toBe(falses(READER_TEMPLATE_TEXT) + 1);
     expect(text).toContain("    Default: 'arn:aws:s3:::exemplo-trilha'");
+    // O comando lê esse mesmo arquivo, com a escolha nova e o bucket da conta.
+    const command = within(stack).getByText(/^aws cloudformation deploy/);
+    expect(templateFileOf(command)).toBe(browser.downloads[0]?.name);
+    expect(command).toHaveTextContent('ReadTaggedLogGroups=false');
+    expect(command).toHaveTextContent('LogBucketArns=arn:aws:s3:::exemplo-trilha');
+  });
+
+  it('sem arquivo para baixar (falta um valor do ambiente), não há comando apontando para um arquivo que não existe', async () => {
+    open(
+      state('awaiting_sources', {
+        template: {
+          version: 1,
+          capabilities: ['discovery'],
+          outdated: true,
+          checkedAt: '2026-11-23T11:00:00.000Z',
+        },
+      }),
+      { account: { nodeServiceAccountId: null } },
+    );
+    const stack = await screen.findByRole('region', { name: 'Pilha na AWS' });
+    expect(await within(stack).findByText('O arquivo da pilha não pode ser preparado agora.')).toBeVisible();
+    expect(within(stack).getByRole('button', { name: 'Baixar o arquivo da pilha' })).toBeDisabled();
+    expect(within(stack).queryByText(/^aws cloudformation deploy/)).not.toBeInTheDocument();
+    expect(stack).not.toHaveTextContent('Prefere a CLI?');
   });
 
   it('etiqueta da versão ilegível: pede a pilha atualizada, com o arquivo desta tela', async () => {
