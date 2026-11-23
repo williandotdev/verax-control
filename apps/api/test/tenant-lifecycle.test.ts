@@ -6,6 +6,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AwsCheck } from '../src/aws/aws-check.js';
 import type { AwsCheckOutcome, AwsConnectionChecker } from '../src/aws/aws-connection-check.js';
+import { syncLegacyAwsSources } from '../src/aws/onboarding/legacy-sources.js';
 import { findWazuhSourceRows } from '../src/aws/wazuh-sources.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { TenantScopeViolation } from '../src/common/prisma/tenant-scope.js';
@@ -268,7 +269,7 @@ describe('estados do ciclo de vida do cliente (CE-02)', () => {
 
   describe('a coleta só lê cliente ativo', () => {
     async function verifiedAwsAccount(tenantId: string, data: { checkRequestedAt?: Date } = {}) {
-      return prisma.cloudAccount.create({
+      const account = await prisma.cloudAccount.create({
         data: {
           tenantId,
           provider: 'aws',
@@ -280,6 +281,9 @@ describe('estados do ciclo de vida do cliente (CE-02)', () => {
           ...data,
         },
       });
+      // A lista do Wazuh sai das fontes da conta: o bucket do cadastro com a linha dele, como a API o grava.
+      await syncLegacyAwsSources(prisma.forTenant(tenantId), account.id);
+      return account;
     }
 
     it('o suspenso sai da lista do Wazuh e volta ao reativar', async () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { open, rename, rm, writeFile } from 'node:fs/promises';
+import { open, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AwsCollectionErrorCode } from '@verax/shared';
 import { z } from 'zod';
@@ -8,9 +8,21 @@ import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import {
+  parseWazuhProgress,
+  WAZUH_PROGRESS_MAX_BYTES,
+  WAZUH_PROGRESS_STALE_AFTER_MS,
+  type WazuhProgress,
+} from './wazuh-progress.js';
+import {
+  type WazuhNodeState,
+  WazuhSourceHealth,
+  type WazuhSourceHealthReport,
+  type WazuhStallProbe,
+} from './wazuh-source-health.js';
+import {
   findWazuhSourceRows,
+  planWazuhSources,
   serializeWazuhSources,
-  toWazuhSources,
   wazuhSourcesGeneration,
 } from './wazuh-sources.js';
 
@@ -24,15 +36,17 @@ export const AWS_TOKEN_STALE_AFTER_MS = 40 * 60 * 1000;
 
 /**
  * Os arquivos da pasta de sinais (`/run/verax/wazuh-signal` no host, montada no worker em `WAZUH_SIGNAL_DIR`). O worker
- * só escreve a geração; os outros dois são do host (`infra/node/bin/wazuh-apply.sh` e `aws-token.sh`), e o bit t da
- * pasta impede que o worker os troque.
+ * só escreve a geração; os outros três são do host (`infra/node/bin/wazuh-apply.sh`, `aws-token.sh` e
+ * `wazuh-progress.sh`), e o bit t da pasta impede que o worker os troque.
  */
 export const WAZUH_SIGNAL_FILES = {
   generation: 'generation',
   applied: 'applied',
   awsToken: 'aws-token',
+  /** Até onde o módulo do Wazuh já leu cada fonte (`wazuh-progress.ts`). */
+  progress: 'progress',
 } as const;
-/** Um sinal do host tem menos de 200 bytes; maior que isso nem é lido. */
+/** Um sinal do host tem menos de 200 bytes; maior que isso nem é lido. O `progress` tem o teto dele. */
 const SIGNAL_MAX_BYTES = 4096;
 
 const generationPattern = /^[0-9a-f]{64}$/;
@@ -66,6 +80,8 @@ export interface WazuhConfigReport {
   cleared: number;
   /** Sinais do host fora do formato (ignorados). */
   invalidSignals: number;
+  /** A saúde das fontes lidas pelo Wazuh; ausente no nó que não a grava (a célula). */
+  sources?: WazuhSourceHealthReport;
 }
 
 export interface WazuhConfigOptions {
@@ -76,6 +92,14 @@ export interface WazuhConfigOptions {
   staleAfterMs?: number;
   /** Só os testes, que dividem o banco: restringe a tarefa às contas destes clientes. */
   tenantIds?: readonly string[];
+  /**
+   * Grava o estado e os horários de cada fonte (`wazuh-source-health.ts`). Desligado na célula compartilhada, onde a
+   * coleta da AWS ainda não existe por cliente: lá a tarefa segue só com a geração e os avisos das contas.
+   */
+  sourceHealth?: boolean;
+  /** A conferência da origem das fontes paradas (a sessão de leitura das contas); sem ela, nenhuma é marcada. */
+  stallProbe?: WazuhStallProbe | null;
+  progressStaleAfterMs?: number;
 }
 
 /**
@@ -114,7 +138,10 @@ export function applicationResult(
 const INVALID = Symbol('sinal inválido');
 
 /** Um sinal do host: o texto, null sem o arquivo, ou INVALID. */
-async function readSignal(path: string): Promise<string | null | typeof INVALID> {
+async function readSignal(
+  path: string,
+  maxBytes: number = SIGNAL_MAX_BYTES,
+): Promise<string | null | typeof INVALID> {
   let handle;
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- pasta da configuração do nó, não do request
@@ -125,7 +152,7 @@ async function readSignal(path: string): Promise<string | null | typeof INVALID>
   }
   try {
     const stats = await handle.stat();
-    if (!stats.isFile() || stats.size > SIGNAL_MAX_BYTES) return INVALID;
+    if (!stats.isFile() || stats.size > maxBytes) return INVALID;
     return await handle.readFile('utf8');
   } finally {
     await handle.close();
@@ -158,9 +185,10 @@ interface CollectionRow {
  * Tarefa `wazuh-config` do worker (fase 2, PR-V4'; só no nó com o Wazuh, com `WAZUH_SIGNAL_DIR`): a ponte, sem segredo,
  * entre as contas AWS do banco e a configuração do manager, que só o host aplica.
  *
- * - Grava a geração (o SHA-256 da lista que o CLI `wazuh-sources` imprime: contas, região, buckets e início da coleta)
- *   no arquivo `generation` da pasta de sinais, só quando ela muda: o `verax-wazuh-apply.path` do host reage e refaz a
- *   configuração do manager em segundos. Troca atômica (rename), como no host.
+ * - Grava a geração (o SHA-256 da lista que o CLI `wazuh-sources` imprime: as contas, a região e as fontes autorizadas
+ *   de cada uma, com o início da coleta) no arquivo `generation` da pasta de sinais, só quando ela muda: o
+ *   `verax-wazuh-apply.path` do host reage e refaz a configuração do manager em segundos. Troca atômica (rename), como
+ *   no host.
  * - Lê os dois sinais do host e grava, em cada conta que o manager lê, o aviso da coleta em `collectionError`, um campo
  *   só dela: `aws_token_stale` quando o token do Google não é renovado há mais de 40 min, e `wazuh_apply_failed` quando
  *   a aplicação da lista de agora deu erro, ou quando o host nem conseguiu ler a lista (o sinal com erro e sem geração;
@@ -170,6 +198,9 @@ interface CollectionRow {
  *   PR-V5'): os dois avisos são do nó inteiro, não da conta do cliente, e nenhuma das duas tarefas desfaz a outra.
  * - Cada mudança numa transação própria, pelo escopo do cliente da conta, só se o aviso ainda for o lido, com auditoria
  *   (`cloud_account.aws_collection`, ator sistema) na trilha do cliente. Sem mudança, nada é gravado.
+ * - Com o sinal `progress` do host (até onde o módulo do Wazuh leu cada fonte), grava o estado e os horários de cada
+ *   fonte autorizada lida pelo Wazuh (`wazuh-source-health.ts`): configurando, aguardando eventos, coletando, parada
+ *   ou com erro. É o que a tela das fontes mostra.
  *
  * O worker só escreve esse sinal sem segredo: quem escreve a configuração do manager e os profiles da AWS é só o gerador
  * (decisão R1 do plano), e o token do Google fica com o host.
@@ -180,6 +211,10 @@ export class WazuhConfig {
   private readonly startedAt: Date;
   private readonly staleAfterMs: number;
   private readonly tenantIds: readonly string[] | undefined;
+  private readonly health: WazuhSourceHealth | null;
+  private readonly progressStaleAfterMs: number;
+  /** O último sinal `progress` lido, pelo arquivo dele: o mesmo arquivo não é conferido de novo a cada 30 s. */
+  private lastProgress: { key: string; progress: WazuhProgress | null } | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -190,6 +225,9 @@ export class WazuhConfig {
       startedAt,
       staleAfterMs = AWS_TOKEN_STALE_AFTER_MS,
       tenantIds,
+      sourceHealth = true,
+      stallProbe = null,
+      progressStaleAfterMs = WAZUH_PROGRESS_STALE_AFTER_MS,
     }: WazuhConfigOptions = {},
   ) {
     this.audit = audit;
@@ -197,11 +235,15 @@ export class WazuhConfig {
     this.startedAt = startedAt ?? now();
     this.staleAfterMs = staleAfterMs;
     this.tenantIds = tenantIds;
+    this.health = sourceHealth ? new WazuhSourceHealth(prisma, { audit, stallProbe }) : null;
+    this.progressStaleAfterMs = progressStaleAfterMs;
   }
 
   async runOnce(signal: AbortSignal = new AbortController().signal): Promise<WazuhConfigReport> {
-    const rows = await findWazuhSourceRows(this.prisma, this.tenantIds);
-    const generation = wazuhSourcesGeneration(serializeWazuhSources(toWazuhSources(rows)));
+    const plan = planWazuhSources(await findWazuhSourceRows(this.prisma, this.tenantIds));
+    // As contas que o manager lê: as que têm ao menos uma fonte na lista.
+    const rows = plan.accounts;
+    const generation = wazuhSourcesGeneration(serializeWazuhSources(plan.list));
     const written = await this.writeGeneration(generation);
 
     const applied = parseSignal(await readSignal(this.path('applied')), appliedSchema);
@@ -212,7 +254,7 @@ export class WazuhConfig {
     const tokenAt = token !== null && token !== INVALID ? new Date(token.tokenAt) : this.startedAt;
     const stale = this.now().getTime() - tokenAt.getTime() > this.staleAfterMs;
     const result = applicationResult(applied === INVALID ? null : applied, generation);
-    const state: WazuhConfigReport['state'] = stale
+    const state: WazuhNodeState = stale
       ? 'aws_token_stale'
       : result === 'error'
         ? 'wazuh_apply_failed'
@@ -246,7 +288,51 @@ export class WazuhConfig {
       if (next === null) report.cleared += 1;
       else report.marked += 1;
     }
+    if (this.health !== null) {
+      const progress = await this.readProgress();
+      if (progress === INVALID) report.invalidSignals += 1;
+      report.sources = await this.health.apply(
+        plan.sources,
+        { now: this.now(), node: state, progress: progress === INVALID ? null : progress },
+        signal,
+      );
+    }
     return report;
+  }
+
+  /**
+   * O sinal `progress` de agora: null sem o arquivo ou com ele velho demais (o timer do host parou), INVALID fora do
+   * formato. O arquivo que não mudou desde a última leitura não é conferido de novo.
+   */
+  private async readProgress(): Promise<WazuhProgress | null | typeof INVALID> {
+    const target = this.path('progress');
+    let key: string;
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- pasta da configuração do nó, não do request
+      const stats = await stat(target);
+      key = `${stats.mtimeMs}:${stats.size}:${stats.ino}`;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    if (this.lastProgress?.key !== key) {
+      const raw = await readSignal(target, WAZUH_PROGRESS_MAX_BYTES);
+      if (raw === null) return null;
+      let progress: WazuhProgress | null = null;
+      if (raw !== INVALID) {
+        try {
+          progress = parseWazuhProgress(JSON.parse(raw));
+        } catch {
+          progress = null;
+        }
+      }
+      this.lastProgress = { key, progress };
+    }
+    const { progress } = this.lastProgress;
+    if (progress === null) return INVALID;
+    const age = this.now().getTime() - progress.at.getTime();
+    // Um horário no futuro (o relógio do host adiantado em mais que a folga) também não serve.
+    return age > this.progressStaleAfterMs || age < -this.progressStaleAfterMs ? null : progress;
   }
 
   private path(name: keyof typeof WAZUH_SIGNAL_FILES): string {
