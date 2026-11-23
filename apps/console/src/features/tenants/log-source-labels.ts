@@ -207,6 +207,8 @@ export const LOG_SOURCE_ERRORS: Readonly<Record<string, string>> = {
     'Projetos da GCP pelo console só no ambiente na VM do cliente, por enquanto: o servidor na infraestrutura da Verax ainda não recebe projetos de cliente.',
   credential_kind_not_allowed:
     'Este tipo de chave não vale no servidor deste cliente: no ambiente da Verax, a AWS é lida pelo papel sem chave (a pilha do CloudFormation).',
+  cloudflare_oauth_only:
+    'Neste cliente, o Cloudflare é conectado por ele mesmo, no painel ("Conectar com Cloudflare"): nenhum token novo foi enviado. A conta que já coleta com token segue coletando.',
   credential_provider_mismatch: 'A chave é de outro provedor que o da fonte.',
   confirmation_mismatch: 'O subdomínio não confere com o do cliente: nada mudou.',
   rate_limited:
