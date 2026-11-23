@@ -382,6 +382,12 @@ model CloudAccount {
   awsCapabilitiesCheckedAt DateTime?              @db.Timestamptz(3)
   /// AWS: as regiões com recurso ou fonte de log, pela última descoberta que entrou na conta.
   awsDiscoveredRegions     String[]               @default([])
+  /// AWS, onboarding self-service: as autorizações que o cliente marcou no painel na última vez em que as confirmou (no
+  /// "Conectar com AWS" ou no "Verificar" depois de atualizar a pilha), separadas por espaço e na ordem do catálogo
+  /// (`service-logs findings log-groups`; vazio: só a descoberta). Null sem escolha gravada. É só a escolha, para a tela
+  /// devolver as mesmas caixas marcadas e avisar quando o papel na AWS ficou diferente dela: o que o papel pode ler
+  /// está em `awsCapabilities`, pelas tags dele. Só conta AWS (CHECK da migration).
+  awsChosenCapabilities    String?                @db.VarChar(64)
   createdAt                DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt                DateTime               @updatedAt @db.Timestamptz(3)
   cursors                  CollectorCursor[]
@@ -757,6 +763,11 @@ model CloudWatchAlertOwnership {
   ownerAccountId String?  @db.VarChar(12)
   /// A geração (o SHA-256 da lista) que o manager roda, a última que a tarefa conferiu pelo sinal `applied`.
   generation     String   @db.VarChar(64)
+  /// O número de sequência do sinal `applied` na última conferência: o host o aumenta a cada troca da configuração do
+  /// manager (`infra/node/bin/wazuh-apply.sh`). A prova só continua com o mesmo número, ou com o seguinte e uma geração
+  /// conferida; qualquer outro salto é uma troca que a tarefa não viu. Null só na linha gravada antes de o número
+  /// existir, que não vale como prova.
+  appliedSeq     BigInt?
   /// Desde quando toda configuração aplicada só teve grupos de logs deste dono (ou nenhum). Nunca anda para trás: a
   /// linha que perde a prova é apagada, e a nova começa de novo.
   since          DateTime @db.Timestamptz(3)
