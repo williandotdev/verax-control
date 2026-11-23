@@ -71,10 +71,12 @@ export interface WazuhRule {
   level: number;
 }
 
-const GUARDDUTY_RULES: readonly { digits: RegExp; rule: WazuhRule; portProbe: WazuhRule }[] = [
-  { digits: /[789]/, rule: { id: '80303', level: 10 }, portProbe: { id: '80307', level: 10 } },
-  { digits: /[456]/, rule: { id: '80302', level: 6 }, portProbe: { id: '80306', level: 6 } },
-  { digits: /[0123]/, rule: { id: '80301', level: 3 }, portProbe: { id: '80305', level: 3 } },
+// Os algarismos de cada regra do Wazuh (que casa a severidade como texto: basta um deles aparecer no número), na ordem
+// em que as regras são tentadas.
+const GUARDDUTY_RULES: readonly { digits: string; rule: WazuhRule; portProbe: WazuhRule }[] = [
+  { digits: '789', rule: { id: '80303', level: 10 }, portProbe: { id: '80307', level: 10 } },
+  { digits: '456', rule: { id: '80302', level: 6 }, portProbe: { id: '80306', level: 6 } },
+  { digits: '0123', rule: { id: '80301', level: 3 }, portProbe: { id: '80305', level: 3 } },
 ];
 
 /** A ação do GuardDuty que tem regra própria no Wazuh (a sondagem de porta). */
@@ -87,7 +89,9 @@ export const GUARDDUTY_PORT_PROBE = 'PORT_PROBE';
 export function guardDutyWazuhRule(severity: number, actionType: string | undefined): WazuhRule {
   const text = wazuhNumberText(severity);
   // Todo número tem ao menos um algarismo, e os três padrões juntos cobrem os dez: sempre há uma regra.
-  const matched = GUARDDUTY_RULES.find(({ digits }) => digits.test(text)) ?? GUARDDUTY_RULES[2];
+  const matched =
+    GUARDDUTY_RULES.find(({ digits }) => [...text].some((char) => digits.includes(char))) ??
+    GUARDDUTY_RULES[2];
   if (matched === undefined) throw new RangeError('severidade do GuardDuty sem regra');
   return actionType === GUARDDUTY_PORT_PROBE ? matched.portProbe : matched.rule;
 }
