@@ -6460,6 +6460,15 @@ note?, confirmSlug}` → `{amendmentId, state, hosting, hostingChanged, nodeLimi
 - **Desvio do pedido:** o `POST …/aws/verify` também aceita o mesmo corpo opcional. É por ele que a escolha feita no
   bloco "Atualize a pilha" (e, na VM própria, no passo das políticas) é gravada: sem isso, depois de uma atualização
   deliberada da pilha o aviso de diferença ficaria aceso para sempre.
+- **Correção da revisão (a escolha gravada fora de ordem):** marcar e desmarcar caixas em seguida, na espera pela
+  pilha, mandava vários "Conectar" ao mesmo tempo, e a API decidia o que gravar por uma leitura de antes: podia ficar
+  gravada uma escolha que o cliente já tinha desfeito, e o arquivo baixado depois sairia diferente da última escolha.
+  Na API, o "Conectar" e o "Verificar" prendem a linha da conta (`lockAwsAccountRow`) e gravam a escolha do pedido
+  como veio: vale a do último pedido gravado. No painel (`features/admin/aws-choice.ts`), um pedido de cada vez, com
+  a última escolha; o arquivo e o comando só saem com a escolha que a API confirmou (no "Conectar com AWS", o arquivo
+  é baixado depois da resposta); a gravação que falha fica à vista, com "Tentar de novo", e as caixas não voltam
+  sozinhas. Testes que caem sem a correção: três na API com Postgres (a linha presa por uma transação do teste, para
+  o segundo pedido sair com o primeiro no caminho) e sete no painel.
 - **Documentação:** `docs/ARQUITETURA.md` ganha a seção "Onboarding AWS self-service" (o fluxo, o template v2, o
   modelo de dados, os estados e as nove conferências, a descoberta e a trava de só leitura, os coletores, os limites e
   o controle de volume, o isolamento entre clientes, o que não está coberto e a tabela "O que foi conferido onde"), e

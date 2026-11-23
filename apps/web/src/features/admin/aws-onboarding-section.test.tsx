@@ -99,6 +99,37 @@ function watchBrowser() {
   return { events, downloads, opened, revoke };
 }
 
+type Authorization = 'service-logs' | 'findings' | 'log-groups';
+
+/** A conta esperando a pilha, com a escolha gravada informada: o que a API devolve depois de um "Conectar" com ela. */
+const waitingFor = (capabilities: Authorization[]) =>
+  state('awaiting_authorization', {
+    connect: {
+      requestedAt: '2026-11-23T12:00:00.000Z',
+      waitingUntil: new Date(Date.now() + 50 * 60_000).toISOString(),
+      capabilities,
+    },
+    checks: checksFixture({ assume_role: { status: 'pending', code: 'awaiting_stack' } }),
+  });
+
+/** O padrão gravado no arquivo para cada parâmetro de autorização: a linha `Default:` do bloco dele. */
+function authorizationDefaults(template: string): Record<string, string | undefined> {
+  const lines = template.split('\n').map((line) => line.trimEnd());
+  const defaultOf = (parameter: string) => {
+    const block = lines.slice(lines.indexOf(`  ${parameter}:`) + 1);
+    const end = block.findIndex((line) => line.startsWith('  ') && !line.startsWith('   '));
+    return block
+      .slice(0, end === -1 ? block.length : end)
+      .find((line) => line.startsWith('    Default: '))
+      ?.slice('    Default: '.length);
+  };
+  return {
+    ReadAwsServiceLogs: defaultOf('ReadAwsServiceLogs'),
+    ReadSecurityFindings: defaultOf('ReadSecurityFindings'),
+    ReadTaggedLogGroups: defaultOf('ReadTaggedLogGroups'),
+  };
+}
+
 /** O arquivo que o comando da CLI lê (`--template-file`). */
 const templateFileOf = (command: HTMLElement): string | undefined =>
   / --template-file (\S+) /.exec(command.textContent)?.[1];
@@ -110,7 +141,7 @@ function changedLines(filled: string): string[] {
 }
 
 describe('Conectar com AWS', () => {
-  it('um clique baixa o arquivo preenchido, abre o CloudFormation e avisa a API; a tela só avança com a resposta', async () => {
+  it('um clique abre o CloudFormation, avisa a API e, com a escolha confirmada, baixa o arquivo preenchido; a tela só avança com a resposta', async () => {
     const user = userEvent.setup();
     const browser = watchBrowser();
     const { account, fake } = open(state('not_started'));
@@ -151,14 +182,14 @@ describe('Conectar com AWS', () => {
     await waitFor(() => expect(button).toBeEnabled());
     await user.click(button);
 
-    // Na ordem: o arquivo, o console em outra aba (sem acesso a esta) e o aviso à API.
-    await waitFor(() => expect(browser.events).toEqual(['download', 'open', 'connect']));
+    // Na ordem: o console em outra aba (sem acesso a esta), o aviso à API e, com a resposta dela, o arquivo.
+    await waitFor(() => expect(browser.events).toEqual(['open', 'connect', 'download']));
     expect(browser.opened).toHaveBeenCalledExactlyOnceWith(
       'https://console.aws.amazon.com/cloudformation/home?region=sa-east-1#/stacks/create',
       '_blank',
       'noopener,noreferrer',
     );
-    // O pedido leva a escolha do arquivo baixado (sem a descoberta, que vale sempre): é o que a API guarda.
+    // O pedido leva a escolha das caixas (sem a descoberta, que vale sempre); o arquivo sai com a que a API confirmou.
     expect(fake.calls).toEqual([
       { route: 'connect', sourceId: null, body: { capabilities: ['service-logs', 'log-groups'] } },
     ]);
@@ -252,20 +283,54 @@ describe('Conectar com AWS', () => {
     );
   });
 
-  it('a recusa da API aparece, e a tela continua no mesmo passo (nada é adiantado)', async () => {
+  it('a recusa da API aparece, e a tela continua no mesmo passo (nada é adiantado): nenhum arquivo sai com a escolha que não foi gravada', async () => {
     const user = userEvent.setup();
-    watchBrowser();
-    const { fake } = open(state('not_started'));
-    fake.on('connect', () => refusal(400, undefined, 'Reative o monitoramento antes de conectar a conta.'));
+    const browser = watchBrowser();
+    const { account, fake } = open(state('not_started'));
+    let refuse = true;
+    fake.on('connect', (call) =>
+      refuse
+        ? refusal(400, undefined, 'Reative o monitoramento antes de conectar a conta.')
+        : onboardingFixture(account.id, 'awaiting_authorization', {
+            connect: {
+              requestedAt: new Date().toISOString(),
+              waitingUntil: new Date(Date.now() + 60 * 60_000).toISOString(),
+              capabilities: (call.body as { capabilities: ('service-logs' | 'findings' | 'log-groups')[] })
+                .capabilities,
+            },
+          }),
+    );
     const panel = await screen.findByRole('region', { name: 'Conectar a conta 111111111111' });
+    const groups = within(panel).getByRole('checkbox', { name: 'Grupos do CloudWatch Logs marcados' });
+    await user.click(groups);
     const button = await within(panel).findByRole('button', { name: 'Conectar com AWS' });
     await waitFor(() => expect(button).toBeEnabled());
     await user.click(button);
-    expect(await within(panel).findByRole('alert')).toHaveTextContent(
-      'Reative o monitoramento antes de conectar a conta.',
-    );
+    const alert = await within(panel).findByRole('alert');
+    expect(alert).toHaveTextContent('Reative o monitoramento antes de conectar a conta.');
+    expect(alert).toHaveTextContent('nenhum arquivo foi baixado');
     expect(screen.queryByRole('region', { name: 'Crie a pilha na AWS' })).not.toBeInTheDocument();
     expect(await banner()).toHaveTextContent('Não conectada');
+    // O console abriu no clique; o arquivo, que levaria uma escolha não gravada, não saiu.
+    expect(browser.events).toEqual(['open']);
+    // As caixas ficam como o cliente as deixou: nenhuma autorização volta a ficar ligada sozinha.
+    expect(groups).not.toBeChecked();
+    expect(groups).toBeEnabled();
+
+    // De novo, com a API respondendo: o mesmo pedido, e agora o arquivo, com a escolha confirmada.
+    refuse = false;
+    await user.click(button);
+    await waitFor(() => expect(browser.downloads).toHaveLength(1));
+    expect(fake.calls.map((call) => call.body)).toEqual([
+      { capabilities: ['service-logs', 'findings'] },
+      { capabilities: ['service-logs', 'findings'] },
+    ]);
+    const text = (await browser.downloads[0]?.blob.text()) ?? '';
+    expect(authorizationDefaults(text)).toEqual({
+      ReadAwsServiceLogs: "'true'",
+      ReadSecurityFindings: "'true'",
+      ReadTaggedLogGroups: "'false'",
+    });
   });
 
   it('alternativa manual: o template sem preencher, os valores com cópia, a CLI com a escolha e o aviso à API', async () => {
@@ -308,7 +373,11 @@ describe('Conectar com AWS', () => {
         { route: 'connect', sourceId: null, body: { capabilities: ['service-logs', 'findings'] } },
       ]),
     );
+    await waitFor(() =>
+      expect(within(panel).getByRole('button', { name: 'Já criei a pilha: conectar' })).toBeEnabled(),
+    );
     expect(browser.events).toEqual([]);
+    expect(within(panel).queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('a tela recarregada devolve a escolha gravada: as caixas, o arquivo baixado de novo e a CLI, nunca as três de volta', async () => {
@@ -380,6 +449,225 @@ describe('Conectar com AWS', () => {
     expect(falses((await browser.downloads[0]?.blob.text()) ?? '')).toBe(falses(READER_TEMPLATE_TEXT) + 1);
     // O prazo é o do "Conectar" de antes: gravar a escolha não o renova (a API responde com o mesmo pedido).
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('marcar e desmarcar em seguida, com a primeira gravação parada na API: um pedido de cada vez, vale a última escolha, e nada sai da tela antes de ela ser a gravada', async () => {
+    const user = userEvent.setup();
+    const browser = watchBrowser();
+    const { account, fake } = open(waitingFor(['service-logs', 'findings']));
+    // A primeira gravação fica parada na API até o teste soltar; as seguintes respondem na hora.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let inFlight = 0;
+    let together = 0;
+    fake.on('connect', async (call) => {
+      inFlight += 1;
+      together = Math.max(together, inFlight);
+      if (fake.calls.length === 1) await held;
+      inFlight -= 1;
+      return waitingFor((call.body as { capabilities: Authorization[] }).capabilities)(account);
+    });
+    const waiting = await screen.findByRole('region', { name: 'Crie a pilha na AWS' });
+    await user.click(within(waiting).getByText('O que o arquivo autoriza'));
+    const findings = within(waiting).getByRole('checkbox', { name: 'Achados de segurança' });
+    const groups = within(waiting).getByRole('checkbox', { name: 'Grupos do CloudWatch Logs marcados' });
+    const again = within(waiting).getByRole('button', { name: 'Baixar o arquivo de novo' });
+    await waitFor(() => expect(again).toBeEnabled());
+    expect(within(waiting).getByText(/^aws cloudformation deploy/)).toBeInTheDocument();
+
+    // Desliga os achados (o primeiro pedido sai e fica parado), liga os grupos, liga os achados e desliga de novo.
+    await user.click(findings);
+    await waitFor(() => expect(fake.calls).toHaveLength(1));
+    await user.click(groups);
+    await user.click(findings);
+    await user.click(findings);
+
+    // Só um pedido saiu. As caixas mostram a última escolha; o arquivo e o comando esperam ela ser gravada.
+    expect(fake.calls).toHaveLength(1);
+    expect(findings).not.toBeChecked();
+    expect(groups).toBeChecked();
+    expect(again).toBeDisabled();
+    expect(within(waiting).getByText(/Salvando a escolha/)).toBeInTheDocument();
+    expect(within(waiting).queryByText(/^aws cloudformation deploy/)).not.toBeInTheDocument();
+    await user.click(again);
+    expect(browser.downloads).toEqual([]);
+
+    // A primeira termina: a seguinte leva a escolha de agora, e nenhuma das que ficaram pelo caminho.
+    release();
+    await waitFor(() => expect(again).toBeEnabled());
+    expect(fake.calls.map((call) => call.body)).toEqual([
+      { capabilities: ['service-logs'] },
+      { capabilities: ['service-logs', 'log-groups'] },
+    ]);
+    expect(together).toBe(1);
+    expect(within(waiting).queryByText(/Salvando a escolha/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    // O arquivo e o comando saem com a escolha que a API confirmou por último.
+    await user.click(again);
+    expect(authorizationDefaults((await browser.downloads[0]?.blob.text()) ?? '')).toEqual({
+      ReadAwsServiceLogs: "'true'",
+      ReadSecurityFindings: "'false'",
+      ReadTaggedLogGroups: "'true'",
+    });
+    const cli = within(waiting).getByText(/^aws cloudformation deploy/);
+    expect(cli).toHaveTextContent('ReadSecurityFindings=false');
+    expect(cli).toHaveTextContent('ReadTaggedLogGroups=true');
+  });
+
+  it('desligar e ligar de volta com a gravação no caminho: o segundo pedido só sai depois do primeiro, e fica gravada a escolha de volta', async () => {
+    const user = userEvent.setup();
+    const { account, fake } = open(waitingFor(['service-logs', 'findings']));
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fake.on('connect', async (call) => {
+      if (fake.calls.length === 1) await held;
+      return waitingFor((call.body as { capabilities: Authorization[] }).capabilities)(account);
+    });
+    const waiting = await screen.findByRole('region', { name: 'Crie a pilha na AWS' });
+    await user.click(within(waiting).getByText('O que o arquivo autoriza'));
+    const findings = within(waiting).getByRole('checkbox', { name: 'Achados de segurança' });
+    await user.click(findings);
+    await waitFor(() => expect(fake.calls).toHaveLength(1));
+    await user.click(findings);
+    expect(fake.calls).toHaveLength(1);
+    release();
+    await waitFor(() =>
+      expect(fake.calls.map((call) => call.body)).toEqual([
+        { capabilities: ['service-logs'] },
+        { capabilities: ['service-logs', 'findings'] },
+      ]),
+    );
+    const again = within(waiting).getByRole('button', { name: 'Baixar o arquivo de novo' });
+    await waitFor(() => expect(again).toBeEnabled());
+    expect(findings).toBeChecked();
+  });
+
+  it('a gravação que falha fica à vista: as caixas como o cliente deixou, o arquivo e o comando indisponíveis, e "Tentar de novo" grava', async () => {
+    const user = userEvent.setup();
+    const browser = watchBrowser();
+    const { account, fake } = open(waitingFor(['service-logs']));
+    let fail = true;
+    fake.on('connect', (call) =>
+      fail
+        ? refusal(500)
+        : waitingFor((call.body as { capabilities: Authorization[] }).capabilities)(account),
+    );
+    const waiting = await screen.findByRole('region', { name: 'Crie a pilha na AWS' });
+    await user.click(within(waiting).getByText('O que o arquivo autoriza'));
+    const findings = within(waiting).getByRole('checkbox', { name: 'Achados de segurança' });
+    const again = within(waiting).getByRole('button', { name: 'Baixar o arquivo de novo' });
+    await waitFor(() => expect(again).toBeEnabled());
+    await user.click(findings);
+
+    const alert = await within(waiting).findByRole('alert');
+    expect(alert).toHaveTextContent('A escolha marcada não foi salva');
+    // A caixa fica como o cliente a deixou, e nada sai da tela com a escolha que não foi gravada.
+    expect(findings).toBeChecked();
+    expect(again).toBeDisabled();
+    expect(within(waiting).queryByText(/^aws cloudformation deploy/)).not.toBeInTheDocument();
+    await user.click(again);
+    expect(browser.downloads).toEqual([]);
+
+    // "Tentar de novo" manda a mesma escolha; gravada, o arquivo sai com ela.
+    fail = false;
+    await user.click(within(alert).getByRole('button', { name: 'Tentar de novo' }));
+    await waitFor(() => expect(again).toBeEnabled());
+    expect(fake.calls.map((call) => call.body)).toEqual([
+      { capabilities: ['service-logs', 'findings'] },
+      { capabilities: ['service-logs', 'findings'] },
+    ]);
+    expect(within(waiting).queryByRole('alert')).not.toBeInTheDocument();
+    await user.click(again);
+    expect(authorizationDefaults((await browser.downloads[0]?.blob.text()) ?? '')).toEqual({
+      ReadAwsServiceLogs: "'true'",
+      ReadSecurityFindings: "'true'",
+      ReadTaggedLogGroups: "'false'",
+    });
+  });
+
+  it('depois da falha, voltar a caixa para a escolha gravada libera o arquivo, que sai com a gravada', async () => {
+    const user = userEvent.setup();
+    const browser = watchBrowser();
+    const { account, fake } = open(waitingFor(['service-logs']));
+    let fail = true;
+    fake.on('connect', (call) =>
+      fail
+        ? refusal(500)
+        : waitingFor((call.body as { capabilities: Authorization[] }).capabilities)(account),
+    );
+    const waiting = await screen.findByRole('region', { name: 'Crie a pilha na AWS' });
+    await user.click(within(waiting).getByText('O que o arquivo autoriza'));
+    const findings = within(waiting).getByRole('checkbox', { name: 'Achados de segurança' });
+    const again = within(waiting).getByRole('button', { name: 'Baixar o arquivo de novo' });
+    await waitFor(() => expect(again).toBeEnabled());
+    await user.click(findings);
+    await within(waiting).findByRole('alert');
+    expect(again).toBeDisabled();
+
+    fail = false;
+    await user.click(findings);
+    await waitFor(() => expect(again).toBeEnabled());
+    expect(within(waiting).queryByRole('alert')).not.toBeInTheDocument();
+    await user.click(again);
+    expect(authorizationDefaults((await browser.downloads[0]?.blob.text()) ?? '')).toEqual({
+      ReadAwsServiceLogs: "'true'",
+      ReadSecurityFindings: "'false'",
+      ReadTaggedLogGroups: "'false'",
+    });
+  });
+
+  it('esperando a pilha sem escolha gravada: o primeiro "Baixar o arquivo de novo" grava a escolha da tela, e o arquivo sai com a confirmada', async () => {
+    const user = userEvent.setup();
+    const browser = watchBrowser();
+    // Um "Conectar de novo" das conferências, numa conta que nunca gravou a escolha: a tela parte das três do modelo.
+    const { account, fake } = open(
+      state('awaiting_authorization', {
+        connect: {
+          requestedAt: new Date().toISOString(),
+          waitingUntil: new Date(Date.now() + 50 * 60_000).toISOString(),
+          capabilities: null,
+        },
+        checks: checksFixture({ assume_role: { status: 'pending', code: 'awaiting_stack' } }),
+      }),
+    );
+    let fail = true;
+    fake.on('connect', (call) =>
+      fail
+        ? refusal(500)
+        : waitingFor((call.body as { capabilities: Authorization[] }).capabilities)(account),
+    );
+    const waiting = await screen.findByRole('region', { name: 'Crie a pilha na AWS' });
+    const again = within(waiting).getByRole('button', { name: 'Baixar o arquivo de novo' });
+    await waitFor(() => expect(again).toBeEnabled());
+    // A gravação falha: nenhum arquivo sai, e a tela diz por quê.
+    await user.click(again);
+    expect(await within(waiting).findByRole('alert')).toHaveTextContent('nenhum arquivo foi baixado');
+    expect(browser.downloads).toEqual([]);
+
+    fail = false;
+    await waitFor(() => expect(again).toBeEnabled());
+    await user.click(again);
+    await waitFor(() => expect(browser.downloads).toHaveLength(1));
+    expect(within(waiting).queryByRole('alert')).not.toBeInTheDocument();
+    expect(fake.calls.map((call) => call.body)).toEqual([
+      { capabilities: ['service-logs', 'findings', 'log-groups'] },
+      { capabilities: ['service-logs', 'findings', 'log-groups'] },
+    ]);
+    expect(authorizationDefaults((await browser.downloads[0]?.blob.text()) ?? '')).toEqual({
+      ReadAwsServiceLogs: "'true'",
+      ReadSecurityFindings: "'true'",
+      ReadTaggedLogGroups: "'true'",
+    });
+    // Com a escolha gravada, baixar de novo não manda mais nada.
+    await waitFor(() => expect(again).toBeEnabled());
+    await user.click(again);
+    expect(browser.downloads).toHaveLength(2);
+    expect(fake.calls).toHaveLength(2);
   });
 
   it('criar a pilha de novo (desconectada): o painel parte da escolha gravada; sem ela, do que a pilha tinha', async () => {

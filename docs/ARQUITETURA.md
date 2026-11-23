@@ -838,8 +838,8 @@ protege a entrada nele continuam os da seção "Por que papel sem chave"; esta s
 ### O fluxo, de ponta a ponta
 
 1. **Conectar.** Em Contas cloud, o cliente cadastra a conta (o ID e a região principal), marca o que autoriza e
-   clica em "Conectar com AWS": o painel baixa o template preenchido, abre o CloudFormation em outra aba e avisa a API
-   (`POST …/aws/connect`), que guarda a escolha e o pedido.
+   clica em "Conectar com AWS": o painel abre o CloudFormation em outra aba, avisa a API (`POST …/aws/connect`), que
+   guarda a escolha e o pedido, e, com a resposta, baixa o template preenchido com a escolha que a API confirmou.
 2. **Validação.** A tarefa `aws-check` do worker tenta entrar no papel por até 60 min, sem ninguém clicar em
    "Verificar". Na primeira entrada, confere a identidade e lê as tags do papel: a versão do template e as
    autorizações que a pilha concedeu de fato.
@@ -956,6 +956,24 @@ verificação com o mesmo horário, e volta a conexão para "aguardando". O corp
 renovar a janela (o cliente mudou as caixas enquanto esperava a pilha); sem ele, a escolha gravada fica. Um "Conectar"
 ainda pendente não é renovado: clicar de novo não adia o fim da janela. O `POST …/aws/verify` de sempre aceita o mesmo
 corpo.
+
+**A escolha do pedido é a verdade, e o arquivo só sai com a escolha confirmada.** O que o cliente recebe (o arquivo
+da pilha, o comando da CLI) tem de ser o que ficou registrado como a escolha dele. Dos dois lados:
+
+- **Na API:** o "Conectar" e o "Verificar" prendem a linha da conta (`lockAwsAccountRow`, `FOR NO KEY UPDATE`) antes
+  de ler o pedido pendente e a escolha gravada, e gravam a escolha do pedido como veio, na ordem do catálogo, sem
+  comparar com uma leitura de antes. Dois pedidos quase juntos rodam um depois do outro e terminam com a escolha do
+  último a ser gravado, nunca com uma mistura; o mesmo pedido de novo não muda nada; a resposta de cada um traz o que
+  ficou gravado depois dele; e o antes e o depois da trilha só mostram mudança quando o valor mudou. É a linha da
+  conta, e não o lock das fontes (`lockAwsOnboarding`): a tarefa `aws-check` grava a linha e só depois toma aquele
+  lock para pedir a descoberta, e um pedido que o tomasse antes de gravar a linha travaria com ela.
+- **No painel** (`features/admin/aws-choice.ts`): as gravações da escolha saem uma de cada vez. Com uma no caminho,
+  marcar e desmarcar só muda as caixas; quando ela termina, a seguinte leva a escolha de agora, se não for a que a API
+  acabou de confirmar. O arquivo e o comando saem sempre da escolha confirmada: no "Conectar com AWS", o arquivo é
+  baixado depois da resposta; na espera pela pilha, "Baixar o arquivo de novo" fica desligado e o comando some
+  enquanto a escolha das caixas não é a gravada ("Salvando a escolha…"). Se a gravação falha, as caixas ficam como o
+  cliente as deixou, marcadas como não salvas, com "Tentar de novo"; nada sai da tela até gravar. As caixas nunca
+  voltam sozinhas para a escolha anterior: isso poderia religar uma autorização que o cliente acabou de desligar.
 
 Nesse pedido, a tarefa `aws-check` tem uma janela de 60 min em que a entrada recusada e o token recusado só dizem que
 o papel ainda não existe (a pilha está sendo criada; o nó não vê a pilha, só sabe que ainda não entrou): o pedido fica
@@ -1123,7 +1141,8 @@ conhece aparece como "Tipo do erro".
   botão "Conectar com AWS" e a alternativa manual, recolhida. Sem um valor do nó, não sai arquivo quebrado: a tela
   diz o que pedir à Verax.
 - **Depois do clique:** os passos pelo estado da API, o aviso de que o Verax não vê a pilha enquanto ela é criada, o
-  tempo que falta da janela e "Baixar o arquivo de novo", com a escolha gravada.
+  tempo que falta da janela e "Baixar o arquivo de novo", com a escolha gravada (desligado enquanto uma mudança das
+  caixas ainda não foi gravada).
 - **Conferências:** as nove, com o "tentar de novo" de cada uma e, nas das fontes, um link para a linha de cada fonte
   citada em "Fontes autorizadas", que fica em destaque (um contorno e a marca "Apontada pela conferência").
 - **Pilha na AWS:** a versão do modelo e as autorizações lidas das tags, o aviso quando elas não são a escolha do

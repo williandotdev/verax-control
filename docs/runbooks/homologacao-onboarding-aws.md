@@ -628,7 +628,9 @@ achados novos ou atualizados depois de o export ser ligado).
 
 1. Depois do passo 3 da seção 2, **recarregue a página** enquanto ela espera a pilha. **Esperado:** em "O que o
    arquivo autoriza", "Grupos do CloudWatch Logs marcados" continua desmarcado; "Baixar o arquivo de novo" baixa o
-   mesmo arquivo (o `diff` do passo 4 dá o mesmo resultado).
+   mesmo arquivo (o `diff` do passo 4 dá o mesmo resultado). Ainda na espera, marque e desmarque uma caixa algumas
+   vezes seguidas: **esperado** "Salvando a escolha…" com o botão de baixar desligado por um instante, e, recarregada
+   a página, as caixas como você as deixou por último (o arquivo baixado então sai com elas).
 2. **A pilha concede mais do que a escolha** (a atualização pelo console que mantém o valor antigo): em "Atualize a
    pilha", desmarque "Achados de segurança", baixe o arquivo e atualize a pilha pelo console **sem** mudar o
    parâmetro `ReadSecurityFindings` na tela dos parâmetros (o console mantém o `true` que a pilha já tinha). Clique em

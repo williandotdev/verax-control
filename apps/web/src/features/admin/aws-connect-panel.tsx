@@ -13,18 +13,17 @@ import {
 import { Download } from 'lucide-react';
 import { type ReactNode, useId } from 'react';
 import { Button } from '@/components/ui/button';
+import type { AwsChoiceControl } from '@/features/admin/aws-choice';
 import {
   authorizationParameters,
   type AwsAuthorizationChoice,
   awsConsoleRegion,
   awsDeployCommand,
   awsStackFileName,
-  chosenAuthorizations,
   downloadTextFile,
   openInNewTab,
 } from '@/features/admin/aws-connect';
 import { type AwsStackFile, useAwsStackFile, useNow } from '@/features/admin/aws-hooks';
-import { useAwsConnect } from '@/features/admin/aws-onboarding-api';
 import {
   AWS_AUTHORIZATION_FOOTNOTE,
   AWS_AUTHORIZATION_TEXTS,
@@ -176,36 +175,40 @@ export function PrefilledStackCli({
 
 /**
  * Antes de conectar (e depois do tempo esgotado): o que a integração faz, o que o cliente autoriza e o botão
- * **Conectar com AWS**. Um clique: (1) baixa o template com os valores deste ambiente e as autorizações escolhidas já
- * gravados, montado aqui no navegador; (2) abre o CloudFormation na criação de pilha, em outra aba; (3) avisa a API,
- * que passa a tentar a entrada no papel e guarda as autorizações escolhidas (as do arquivo baixado). A tela só muda de
- * passo quando a API responde: nada é adiantado.
+ * **Conectar com AWS**. Um clique: (1) abre o CloudFormation na criação de pilha, em outra aba, na hora (depois de uma
+ * espera o navegador barraria a aba); (2) avisa a API, que passa a tentar a entrada no papel e grava as autorizações
+ * escolhidas; (3) com a resposta, baixa o template com os valores deste ambiente e as autorizações **que a API
+ * confirmou**, montado aqui no navegador. O arquivo nunca sai com uma escolha que não ficou gravada: se o pedido falha,
+ * nada é baixado, as caixas ficam como estavam e o erro diz para clicar de novo. A tela só muda de passo quando a API
+ * responde: nada é adiantado.
  */
 export function AwsConnectPanel({
   account,
   canWrite,
   choice,
-  onChoiceChange,
   again = false,
 }: {
   account: CloudAccount;
   canWrite: boolean;
-  choice: AwsAuthorizationChoice;
-  onChoiceChange: (choice: AwsAuthorizationChoice) => void;
+  /** A escolha das autorizações e a gravação dela, uma para a tela inteira (`useAwsChoice`). */
+  choice: AwsChoiceControl;
   /** A conta já passou por uma tentativa (o tempo esgotou, ou a pilha foi apagada): o título diz "de novo". */
   again?: boolean;
 }) {
-  const stack = useAwsStackFile(account, choice);
-  const connect = useAwsConnect(account.id);
+  const stack = useAwsStackFile(account, choice.shown);
   const active = account.status === 'active';
   const ready = stack.file !== null && stack.file.ok;
+  const { build } = stack;
 
   const start = () => {
     if (stack.file === null || !stack.file.ok) return;
-    downloadTextFile(stack.file.fileName, stack.file.text);
     openInNewTab(cloudFormationConsoleUrl(awsConsoleRegion(account)));
-    // A escolha vai junto: é a do arquivo que acabou de ser baixado, e é ela que a tela devolve depois de recarregada.
-    connect.mutate(chosenAuthorizations(choice));
+    // O arquivo sai depois de a API confirmar, e com a escolha que ela confirmou: é a que a tela devolve depois de
+    // recarregada. Se o pedido falha, nenhum arquivo é baixado (o erro fica na tela).
+    void choice.confirm().then((confirmed) => {
+      const file = confirmed === null ? null : build(confirmed);
+      if (file !== null && file.ok) downloadTextFile(file.fileName, file.text);
+    });
   };
 
   return (
@@ -230,7 +233,12 @@ export function AwsConnectPanel({
           endereço dele.
         </li>
       </ul>
-      <AwsAuthorizationChoices choice={choice} onChange={onChoiceChange} disabled={!canWrite} />
+      {/* Com o pedido no caminho, as caixas ficam paradas: o arquivo sai com a escolha que foi no clique. */}
+      <AwsAuthorizationChoices
+        choice={choice.shown}
+        onChange={choice.pick}
+        disabled={!canWrite || choice.saving}
+      />
       {!canWrite ? (
         <p className="text-sm text-muted-foreground">Quem administra as contas conecta a conta.</p>
       ) : !active ? (
@@ -240,29 +248,30 @@ export function AwsConnectPanel({
           <StackFileProblem stack={stack} />
           {(ready || stack.loading) && (
             <div className="space-y-2">
-              <Button type="button" onClick={start} disabled={!ready || connect.isPending}>
-                {connect.isPending ? 'Conectando…' : 'Conectar com AWS'}
+              <Button type="button" onClick={start} disabled={!ready || choice.saving}>
+                {choice.saving ? 'Conectando…' : 'Conectar com AWS'}
               </Button>
               <p className="text-xs text-muted-foreground">
-                O botão baixa o arquivo da pilha, já com os valores deste ambiente e as suas escolhas (ele não
-                tem segredo), e abre o CloudFormation em outra aba. Lá:
+                O botão abre o CloudFormation em outra aba e baixa o arquivo da pilha, já com os valores deste
+                ambiente e as suas escolhas (ele não tem segredo). Lá:
               </p>
               <AwsCreateStackSteps account={account} />
             </div>
           )}
-          {connect.error ? (
+          {choice.error ? (
             <p role="alert" className="text-sm text-critical-text">
-              {awsOnboardingErrorText(connect.error)}
+              {awsOnboardingErrorText(choice.error)} O pedido não foi gravado, e por isso nenhum arquivo foi
+              baixado. Clique em Conectar com AWS de novo.
             </p>
           ) : null}
         </>
       )}
       <AwsManualAlternative
         account={account}
-        choice={choice}
+        choice={choice.shown}
         canConnect={canWrite && active}
-        connecting={connect.isPending}
-        onConnect={() => connect.mutate(chosenAuthorizations(choice))}
+        connecting={choice.saving}
+        onConnect={() => void choice.confirm()}
       />
     </Section>
   );
@@ -383,30 +392,42 @@ const COUNTDOWN_TICK_MS = 15_000;
  * abrir o CloudFormation. As caixas vêm com a escolha gravada no "Conectar" (o arquivo baixado de novo é o mesmo); se
  * o cliente as muda aqui, a escolha nova é gravada na hora, sem renovar o prazo, para o arquivo, o comando da CLI e o
  * que a tela mostra depois dizerem a mesma coisa.
+ *
+ * O arquivo e o comando saem sempre da escolha que a API confirmou (`choice.confirmed`), nunca das caixas: enquanto
+ * uma gravação está no caminho, ou depois de uma que falhou, o botão de baixar fica desligado e o comando some, com o
+ * motivo ao lado ("Salvando a escolha…", ou o erro e o "Tentar de novo"). As gravações saem uma de cada vez
+ * (`useAwsChoice`): marcar e desmarcar em seguida termina com a última escolha gravada.
  */
 export function AwsWaitingPanel({
   account,
   onboarding,
   canWrite,
   choice,
-  onChoiceChange,
 }: {
   account: CloudAccount;
   onboarding: AwsOnboarding;
   canWrite: boolean;
-  choice: AwsAuthorizationChoice;
-  onChoiceChange: (choice: AwsAuthorizationChoice) => void;
+  /** A escolha das autorizações e a gravação dela, uma para a tela inteira (`useAwsChoice`). */
+  choice: AwsChoiceControl;
 }) {
   const now = useNow(COUNTDOWN_TICK_MS);
-  const stack = useAwsStackFile(account, choice, canWrite);
-  const connect = useAwsConnect(account.id);
-  const change = (next: AwsAuthorizationChoice) => {
-    onChoiceChange(next);
-    connect.mutate(chosenAuthorizations(next));
-  };
+  const stack = useAwsStackFile(account, choice.confirmed, canWrite);
   const until = onboarding.connect.waitingUntil;
   const remainingMs = until === null ? 0 : Math.max(0, Date.parse(until) - now);
+  // As caixas mostram uma escolha que ainda não é a gravada: nada sai da tela até ela ser.
+  const unsettled = choice.saving || choice.unsaved;
+  const { build } = stack;
   const again = () => {
+    if (unsettled) return;
+    // Uma conta conectada sem escolha gravada (o "Conectar de novo" das conferências): o primeiro arquivo grava a
+    // que está na tela, e sai com a que a API confirmou.
+    if (onboarding.connect.capabilities === null) {
+      void choice.confirm().then((confirmed) => {
+        const file = confirmed === null ? null : build(confirmed);
+        if (file !== null && file.ok) downloadTextFile(file.fileName, file.text);
+      });
+      return;
+    }
     if (stack.file !== null && stack.file.ok) downloadTextFile(stack.file.fileName, stack.file.text);
   };
   return (
@@ -436,7 +457,7 @@ export function AwsWaitingPanel({
             type="button"
             variant="secondary"
             onClick={again}
-            disabled={stack.file === null || !stack.file.ok}
+            disabled={unsettled || stack.file === null || !stack.file.ok}
           >
             <Download aria-hidden />
             Baixar o arquivo de novo
@@ -446,27 +467,42 @@ export function AwsWaitingPanel({
           Abrir o CloudFormation
         </OutLink>
       </div>
+      {canWrite && choice.saving && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Salvando a escolha… O arquivo fica disponível assim que ela for gravada.
+        </p>
+      )}
+      {canWrite && !choice.saving && (choice.unsaved || Boolean(choice.error)) && (
+        <div role="alert" className="space-y-2 text-sm">
+          <p className="text-critical-text">
+            {choice.error ? `${awsOnboardingErrorText(choice.error)} ` : ''}
+            {choice.unsaved
+              ? 'A escolha marcada não foi salva: o arquivo e o comando ficam indisponíveis até ela ser gravada.'
+              : 'A escolha não foi gravada, e por isso nenhum arquivo foi baixado. Clique em Baixar o arquivo de novo.'}
+          </p>
+          {choice.unsaved && (
+            <Button type="button" variant="secondary" size="sm" onClick={choice.retry}>
+              Tentar de novo
+            </Button>
+          )}
+        </div>
+      )}
       {canWrite && <StackFileProblem stack={stack} />}
       {canWrite && (
         <details className="space-y-3 text-sm">
           <summary className="cursor-pointer font-medium">O que o arquivo autoriza</summary>
           <AwsAuthorizationChoices
-            choice={choice}
-            onChange={change}
+            choice={choice.shown}
+            onChange={choice.save}
             legend="O arquivo baixado de novo sai com estas autorizações"
           />
           <p className="text-xs text-muted-foreground">
             A escolha fica gravada: se você mudar uma caixa, baixe o arquivo de novo antes de criar a pilha.
           </p>
-          {connect.error ? (
-            <p role="alert" className="text-sm text-critical-text">
-              {awsOnboardingErrorText(connect.error)}
-            </p>
-          ) : null}
         </details>
       )}
-      {canWrite && (
-        <PrefilledStackCli account={account} choice={choice} stack={stack}>
+      {canWrite && !unsettled && (
+        <PrefilledStackCli account={account} choice={choice.confirmed} stack={stack}>
           O comando cria a pilha com os valores deste ambiente e as autorizações de &ldquo;O que o arquivo
           autoriza&rdquo;, acima.
         </PrefilledStackCli>

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   type AwsConnect,
   type AwsOnboarding,
@@ -91,6 +91,7 @@ export function awsOnboardingPollInterval(
 }
 
 const onboardingKey = (accountId: string) => ['aws-onboarding', accountId] as const;
+const connectKey = (accountId: string) => ['aws-connect', accountId] as const;
 const path = (accountId: string, rest: string) =>
   `/v1/cloud-accounts/${encodeURIComponent(accountId)}/aws/${rest}`;
 
@@ -111,9 +112,14 @@ const ACCOUNT_LIST_KEYS = ['admin-cloud-accounts', 'cloud-accounts'] as const;
  * Uma escrita do onboarding: a resposta é o estado novo da conta, e é ela que a tela passa a mostrar. Uma leitura que
  * estava no caminho é cancelada antes, para não devolver à tela o estado de antes da escrita.
  */
-function useOnboardingWrite<TInput>(accountId: string, write: (input: TInput) => Promise<AwsOnboarding>) {
+function useOnboardingWrite<TInput>(
+  accountId: string,
+  write: (input: TInput) => Promise<AwsOnboarding>,
+  mutationKey?: readonly string[],
+) {
   const queryClient = useQueryClient();
   return useMutation({
+    ...(mutationKey !== undefined && { mutationKey }),
     mutationFn: write,
     onSuccess: async (onboarding) => {
       await queryClient.cancelQueries({ queryKey: onboardingKey(accountId) });
@@ -136,9 +142,19 @@ function choiceBody(capabilities: AwsReaderAuthorization[] | void): AwsConnect |
  * tela, elas ficam gravadas: a tela recarregada devolve as mesmas caixas e o mesmo arquivo.
  */
 export const useAwsConnect = (accountId: string) =>
-  useOnboardingWrite(accountId, (capabilities: AwsReaderAuthorization[] | void) =>
-    api.post(path(accountId, 'connect'), choiceBody(capabilities), awsOnboardingSchema),
+  useOnboardingWrite(
+    accountId,
+    (capabilities: AwsReaderAuthorization[] | void) =>
+      api.post(path(accountId, 'connect'), choiceBody(capabilities), awsOnboardingSchema),
+    connectKey(accountId),
   );
+
+/**
+ * Há um "Conectar" desta conta no caminho, saído de qualquer parte da tela (ou de uma tela que já fechou)? Enquanto
+ * houver, a escolha gravada pode estar para mudar: nada que dependa dela sai da tela.
+ */
+export const useAwsConnecting = (accountId: string): boolean =>
+  useIsMutating({ mutationKey: connectKey(accountId) }) > 0;
 
 /** Pede outra descoberta das fontes (no máximo uma a cada 5 min). */
 export const useAwsDiscovery = (accountId: string) =>

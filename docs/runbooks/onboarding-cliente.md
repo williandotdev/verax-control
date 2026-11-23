@@ -138,10 +138,11 @@ painel não monta o arquivo da pilha (a tela diz "peça à Verax") e o worker n�
 2. **Escolhe o que autoriza**, em "O que você autoriza": a descoberta vale sempre, e as três autorizações vêm
    marcadas (os logs que a AWS grava no S3, os achados de segurança e os grupos do CloudWatch Logs que ele marcar). A
    escolha fica gravada: a tela recarregada devolve as mesmas caixas e o mesmo arquivo.
-3. **Clica em "Conectar com AWS".** O painel baixa o arquivo `verax-control-reader-<conta>.yaml`, já com os valores
-   do nó e a escolha dele, e abre o CloudFormation em outra aba. Lá: _Create stack_ → _Upload a template file_, o
-   nome `verax-control-reader`, avançar sem mudar os valores, marcar a confirmação de IAM e criar. Leva 1 ou 2
-   minutos.
+3. **Clica em "Conectar com AWS".** O painel abre o CloudFormation em outra aba e baixa o arquivo
+   `verax-control-reader-<conta>.yaml`, já com os valores do nó e a escolha dele. O arquivo só sai depois de a
+   escolha ser gravada: se a tela mostrar um erro no lugar, nenhum arquivo foi baixado, e é só clicar de novo. Lá no
+   CloudFormation: _Create stack_ → _Upload a template file_, o nome `verax-control-reader`, avançar sem mudar os
+   valores, marcar a confirmação de IAM e criar. Leva 1 ou 2 minutos.
 4. **Espera, sem clicar em nada.** O nó tenta entrar no papel por até 60 min. Quando a pilha termina, a tela avança
    sozinha: a autenticação, a descoberta (segundos a poucos minutos) e a lista das fontes.
 5. **Autoriza as fontes**, em "Fontes de log": marca as que quer e confirma. Os grupos do CloudWatch Logs são

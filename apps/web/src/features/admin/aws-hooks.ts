@@ -1,5 +1,5 @@
 import { AWS_SOURCE_RETRY_INTERVAL_MS, type AwsOnboardingErrorCode, type CloudAccount } from '@verax/shared';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   type AwsAuthorizationChoice,
   type PrefilledTemplate,
@@ -28,11 +28,13 @@ export interface AwsStackFile {
   error: boolean;
   retry: () => void;
   file: PrefilledTemplate | null;
+  /** O arquivo com outra escolha (a que a API acabou de confirmar); null enquanto o modelo não foi lido. */
+  build: (choice: AwsAuthorizationChoice) => PrefilledTemplate | null;
 }
 
 /**
- * O arquivo preenchido desta conta com a escolha atual, pronto antes do clique: o modelo é lido quando a tela abre, e o
- * preenchimento roda no navegador. Assim o clique baixa o arquivo e abre o console na hora, sem esperar a rede.
+ * O arquivo preenchido desta conta com a escolha informada, pronto antes do clique: o modelo é lido quando a tela abre,
+ * e o preenchimento roda no navegador. Assim o arquivo sai na hora em que a escolha é confirmada, sem outra ida à rede.
  */
 export function useAwsStackFile(
   account: CloudAccount,
@@ -40,15 +42,19 @@ export function useAwsStackFile(
   enabled = true,
 ): AwsStackFile {
   const template = useAwsReaderTemplate(enabled);
-  const file = useMemo(
-    () => (template.data === undefined ? null : prefilledReaderTemplate(template.data, account, choice)),
-    [template.data, account, choice],
+  const text = template.data;
+  const build = useCallback(
+    (chosen: AwsAuthorizationChoice) =>
+      text === undefined ? null : prefilledReaderTemplate(text, account, chosen),
+    [text, account],
   );
+  const file = useMemo(() => build(choice), [build, choice]);
   return {
     loading: enabled && template.isPending,
     error: template.isError,
     retry: () => void template.refetch(),
     file,
+    build,
   };
 }
 

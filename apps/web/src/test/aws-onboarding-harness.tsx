@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render } from '@testing-library/react';
-import { type AwsOnboarding, type CloudAccount } from '@verax/shared';
+import { type AwsOnboarding, awsConnectSchema, type CloudAccount } from '@verax/shared';
 import { http, HttpResponse, type RequestHandler } from 'msw';
 import { AwsOnboardingSection } from '@/features/admin/aws-onboarding-section';
 import { API_URL } from '@/lib/env';
@@ -10,7 +10,9 @@ import { readerTemplateHandler } from './aws-reader-template';
 /**
  * A API do onboarding da AWS nos testes da tela: o teste diz o estado que a leitura devolve e o que cada escrita
  * responde, e confere os pedidos que chegaram. Nada de regra aqui (a imitação com regras é `mocks/aws-onboarding.ts`):
- * a tela é testada contra respostas exatas, uma por estado.
+ * a tela é testada contra respostas exatas, uma por estado. A única coisa que ela faz sozinha é o que o contrato
+ * garante em toda resposta do "Conectar": sem resposta própria do teste, a escolha que o pedido levou volta gravada
+ * (`connect.capabilities`), porque é por ela que a tela sabe que a escolha foi confirmada.
  */
 
 /** As escritas do onboarding, pelo fim do caminho. */
@@ -72,6 +74,12 @@ export function onboardingApi(account: CloudAccount, initial: AwsOnboarding): On
       const reply = await replies.get(matched.route)?.(call);
       if (reply instanceof Response) return reply;
       if (reply !== undefined) current = reply;
+      else if (matched.route === 'connect') {
+        const sent = awsConnectSchema.safeParse(call.body ?? {});
+        const capabilities = sent.success ? sent.data.capabilities : undefined;
+        if (capabilities !== undefined)
+          current = { ...current, connect: { ...current.connect, capabilities } };
+      }
       // O "Verificar" responde com a conta; as demais, com o estado do onboarding.
       if (matched.route === 'verify') {
         return HttpResponse.json({ ...account, checkRequestedAt: new Date().toISOString() }, { status: 202 });
