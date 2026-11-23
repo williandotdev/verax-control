@@ -176,7 +176,7 @@ describe('fontes de log', () => {
   it('cada código do servidor tem a mensagem e o que fazer', async () => {
     const state = stateAt();
     const codes = Object.keys(SOURCE_CODE_MESSAGES) as NodeSyncSourceCode[];
-    expect(codes).toHaveLength(18);
+    expect(codes).toHaveLength(19);
     const sources = new Map<string, FakeLogSource>();
     codes.forEach((code, index) => {
       const id = `00000000-0000-4000-8000-${(0xc000 + index).toString(16).padStart(12, '0')}`;
@@ -208,6 +208,43 @@ describe('fontes de log', () => {
       expect(row).toHaveTextContent(SOURCE_CODE_MESSAGES[code].message);
       expect(SOURCE_CODE_MESSAGES[code].action.length).toBeGreaterThan(10);
     }
+  });
+
+  it('a conta excluída pelo cliente no painel: o motivo e o caminho para cadastrar de novo', async () => {
+    const state = stateAt();
+    const id = '00000000-0000-4000-8000-00000000d001';
+    const sources = new Map<string, FakeLogSource>([
+      [
+        id,
+        source(
+          { provider: 'aws', accountId: '111111111111', regions: ['sa-east-1'] },
+          {
+            report: {
+              id,
+              revision: 1,
+              outcome: 'failed',
+              code: 'deleted_in_panel',
+              credential: null,
+              account: null,
+              reportedAt: NOW.toISOString(),
+            },
+          },
+        ),
+      ],
+    ]);
+    state.logSources.tenants.set(ACTIVE_ID, { node: fakeNode('gcp', NOW), generation: 1, sources });
+    const { user } = renderConsole(`/clientes/${ACTIVE_ID}`, state);
+    const region = await logSources();
+    const row = within(region).getByRole('row', { name: /111111111111/ });
+    expect(row).toHaveTextContent('Falhou');
+    expect(row).toHaveTextContent('Excluída pelo cliente no painel dele.');
+    const detail = await openSource(user, region, 'AWS 111111111111');
+    expect(detail).toHaveTextContent(
+      'Para cadastrar de novo, altere a fonte aqui (nova revisão) ou peça ao cliente para conectar pelo painel.',
+    );
+    expect(within(detail).getByText('deleted_in_panel')).toBeInTheDocument();
+    // A fonte continua ativa no console: dá para alterar (a revisão nova) ou remover.
+    expect(within(detail).getByRole('button', { name: 'Alterar…' })).toBeEnabled();
   });
 
   it('cadastrar AWS no gerenciado: sem GCP na lista, sem chave, a conferência antes de mandar e a pilha para o cliente', async () => {

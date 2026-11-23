@@ -852,6 +852,46 @@ describe('cp-admin: fontes de log do nó do cliente', () => {
     expect((await overview(tenant)).node).toMatchObject({ stale: true });
   });
 
+  it('a conta excluída pelo cliente no painel: falhou com deleted_in_panel; alterada aqui, volta a pendente', async () => {
+    const tenant = await managed();
+    await seedNode(tenant);
+    const created = await create(tenant, { spec: CLOUDFLARE_SPEC });
+    const id = created.source.id;
+    const report = async (value: ReturnType<typeof sourceReport>) => {
+      await documents.runTransaction((tx) => {
+        tx.set(
+          COLLECTIONS.logSourceReports(tenant.id),
+          id,
+          logSourceReportSchema.parse({ report: value, reportedAt: clock.now() }),
+        );
+        return Promise.resolve();
+      });
+      return (await overview(tenant)).sources.find((source) => source.id === id);
+    };
+
+    // O nó conta a falha na revisão de agora, sem a conta (ela não existe mais lá) e sem a credencial.
+    const deleted = await report({
+      ...sourceReport(id, 1),
+      outcome: 'failed',
+      code: 'deleted_in_panel',
+      account: null,
+    });
+    expect(deleted).toMatchObject({
+      status: 'failed',
+      code: 'deleted_in_panel',
+      pending: false,
+      report: { revision: 1, outcome: 'failed', code: 'deleted_in_panel', account: null },
+    });
+
+    // Alterar a fonte aqui é uma revisão nova: pendente até o nó a cadastrar de novo.
+    await send('patch', `${base(tenant)}/log-sources/${id}`, { zones: ['outro.example'] }).expect(200);
+    expect((await overview(tenant)).sources[0]).toMatchObject({
+      status: 'pending',
+      pending: true,
+      code: null,
+    });
+  });
+
   it('o template do papel de leitura, do commit da imagem, atrás da sessão', async () => {
     await read('/v1/admin/aws-reader/verax-control-reader.yaml', null).expect(401);
     const response = await read('/v1/admin/aws-reader/verax-control-reader.yaml')

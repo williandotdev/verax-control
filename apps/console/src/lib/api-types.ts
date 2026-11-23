@@ -928,6 +928,7 @@ export type NodeSyncSourceCode =
   | 'credential_rejected_not_yet_valid'
   | 'credential_rejected_no_account_access'
   | 'credential_rejected_wrong_identity'
+  | 'deleted_in_panel'
   | 'source_unavailable'
   | 'internal_error';
 

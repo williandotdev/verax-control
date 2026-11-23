@@ -160,6 +160,11 @@ export const SOURCE_CODE_MESSAGES: Readonly<Record<NodeSyncSourceCode, SourceCod
     message: 'A chave é de outra conta ou de outra identidade.',
     action: 'Confira se a chave é da conta cadastrada e envie de novo.',
   },
+  deleted_in_panel: {
+    message: 'Excluída pelo cliente no painel dele.',
+    action:
+      'Para cadastrar de novo, altere a fonte aqui (nova revisão) ou peça ao cliente para conectar pelo painel.',
+  },
   source_unavailable: {
     message: 'A origem não respondeu à conferência da chave.',
     action: 'Nada a fazer: o servidor tenta de novo sozinho, com espera crescente (até 30 minutos).',
