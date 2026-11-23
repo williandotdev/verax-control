@@ -22,6 +22,11 @@ export const DELETED_IN_PANEL: NodeSyncSourceCode = 'deleted_in_panel';
  * O item da credencial da fonte sai junto: a credencial da conta foi apagada com ela, e a conta recriada por uma revisão
  * maior recebe de novo a credencial que o console mandar, como uma conta nova.
  *
+ * Ordem dos locks (a mesma em todo caminho que toca a conta, a credencial e os itens da sincronização): as vagas do
+ * plano (`lockSeats`), o lock da credencial da conta (`lockCredential`, advisory de transação, reentrante) e só depois
+ * os itens de `ControlPlaneSyncItem`. Quem chama já pegou os dois primeiros (`CloudAccountsService.delete`); a
+ * sincronização (`applyAccount` e `applyCredential`, `apply-source.ts`) segue a mesma ordem.
+ *
  * É a única gravação de `ControlPlaneSyncItem` fora da tarefa do worker, com o cliente base (o model é só leitura no
  * escopo do cliente, `SYSTEM_WRITTEN_MODELS`), e sempre com o cliente da sessão.
  */

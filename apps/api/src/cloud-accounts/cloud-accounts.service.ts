@@ -301,6 +301,11 @@ export class CloudAccountsService {
         DELETE_CONFIRMATION_MISMATCH_CODE,
       );
     }
+    // A ordem dos locks é a de toda escrita da conta e dos itens da sincronização (`deleted-in-panel.ts`): as vagas do
+    // plano, o lock da credencial da conta e só depois os itens de `ControlPlaneSyncItem`. A sincronização
+    // (`applyCredential`) pega o lock da credencial antes de gravar o item da credencial: com os itens antes do lock, as
+    // duas transações se esperariam (deadlock). O `wipeCredential` pega o mesmo lock de novo (reentrante na transação).
+    await lockCredential(this.prisma.db(), id);
     if (before.origin === 'control_plane') {
       await recordDeletedInPanel(this.prisma.db(), {
         tenantId: auth.scopeTenantId as string,

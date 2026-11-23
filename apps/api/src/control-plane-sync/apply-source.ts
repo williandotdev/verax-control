@@ -510,7 +510,10 @@ async function applyCredential(
     }
     const outcome = await prisma.$transaction(
       async (tx) => {
-        // O lock da conta: o mesmo da troca pelo painel, da recifragem e da desativação.
+        // O lock da conta: o mesmo da troca pelo painel, da recifragem, da desativação e da exclusão. A ordem dos locks é
+        // a de todo caminho que toca a credencial e os itens da sincronização: (as vagas do plano, quando há) o lock da
+        // credencial e só depois o item (`recordItem`, no fim). A exclusão no painel segue a mesma ordem
+        // (`deleted-in-panel.ts`); o item antes do lock levaria a um deadlock com ela.
         await lockCredential(tx, source.id);
         const scoped = scopeToTenant(tx, tenantId);
         const still = await scoped.cloudAccount.findUnique({

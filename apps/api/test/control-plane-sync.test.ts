@@ -15,7 +15,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 import { CloudflareTokenCheck } from '../src/cloudflare/cloudflare-token-check.js';
-import type { SyncLogger } from '../src/control-plane-sync/apply-source.js';
+import { recordItem, type SyncLogger } from '../src/control-plane-sync/apply-source.js';
 import {
   ControlPlaneSync,
   type ControlPlaneSyncOptions,
@@ -31,6 +31,7 @@ import {
   CredentialSourceUnavailable,
 } from '../src/credentials/credential-check.js';
 import { parsePrivateKeys, type VaultKeyring } from '../src/credentials/credential-keys.js';
+import { lockCredential } from '../src/credentials/credential-rekey.js';
 import {
   AwsAccessKey,
   CloudflareToken,
@@ -628,6 +629,76 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
       expect(cp.last().sources).toEqual([
         expect.objectContaining({ id: source.id, revision: 2, outcome: 'applied', code: null }),
       ]);
+    });
+
+    it('a exclusão e a credencial do console ao mesmo tempo: a mesma ordem de locks, sem deadlock', async () => {
+      const source = withCredential(cloudflareSource());
+      cp.desired = [source];
+      await run();
+      expect(await itemOf('log_source_credential', source.id)).toMatchObject({ outcome: 'applied' });
+      const key = `verax:cloud-credential:${source.id}`;
+      /** Quantos pedidos do lock da credencial desta conta estão concedidos (ou esperando). */
+      const advisory = async (granted: boolean) => {
+        const [row] = await prisma.$queryRaw<{ n: bigint }[]>`
+          SELECT count(*)::bigint AS n FROM pg_locks
+          WHERE locktype = 'advisory' AND granted = ${granted}
+            AND objid = ((hashtext(${key})::bigint) & 4294967295)::oid`;
+        return Number(row?.n ?? 0);
+      };
+      const until = async (check: () => Promise<boolean>) => {
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          if (await check()) return;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        throw new Error('o lock esperado não apareceu');
+      };
+
+      // Como o `applyCredential`: o lock da credencial da conta primeiro e, depois, o item da credencial.
+      let release = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const worker = prisma.$transaction(
+        async (tx) => {
+          await lockCredential(tx, source.id);
+          await released;
+          await recordItem(tx, {
+            kind: 'log_source_credential',
+            itemId: source.id,
+            tenantId: tenantA,
+            revision: 2,
+            outcome: 'applied',
+          });
+        },
+        { timeout: 30_000 },
+      );
+      await until(async () => (await advisory(true)) === 1);
+
+      // A exclusão no painel, ao mesmo tempo: espera o lock da credencial (antes da correção, já com os itens presos).
+      const user = await createSignedInUser(app, { role: 'admin_cliente', tenantId: tenantA });
+      const { cookie, token: csrf } = await withCsrf(app, user.cookie);
+      const deletion = request(app.getHttpServer())
+        .post(`/v1/cloud-accounts/${source.id}/delete`)
+        .set('Cookie', cookie)
+        .set('Origin', TEST_WEB_ORIGIN)
+        .set('X-CSRF-Token', csrf)
+        .send({ confirmAccountId: source.spec.accountId })
+        .then((response) => response);
+      await until(async () => (await advisory(false)) === 1);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      release();
+
+      // As duas terminam: nenhuma é abortada por deadlock.
+      const [workerResult, deleted] = await Promise.allSettled([worker, deletion]);
+      expect(workerResult.status).toBe('fulfilled');
+      expect(deleted.status === 'fulfilled' ? deleted.value.status : deleted.reason).toBe(204);
+      expect(await accountOf(source.id)).toBeNull();
+      expect(await prisma.cloudCredential.count({ where: { cloudAccountId: source.id } })).toBe(0);
+      expect(await itemOf('log_source', source.id)).toMatchObject({
+        outcome: 'failed',
+        code: 'deleted_in_panel',
+      });
+      expect(await itemOf('log_source_credential', source.id)).toBeNull();
     });
 
     it('a lápide depois da exclusão no painel é contada como removida, sem erro', async () => {
