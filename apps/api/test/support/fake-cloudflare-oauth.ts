@@ -69,31 +69,47 @@ export class FakeCloudflareOAuthServer {
   beforeReply: (() => Promise<void> | void) | undefined;
   tokenUrl = '';
   revokeUrl = '';
-  private server: Server | undefined;
+  /** Um servidor para os tokens e outro para a revogação, cada um com o próprio tratamento. */
+  private readonly servers: Server[] = [];
   private readonly hanging: ServerResponse[] = [];
 
   constructor(private readonly cloudflare: FakeCloudflareServer) {}
 
   async start(): Promise<void> {
-    this.server = createServer((request, response) => {
+    const tokens = await this.listen((request, response, body) => this.handleToken(request, response, body));
+    const revocations = await this.listen((request, response, body) =>
+      this.handleRevocation(request, response, body),
+    );
+    this.tokenUrl = `http://127.0.0.1:${tokens}/oauth2/token`;
+    this.revokeUrl = `http://127.0.0.1:${revocations}/oauth2/revoke`;
+  }
+
+  private async listen(
+    handle: (request: IncomingMessage, response: ServerResponse, body: string) => Promise<void>,
+  ): Promise<number> {
+    const server = createServer((request, response) => {
       const chunks: Buffer[] = [];
       request.on('data', (chunk: Buffer) => chunks.push(chunk));
       request.on('end', () => {
-        void this.handle(request, response, Buffer.concat(chunks).toString('utf8'));
+        void handle(request, response, Buffer.concat(chunks).toString('utf8'));
       });
     });
-    await new Promise<void>((resolve) => this.server?.listen(0, '127.0.0.1', resolve));
-    const { port } = this.server.address() as AddressInfo;
-    this.tokenUrl = `http://127.0.0.1:${port}/oauth2/token`;
-    this.revokeUrl = `http://127.0.0.1:${port}/oauth2/revoke`;
+    this.servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return (server.address() as AddressInfo).port;
   }
 
   async stop(): Promise<void> {
     for (const response of this.hanging) response.destroy();
-    await new Promise<void>((resolve) => {
-      this.server?.close(() => resolve());
-      this.server?.closeAllConnections();
-    });
+    await Promise.all(
+      this.servers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+            server.closeAllConnections();
+          }),
+      ),
+    );
   }
 
   reset(): void {
@@ -144,19 +160,20 @@ export class FakeCloudflareOAuthServer {
     this.cloudflare.tokens.delete(grant.accessToken);
   }
 
-  private async handle(request: IncomingMessage, response: ServerResponse, body: string): Promise<void> {
-    const form = new URLSearchParams(body);
-    const revoking = request.url === '/oauth2/revoke';
-    if (revoking) this.revocations.push(form.get('token') ?? '');
-    else this.requests.push(form);
-    const reply = revoking ? this.revokeScript.shift() : this.script.shift();
+  /** Como responder, com o que o roteiro manda; null quando o roteiro já tratou o pedido. */
+  private replier(
+    request: IncomingMessage,
+    response: ServerResponse,
+    form: URLSearchParams,
+    reply: FakeOAuthReply | undefined,
+  ) {
     if (reply?.dropBefore) {
       request.socket.destroy();
-      return;
+      return null;
     }
     if (reply?.hang) {
       this.hanging.push(response);
-      return;
+      return null;
     }
     const send = (status: number, text: string) => {
       response.writeHead(status, { 'content-type': 'application/json', ...reply?.headers });
@@ -169,22 +186,42 @@ export class FakeCloudflareOAuthServer {
       );
     if (reply?.status !== undefined) {
       send(reply.status, reply.body ?? JSON.stringify({ error: `falha ${form.get('refresh_token')}` }));
-      return;
+      return null;
     }
-    if (revoking) {
-      const token = form.get('token') ?? '';
-      const found = this.grants.find(
-        (candidate) =>
-          candidate.refreshToken === token ||
-          candidate.accessToken === token ||
-          candidate.usedRefresh.has(token),
-      );
-      if (found !== undefined && form.get('client_id') !== found.clientId)
-        return error(401, 'invalid_client');
-      if (found !== undefined) this.revoke(found);
-      await this.beforeReply?.();
-      return send(200, '');
+    return { send, error };
+  }
+
+  private async handleRevocation(
+    request: IncomingMessage,
+    response: ServerResponse,
+    body: string,
+  ): Promise<void> {
+    const form = new URLSearchParams(body);
+    const token = form.get('token') ?? '';
+    this.revocations.push(token);
+    const replier = this.replier(request, response, form, this.revokeScript.shift());
+    if (replier === null) return;
+    const found = this.grants.find(
+      (candidate) =>
+        candidate.refreshToken === token ||
+        candidate.accessToken === token ||
+        candidate.usedRefresh.has(token),
+    );
+    if (found !== undefined && form.get('client_id') !== found.clientId) {
+      return replier.error(401, 'invalid_client');
     }
+    if (found !== undefined) this.revoke(found);
+    await this.beforeReply?.();
+    replier.send(200, '');
+  }
+
+  private async handleToken(request: IncomingMessage, response: ServerResponse, body: string): Promise<void> {
+    const form = new URLSearchParams(body);
+    this.requests.push(form);
+    const reply = this.script.shift();
+    const replier = this.replier(request, response, form, reply);
+    if (replier === null) return;
+    const { send, error } = replier;
     if (request.method === 'POST' && form.get('grant_type') === 'authorization_code') {
       const issued = this.codes.get(form.get('code') ?? '');
       if (issued === undefined) return error(400, 'invalid_grant');

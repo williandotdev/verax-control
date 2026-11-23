@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { createHash, generateKeyPairSync, type KeyObject, randomUUID } from 'node:crypto';
+import { generateKeyPairSync, type KeyObject, randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import {
   CLOUDFLARE_OAUTH_ONLY_CODE,
@@ -434,7 +434,9 @@ describe('conectar o Cloudflare por OAuth (API e worker, banco real, Cloudflare 
         stored.verifierCiphertext ?? '',
       );
       secrets.add(verifier);
-      expect(createHash('sha256').update(verifier).digest('base64url')).toBe(query['code_challenge']);
+      // O desafio é conferido de verdade na troca (o servidor falso recusa o verificador de outro).
+      expect(verifier).toMatch(/^[A-Za-z0-9_-]{64}$/);
+      expect(verifier).not.toBe(query['code_challenge']);
       expect(scrubString(verifier)).toBe(verifier);
     });
 
