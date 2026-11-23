@@ -1,0 +1,12 @@
+# A cada 5 min, o intervalo em que o módulo do Wazuh passa por todas as fontes da AWS. Começa 5 min depois do boot, com
+# o Wazuh já no ar. O worker deixa de usar o sinal com mais de 20 min (quatro execuções perdidas).
+[Unit]
+Description=Verax Control - marcadores da leitura da AWS pelo Wazuh a cada 5 min
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

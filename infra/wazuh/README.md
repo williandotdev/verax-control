@@ -186,15 +186,25 @@ No nó de cliente (fase 2, PR-V4'), o manager lê os buckets de cada conta com o
 desenho inteiro está em `docs/ARQUITETURA.md` ("Por que papel sem chave", passo "Coletar"); aqui, o que é deste bundle.
 
 A lista das contas vem do banco do nó: o CLI `wazuh-sources` da API imprime as contas AWS ativas que já passaram pela
-verificação e têm bucket, cada uma com a conta, a primeira região, a data de início (`onlyLogsAfter`, no formato
-`2026-NOV-01`) e os buckets. Nada nela é segredo. Um exemplo, com contas fictícias, está em
-`tests/fixtures/aws-sources.example.json`. O `infra/node/bin/wazuh-apply.sh` a passa ao gerador pela entrada padrão,
-com o IP de saída do nó em `VERAX_NODE_EGRESS_IPS`, e o `scripts/render-manager-config.py` valida a lista inteira
-(qualquer valor fora do formato para tudo, sem escrever nada) e gera:
+verificação, cada uma com a conta, a primeira região e as fontes autorizadas que o Wazuh lê. Nada nela é segredo. O
+formato é o 2, um objeto com a versão (`{"version": 2, "accounts": [...]}`; o gerador recusa uma versão que não
+conhece): em `s3`, os buckets do cadastro anterior (`"legacy": true`) e as fontes descobertas no onboarding
+self-service (a trilha, os flow logs, o export do GuardDuty e o WAF por Web ACL), cada uma com a data de início dela
+(`onlyLogsAfter`, no formato `2026-NOV-01`); em `logGroups`, os grupos do CloudWatch Logs por região. Um exemplo com
+todo elemento, com contas fictícias, está em `tests/fixtures/aws-sources.sample.v2.json`. A lista simples de antes
+(`tests/fixtures/aws-sources.example.json`) continua aceita e dá a mesma configuração. O
+`infra/node/bin/wazuh-apply.sh` passa a lista ao gerador pela entrada padrão, com o IP de saída do nó em
+`VERAX_NODE_EGRESS_IPS`, e o `scripts/render-manager-config.py` valida a lista inteira (qualquer valor fora do formato
+para tudo, sem escrever nada) e gera:
 
 - o `ossec.conf` do manager, com o módulo `aws-s3`: um bucket por fonte de cada conta, cada um só lido
-  (`remove_from_bucket` em `no`), o WAF sem as requisições liberadas, e um bucket do GuardDuty ou do WAF listado por
-  mais de uma conta lido uma vez só (pelo papel da conta de menor ID, desde a data mais antiga);
+  (`remove_from_bucket` em `no`), o WAF sem as requisições liberadas, e um bucket do GuardDuty ou do WAF do cadastro
+  anterior listado por mais de uma conta lido uma vez só (pelo papel da conta de menor ID, desde a data mais antiga).
+  As fontes descobertas saem com a pasta exata (`aws_account_id`, `regions` e, na trilha de organização,
+  `aws_organization_id`; no WAF, o `path` da Web ACL), os flow logs sem o tráfego aceito (`discard_regex` em `ACCEPT`,
+  salvo `"traffic": "all"`), e os grupos de logs num serviço `cloudwatchlogs` por conta, região e data de início, com
+  `remove_log_streams` em `no`. Os buckets do cadastro anterior saem byte a byte como antes
+  (`tests/fixtures/golden/`);
 - as regras locais: as correlações por conta e as regras críticas como estão no bundle, e `verax_reader_rules.xml`, do
   modelo `config/manager/rules/verax_reader_rules.xml.tmpl` com o IP do nó (leitura do próprio nó, nível 0; a sessão
   de outro IP, nível 12; alteração do papel, nível 5);
@@ -208,6 +218,17 @@ ele muda e, se o manager não ficar saudável em 180 s, devolve a configuração
 juntos em `<config>/.prev`, que o init da imagem não copia; o token do Google fica como o host o deixou) com
 `VERAX_MANAGER_CONFIG_ROLLBACK=1`. O `scripts/test-aws-profile.sh` (no CI) confere
 na imagem, sem rede, que o boto3 do manager entra no papel por esses profiles.
+
+O `scripts/test-aws-sources.sh` confere, também na imagem e sem rede, o que as fontes do onboarding self-service
+combinam com o módulo: o leitor de configuração do Wazuh (`wazuh-modulesd -t`) aceita o `ossec.conf` gerado para a
+lista de exemplo (e recusa uma etiqueta desconhecida), cada entrada passa pelos validadores do próprio módulo, as
+regiões do gerador são as do módulo, e os marcadores que o código do módulo grava são lidos de volta pelo exportador.
+
+**Marcadores da leitura.** O `scripts/export-aws-progress.py` roda dentro do contêiner do manager (o host o chama a
+cada 5 min, `infra/node/bin/wazuh-progress.sh`) e só lê: abre para leitura os bancos SQLite em que o módulo guarda o que
+já leu (`/var/ossec/wodles/aws/s3_cloudtrail.db` e `aws_services.db`) e imprime, numa linha de JSON, o último objeto
+lido de cada bucket, conta e região e o último evento de cada grupo de logs. O worker usa esse sinal para mostrar no
+painel o estado de cada fonte. Nenhum conteúdo de log sai dali.
 
 **EC2 legado.** O fluxo antigo do EC2 (o papel `VeraxControlReadOnly` com `ExternalId`, pela credencial da instância)
 não existe mais: o gerador recusa a lista com `externalId`, e o deploy do EC2 só sobe sem contas AWS
