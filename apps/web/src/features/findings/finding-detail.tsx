@@ -22,6 +22,9 @@ import { useAddFindingComment, useCreateAlertException, useUpdateFindingStatus }
 
 /** De onde vem a regra do alerta, quando não é a do Wazuh para os logs da AWS. */
 const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
+  security_hub: 'Regra (achados do Security Hub)',
+  inspector: 'Regra (achados do Inspector)',
+  access_analyzer: 'Regra (achados do Access Analyzer)',
   gcp_audit: 'Regra (auditoria da GCP)',
   cloudflare_audit: 'Regra (auditoria do Cloudflare)',
   cloudflare_waf: 'Regra (eventos de segurança do Cloudflare)',

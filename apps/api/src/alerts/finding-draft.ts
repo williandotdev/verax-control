@@ -19,10 +19,11 @@ export interface FindingDraft {
   /** A conta de onde veio o evento ou, nos alertas das instâncias, o agente (`agent:<id>`). */
   accountId: string;
   /**
-   * Sistema de origem: o Wazuh (contas AWS e agentes nas instâncias do cliente) ou a própria leitura dos logs da GCP e
-   * do Cloudflare.
+   * Sistema de origem: o Wazuh (contas AWS e agentes nas instâncias do cliente), a própria leitura dos logs da GCP e do
+   * Cloudflare, ou a leitura dos achados da AWS pela API de cada serviço (`aws`: Security Hub, Inspector e Access
+   * Analyzer; o GuardDuty lido pela API sai como `wazuh`, com a mesma chave do que chega pelo bucket).
    */
-  source: 'wazuh' | 'gcp' | 'cloudflare';
+  source: 'wazuh' | 'gcp' | 'cloudflare' | 'aws';
   /** Chave do achado na origem: a mesma a cada releitura do mesmo evento (`wazuhFindingKey`, `gcpEventIdFor`). */
   sourceEventId: string;
   /** Só no Wazuh: o ID do alerta, por onde o detalhe busca o evento bruto no indexer. A GCP não guarda o evento. */
@@ -36,8 +37,19 @@ export interface FindingDraft {
    * regra; nos agentes, a descrição. O resumo do incidente em português vem do dicionário da T7.9.
    */
   title: string;
-  /** Fonte de log: `cloudtrail`, `guardduty`, `waf`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`. */
-  logSource: AwsSource | 'gcp_audit' | 'cloudflare_audit' | 'cloudflare_waf' | 'wazuh_agent';
+  /**
+   * Fonte de log: `cloudtrail`, `guardduty`, `waf`, `security_hub`, `inspector`, `access_analyzer`, `gcp_audit`,
+   * `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`.
+   */
+  logSource:
+    | AwsSource
+    | 'security_hub'
+    | 'inspector'
+    | 'access_analyzer'
+    | 'gcp_audit'
+    | 'cloudflare_audit'
+    | 'cloudflare_waf'
+    | 'wazuh_agent';
   eventName: string | null;
   region: string | null;
   resource: string | null;
@@ -54,6 +66,14 @@ export interface FindingDraft {
    * reincidência por aqui.
    */
   recurrence?: { lastSeenAt: string; chainKey: string; sourceEventId: string };
+  /**
+   * Só nos achados de estado lidos pela API da AWS (Security Hub, Inspector e Access Analyzer): a versão do achado na
+   * origem (`updatedAt`). Esses achados descrevem uma condição que continua valendo (um controle reprovado, uma
+   * vulnerabilidade, um acesso externo), e a origem os atualiza a cada reavaliação: a versão nova nunca vira outro
+   * achado, seja qual for o status. Ela só avança o `lastSeenAt` do que já existe e, se mudaram, a severidade, a regra
+   * e o título (`FindingStore.revise`).
+   */
+  revision?: { lastSeenAt: string };
 }
 
 /**

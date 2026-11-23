@@ -403,6 +403,7 @@ A escala de nível é a mesma em todas: 12 ou mais é crítica, 10 alta, 7 médi
 | 990101 a 990199 | Worker, sem Wazuh (`apps/api/src/gcp/gcp-rules.ts`)                     | Auditoria da GCP                                                                                                               |
 | 990201 a 990299 | Não usada                                                               | Era a do coletor próprio do CloudTrail, que saiu do plano; o subconjunto crítico do catálogo dela virou a faixa 100300         |
 | 990301 a 990399 | Worker, sem Wazuh (`apps/api/src/cloudflare/cloudflare-rules.ts`)       | Auditoria do Cloudflare                                                                                                        |
+| 990501 a 990599 | Worker, sem Wazuh (`apps/api/src/aws/findings/finding-rules.ts`)        | Achados da AWS lidos pela API: Security Hub, Inspector e Access Analyzer (o GuardDuty pela API leva a regra 8030x do Wazuh)    |
 
 **O título do achado é fixo e em português.** Nas regras do worker, é o da tabela de regras. Nas do Wazuh, a
 descrição cita campos do evento (o nome da chamada, o IP, o bucket) e, nas regras do próprio Wazuh, é em inglês: o
@@ -775,8 +776,10 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
 
 _(em construção, em vários PRs. Feito no código: o template v2 do papel, com a descoberta e as três autorizações do
 cliente (PR-T); o contrato, o modelo de dados, o "Conectar" com validação automática, a descoberta e as rotas de
-autorização (PR-B). A construir: a coleta das fontes autorizadas pelo Wazuh e pelas APIs de achados (PR-C1 e PR-C2) e a
-tela nova (PR-U). Até lá, uma fonte autorizada fica "aguardando o coletor", e a tela de Contas cloud segue a de antes.)_
+autorização (PR-B); a coleta dos achados pelas APIs do GuardDuty, do Security Hub, do Inspector e do Access Analyzer
+(PR-C2). A construir: a coleta das fontes de S3 e do CloudWatch Logs pelo Wazuh (PR-C1) e a tela nova (PR-U). Até lá,
+uma fonte de S3 ou do CloudWatch Logs autorizada fica "aguardando o coletor", e a tela de Contas cloud segue a de
+antes.)_
 
 O cliente conecta a conta AWS sozinho: clica em "Conectar com AWS", cria a pilha do papel de leitura no CloudFormation
 e, a partir daí, o nó valida a conexão, descobre as fontes de log da conta e mostra o que pode ser coletado. O cliente
@@ -884,6 +887,111 @@ nunca guardado nem escrito à mão: `not_started`, `awaiting_authorization`, `au
 `template`, `discovery` e, das fontes autorizadas, `permission`, `collector_config`, `events`, `last_sync` e `lag`. A
 regra: nunca um "tudo certo" com um passo essencial pendente. A conta só está `collecting` quando toda fonte autorizada
 está coletando; com o papel removido, fica `disconnected`, e as fontes e as autorizações continuam lá.
+
+**Achados pela API (tarefa `aws-findings` do worker, `apps/api/src/aws/findings/`):** as fontes lidas por API
+(`guardduty`, `security_hub`, `inspector` e `access_analyzer`) são coletadas pelo worker, sem o Wazuh, pela mesma
+sessão de leitura da conferência e da descoberta (`AwsReaderCredentials`) e pelos mesmos clientes com a trava de só
+leitura. A tarefa roda a cada 5 min, sob concessão no banco (`SyncState('aws-findings')`, um worker por vez), só no nó
+dedicado (na célula ela não é ligada, como a descoberta). A cada execução entram as fontes com a autorização valendo e
+dentro da coleta, de conta ativa, já verificada, que entra no papel, de cliente ativo; no máximo 2 contas ao mesmo
+tempo, as fontes de cada conta em sequência, e, passados 4 min, as que faltam ficam para a execução seguinte. A fonte
+revogada sai na execução seguinte. Uma fonte com falha nunca para as outras.
+
+| Fonte             | Chamadas (todas de leitura)                                                                                          | Filtro na origem                                                                                           | Página | Chave do achado                                                                |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------ |
+| `guardduty`       | `ListFindings` e `GetFindings` (50 IDs por chamada)                                                                  | `updatedAt` maior ou igual ao começo da janela; `service.archived = false`                                 | 50     | `wazuh/<conta>/guardduty:<id>:<regra do Wazuh>` (a mesma do caminho do bucket) |
+| `security_hub`    | `GetFindings`, no máximo uma chamada a cada 350 ms por conta e região                                                | `UpdatedAt` entre o começo e o fim da janela; `RecordState = ACTIVE`; `WorkflowStatus` `NEW` ou `NOTIFIED` | 100    | `aws/<conta>/securityhub:sha256-<resumo de ProductArn e Id>`                   |
+| `inspector`       | `ListFindings` (Inspector2)                                                                                          | `updatedAt` entre o começo e o fim da janela; `findingStatus = ACTIVE`                                     | 100    | `aws/<conta>/inspector:<findingArn>`                                           |
+| `access_analyzer` | `ListAnalyzers`, `ListFindingsV2` por analisador autorizado e `GetFindingV2` só do acesso externo novo ou atualizado | `status = ACTIVE` (a API não filtra por data: a listagem é inteira)                                        | 100    | `aws/<conta>/access-analyzer:<região>/<analisador>/<id>`                       |
+
+- **Cursor e janela:** cada fonte tem um cursor em `CollectorCursor` (fluxos `aws_findings_guardduty`,
+  `aws_findings_security_hub` e `aws_findings_inspector`, por região; no Access Analyzer, `aws_findings_aa_<resumo>`,
+  um por analisador, com o resumo do nome dele), com a posição (`cursorAt`), a próxima leitura, a última leitura sem
+  erro, o tipo do último erro e as falhas seguidas. A janela vai da posição menos 10 min (a sobreposição) até agora;
+  a primeira começa 24 h antes do dia da autorização (`collectFrom`), e nada mais antigo é buscado, nem depois de uma
+  revogação seguida de outra autorização. Cada página é gravada antes de a continuação andar: uma execução que para no
+  meio (o worker parado, o orçamento de tempo, uma falha do banco) relê a página em que parou. No teto de 10 páginas
+  por fonte e por execução, a continuação da AWS e a janela ficam no cursor, e a execução seguinte segue dali; se a
+  AWS não aceitar mais a continuação, a janela recomeça. Lida a janela inteira, a posição vai para o fim dela.
+- **Sem duplicar:** `(source, sourceEventId)` é único, como em todo coletor. Antes de gravar, a tarefa busca de uma vez
+  as versões já gravadas dos achados da página (pelo escopo do cliente) e só segue com o achado novo ou com `updatedAt`
+  mais novo: a sobreposição e a listagem inteira do Access Analyzer não gravam, não pedem detalhe e não medem nada de
+  novo.
+- **GuardDuty pelos dois caminhos:** o mesmo achado pode chegar pelo export para o S3 (o Wazuh) e pela API. O achado
+  lido pela API volta para o formato do export e passa pelas mesmas regras do alerta do Wazuh: sai com a mesma origem
+  (`wazuh`), a mesma chave e os mesmos campos, e um caminho nunca duplica o outro. A chave leva o ID da regra do Wazuh,
+  então a regra de fábrica é reproduzida (`finding-keys.ts`): 80303 se o texto da severidade tem 7, 8 ou 9; senão 80302
+  se tem 4, 5 ou 6; senão 80301; e 80305 a 80307 na sondagem de porta, que vira um achado por IP e porta. A comparação
+  é por trecho do texto, como no Wazuh (a severidade 10 cai na 80301, e 3,7 na 80303); a severidade do achado não
+  depende da regra. O achado lido só pela API não tem evento bruto no detalhe (o evento bruto fica no indexer do Wazuh).
+- **Security Hub sem repetir o GuardDuty e o Inspector, e sem perder nada:** o Security Hub também recebe os achados
+  desses serviços. O registro dele só é pulado quando a fonte própria do serviço (`guardduty` ou `inspector`), na
+  conta e na região do achado, está de fato sendo coletada, isto é, com a autorização valendo e no estado `collecting`
+  (a última leitura deu certo), e além disso o coletor dela já leu essa versão do achado (o `UpdatedAt` está entre o
+  começo do que ele lê e a posição do cursor dele) ou o registro é dos últimos 10 min da janela (a sobreposição: o
+  coletor próprio ainda vai lê-lo e, se parar antes, a leitura seguinte do Security Hub o traz de novo e o grava). Em
+  qualquer outro caso o achado entra pelo Security Hub: a fonte própria nunca autorizada, revogada, sumida
+  (`source_missing`, como o detector apagado e trocado por outro, que precisa da própria autorização), com
+  `permission_error` ou `ingestion_error`, ainda sem a primeira leitura, de outra região (a agregação entre
+  regiões), ou parada há mais tempo do que a sobreposição. A regra é preferir um achado repetido (um pela fonte
+  própria, outro pelo Security Hub, nas transições) a um buraco: o cursor do Security Hub nunca passa por cima de um
+  achado que ninguém leu. Em cada conta, as fontes próprias são lidas antes da do Security Hub, na mesma execução:
+  autorizadas juntas, a primeira leitura da fonte própria (se terminar a janela) já cobre os achados dela, sem repetir
+  o histórico inteiro; se ela falhar ou parar no teto de páginas, o Security Hub os grava. Os achados do Access
+  Analyzer e do export do GuardDuty para o S3 que também passem pelo Security Hub não são cruzados.
+- **Atualização e fechamento:** no GuardDuty vale a regra de sempre (decisão de 04/11/2026): a versão nova de um achado
+  ainda não triado só avança o `lastSeenAt`; a de um já triado vira uma recorrência, ligada ao original. Nos outros
+  três, o achado descreve uma condição que continua valendo, e a origem o atualiza a cada reavaliação: a versão nova
+  nunca vira outro achado, seja qual for o status; ela avança o `lastSeenAt` e, se mudaram, a severidade, a regra e o
+  título (`revision`, em `FindingStore`), e avisa por e-mail se a severidade subiu para alta ou crítica (uma vez por
+  achado, e nunca o marcado como legítimo). **Nada é fechado sozinho:** o achado arquivado, resolvido, suprimido ou
+  fechado na origem só deixa de ser lido; o status no painel é sempre de uma pessoa.
+- **Dono:** o achado é do cliente da conta cuja sessão o leu, desde que a conta citada no achado seja a da fonte. Se
+  for outra (o detector, o hub ou o analisador que administra contas-membro), vale a regra de sempre: só é do cliente
+  se estiver cadastrada, ativa, para ele, e entra na conta dela. A conta de outro cliente (`source_mismatch`), a não
+  cadastrada (`unknown_account`) e o campo de conta fora do formato (`invalid_alert`) mandam o achado para a fila sem
+  dono, com o mínimo para a triagem.
+- **Severidade** (`finding-rules.ts`; o nível da regra segue a escala comum: 12 crítica, 10 alta, 7 média, 3 baixa):
+
+  | Fonte           | Na origem                                                  | No painel                                                                                             |
+  | --------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+  | GuardDuty       | `severity` de 0 a 10                                       | 9 ou mais crítica, 7 ou mais alta, 4 ou mais média, abaixo baixa (como no caminho do bucket)          |
+  | Security Hub    | `Severity.Label` (sem ele, `Severity.Normalized`, 0 a 100) | `CRITICAL` (90+) crítica, `HIGH` (70+) alta, `MEDIUM` (40+) média, `LOW` e `INFORMATIONAL` baixa      |
+  | Inspector       | `severity`                                                 | `CRITICAL` crítica, `HIGH` alta, `MEDIUM` e `UNTRIAGED` média, `LOW` e `INFORMATIONAL` baixa          |
+  | Access Analyzer | tipo do achado e `isPublic` (do detalhe)                   | acesso externo público alta; a outra conta ou identidade média; acesso sem uso e acesso interno baixa |
+
+  O Inspector é lido pela API porque as regras de fábrica do Wazuh não acusam a severidade `CRITICAL`. As regras desses
+  achados ficam na faixa 990501 a 990599 (o controle reprovado e o achado de produto integrado do Security Hub; a
+  vulnerabilidade em pacote, a porta alcançável e a vulnerabilidade no código do Inspector; o acesso público, o
+  externo, o sem uso e o interno do Access Analyzer), com o título em português seguido do título da origem.
+
+- **O que é guardado:** só os campos do achado (título, tipo, região, recurso no formato dos outros achados, IP, as
+  táticas do MITRE dos tipos do Security Hub), cada um conferido e cortado no tamanho da coluna. O registro inteiro
+  nunca é gravado, e um registro acima de 512 KB é recusado sem ser lido. Nada do achado vai para o log: o relatório da
+  tarefa só tem contagens e códigos.
+- **Volume:** os bytes do JSON de cada achado novo ou com versão nova entram no medidor da AWS (`IngestUsage` e
+  `IngestUsageDay`, fonte `aws`), depois de a página ficar gravada, e somam nos avisos de 80% e 100% do plano. O achado
+  de outro cliente, o pulado e a releitura não contam. Nenhum achado é descartado por plano.
+- **Estado e saúde da fonte:** a primeira leitura sem erro leva a fonte de `authorized` (aguardando o coletor) a
+  `collecting`, mesmo sem achado nenhum (`no_findings_yet` até o primeiro). Fonte de achados nunca fica `stalled`: o
+  que conta é a última leitura. A permissão negada vira `permission_error`, com a ação do IAM que faltou (ou
+  `capability_off`, sem chamada nenhuma, quando as tags do papel dizem que a leitura de achados está desligada); o
+  serviço desligado ou o recurso apagado depois da autorização, `source_missing` (`not_enabled` ou `not_found`), e a
+  fonte sai da coleta até a descoberta vê-la de novo; o limite de requisições e as outras falhas só viram
+  `ingestion_error` na terceira seguida (`throttled` ou o nome do erro). A saúde fica na própria fonte: `lastSyncAt`
+  (a última leitura sem erro), `lastEventAt` (a atualização mais recente de um achado na origem), `lastIngestedAt`, o
+  volume das últimas 24 h e o `lagSeconds`, que o painel recalcula a cada leitura (o tempo desde a última leitura sem
+  erro; acima de 2 h, a conferência `lag` falha com `sync_delayed`). Só a mudança de estado entra na trilha do cliente
+  (`cloud_account.aws_source_collection`, ator sistema).
+- **Limites da AWS:** a chamada limitada (`TooManyRequestsException`, `ThrottlingException`) é repetida até 3 vezes,
+  com recuo que dobra (1 s, 2 s) e metade sorteada; persistindo, a fonte recua 5 min, dobrando, até 1 h. A recusa
+  (permissão, serviço desligado) recua 15 min, dobrando, até 6 h, porque cada tentativa é uma linha de acesso negado no
+  CloudTrail do cliente; a fonte que a descoberta devolve à coleta é lida na execução seguinte, sem esperar o recuo.
+  No máximo 4 chamadas ao mesmo tempo por conta, e 200 detalhes do Access Analyzer por fonte e por execução.
+- **Fica de fora, por enquanto:** o Security Hub v2 (achados em OCSF, `GetFindingsV2`); o cruzamento dos achados do
+  Access Analyzer e do export do GuardDuty com os do Security Hub; o fechamento automático no painel do que foi
+  resolvido na origem; e as contas-membro de um administrador delegado que não estão cadastradas para o cliente (os
+  achados delas vão para a fila sem dono).
 
 ## Ativos e Postura da AWS
 

@@ -406,6 +406,42 @@ function nativeIdOf(source: AwsSource, aws: Record<string, unknown>): NativeIden
   return parsed.success ? parsed.data : undefined;
 }
 
+/** O que sai de um achado do GuardDuty, seja qual for o caminho por onde ele chegou. */
+export type GuardDutyAlertFields = Pick<
+  WazuhAwsAlert,
+  | 'nativeId'
+  | 'findingId'
+  | 'accounts'
+  | 'region'
+  | 'eventName'
+  | 'awsSeverity'
+  | 'lastSeenAt'
+  | 'actor'
+  | 'resource'
+>;
+
+/**
+ * Os campos e a identidade de um achado do GuardDuty no formato do export para o S3 (o que o Wazuh grava em
+ * `data.aws`), pelas mesmas regras do alerta do Wazuh. É por aqui que o achado lido pela API do GuardDuty (tarefa
+ * `aws-findings`, `aws/findings/guardduty.ts`) ganha os mesmos campos e a mesma chave do que chega pelo bucket: um
+ * caminho nunca duplica o outro.
+ */
+export function guardDutyAlertFields(aws: Record<string, unknown>): GuardDutyAlertFields {
+  const details = guardDutyDetails(aws);
+  const identity = nativeIdOf('guardduty', aws);
+  return {
+    nativeId: identity?.nativeId,
+    findingId: identity?.findingId,
+    accounts: accountsOf('guardduty', aws),
+    region: details.region,
+    eventName: details.eventName,
+    awsSeverity: details.awsSeverity,
+    lastSeenAt: details.lastSeenAt,
+    actor: details.actor ?? {},
+    resource: details.resource,
+  };
+}
+
 /** Valida o documento do indexer e extrai o que a API usa. Nunca lança: o que não serve vira um motivo. */
 export function parseWazuhAlert(document: unknown): ParsedAlert {
   const envelope = envelopeSchema.safeParse(document);
