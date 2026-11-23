@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
-import type { CloudflareToken } from '../credentials/credential-vault.js';
+import type { CloudflareBearer } from './cloudflare-bearer.js';
 import { CLOUDFLARE_API_BASE_URL, isAllowedBaseUrl, rfc3339 } from './cloudflare-token-check.js';
 
 /**
@@ -19,6 +19,9 @@ import { CLOUDFLARE_API_BASE_URL, isAllowedBaseUrl, rfc3339 } from './cloudflare
  * (`errorKind`). Cada tentativa tem tempo limite; 5xx, falha de rede e tempo esgotado são tentados de novo poucas
  * vezes, com espera crescente; 401, 403 e 429 nunca (o 429 devolve a espera pedida pelo `retry-after`, e o coletor
  * só volta depois dela). O corpo é lido até um teto de bytes.
+ *
+ * A exceção do 401 é o acesso por OAuth (`CloudflareBearer.renew`): ele vence em horas, e a recusa vale uma renovação e
+ * um novo envio. O token colado não se renova: o 401 dele sobe na hora.
  */
 
 /** Códigos dos erros da API, gravados como estão em `CloudAccount.connectionError` e no cursor. */
@@ -31,6 +34,8 @@ export type CloudflareErrorCode =
   | 'network'
   | 'bad_response'
   | 'response_too_large'
+  // Só no acesso por OAuth: recusado (401), e a renovação não pôde ser feita agora (não prova que a autorização acabou).
+  | 'oauth_refresh_unavailable'
   // GraphQL de analytics (PR-13): o token sem `Analytics: Read` na zona, a zona sem o conjunto de dados no plano, a
   // janela mais antiga que a retenção, a consulta recusada (formato, limites) e o serviço indisponível.
   | 'security_events_forbidden'
@@ -84,7 +89,7 @@ export function retryAfterMs(header: string | null, now: number = Date.now()): n
 }
 
 /** Lê o corpo até `max` bytes; acima disso, desiste sem guardar o resto. */
-async function readBounded(response: Response, max: number): Promise<{ text: string; bytes: number }> {
+export async function readBounded(response: Response, max: number): Promise<{ text: string; bytes: number }> {
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > max) {
     await response.body?.cancel().catch(() => undefined);
@@ -261,7 +266,7 @@ export class CloudflareClient {
 
   /** Uma página da auditoria da conta, em ordem crescente de horário. */
   async auditPage(
-    token: CloudflareToken,
+    token: CloudflareBearer,
     accountId: string,
     request: AuditPageRequest,
     signal?: AbortSignal,
@@ -281,7 +286,7 @@ export class CloudflareClient {
   }
 
   /** Zonas da conta, para conferir as zonas cadastradas. */
-  async zones(token: CloudflareToken, accountId: string, signal?: AbortSignal): Promise<AccountZones> {
+  async zones(token: CloudflareBearer, accountId: string, signal?: AbortSignal): Promise<AccountZones> {
     const names = new Set<string>();
     const ids = new Map<string, string>();
     for (let page = 1; page <= MAX_ZONE_PAGES; page += 1) {
@@ -322,7 +327,7 @@ export class CloudflareClient {
    * Cloudflare, e quem consulta cobra o orçamento dela ali. Se o gancho lançar, nada é enviado e o erro sobe como está.
    */
   async graphql(
-    token: CloudflareToken,
+    token: CloudflareBearer,
     request: GraphqlRequest,
     signal?: AbortSignal,
     { beforeAttempt }: GraphqlOptions = {},
@@ -350,7 +355,7 @@ export class CloudflareClient {
   private get(
     path: string,
     query: URLSearchParams,
-    token: CloudflareToken,
+    token: CloudflareBearer,
     signal: AbortSignal | undefined,
   ): Promise<{ text: string; bytes: number }> {
     return this.send('GET', path, query, null, token, signal);
@@ -365,19 +370,31 @@ export class CloudflareClient {
     path: string,
     query: URLSearchParams | null,
     body: string | null,
-    token: CloudflareToken,
+    token: CloudflareBearer,
     signal: AbortSignal | undefined,
     beforeAttempt?: (attempt: number) => Promise<void>,
   ): Promise<{ text: string; bytes: number }> {
-    for (let attempt = 0; ; attempt += 1) {
+    let renewed = false;
+    for (let attempt = 0; ;) {
       signal?.throwIfAborted();
       await beforeAttempt?.(attempt);
       try {
         return await this.once(method, path, query, body, token, signal);
       } catch (error) {
+        if (!(error instanceof CloudflareApiError)) throw error;
+        if (error.code === 'credential_rejected' && token.renew !== undefined && !renewed) {
+          renewed = true;
+          const renewal = await token.renew();
+          // O novo envio não gasta uma das novas tentativas das falhas passageiras.
+          if (renewal === 'renewed') continue;
+          if (renewal === 'unavailable')
+            throw new CloudflareApiError('oauth_refresh_unavailable', error.status);
+          throw error;
+        }
         const delay = this.#retryDelaysMs[attempt];
-        if (!(error instanceof CloudflareApiError) || !isRetryable(error) || delay === undefined) throw error;
+        if (!isRetryable(error) || delay === undefined) throw error;
         await sleep(delay, undefined, { signal });
+        attempt += 1;
       }
     }
   }
@@ -387,7 +404,7 @@ export class CloudflareClient {
     path: string,
     query: URLSearchParams | null,
     body: string | null,
-    token: CloudflareToken,
+    token: CloudflareBearer,
     signal: AbortSignal | undefined,
   ): Promise<{ text: string; bytes: number }> {
     const timeout = AbortSignal.timeout(this.#timeoutMs);

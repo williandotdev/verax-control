@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { tenantSlugSchema } from './cell-protocol.js';
-import { cloudflareAccountIdSchema, isDomainName } from './cloud-accounts.js';
+import { type CloudflareBlockingError, cloudflareAccountIdSchema, isDomainName } from './cloud-accounts.js';
 import type { NodePlatform } from './cloud-credentials.js';
 
 /**
@@ -361,10 +361,10 @@ export type CloudflareGrantStatus = (typeof CLOUDFLARE_GRANT_STATUSES)[number];
 
 /**
  * A autorização foi revogada, venceu ou o Cloudflare recusou a renovação: a coleta para até o cliente conectar de novo.
- * Vai em `connectionError` e para a coleta como os `CLOUDFLARE_BLOCKING_ERRORS`; entra nessa lista junto com o coletor
- * que o grava e com a explicação dele no painel.
+ * Vai em `connectionError` e é um dos `CLOUDFLARE_BLOCKING_ERRORS`.
  */
-export const CLOUDFLARE_OAUTH_RECONNECT_ERROR = 'oauth_reconnect_required';
+export const CLOUDFLARE_OAUTH_RECONNECT_ERROR =
+  'oauth_reconnect_required' as const satisfies CloudflareBlockingError;
 /** O Cloudflare recusou o app da Verax na renovação: não depende do cliente e não para o que ainda vale. */
 export const CLOUDFLARE_OAUTH_CLIENT_ERROR = 'oauth_client_rejected';
 

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { isCloudflareBlockingError } from '@verax/shared';
 import { z } from 'zod';
 import { type ActiveException, matchingException } from '../alerts/exception-match.js';
@@ -15,25 +16,27 @@ import {
 } from '../credentials/credential-check.js';
 import type { VaultKeyring } from '../credentials/credential-keys.js';
 import { lockCredential } from '../credentials/credential-rekey.js';
-import {
-  CloudflareToken,
-  CredentialVaultError,
-  credentialBinding,
-  open,
-} from '../credentials/credential-vault.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import type { AlertNotices } from '../notifications/finding-notices.js';
 import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
 import { UsageMeter, utf8Bytes } from '../usage/usage-meter.js';
 import { cloudflareEventId, invalidEntryId, isCloudflareAccountId, parseAuditEntry } from './audit-entry.js';
 import { CloudflareApiError, CloudflareClient } from './cloudflare.client.js';
+import {
+  CloudflareCredentials,
+  type CloudflareSession,
+  type CredentialVersion,
+} from './cloudflare-credentials.js';
 import { detect, toCloudflareFindingDraft } from './cloudflare-rules.js';
 import {
   CLOUDFLARE_SECURITY_STREAM,
   CloudflareSecurityEvents,
   type CloudflareSecurityEventsOptions,
+  type GrantSharing,
 } from './cloudflare-security-sync.js';
 import { CloudflareTokenCheck } from './cloudflare-token-check.js';
+import { CloudflareGrants, type CloudflareGrantsOptions } from './oauth/cloudflare-grants.js';
+import { type CloudflareOAuthTokens, PublicClientTokens } from './oauth/oauth-tokens.js';
 
 export const CLOUDFLARE_SYNC = 'cloudflare';
 /**
@@ -65,6 +68,8 @@ const SMALL_PAGE_SIZE = 50;
 export const CLOUDFLARE_MAX_PAGES = 20;
 /** Espera depois de um 429 sem `retry-after`: o Cloudflare bloqueia o token por 5 minutos. */
 const RATE_LIMIT_WAIT_MS = 5 * 60 * 1000;
+/** Janela da leitura de prova da auditoria na conferência da concessão por OAuth: basta a resposta. */
+const PROBE_WINDOW_MS = 60 * 60 * 1000;
 /** Tamanho da coluna `CollectorCursor.continuation`. */
 const CONTINUATION_MAX = 2048;
 
@@ -100,6 +105,9 @@ export interface CloudflareAuditSyncOptions {
   leaseMs?: number;
   client?: CloudflareClient;
   tokenCheck?: CloudflareTokenCheck;
+  /** Quem renova o acesso por OAuth (só para os testes; fora deles, o app sem segredo). */
+  oauthTokens?: CloudflareOAuthTokens;
+  grants?: CloudflareGrantsOptions;
   auditIntervalMs?: number;
   checkIntervalMs?: number;
   pageSize?: number;
@@ -115,13 +123,16 @@ export interface CloudflareAuditSyncOptions {
 /** Contagens de uma execução (vão para o log do agendador; nenhum dado de cliente nem nome com "token"). */
 export interface CloudflareSyncReport {
   status: 'done' | 'locked';
-  /** Contas do Cloudflare ativas e com token guardado. */
+  /** Contas do Cloudflare ativas e com credencial guardada (o token colado ou a concessão por OAuth). */
   accounts: number;
   /** Nenhum dos fluxos da conta estava na hora. */
   notDue: number;
-  /** Coleta parada até o token ser trocado (recusado, vencido, desativado, sem acesso). Nenhuma chamada. */
+  /**
+   * Coleta parada até a credencial ser trocada (token recusado, vencido, desativado, sem acesso; autorização que
+   * acabou). Nenhuma chamada.
+   */
   blocked: number;
-  /** O token guardado não abriu no worker (versão da chave ausente, texto adulterado). Nenhuma chamada. */
+  /** A credencial guardada não abriu no worker (versão da chave ausente, texto adulterado). Nenhuma chamada. */
   unreadable: number;
   /** Contas com falha nesta execução (a da origem vira erro de conexão; a interna fica no estado do sync). */
   failedAccounts: number;
@@ -151,6 +162,10 @@ export interface CloudflareSyncReport {
   securityExpired: number;
   /** Leituras dos eventos que pararam no orçamento de consultas do token. */
   budgetWaits: number;
+  /** Concessões por OAuth: acessos renovados, renovações que falharam e as em que o Cloudflare recusou o app da Verax. */
+  grantsRenewed: number;
+  grantsFailed: number;
+  grantsAppRejected: number;
 }
 
 /** As chaves dos cursores de uma conta (sem os eventos de segurança quando o fluxo está desligado). */
@@ -164,6 +179,8 @@ interface AccountRow {
   id: string;
   tenantId: string;
   accountId: string;
+  /** A concessão por OAuth que lê a conta; null na conta com token colado. */
+  cloudflareGrantId: string | null;
   zones: string[];
   connection: 'waiting' | 'connected' | 'error';
   connectionError: string | null;
@@ -175,14 +192,12 @@ interface RunContext {
   exceptions: ReadonlyMap<string, ActiveException[]>;
   lastEvents: LastEvents;
   signal: AbortSignal | undefined;
+  /** O horário da execução mais o tempo já passado nela (a validade do acesso por OAuth é contada por ele). */
+  clock: () => Date;
 }
 
-/** A leitura da conta que está em curso: a conta, o texto cifrado do token aberto (a "versão" dele) e o token. */
-interface Session {
-  account: AccountRow;
-  ciphertext: string;
-  token: CloudflareToken;
-}
+/** A leitura da conta que está em curso: a conta, a versão da credencial aberta e o que autentica os pedidos. */
+type Session = CloudflareSession<AccountRow>;
 
 type CheckOutcome =
   | { kind: 'blocked'; code: string }
@@ -194,6 +209,9 @@ type ConnectionData = Pick<
   Prisma.CloudAccountUpdateManyMutationInput,
   'connection' | 'connectionError' | 'lastCollectedAt'
 >;
+
+type TokenSession = Extract<Session, { version: { kind: 'token' } }>;
+const isTokenSession = (session: Session): session is TokenSession => session.version.kind === 'token';
 
 const errorState = (code: string): ConnectionData => ({ connection: 'error', connectionError: code });
 
@@ -240,6 +258,13 @@ function decodeContinuation(text: string | null): AuditWindow | null {
  * tem as chaves privadas e abre o token, na memória, a cada execução (o invólucro o registra como segredo vivo, e o
  * logger o oculta em qualquer linha). A API nunca decifra.
  *
+ * A credencial vem de `CloudflareCredentials` (CF-3): o token colado ou, na conta conectada por OAuth, o acesso da
+ * concessão, que o próprio coletor renova (`CloudflareGrants`). Nada muda para a conta com token colado. Na concessão:
+ * - a conferência de hora em hora é só a leitura de prova da auditoria (o `tokens/verify` é do token colado);
+ * - o 401 vale uma renovação e um novo envio; recusado de novo, a concessão espera o cliente conectar de novo
+ *   (`oauth_reconnect_required`, que para a coleta), e o app recusado pelo Cloudflare só espera (é da Verax);
+ * - o limite de requisições é da concessão: um 429 adia todas as contas dela, e elas dividem o orçamento do GraphQL.
+ *
  * Uma concessão (`SyncState('cloudflare')`) deixa um worker por vez. Cada execução, para cada conta do Cloudflare
  * ativa e com token guardado (cada uma pelo escopo do próprio cliente):
  * 1. **Coleta parada:** se a última leitura acabou num erro que para a coleta (`CLOUDFLARE_BLOCKING_ERRORS`: token
@@ -268,8 +293,8 @@ function decodeContinuation(text: string | null): AuditWindow | null {
  * o cursor recua. Com mais de um problema, vale o da auditoria nesta leitura, depois o da conferência e depois o dos
  * eventos (que fica guardado no cursor deles até a próxima leitura). O 429 (limite do token inteiro) adia os três
  * fluxos da conta até o `retry-after`, venha de qualquer um deles. Toda escrita da conexão confere, sob o lock da
- * credencial, que o token guardado ainda é o que foi usado: um token trocado no meio da leitura nunca herda o erro do
- * anterior.
+ * credencial, que a versão da credencial ainda é a que foi usada: um token trocado no meio da leitura nunca herda o erro
+ * do anterior.
  */
 export class CloudflareAuditSync {
   private readonly name: string;
@@ -284,10 +309,12 @@ export class CloudflareAuditSync {
   private readonly lease: SyncLease;
   private readonly cursors: CollectorCursors;
   private readonly security: CloudflareSecurityEvents | null;
+  private readonly grants: CloudflareGrants;
+  private readonly credentials: CloudflareCredentials;
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly keyring: VaultKeyring,
+    keyring: VaultKeyring,
     options: CloudflareAuditSyncOptions = {},
   ) {
     this.name = options.name ?? CLOUDFLARE_SYNC;
@@ -309,6 +336,13 @@ export class CloudflareAuditSync {
       options.leaseMs ?? 5 * 60 * 1000,
     );
     this.cursors = new CollectorCursors(prisma);
+    this.grants = new CloudflareGrants(
+      prisma,
+      keyring,
+      options.oauthTokens ?? new PublicClientTokens(),
+      options.grants,
+    );
+    this.credentials = new CloudflareCredentials(prisma, keyring, this.grants);
     this.security =
       options.securityEvents === false
         ? null
@@ -347,9 +381,13 @@ export class CloudflareAuditSync {
       securitySkippedZones: 0,
       securityExpired: 0,
       budgetWaits: 0,
+      grantsRenewed: 0,
+      grantsFailed: 0,
+      grantsAppRejected: 0,
     };
     if (!(await this.lease.acquire(now))) return { ...report, status: 'locked' };
     let firstError: string | null = null;
+    const started = performance.now();
     try {
       const context: RunContext = {
         now,
@@ -357,8 +395,10 @@ export class CloudflareAuditSync {
         exceptions: await this.store.activeExceptions(now),
         lastEvents: new LastEvents(),
         signal,
+        clock: () => new Date(now.getTime() + Math.max(0, Math.round(performance.now() - started))),
       };
-      for (const account of await this.accounts()) {
+      const accounts = await this.accounts();
+      for (const account of accounts) {
         signal?.throwIfAborted();
         report.accounts += 1;
         try {
@@ -372,6 +412,7 @@ export class CloudflareAuditSync {
         }
       }
       await context.lastEvents.save(this.prisma, 'cloudflare');
+      await this.grants.prune(new Set(accounts.flatMap((account) => account.cloudflareGrantId ?? [])));
       await this.prisma.syncState.update({
         where: { name: this.name },
         data: {
@@ -389,17 +430,21 @@ export class CloudflareAuditSync {
       });
       throw error;
     } finally {
+      const counters = this.grants.takeCounters();
+      report.grantsRenewed = counters.renewed;
+      report.grantsFailed = counters.failed;
+      report.grantsAppRejected = counters.appRejected;
       await this.lease.release();
     }
   }
 
-  /** Contas do Cloudflare ativas e com token guardado: busca de sistema, só as chaves e o estado da conexão. */
+  /** Contas do Cloudflare ativas e com credencial guardada: busca de sistema, só as chaves e o estado da conexão. */
   private accounts(): Promise<AccountRow[]> {
     return this.prisma.cloudAccount.findMany({
       where: {
         provider: 'cloudflare',
         status: 'active',
-        credential: { isNot: null },
+        OR: [{ credential: { isNot: null } }, { cloudflareGrantId: { not: null } }],
         // Só cliente ativo (CE-02): a conta de quem está suspenso, cancelado ou em expurgo não é lida.
         ...COLLECTING_TENANT,
         ...(this.tenantIds !== undefined && { tenantId: { in: [...this.tenantIds] } }),
@@ -408,6 +453,7 @@ export class CloudflareAuditSync {
         id: true,
         tenantId: true,
         accountId: true,
+        cloudflareGrantId: true,
         zones: true,
         connection: true,
         connectionError: true,
@@ -422,12 +468,7 @@ export class CloudflareAuditSync {
       report.blocked += 1;
       return;
     }
-    const keys: StreamKeys = {
-      audit: { cloudAccountId: account.id, stream: CLOUDFLARE_AUDIT_STREAM },
-      check: { cloudAccountId: account.id, stream: CLOUDFLARE_CHECK_STREAM },
-      security:
-        this.security === null ? null : { cloudAccountId: account.id, stream: CLOUDFLARE_SECURITY_STREAM },
-    };
+    const keys = this.keysOf(account.id);
     const audit = await this.cursors.read(keys.audit, now);
     const check = await this.cursors.read(keys.check, now);
     const security = keys.security === null ? null : await this.cursors.read(keys.security, now);
@@ -439,30 +480,29 @@ export class CloudflareAuditSync {
       return;
     }
 
-    const credential = await this.prisma.forTenant(account.tenantId).cloudCredential.findUnique({
-      where: { cloudAccountId: account.id },
-      select: { kind: true, ciphertext: true, expiresAt: true },
-    });
-    if (credential?.kind !== 'cloudflare_api_token') return;
-    const { ciphertext } = credential;
-    if (credential.expiresAt !== null && credential.expiresAt.getTime() <= now.getTime()) {
-      report.blocked += 1;
-      await this.markConnection(account, ciphertext, errorState('credential_expired'));
-      return;
+    const opened = await this.credentials.open(account, now, context.clock);
+    switch (opened.kind) {
+      case 'none':
+        return;
+      case 'blocked':
+        report.blocked += 1;
+        await this.markConnection(account, opened.version, errorState(opened.code));
+        return;
+      case 'unreadable':
+        report.unreadable += 1;
+        await this.markConnection(account, opened.version, errorState(opened.code));
+        return;
+      case 'waiting':
+        // O acesso por OAuth venceu e a renovação espera: nenhum fluxo tem com que ler, e nada conta como falha deles.
+        report.failedAccounts += 1;
+        await this.postpone(keys, null, opened.retryAt);
+        await this.markConnection(account, opened.version, errorState(opened.code));
+        return;
+      case 'ready':
+        break;
     }
-    let token: CloudflareToken;
-    try {
-      const binding = credentialBinding({ ...account, provider: 'cloudflare' }, credential.kind);
-      const opened = open(this.keyring, binding, ciphertext);
-      if (!(opened instanceof CloudflareToken)) throw new CredentialVaultError('payload_invalid');
-      token = opened;
-    } catch (error) {
-      if (!(error instanceof CredentialVaultError)) throw error;
-      report.unreadable += 1;
-      await this.markConnection(account, ciphertext, errorState('credential_unreadable'));
-      return;
-    }
-    const session: Session = { account, ciphertext, token };
+    const { session } = opened;
+    const { token, version } = session;
 
     let checkError =
       check.lastErrorKind !== null && CHECK_ERRORS.has(check.lastErrorKind) ? check.lastErrorKind : null;
@@ -471,14 +511,14 @@ export class CloudflareAuditSync {
       const outcome = await this.check(session, keys.check, context);
       if (outcome.kind === 'blocked') {
         report.blocked += 1;
-        await this.markConnection(account, ciphertext, errorState(outcome.code));
+        await this.block(session, outcome.code);
         return;
       }
       if (outcome.kind === 'rate_limited') {
         // O limite vale para o token inteiro: a auditoria e os eventos também esperam, estejam ou não na hora.
         report.failedAccounts += 1;
-        await this.postpone(keys, 'check', outcome.retryAt);
-        await this.markConnection(account, ciphertext, errorState('rate_limited'));
+        await this.rateLimited(account, keys, 'check', outcome.retryAt, now);
+        await this.markConnection(account, version, errorState('rate_limited'));
         return;
       }
       if (outcome.kind === 'done') {
@@ -497,9 +537,13 @@ export class CloudflareAuditSync {
       } catch (error) {
         if (!(error instanceof CloudflareApiError)) throw error;
         report.failedAccounts += 1;
-        await this.sourceFailed(keys, error, now);
-        if (isCloudflareBlockingError(error.code) || error.code === 'rate_limited') {
-          await this.markConnection(account, ciphertext, errorState(error.code));
+        await this.sourceFailed(account, keys, error, now);
+        if (isCloudflareBlockingError(error.code)) {
+          await this.block(session, error.code);
+          return;
+        }
+        if (error.code === 'rate_limited') {
+          await this.markConnection(account, version, errorState(error.code));
           return;
         }
         sourceError = error.code;
@@ -512,16 +556,17 @@ export class CloudflareAuditSync {
         ? security.lastErrorKind
         : null;
     if (securityDue && this.security !== null && keys.security !== null) {
-      const outcome = await this.security.read(account, token, security, keys.security, context);
+      const sharing = await this.sharing(account);
+      const outcome = await this.security.read(account, token, security, keys.security, context, sharing);
       switch (outcome.kind) {
         case 'blocked':
           report.blocked += 1;
-          await this.markConnection(account, ciphertext, errorState(outcome.code));
+          await this.block(session, outcome.code);
           return;
         case 'rate_limited':
           report.failedAccounts += 1;
-          await this.postpone(keys, 'security', outcome.retryAt);
-          await this.markConnection(account, ciphertext, errorState('rate_limited'));
+          await this.rateLimited(account, keys, 'security', outcome.retryAt, now);
+          await this.markConnection(account, version, errorState('rate_limited'));
           return;
         case 'failed':
           report.failedAccounts += 1;
@@ -543,21 +588,35 @@ export class CloudflareAuditSync {
       // Só a conferência rodou: a conexão muda só pelo que ela confere.
       if (!checkDone) return;
       if (final !== null) {
-        await this.markConnection(account, ciphertext, errorState(final));
+        await this.markConnection(account, version, errorState(final));
       } else if (account.connection === 'error' && CHECK_ERRORS.has(account.connectionError ?? '')) {
         // O problema das zonas foi resolvido no cadastro ou no Cloudflare.
-        await this.markConnection(account, ciphertext, { connection: 'connected', connectionError: null });
+        await this.markConnection(account, version, { connection: 'connected', connectionError: null });
       }
       return;
     }
-    await this.markConnection(account, ciphertext, {
+    await this.markConnection(account, version, {
       ...(final === null ? { connection: 'connected', connectionError: null } : errorState(final)),
       ...(collected && { lastCollectedAt: now }),
     });
   }
 
+  private keysOf(cloudAccountId: string): StreamKeys {
+    return {
+      audit: { cloudAccountId, stream: CLOUDFLARE_AUDIT_STREAM },
+      check: { cloudAccountId, stream: CLOUDFLARE_CHECK_STREAM },
+      security: this.security === null ? null : { cloudAccountId, stream: CLOUDFLARE_SECURITY_STREAM },
+    };
+  }
+
+  /** A recusa que para a coleta da conta até a credencial ser trocada (ou, por OAuth, o cliente conectar de novo). */
+  private async block(session: Session, code: string): Promise<void> {
+    const blocking = await this.credentials.blockingCode(session, code);
+    await this.markConnection(session.account, session.version, errorState(blocking));
+  }
+
   /** O 429 vale para o token inteiro: os outros fluxos da conta esperam o mesmo prazo, sem contar falha. */
-  private async postpone(keys: StreamKeys, from: keyof StreamKeys, until: Date): Promise<void> {
+  private async postpone(keys: StreamKeys, from: keyof StreamKeys | null, until: Date): Promise<void> {
     for (const stream of ['audit', 'check', 'security'] as const) {
       const key = keys[stream];
       if (stream !== from && key !== null) await this.cursors.postpone(key, until);
@@ -565,11 +624,68 @@ export class CloudflareAuditSync {
   }
 
   /**
+   * O 429 em todos os fluxos da conta e, na concessão por OAuth, em todos os das outras contas dela, que usam o mesmo
+   * acesso: as que vêm depois nesta execução já o encontram.
+   */
+  private async rateLimited(
+    account: AccountRow,
+    keys: StreamKeys,
+    from: keyof StreamKeys,
+    until: Date,
+    now: Date,
+  ): Promise<void> {
+    await this.postpone(keys, from, until);
+    for (const id of await this.siblings(account)) {
+      const sibling = this.keysOf(id);
+      for (const key of [sibling.audit, sibling.check, sibling.security]) {
+        // O cursor de uma conta nunca lida ainda não existe, e só um cursor gravado se adia.
+        if (key !== null) await this.cursors.read(key, now);
+      }
+      await this.postpone(sibling, null, until);
+    }
+  }
+
+  /** As outras contas ativas da mesma concessão; nenhuma na conta com token colado. */
+  private async siblings(account: AccountRow): Promise<string[]> {
+    if (account.cloudflareGrantId === null) return [];
+    const rows = await this.prisma.forTenant(account.tenantId).cloudAccount.findMany({
+      where: {
+        cloudflareGrantId: account.cloudflareGrantId,
+        provider: 'cloudflare',
+        status: 'active',
+        id: { not: account.id },
+      },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+    });
+    return rows.map(({ id }) => id);
+  }
+
+  /** Com quem a conta divide o orçamento do GraphQL; null quando ele é só dela. */
+  private async sharing(account: AccountRow): Promise<GrantSharing | null> {
+    const siblings = await this.siblings(account);
+    if (siblings.length === 0) return null;
+    const cursors = await this.prisma.collectorCursor.findMany({
+      where: { cloudAccountId: { in: siblings }, stream: CLOUDFLARE_SECURITY_STREAM, region: '' },
+      select: { continuation: true },
+    });
+    return {
+      accounts: siblings.length + 1,
+      continuations: cursors.map(({ continuation }) => continuation),
+    };
+  }
+
+  /**
    * Falha da origem na auditoria (quem chama põe a conexão em erro com o código). 401 e 403 param a coleta até o token
    * ser trocado (nenhuma nova tentativa); 429 espera o `retry-after`, em todos os fluxos da conta (o limite é do token
    * inteiro); o resto recua o cursor (1 min, dobrando, até 1 h).
    */
-  private async sourceFailed(keys: StreamKeys, error: CloudflareApiError, now: Date): Promise<void> {
+  private async sourceFailed(
+    account: AccountRow,
+    keys: StreamKeys,
+    error: CloudflareApiError,
+    now: Date,
+  ): Promise<void> {
     if (isCloudflareBlockingError(error.code)) {
       await this.cursors.fail(keys.audit, error, now, {
         retryAt: new Date(now.getTime() + this.auditIntervalMs),
@@ -577,16 +693,15 @@ export class CloudflareAuditSync {
     } else if (error.code === 'rate_limited') {
       const retryAt = new Date(now.getTime() + (error.retryAfterMs ?? RATE_LIMIT_WAIT_MS));
       await this.cursors.fail(keys.audit, error, now, { retryAt });
-      await this.postpone(keys, 'audit', retryAt);
+      await this.rateLimited(account, keys, 'audit', retryAt, now);
     } else {
       await this.cursors.fail(keys.audit, error, now);
     }
   }
 
-  /** Conferência de hora em hora: o token (verify e leitura de prova) e, com zonas cadastradas, a lista das zonas. */
-  private async check(session: Session, key: CursorKey, context: RunContext): Promise<CheckOutcome> {
-    const { account, token } = session;
-    const { now } = context;
+  /** O token colado: o `tokens/verify` e a leitura de prova (os mesmos do painel). Null quando está tudo certo. */
+  private async verifyToken(session: TokenSession, key: CursorKey, now: Date): Promise<CheckOutcome | null> {
+    const { account, token, version } = session;
     let checked: CheckedCredential;
     try {
       checked = await this.tokenCheck.check(token, account.accountId, now);
@@ -602,7 +717,46 @@ export class CloudflareAuditSync {
       await this.cursors.fail(key, new CloudflareSyncError(error.code), now);
       return { kind: 'unavailable' };
     }
-    await this.refreshCredential(session, checked, now);
+    await this.credentials.checked(account, version, checked, now);
+    return null;
+  }
+
+  /** A concessão por OAuth: só a leitura de prova da auditoria, uma entrada da última hora. Null quando está tudo certo. */
+  private async probeGrant(
+    session: Session,
+    key: CursorKey,
+    context: RunContext,
+  ): Promise<CheckOutcome | null> {
+    const { now } = context;
+    try {
+      await this.client.auditPage(
+        session.token,
+        session.account.accountId,
+        { since: new Date(now.getTime() - PROBE_WINDOW_MS), before: now, limit: 1 },
+        context.signal,
+      );
+      return null;
+    } catch (error) {
+      if (!(error instanceof CloudflareApiError)) throw error;
+      if (isCloudflareBlockingError(error.code)) return { kind: 'blocked', code: error.code };
+      if (error.code === 'rate_limited') {
+        const retryAt = new Date(now.getTime() + (error.retryAfterMs ?? RATE_LIMIT_WAIT_MS));
+        await this.cursors.fail(key, error, now, { retryAt });
+        return { kind: 'rate_limited', retryAt };
+      }
+      await this.cursors.fail(key, error, now);
+      return { kind: 'unavailable' };
+    }
+  }
+
+  /** Conferência de hora em hora: a credencial e, com zonas cadastradas, a lista das zonas. */
+  private async check(session: Session, key: CursorKey, context: RunContext): Promise<CheckOutcome> {
+    const { account, token } = session;
+    const { now } = context;
+    const failed = isTokenSession(session)
+      ? await this.verifyToken(session, key, now)
+      : await this.probeGrant(session, key, context);
+    if (failed !== null) return failed;
 
     let checkError: string | null = null;
     if (account.zones.length > 0) {
@@ -636,32 +790,19 @@ export class CloudflareAuditSync {
     return { kind: 'done', checkError };
   }
 
-  /** A última conferência e a validade vindas do Cloudflare, só se o token guardado ainda é o conferido. */
-  private async refreshCredential(session: Session, checked: CheckedCredential, now: Date): Promise<void> {
-    const { account, ciphertext } = session;
-    await this.prisma.$transaction(async (tx) => {
-      await lockCredential(tx, account.id);
-      await scopeToTenant(tx, account.tenantId).cloudCredential.updateMany({
-        where: { cloudAccountId: account.id, ciphertext },
-        data: { verifiedAt: now, expiresAt: checked.expiresAt },
-      });
-    });
-  }
-
   /**
    * Estado da conexão da conta, pelo escopo do cliente, sob o lock da credencial (o mesmo da troca pelo painel) e só
-   * se o token guardado ainda é o que esta leitura usou. Conta desativada no meio fica como a desativação deixou.
+   * se a credencial ainda é a que esta leitura usou. Conta desativada no meio fica como a desativação deixou.
    */
-  private async markConnection(account: AccountRow, ciphertext: string, data: ConnectionData): Promise<void> {
+  private async markConnection(
+    account: AccountRow,
+    version: CredentialVersion,
+    data: ConnectionData,
+  ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       await lockCredential(tx, account.id);
-      const db = scopeToTenant(tx, account.tenantId);
-      const current = await db.cloudCredential.findUnique({
-        where: { cloudAccountId: account.id },
-        select: { ciphertext: true },
-      });
-      if (current?.ciphertext !== ciphertext) return;
-      await db.cloudAccount.updateMany({
+      if (!(await this.credentials.isCurrent(tx, account, version))) return;
+      await scopeToTenant(tx, account.tenantId).cloudAccount.updateMany({
         where: { id: account.id, provider: 'cloudflare', status: 'active' },
         data,
       });

@@ -6,6 +6,7 @@ import {
   CLOUDFLARE_OAUTH_ATTEMPT_STATUSES,
   CLOUDFLARE_OAUTH_CALLBACK_ERRORS,
   CLOUDFLARE_OAUTH_CALLBACK_PATH,
+  CLOUDFLARE_OAUTH_CLIENT_ERROR,
   CLOUDFLARE_OAUTH_CODE_MAX_LENGTH,
   CLOUDFLARE_OAUTH_ISSUER,
   CLOUDFLARE_OAUTH_OPEN_STATUSES,
@@ -49,7 +50,7 @@ describe('Cloudflare por OAuth: quando vale', () => {
     expect(cloudflareConnectMode({ platform: 'vm', oauth: null })).toBe('token');
   });
 
-  it('nada que um lado anterior recuse: nem tipo de credencial, nem campo na conta, nem erro que para a coleta', () => {
+  it('nada que um lado anterior recuse: nem tipo de credencial, nem campo na conta, nem código de erro', () => {
     // O tipo iria no relato estrito do nó e no enum do banco; o campo, no contrato estrito que o painel anterior lê.
     expect(CLOUD_CREDENTIAL_KINDS).toEqual([
       'cloudflare_api_token',
@@ -57,11 +58,23 @@ describe('Cloudflare por OAuth: quando vale', () => {
       'gcp_service_account_key',
     ]);
     expect(Object.keys(cloudAccountSchema.shape).filter((key) => /grant|oauth/i.test(key))).toEqual([]);
-    // Entra na lista com o coletor que o grava e a explicação no painel. O formato já cabe no contrato de hoje.
-    expect(CLOUDFLARE_BLOCKING_ERRORS as readonly string[]).not.toContain(CLOUDFLARE_OAUTH_RECONNECT_ERROR);
-    expect(cloudAccountSchema.shape.connectionError.safeParse(CLOUDFLARE_OAUTH_RECONNECT_ERROR).success).toBe(
-      true,
-    );
+    // O que para a coleta ganha um código só; o contrato da conexão é texto livre, então o lado anterior o aceita.
+    expect(CLOUDFLARE_BLOCKING_ERRORS).toEqual([
+      'credential_rejected',
+      'credential_forbidden',
+      'credential_expired',
+      'credential_disabled',
+      CLOUDFLARE_OAUTH_RECONNECT_ERROR,
+    ]);
+    const { connectionError } = cloudAccountSchema.shape;
+    for (const code of [
+      CLOUDFLARE_OAUTH_RECONNECT_ERROR,
+      CLOUDFLARE_OAUTH_CLIENT_ERROR,
+      'oauth_refresh_unavailable',
+      'oauth_unreadable',
+    ]) {
+      expect(connectionError.safeParse(code).success).toBe(true);
+    }
   });
 });
 

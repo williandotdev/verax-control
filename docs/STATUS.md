@@ -6585,3 +6585,22 @@ log-source-labels.ts`, `lib/api-types.ts` e `log-sources.test.tsx`; `apps/contro
 - **Riscos:** os escopos, a renovação sem segredo e a leitura da auditoria e do GraphQL por OAuth dependem de um app
   registrado no Cloudflare e não foram conferidos. O plano de controle grava as capacidades de cada nó num schema
   estrito: voltar a versão dele depois de um nó anunciar `cloudflare_oauth` recusaria a leitura.
+
+## Cloudflare por OAuth: coletor (CF-3, 23/11/2026)
+
+- **O que mudou:** o coletor do Cloudflare lê a credencial por uma origem só (`apps/api/src/cloudflare/cloudflare-credentials.ts`):
+  o token colado ou a concessão por OAuth. Nenhuma conta tem concessão ainda (a conexão é do CF-4).
+  - **Renovação** (`oauth/cloudflare-grants.ts` e `oauth/oauth-tokens.ts`): intenção gravada sob `lockGrant`, pedido fora de
+    transação, sem repetir e sem o sinal da parada, e gravação condicional pela geração, tentada de novo e guardada na
+    memória se o banco não volta. O acesso novo só é usado depois de gravado. O 401 da API vale uma renovação e um novo envio.
+  - **Limites da concessão:** o 429 adia todas as contas dela, e o orçamento do GraphQL é dividido entre elas, com o gasto
+    das outras contando no total.
+  - **Códigos:** `oauth_reconnect_required` (para a coleta, em `CLOUDFLARE_BLOCKING_ERRORS`), `oauth_client_rejected`,
+    `oauth_refresh_unavailable` e `oauth_unreadable`, com explicação no painel. `connectionError` é texto livre no contrato:
+    painel, console e plano de controle anteriores mostram só o código.
+- **Conta com token colado:** comparada lado a lado com o coletor anterior em 28 cenários (pedidos HTTP, consultas,
+  cursores, conexão, credencial, achados, fila sem dono, uso e relatório), sem diferença; os testes dela não mudaram.
+- **Dependências:** nenhuma.
+- **Riscos:** só um app registrado confirma a renovação sem segredo, a troca do token a cada uso e o 401. Uma queda entre a
+  resposta do Cloudflare e a gravação pede a reconexão. O CF-4, ao reconectar na mesma concessão, precisa aumentar a
+  `generation`, para uma renovação atrasada não gravar por cima.
