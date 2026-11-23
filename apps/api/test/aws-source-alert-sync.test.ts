@@ -122,7 +122,7 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
   });
 
   describe('flow logs da VPC e buckets das fontes descobertas (sync da AWS)', () => {
-    it('o alerta do bucket de uma fonte autorizada vira achado do cliente dela; o mesmo registro duas vezes, um achado só', async () => {
+    it('a correlação dos flow logs no bucket de uma fonte autorizada vira achado do cliente dela; a mesma rajada duas vezes, um achado só', async () => {
       const cloud = await cloudAccount(tenantA);
       const flowBucket = bucket('fluxo');
       const trailBucket = bucket('trilha-descoberta');
@@ -131,30 +131,53 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       await source(cloud, { details: { bucket: flowBucket, flowLogId: 'fl-0fedcba9876543210' } });
       await source(cloud, { kind: 'cloudtrail', details: { bucket: trailBucket } });
 
-      const flow = at(vpcFlowAlert({ account: cloud.accountId, bucket: flowBucket }));
-      // O mesmo registro lido de novo pelo Wazuh: outro alerta, a mesma identidade.
-      const again = at(vpcFlowAlert({ account: cloud.accountId, bucket: flowBucket }), 4);
-      const other = at(vpcFlowAlert({ account: cloud.accountId, bucket: flowBucket, sourcePort: 50_000 }), 3);
+      const from = { account: cloud.accountId, bucket: flowBucket };
+      const flow = at(vpcFlowAlert({ ...from, rule: 'scan' }));
+      // A mesma rajada lida de novo pelo Wazuh, fechada noutro registro: outro alerta, o mesmo achado.
+      const again = at(vpcFlowAlert({ ...from, rule: 'scan', sourcePort: 50_000 }), 4);
+      // Outro endereço e a outra regra do mesmo endereço: outros achados.
+      const other = at(vpcFlowAlert({ ...from, rule: 'scan', sourceIp: '203.0.113.51' }), 3);
+      const insistence = at(vpcFlowAlert({ ...from, rule: 'insistence' }), 3);
       const trail = at(cloudTrailAlert({ account: cloud.accountId, bucket: trailBucket }), 2);
-      const report = await awsSync(new FakeIndexer([flow, again, other, trail])).runOnce();
-      expect(report).toMatchObject({ read: 4, created: 3, duplicates: 1, unowned: 0 });
+      const all = [flow, again, other, insistence, trail];
+      const report = await awsSync(new FakeIndexer(all)).runOnce();
+      expect(report).toMatchObject({ read: 5, created: 4, duplicates: 1, unowned: 0 });
 
-      const findings = await findingsOf([flow.id, again.id, other.id, trail.id]);
+      const findings = await findingsOf(all.map((alert) => alert.id));
       expect(findings.map((finding) => finding.rawEventId).sort()).toEqual(
-        [flow.id, other.id, trail.id].sort(),
+        [flow.id, other.id, insistence.id, trail.id].sort(),
       );
+      const key = `wazuh/${cloud.accountId}/vpc:203.0.113.50:100400`;
       expect(findings.find((finding) => finding.rawEventId === flow.id)).toMatchObject({
         tenantId: tenantA,
         accountId: cloud.accountId,
         source: 'wazuh',
+        sourceEventId: key,
+        chainKey: key,
+        lastSeenAt: new Date('2026-11-01T09:00:00.000Z'),
         logSource: 'vpc_flow',
-        severity: 'low',
+        severity: 'medium',
         status: 'new',
+        title: 'Possível varredura de rede vinda do mesmo endereço',
         eventName: 'REJECT',
         region: 'sa-east-1',
         resource: 'eni:eni-0123456789abcdef0',
         sourceIp: '203.0.113.50',
         ruleId: '100400',
+        ruleLevel: 8,
+        mitreTactics: ['Discovery'],
+        mitreTechniques: ['T1046'],
+      });
+      expect(findings.find((finding) => finding.rawEventId === other.id)).toMatchObject({
+        sourceEventId: `wazuh/${cloud.accountId}/vpc:203.0.113.51:100400`,
+        sourceIp: '203.0.113.51',
+      });
+      expect(findings.find((finding) => finding.rawEventId === insistence.id)).toMatchObject({
+        sourceEventId: `wazuh/${cloud.accountId}/vpc:203.0.113.50:100401`,
+        severity: 'high',
+        title: 'Insistência em porta de administração remota vinda do mesmo endereço',
+        ruleId: '100401',
+        mitreTechniques: ['T1110'],
       });
       expect(findings.find((finding) => finding.rawEventId === trail.id)).toMatchObject({
         tenantId: tenantA,
@@ -165,17 +188,78 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       expect(row.lastEventAt).not.toBeNull();
 
       // Outra execução relê tudo: nada novo.
-      expect(await awsSync(new FakeIndexer([flow, again, other, trail])).runOnce()).toMatchObject({
+      expect(await awsSync(new FakeIndexer(all)).runOnce()).toMatchObject({ created: 0, duplicates: 5 });
+    });
+
+    it('a rajada do mesmo endereço em outra hora: sem triagem, só a versão avança; com o achado triado, vira outro, ligado ao original', async () => {
+      const cloud = await cloudAccount(tenantA);
+      const flowBucket = bucket('fluxo');
+      await source(cloud, { details: { bucket: flowBucket } });
+      const scan = (start: string, minutesAgo: number) =>
+        at(vpcFlowAlert({ account: cloud.accountId, bucket: flowBucket, rule: 'scan', start }), minutesAgo);
+      const key = `wazuh/${cloud.accountId}/vpc:203.0.113.50:100400`;
+      const chain = () =>
+        prisma.finding.findMany({
+          where: { tenantId: tenantA, chainKey: key },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true, sourceEventId: true, status: true, lastSeenAt: true, recurrenceOfId: true },
+        });
+
+      const first = scan('2026-11-01T09:58:00Z', 9);
+      expect(await awsSync(new FakeIndexer([first])).runOnce()).toMatchObject({ created: 1 });
+      // Uma hora depois, com o achado ainda na fila: nenhum achado novo, e a versão avança.
+      const nextHour = scan('2026-11-01T10:05:00Z', 8);
+      expect(await awsSync(new FakeIndexer([first, nextHour])).runOnce()).toMatchObject({
+        created: 0,
+        duplicates: 2,
+      });
+      const [original, ...none] = await chain();
+      expect(none).toEqual([]);
+      expect(original).toMatchObject({
+        sourceEventId: key,
+        status: 'new',
+        lastSeenAt: new Date('2026-11-01T10:00:00.000Z'),
+        recurrenceOfId: null,
+      });
+
+      // Triado (resolvido): a rajada da mesma hora já conhecida não muda nada; a de outra hora vira um achado novo.
+      await prisma.finding.update({
+        where: { id: original?.id ?? '' },
+        data: { status: 'resolved', triagedAt: new Date() },
+      });
+      const sameHour = scan('2026-11-01T10:40:00Z', 7);
+      expect(await awsSync(new FakeIndexer([sameHour])).runOnce()).toMatchObject({
+        created: 0,
+        duplicates: 1,
+      });
+      const later = scan('2026-11-01T11:10:00Z', 6);
+      expect(await awsSync(new FakeIndexer([sameHour, later])).runOnce()).toMatchObject({
+        created: 1,
+        duplicates: 1,
+      });
+      const rows = await chain();
+      expect(rows).toMatchObject([
+        { id: original?.id, status: 'resolved', lastSeenAt: new Date('2026-11-01T10:00:00.000Z') },
+        {
+          sourceEventId: `${key}@2026-11-01T11:00:00.000Z`,
+          status: 'new',
+          lastSeenAt: new Date('2026-11-01T11:00:00.000Z'),
+          recurrenceOfId: original?.id,
+        },
+      ]);
+      // A mesma rajada relida, e uma mais antiga que a última conhecida: nada novo.
+      expect(await awsSync(new FakeIndexer([first, nextHour, sameHour, later])).runOnce()).toMatchObject({
         created: 0,
         duplicates: 4,
       });
+      expect(await chain()).toHaveLength(2);
     });
 
     it('a API devolve o achado dos flow logs com a fonte de log dele, só ao cliente dono (A/B)', async () => {
       const cloud = await cloudAccount(tenantA);
       const flowBucket = bucket('fluxo');
       await source(cloud, { details: { bucket: flowBucket } });
-      const flow = at(vpcFlowAlert({ account: cloud.accountId, bucket: flowBucket }));
+      const flow = at(vpcFlowAlert({ account: cloud.accountId, bucket: flowBucket, rule: 'scan' }));
       await awsSync(new FakeIndexer([flow])).runOnce();
 
       const adminA = await createSignedInUser(app, { role: 'admin_cliente', tenantId: tenantA });
@@ -187,6 +271,8 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       expect(items.find((item) => item.accountId === cloud.accountId)).toMatchObject({
         source: 'vpc_flow',
         eventName: 'REJECT',
+        severity: 'medium',
+        title: 'Possível varredura de rede vinda do mesmo endereço',
       });
       const ofB = (await list(adminB.cookie).expect(200)).body as { items: unknown[] };
       expect(ofB.items).toEqual([]);
@@ -201,11 +287,16 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       const revoked = await source(cloudA, { details: { bucket: revokedBucket } });
       await revoke(revoked.id);
 
-      const fromRevoked = at(vpcFlowAlert({ account: cloudA.accountId, bucket: revokedBucket }));
+      const fromRevoked = at(
+        vpcFlowAlert({ account: cloudA.accountId, bucket: revokedBucket, rule: 'scan' }),
+      );
       // O bucket dos flow logs não vale como origem de CloudTrail.
       const wrongSource = at(cloudTrailAlert({ account: cloudA.accountId, bucket: flowBucket }), 4);
       // A pasta da conta de outro cliente no bucket que A autorizou.
-      const otherTenant = at(vpcFlowAlert({ account: cloudB.accountId, bucket: flowBucket }), 3);
+      const otherTenant = at(
+        vpcFlowAlert({ account: cloudB.accountId, bucket: flowBucket, rule: 'insistence' }),
+        3,
+      );
       const report = await awsSync(new FakeIndexer([fromRevoked, wrongSource, otherTenant])).runOnce();
       expect(report).toMatchObject({ read: 3, created: 0, unowned: 3 });
       expect(await unownedOf([fromRevoked.id, wrongSource.id, otherTenant.id])).toEqual(
@@ -226,7 +317,7 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
       const shared = bucket('fluxo-dos-dois');
       await source(cloudA, { details: { bucket: shared } });
       await source(cloudB, { details: { bucket: shared } });
-      const flow = at(vpcFlowAlert({ account: cloudA.accountId, bucket: shared }));
+      const flow = at(vpcFlowAlert({ account: cloudA.accountId, bucket: shared, rule: 'scan' }));
       expect(await awsSync(new FakeIndexer([flow])).runOnce()).toMatchObject({ created: 0, unowned: 1 });
       expect(await unownedOf([flow.id])).toMatchObject([{ reason: 'ambiguous_source' }]);
     });

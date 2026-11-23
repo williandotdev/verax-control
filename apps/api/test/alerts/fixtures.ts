@@ -313,9 +313,42 @@ export function wafAlert(
 }
 
 /**
+ * A regra de um alerta dos flow logs, como o wazuh-logtest do manager 4.14.9 a mostra: a do registro rejeitado (do
+ * próprio Wazuh, de nível 4, abaixo do corte dos alertas do nó) e as duas correlações locais
+ * (`infra/wazuh/config/manager/rules/verax_aws_flow_rules.xml`), a varredura e a insistência em porta de administração
+ * remota.
+ */
+const VPC_FLOW_RULES = {
+  record: {
+    id: '80402',
+    level: 4,
+    description: 'AWS VPC Flow: [REJECT] - Interface: eni-0123456789abcdef0 - Protocol: 6.',
+    groups: ['amazon', 'aws', 'aws_vpcflow'],
+  },
+  scan: {
+    id: '100400',
+    level: 8,
+    description: 'Verax Control: Possível varredura de rede vinda do mesmo endereço (203.0.113.50).',
+    groups: ['verax_aws_flow', 'aws_vpcflow'],
+    frequency: 40,
+    mitre: { id: ['T1046'], tactic: ['Discovery'], technique: ['Network Service Discovery'] },
+  },
+  insistence: {
+    id: '100401',
+    level: 10,
+    description:
+      'Verax Control: Insistência em porta de administração remota vinda do mesmo endereço (203.0.113.50 para 10.0.0.10, porta 22).',
+    groups: ['verax_aws_flow', 'aws_vpcflow'],
+    frequency: 15,
+    mitre: { id: ['T1110'], tactic: ['Credential Access'], technique: ['Brute Force'] },
+  },
+} as const;
+
+/**
  * Registro de um flow log da VPC como o tipo `vpcflow` do módulo o entrega (`source: vpc`): os 14 campos do formato
- * padrão, com o início e o fim em ISO 8601, e a conta da pasta lida em `aws_account_id`. O Wazuh não tem regra de
- * nível 5 para cima para os flow logs: a regra do alerta é a de uma correlação local de exemplo.
+ * padrão, com o início e o fim em ISO 8601, e a conta da pasta lida em `aws_account_id`. `rule` diz que alerta é: o do
+ * registro sozinho (`record`, o padrão; no nó ele não chega ao indexer, porque a regra fica abaixo do corte) ou o de
+ * uma correlação (`scan` e `insistence`), em que o evento do alerta é o registro que fechou a contagem.
  */
 export function vpcFlowAlert(
   options: {
@@ -328,18 +361,13 @@ export function vpcFlowAlert(
     sourcePort?: number;
     action?: string;
     start?: string;
-    level?: number;
+    rule?: keyof typeof VPC_FLOW_RULES;
   } = {},
 ): Record<string, unknown> {
   const account = options.account ?? ALFA.accountId;
   const owner = options.interfaceOwner === undefined ? account : options.interfaceOwner;
   return document(
-    {
-      id: '100400',
-      level: options.level ?? 6,
-      description: 'AWS VPC Flow: muitas conexões rejeitadas da mesma origem.',
-      groups: ['amazon', 'aws', 'aws_vpcflow'],
-    },
+    { ...VPC_FLOW_RULES[options.rule ?? 'record'] },
     {
       log_info: {
         aws_account_alias: '',

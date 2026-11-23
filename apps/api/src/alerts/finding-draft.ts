@@ -56,7 +56,8 @@ export interface FindingDraft {
    * Só no GuardDuty, com id nativo: a versão do achado na origem (`updatedAt`), a chave do achado inteiro
    * (`chainKey`: a mesma no original, nas recorrências e, na sondagem de porta, no achado de cada IP) e a chave que a
    * versão nova ganha se a cadeia já estiver triada (a chave do achado inteiro mais o horário). A gravação decide a
-   * reincidência por aqui.
+   * reincidência por aqui. As correlações dos flow logs da VPC usam a mesma regra: o achado é a regra, a conta e o
+   * endereço de origem, e a versão é a hora da rajada.
    */
   recurrence?: { lastSeenAt: string; chainKey: string; sourceEventId: string };
   /**
@@ -130,6 +131,10 @@ const MAX_EVENT_ID = 128;
  *   sem a conta, um id repetido de propósito no bucket de um cliente apagaria, como duplicado, o achado de outro.
  * - A regra separa a correlação (rajada de logins com falha, de bloqueios no WAF) do evento simples: o evento que
  *   fecha uma correlação, relido sem os anteriores, casa só com a regra simples, e cada regra vira o próprio achado.
+ * - Nas correlações dos flow logs da VPC (a varredura e a insistência em porta de administração remota), o id é só o
+ *   endereço de origem: `wazuh/<conta>/vpc:<endereço>:<regra>`. A rajada do mesmo endereço em outra hora segue a
+ *   regra do GuardDuty acima, com a hora cheia no lugar do `updatedAt`: `...:<regra>@<hora em ISO>` se o achado já
+ *   foi triado.
  * Um id que passaria do tamanho da chave entra pelo resumo SHA-256 (com o horário da recorrência, 111 no máximo).
  */
 export function wazuhFindingKey(

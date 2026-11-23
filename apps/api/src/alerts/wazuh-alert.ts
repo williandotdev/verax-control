@@ -28,6 +28,15 @@ import { z } from 'zod';
 export const AWS_SOURCES = ['cloudtrail', 'guardduty', 'waf', 'vpc'] as const;
 export type AwsSource = (typeof AWS_SOURCES)[number];
 
+/**
+ * As correlações dos flow logs da VPC (`infra/wazuh/config/manager/rules/verax_aws_flow_rules.xml`): a varredura
+ * vinda do mesmo endereço (100400) e a insistência em porta de administração remota (100401). Um registro sozinho
+ * nunca vira alerta (as regras do Wazuh para ele ficam abaixo do corte do nó); o alerta é da contagem, e o evento que
+ * vem nele é só o registro que a fechou. Por isso a identidade do achado não é a do registro: é o endereço de origem
+ * (`flowCorrelationSchema`).
+ */
+export const VPC_FLOW_CORRELATION_RULES: readonly string[] = ['100400', '100401'];
+
 export interface WazuhAwsAlert {
   /** ID do alerta no Wazuh. Muda a cada leitura do mesmo evento; o detalhe do achado busca o evento bruto por ele. */
   id: string;
@@ -36,7 +45,8 @@ export interface WazuhAwsAlert {
    * - CloudTrail: `eventID`;
    * - GuardDuty: `id` do achado e, na sondagem de porta, `/<IP>:<porta>` de quem sondou;
    * - WAF: `<timestamp>/<clientIp>/<requestId>`;
-   * - flow logs da VPC: a interface, o início da janela, a origem, o destino, o protocolo e a ação do registro.
+   * - flow logs da VPC: a interface, o início da janela, a origem, o destino, o protocolo e a ação do registro; nas
+   *   correlações (`VPC_FLOW_CORRELATION_RULES`), só o endereço de origem.
    * Repete-se quando o mesmo evento volta ao indexer (snapshot restaurado, `--reparse`, achado do GuardDuty
    * atualizado), por isso é a base da chave do achado. Ausente ou fora do formato, a chave usa o `id` do alerta.
    */
@@ -66,12 +76,15 @@ export interface WazuhAwsAlert {
    * versão; é este horário que diz se a versão relida é a mesma ou uma nova. O `service.eventLastSeen` não entra:
    * ora um, ora outro, as versões seriam comparadas por horários de natureza diferente, e uma versão nova cujo
    * `eventLastSeen` ficasse atrás do `updatedAt` da anterior cairia como antiga.
+   *
+   * Nas correlações dos flow logs da VPC, a versão é a hora cheia (UTC) do registro que fechou a contagem: a rajada
+   * do mesmo endereço em outra hora é a atividade nova do mesmo achado, e segue a mesma regra de reincidência.
    */
   lastSeenAt?: string;
   /**
    * Só no GuardDuty, com id nativo: o `id` do achado sozinho. Na sondagem de porta, o `nativeId` leva o IP e a porta
    * do item, e este campo fica só com o achado inteiro: a reincidência é dele, uma por versão, por mais itens que o
-   * wodle separe.
+   * wodle separe. Nas correlações dos flow logs da VPC, o endereço de origem (igual ao `nativeId`).
    */
   findingId?: string;
   actor: {
@@ -391,10 +404,14 @@ const portProbeDetailSchema = z
   })
   .transform((detail) => `${detail.remoteIpDetails.ipAddressV4}:${detail.localPortDetails.port}`);
 
-/** O id nativo e, só no GuardDuty, o `id` do achado inteiro (igual ao nativo fora da sondagem de porta). */
+/**
+ * O id nativo e, só no GuardDuty, o `id` do achado inteiro (igual ao nativo fora da sondagem de porta). Nas correlações
+ * dos flow logs, também a versão do achado (`lastSeenAt`), que nas outras fontes sai dos detalhes do evento.
+ */
 interface NativeIdentity {
   nativeId: string;
   findingId?: string;
+  lastSeenAt?: string;
 }
 
 /**
@@ -461,6 +478,37 @@ function nativeIdOf(source: AwsSource, aws: Record<string, unknown>): NativeIden
   return parsed.success ? parsed.data : undefined;
 }
 
+/** O começo da hora (UTC) de um horário ISO 8601 já normalizado (`2026-11-01T10:07:31.000Z`). */
+const hourOf = (iso: string): string => `${iso.slice(0, 13)}:00:00.000Z`;
+
+/**
+ * A identidade de um alerta de correlação dos flow logs da VPC (`VPC_FLOW_CORRELATION_RULES`), só com campos do
+ * registro que fechou a contagem:
+ * - o achado é a regra, a conta e o **endereço de origem** (a regra e a conta entram na chave, em `wazuhFindingKey`):
+ *   toda rajada do mesmo endereço na mesma conta é o mesmo achado, seja qual for o registro que a fechou. Com a
+ *   identidade do registro, cada alerta viraria um achado, e a mesma rajada relida (o `--reparse`, um snapshot
+ *   restaurado) fecharia noutro registro e duplicaria;
+ * - a versão é a **hora cheia** (UTC) do início da janela desse registro. Reler a mesma rajada cai na mesma hora (ou
+ *   numa anterior à última conhecida) e não muda nada. A rajada em outra hora segue a regra de reincidência do
+ *   GuardDuty (`FindingStore.recur`): com o achado ainda não triado, só a versão avança; com ele já triado, vira um
+ *   achado novo, ligado ao original. É no máximo um achado em aberto por regra, conta e endereço.
+ * O horário é o do tráfego, e não o do alerta (que muda a cada leitura). Sem o endereço ou o horário no formato, o
+ * alerta fica sem id nativo, e a chave usa o `id` do alerta.
+ */
+const flowCorrelationSchema = z
+  .object({ srcaddr: ipSchema, start: eventTimeSchema })
+  .transform(({ srcaddr, start }) => ({ nativeId: srcaddr, findingId: srcaddr, lastSeenAt: hourOf(start) }));
+
+function identityOf(
+  source: AwsSource,
+  ruleId: string,
+  aws: Record<string, unknown>,
+): NativeIdentity | undefined {
+  if (source !== 'vpc' || !VPC_FLOW_CORRELATION_RULES.includes(ruleId)) return nativeIdOf(source, aws);
+  const parsed = flowCorrelationSchema.safeParse(aws);
+  return parsed.success ? parsed.data : undefined;
+}
+
 /** O que sai de um achado do GuardDuty, seja qual for o caminho por onde ele chegou. */
 export type GuardDutyAlertFields = Pick<
   WazuhAwsAlert,
@@ -519,7 +567,7 @@ export function parseWazuhAlert(document: unknown): ParsedAlert {
   }
 
   const details = DETAILS[source](aws);
-  const identity = nativeIdOf(source, aws);
+  const identity = identityOf(source, rule.id, aws);
   return {
     ok: true,
     alert: {
@@ -544,7 +592,7 @@ export function parseWazuhAlert(document: unknown): ParsedAlert {
       region: details.region,
       eventName: details.eventName,
       awsSeverity: details.awsSeverity,
-      lastSeenAt: details.lastSeenAt,
+      lastSeenAt: identity?.lastSeenAt ?? details.lastSeenAt,
       actor: details.actor ?? {},
       resource: details.resource,
     },

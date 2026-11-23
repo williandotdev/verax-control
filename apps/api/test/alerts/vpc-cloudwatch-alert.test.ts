@@ -19,7 +19,11 @@ import {
   DEFAULT_SYNC_SETTINGS,
   syncPage,
 } from '../../src/alerts/sync-query.js';
-import { parseWazuhAlert, type WazuhAwsAlert } from '../../src/alerts/wazuh-alert.js';
+import {
+  parseWazuhAlert,
+  VPC_FLOW_CORRELATION_RULES,
+  type WazuhAwsAlert,
+} from '../../src/alerts/wazuh-alert.js';
 import { assertStructuredQuery } from '../../src/indexer/alert-queries.js';
 import { ALFA, BETA, cloudTrailAlert, cloudWatchAlert, vpcFlowAlert, withAws } from './fixtures.js';
 
@@ -44,7 +48,7 @@ describe('alerta de flow log da VPC (onboarding self-service da AWS)', () => {
       eventName: 'REJECT',
       actor: { ip: '203.0.113.50' },
       resource: 'eni:eni-0123456789abcdef0',
-      rule: { id: '100400', level: 6 },
+      rule: { id: '80402', level: 4 },
     });
   });
 
@@ -134,7 +138,7 @@ describe('alerta de flow log da VPC (onboarding self-service da AWS)', () => {
     });
     // A conta, o tipo da fonte, a identidade do registro e a regra.
     expect(first.sourceEventId).toBe(
-      'wazuh/111122223333/vpc:eni-0123456789abcdef0/2026-11-01T09:58:00Z/203.0.113.50-44321/10.0.0.10-22/6/REJECT:100400',
+      'wazuh/111122223333/vpc:eni-0123456789abcdef0/2026-11-01T09:58:00Z/203.0.113.50-44321/10.0.0.10-22/6/REJECT:80402',
     );
     // Com endereços IPv6, a identidade passa do tamanho da chave: entra pelo resumo, sempre o mesmo.
     const addresses = {
@@ -142,7 +146,7 @@ describe('alerta de flow log da VPC (onboarding self-service da AWS)', () => {
       dstaddr: '2001:db8:85a3:8d3:1319:8a2e:370:7349',
     };
     const long = toFindingDraft(flowOf(withAws(vpcFlowAlert(), addresses)), owner);
-    expect(long.sourceEventId).toMatch(/^wazuh\/111122223333\/vpc:sha256-[0-9a-f]{40}:100400$/);
+    expect(long.sourceEventId).toMatch(/^wazuh\/111122223333\/vpc:sha256-[0-9a-f]{40}:80402$/);
     expect(toFindingDraft(flowOf(withAws(vpcFlowAlert(), addresses)), owner).sourceEventId).toBe(
       long.sourceEventId,
     );
@@ -156,6 +160,109 @@ describe('alerta de flow log da VPC (onboarding self-service da AWS)', () => {
     );
     const alert = flowOf(vpcFlowAlert());
     expect(wazuhFindingKey(alert, BETA.accountId)).not.toBe(wazuhFindingKey(alert, ALFA.accountId));
+  });
+
+  it('a correlação (100400 e 100401): a identidade é o endereço de origem, e a versão é a hora da rajada', () => {
+    expect([...VPC_FLOW_CORRELATION_RULES]).toEqual(['100400', '100401']);
+    const scan = flowOf(vpcFlowAlert({ rule: 'scan' }));
+    expect(scan).toMatchObject({
+      source: 'vpc',
+      nativeId: '203.0.113.50',
+      findingId: '203.0.113.50',
+      // A hora cheia do início da janela do registro que fechou a contagem (09:58).
+      lastSeenAt: '2026-11-01T09:00:00.000Z',
+      eventName: 'REJECT',
+      actor: { ip: '203.0.113.50' },
+      rule: { id: '100400', level: 8, mitre: { ids: ['T1046'], tactics: ['Discovery'] } },
+    });
+    // A mesma rajada fechada noutro registro (outra conexão, outra interface, outro minuto da mesma hora).
+    const sameBurst = [
+      vpcFlowAlert({ rule: 'scan', sourcePort: 50_000 }),
+      vpcFlowAlert({ rule: 'scan', interfaceId: 'eni-0fedcba9876543210' }),
+      vpcFlowAlert({ rule: 'scan', start: '2026-11-01T09:01:00Z' }),
+    ];
+    for (const document of sameBurst) {
+      expect(flowOf(document)).toMatchObject({ nativeId: scan.nativeId, lastSeenAt: scan.lastSeenAt });
+    }
+    // Outra hora: o mesmo achado, outra versão. Outro endereço: outro achado.
+    expect(flowOf(vpcFlowAlert({ rule: 'scan', start: '2026-11-01T10:00:00Z' }))).toMatchObject({
+      nativeId: '203.0.113.50',
+      lastSeenAt: '2026-11-01T10:00:00.000Z',
+    });
+    expect(flowOf(vpcFlowAlert({ rule: 'scan', sourceIp: '203.0.113.51' })).nativeId).toBe('203.0.113.51');
+    // A insistência tem a mesma identidade (a regra é que separa os dois achados, na chave).
+    expect(flowOf(vpcFlowAlert({ rule: 'insistence' }))).toMatchObject({
+      nativeId: '203.0.113.50',
+      lastSeenAt: '2026-11-01T09:00:00.000Z',
+      rule: { id: '100401', level: 10, mitre: { ids: ['T1110'], tactics: ['Credential Access'] } },
+    });
+    // Sem o endereço ou sem o horário no formato: sem id nativo e sem versão, e o alerta segue válido.
+    for (const broken of [{ srcaddr: '-' }, { start: 'ontem' }, { start: '2026-13-01T09:58:00Z' }]) {
+      const alert = flowOf(withAws(vpcFlowAlert({ rule: 'scan' }), broken));
+      expect(alert.nativeId).toBeUndefined();
+      expect(alert.findingId).toBeUndefined();
+      expect(alert.lastSeenAt).toBeUndefined();
+    }
+    // O alerta do registro sozinho não tem versão.
+    expect(flowOf(vpcFlowAlert()).lastSeenAt).toBeUndefined();
+    expect(flowOf(vpcFlowAlert()).findingId).toBeUndefined();
+  });
+
+  it('o achado da correlação: a chave é a conta, o endereço e a regra; a hora entra na chave da reincidência', () => {
+    const owner = { owned: true as const, tenantId: ALFA.tenantId, accountId: ALFA.accountId };
+    const key = 'wazuh/111122223333/vpc:203.0.113.50:100400';
+    const scan = toFindingDraft(flowOf(vpcFlowAlert({ rule: 'scan' })), owner);
+    expect(scan).toMatchObject({
+      tenantId: ALFA.tenantId,
+      accountId: ALFA.accountId,
+      source: 'wazuh',
+      logSource: 'vpc_flow',
+      severity: 'medium',
+      ruleId: '100400',
+      ruleLevel: 8,
+      title: 'Possível varredura de rede vinda do mesmo endereço',
+      eventName: 'REJECT',
+      region: 'sa-east-1',
+      sourceIp: '203.0.113.50',
+      mitreTactics: ['Discovery'],
+      mitreTechniques: ['T1046'],
+      sourceEventId: key,
+      recurrence: {
+        lastSeenAt: '2026-11-01T09:00:00.000Z',
+        chainKey: key,
+        sourceEventId: `${key}@2026-11-01T09:00:00.000Z`,
+      },
+    });
+    // A mesma rajada fechada noutro registro: a mesma chave, a mesma versão.
+    const again = toFindingDraft(flowOf(vpcFlowAlert({ rule: 'scan', sourcePort: 50_000 })), owner);
+    expect(again.sourceEventId).toBe(key);
+    expect(again.recurrence).toEqual(scan.recurrence);
+    expect(again.rawEventId).not.toBe(scan.rawEventId);
+    // A insistência do mesmo endereço é outro achado, de severidade alta.
+    expect(toFindingDraft(flowOf(vpcFlowAlert({ rule: 'insistence' })), owner)).toMatchObject({
+      severity: 'high',
+      ruleId: '100401',
+      ruleLevel: 10,
+      title: 'Insistência em porta de administração remota vinda do mesmo endereço',
+      mitreTactics: ['Credential Access'],
+      mitreTechniques: ['T1110'],
+      sourceEventId: 'wazuh/111122223333/vpc:203.0.113.50:100401',
+    });
+    // O mesmo endereço noutra conta é outro achado.
+    expect(wazuhFindingKey(flowOf(vpcFlowAlert({ rule: 'scan' })), BETA.accountId)).toBe(
+      'wazuh/444455556666/vpc:203.0.113.50:100400',
+    );
+    // O endereço IPv6 mais longo cabe na chave, com a hora da reincidência.
+    const address = '2001:db8:85a3:8d3:1319:8a2e:370:7348';
+    const v6 = toFindingDraft(flowOf(withAws(vpcFlowAlert({ rule: 'scan' }), { srcaddr: address })), owner);
+    expect(v6.sourceEventId).toBe(`wazuh/111122223333/vpc:${address}:100400`);
+    expect(v6.recurrence?.sourceEventId).toBe(`${v6.sourceEventId}@2026-11-01T09:00:00.000Z`);
+    expect(v6.recurrence?.sourceEventId.length).toBeLessThanOrEqual(128);
+    // Sem o endereço no formato, a chave fica no id do alerta, sem reincidência.
+    const broken = flowOf(withAws(vpcFlowAlert({ rule: 'scan' }), { srcaddr: '-' }));
+    const draft = toFindingDraft(broken, owner);
+    expect(draft.sourceEventId).toBe(`wazuh/111122223333/alert:${broken.id}:100400`);
+    expect(draft.recurrence).toBeUndefined();
   });
 
   it('a página do sync da AWS lê também os flow logs, e só os eventos de bucket', () => {

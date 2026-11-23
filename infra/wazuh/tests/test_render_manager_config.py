@@ -202,14 +202,20 @@ class ValidSourcesTest(unittest.TestCase):
     def test_local_rules_go_with_the_config_even_without_accounts(self):
         for sources in ([account_a()], []):
             with self.subTest(accounts=len(sources)), Run(sources) as run:
-                # As correlações por conta e as regras críticas (fase 2, PR-V7) vão como estão no bundle.
-                for name in ("verax_aws_rules.xml", "verax_aws_critical_rules.xml"):
+                # As correlações por conta, as regras críticas (fase 2, PR-V7) e as correlações dos flow logs da VPC
+                # (onboarding self-service da AWS) vão como estão no bundle.
+                for name in ("verax_aws_rules.xml", "verax_aws_critical_rules.xml", "verax_aws_flow_rules.xml"):
                     installed = run.config_dir / "etc" / "rules" / name
                     original = RULES_DIR / name
                     self.assertEqual(installed.read_text(encoding="utf-8"), original.read_text(encoding="utf-8"))
                 self.assertEqual(
                     sorted(path.name for path in (run.config_dir / "etc" / "rules").iterdir()),
-                    ["verax_aws_critical_rules.xml", "verax_aws_rules.xml", "verax_reader_rules.xml"],
+                    [
+                        "verax_aws_critical_rules.xml",
+                        "verax_aws_flow_rules.xml",
+                        "verax_aws_rules.xml",
+                        "verax_reader_rules.xml",
+                    ],
                 )
 
     def test_correlations_are_split_by_account(self):
