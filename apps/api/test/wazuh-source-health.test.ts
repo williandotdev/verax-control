@@ -326,6 +326,61 @@ describe('saúde das fontes da AWS lidas pelo Wazuh: a tarefa wazuh-config com o
     expect(await auditOf(cloud.id)).toHaveLength(2);
   });
 
+  it('as fontes de achados lidas por API não entram na lista nem são tocadas: a saúde delas é da tarefa aws-findings', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (fontes de API)');
+    const cloud = await account(tenant);
+    const trailBucket = bucket();
+    const trail = await source(cloud, { details: { bucket: trailBucket } });
+    // Fontes de achados da mesma conta, nos estados que a tarefa `aws-findings` grava (os motivos são dela).
+    const synced = ago(3 * MINUTE);
+    const findings = await Promise.all(
+      [
+        { kind: 'guardduty', state: 'collecting', stateCode: 'no_findings_yet', lastSyncAt: synced },
+        { kind: 'security_hub', state: 'authorized', stateCode: 'awaiting_collector' },
+        { kind: 'inspector', state: 'ingestion_error', stateCode: 'throttled', lastSyncAt: synced },
+        { kind: 'access_analyzer', state: 'permission_error', stateCode: 'access-analyzer:ListFindingsV2' },
+      ].map((data) => source(cloud, { method: 'api', details: {}, name: data.kind, ...data })),
+    );
+    const snapshot = () =>
+      prisma.awsSource.findMany({
+        where: { id: { in: findings.map((item) => item.id) } },
+        orderBy: { id: 'asc' },
+      });
+    const before = await snapshot();
+    expect(before).toHaveLength(4);
+
+    // A lista do manager só tem a trilha.
+    const list = toWazuhSources(await findWazuhSourceRows(prisma, [tenant]));
+    expect(list.accounts).toMatchObject([
+      { accountId: cloud.accountId, s3: [{ type: 'cloudtrail', bucket: trailBucket }], logGroups: [] },
+    ]);
+
+    const dir = await signalDir();
+    let now = new Date();
+    const task = new WazuhConfig(prisma, dir, { tenantIds: [tenant], now: () => now });
+    const marker = {
+      bucketPath: `${trailBucket}/`,
+      accountId: cloud.accountId,
+      lastKey: trailKey(cloud.accountId, ago(8 * MINUTE)),
+      processedAt: ago(4 * MINUTE),
+    };
+    await tokenAt(dir, now);
+    await applied(dir, [tenant]);
+    await progress(dir, [marker]);
+    expect(await task.runOnce()).toMatchObject({ state: 'ok', sources: { sources: 1, transitions: 1 } });
+    expect(await stateOf(trail.id)).toEqual(['collecting', null]);
+    // O token do nó parado derruba só o que o Wazuh lê.
+    now = new Date(Date.now() + 41 * MINUTE);
+    await progress(dir, [marker], [], now);
+    expect(await task.runOnce()).toMatchObject({ state: 'aws_token_stale', sources: { sources: 1 } });
+    expect(await stateOf(trail.id)).toEqual(['ingestion_error', 'aws_token_stale']);
+
+    // As de API ficam como estavam, campo a campo (o `updatedAt` inclusive), e nada delas entra na trilha do cliente.
+    expect(await snapshot()).toEqual(before);
+    const audited = (await auditOf(cloud.id)).map((entry) => (entry.after as { sourceId: string }).sourceId);
+    expect([...new Set(audited)]).toEqual([trail.id]);
+  });
+
   it('os buckets do cadastro anterior: a mesma lista de sempre, e a saúde pelo marcador que já existia', async () => {
     const tenant = await createTenant(app, 'Cliente Demo A (cadastro anterior)');
     const buckets = {

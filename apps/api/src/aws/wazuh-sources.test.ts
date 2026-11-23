@@ -1,16 +1,32 @@
 import { createHash } from 'node:crypto';
-import { AWS_MAX_AUTHORIZED_LOG_GROUPS, AWS_MAX_AUTHORIZED_S3_SOURCES } from '@verax/shared';
+import {
+  AWS_MAX_AUTHORIZED_LOG_GROUPS,
+  AWS_MAX_AUTHORIZED_S3_SOURCES,
+  AWS_SOURCE_ACTIVE_STATES,
+} from '@verax/shared';
 import { describe, expect, it } from 'vitest';
 import {
   planWazuhSources,
   serializeWazuhSources,
   toWazuhSources,
   WAZUH_AWS_REGIONS,
+  WAZUH_COLLECTOR_STATES,
   type WazuhAccountRow,
   wazuhDate,
   type WazuhSourceRow,
   wazuhSourcesGeneration,
 } from './wazuh-sources.js';
+
+describe('estados em que a fonte é da coleta do Wazuh', () => {
+  it('são os estados com a autorização valendo do contrato, menos o da permissão negada', () => {
+    // Os mesmos da coleta dos achados pela API (`AWS_SOURCE_ACTIVE_STATES`), com uma diferença: a fonte que perdeu a
+    // permissão sai da lista do manager até a descoberta devolvê-la (`authorized`). Um estado novo no contrato derruba
+    // este teste até alguém decidir se a fonte nele entra na lista.
+    expect([...WAZUH_COLLECTOR_STATES, 'permission_error'].sort()).toEqual(
+      [...AWS_SOURCE_ACTIVE_STATES].sort(),
+    );
+  });
+});
 
 /** Contas fictícias da documentação da AWS. */
 const ACCOUNT_A = '111122223333';
