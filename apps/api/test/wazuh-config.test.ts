@@ -501,10 +501,33 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
       JSON.stringify({ generation, status: 'talvez', at: '2026-11-04T12:00:00Z' }),
       JSON.stringify({ generation: null, status: 'ok', at: '2026-11-04T12:00:00Z' }),
       JSON.stringify({ generation, status: 'error', at: '2026-11-04T12:00:00Z', pad: 'x'.repeat(5000) }),
+      // O número de sequência fora do formato: negativo, com fração, texto, ou além do que um inteiro guarda.
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: -1 }),
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: 1.5 }),
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: '7' }),
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: null }),
+      `{"generation":"${generation}","status":"ok","at":"2026-11-04T12:00:00Z","seq":9007199254740993}`,
     ]) {
       await writeFile(join(dir, 'applied'), content);
       expect(await task.runOnce()).toMatchObject({ state: 'pending', invalidSignals: 1, marked: 0 });
     }
+    // Com o número no formato, ou sem ele (o script do host de uma versão anterior), o sinal vale para os avisos da
+    // coleta; e o erro sem geração leva o número do mesmo jeito.
+    for (const content of [
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: 0 }),
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: 1795000000 }),
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z' }),
+    ]) {
+      await writeFile(join(dir, 'applied'), content);
+      expect(await task.runOnce()).toMatchObject({ state: 'ok', invalidSignals: 0, marked: 0 });
+    }
+    await writeFile(
+      join(dir, 'applied'),
+      JSON.stringify({ generation: null, status: 'error', at: '2026-11-04T12:00:00Z', seq: 1795000000 }),
+    );
+    expect(await task.runOnce()).toMatchObject({ state: 'wazuh_apply_failed', invalidSignals: 0, marked: 1 });
+    await applied(dir, generation, 'ok');
+    expect(await task.runOnce()).toMatchObject({ state: 'ok', cleared: 1 });
     expect(await rowOf(account.id)).toEqual({
       connection: 'connected',
       connectionError: null,

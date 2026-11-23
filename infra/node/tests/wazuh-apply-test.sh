@@ -20,6 +20,11 @@
 # manager reinicia com ela, e a mesma configuração não é tentada outra vez; um erro do CLI nunca vira "nenhuma conta";
 # o sinal `applied` diz ok ou error com a geração. Num cenário, o gerador é o de verdade (python3): a volta traz os
 # profiles da AWS junto com a configuração, e o token do Google fica como o host o deixou.
+#
+# O número de sequência do sinal `applied` (seq): começa na hora do host, fica no disco do nó (fora do /run), só cresce
+# e conta cada troca da configuração do manager (o reinício com a nova, o da volta à anterior e a deixada para a
+# próxima partida dele), antes de trocá-la. Sem troca (a mesma configuração, o CLI ou o gerador com erro, a que já
+# derrubou o manager), o número fica; depois de um reboot (o /run vazio), ele continua de onde estava.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -95,6 +100,8 @@ case " $* " in
   *' ps --quiet wazuh.manager '*)
     echo manager-id ;;
   *' restart wazuh.manager '*)
+    # O Docker que recusa o reinício (o cenário do script interrompido no meio).
+    [[ ! -f $state/restart.fail ]] || { echo 'Error response from daemon (simulado)' >&2; exit 1; }
     echo restart >>"$state/events"
     # A saúde depois de cada reinício: a próxima linha de $state/health.seq.
     head -n 1 "$state/health.seq" >"$state/health"
@@ -122,13 +129,15 @@ exec "$real_install" "\${args[@]}"
 EOF
 
 # Uma raiz nova por cenário: o node.conf de exemplo (sem comentários) com as linhas do cenário, e os dois scripts com
-# /etc/verax/node.conf e /run/verax trocados. HEALTH_TIMEOUT de 1 s: o laço do healthcheck termina logo.
-root='' state='' run=''
+# /etc/verax/node.conf, /run/verax e a pasta do contador (/var/lib/verax/wazuh-apply) trocados. HEALTH_TIMEOUT de 1 s:
+# o laço do healthcheck termina logo.
+root='' state='' run='' seq_dir=''
 new_root() { # <CHAVE=valor...>
   root=$work/root-$RANDOM$RANDOM
   state=$root.state
   run=$root/run/verax
-  mkdir -p "$root/etc/verax" "$state" "$run"
+  seq_dir=$root/var/lib/verax/wazuh-apply
+  mkdir -p "$root/etc/verax" "$state" "$run" "$root/var/lib/verax"
   grep -v -e '^#' -e '^$' "$here/node.conf.example" >"$root/etc/verax/node.conf"
   local line
   for line in "$@"; do
@@ -137,6 +146,7 @@ new_root() { # <CHAVE=valor...>
   done
   for script in aws-token wazuh-apply; do
     sed -e "s#/etc/verax/node.conf#$root/etc/verax/node.conf#g" -e "s#^run=/run/verax\$#run=$run#" \
+      -e "s#^seq_dir=/var/lib/verax/wazuh-apply\$#seq_dir=$seq_dir#" \
       -e 's#^HEALTH_TIMEOUT=180$#HEALTH_TIMEOUT=1#' -e "s#/opt/verax/bin/aws-token.sh#$root/aws-token.sh#" \
       "$here/bin/$script.sh" >"$root/$script.sh"
     # O wazuh-apply.sh chama o aws-token.sh direto (na VM própria), como no nó.
@@ -157,6 +167,11 @@ listing() { find "$1" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | p
 mode() { stat -c %a "$1"; }
 applied() { cat "$run/wazuh-signal/applied" 2>/dev/null || echo ausente; }
 events() { tr '\n' ' ' <"$state/events" | sed 's/ $//'; }
+# O número de sequência: o do sinal `applied` e o do contador no disco (vazio sem o arquivo ou sem o campo).
+applied_seq() { applied | grep -oE '"seq":[0-9]+' | cut -d: -f2 || true; }
+counter() { cat "$seq_dir/seq" 2>/dev/null || true; }
+# Quanto o número de sequência do sinal andou desde <antes>.
+seq_step() { echo $(($(applied_seq) - $1)); }
 
 # Um token no formato do Google (três partes em base64 da URL), montado aqui: nenhum token fica no repositório.
 segment() { printf '%s' "$1" | base64 | tr -d '=\n' | tr '+/' '-_'; }
@@ -281,8 +296,8 @@ expect "a lista inteira do CLI na entrada do gerador" igual "$(same "$SOURCES" "
 expect "o IP de saída do node.conf para as regras do papel" 'VERAX_NODE_EGRESS_IPS=203.0.113.10/32' \
   "$(cat "$state/render.egress")"
 expect "o hash fica como o da configuração do manager" "$HASH_A" "$(cat "$run/wazuh-apply/running")"
-expect "applied: ok com a geração (o SHA-256 da lista)" "\\{\"generation\":\"$GENERATION\",\"status\":\"ok\",\"at\":\"$ISO\"\\}" \
-  "$(applied)"
+expect "applied: ok com a geração (o SHA-256 da lista), a hora e o número de sequência" \
+  "\\{\"generation\":\"$GENERATION\",\"status\":\"ok\",\"at\":\"$ISO\",\"seq\":[1-9][0-9]{9,14}\\}" "$(applied)"
 expect "applied 0440 na pasta 1770; o estado do host 0700" '440 1770 700' \
   "$(mode "$run/wazuh-signal/applied") $(mode "$run/wazuh-signal") $(mode "$run/wazuh-apply")"
 expect "nenhum arquivo temporário na pasta dos sinais" 'applied' "$(listing "$run/wazuh-signal")"
@@ -309,7 +324,8 @@ expect "erro: a anterior volta ao lugar e o manager reinicia com ela" '1 restart
   "$(code_of wazuh-apply) $(events)"
 expect "a configuração que derrubou o manager fica marcada; a que roda é a anterior" "$HASH_B $HASH_A" \
   "$(cat "$run/wazuh-apply/failed") $(cat "$run/wazuh-apply/running")"
-expect "applied: error com a geração" "\\{\"generation\":\"$GENERATION\",\"status\":\"error\",\"at\":\"$ISO\"\\}" "$(applied)"
+expect "applied: error com a geração" \
+  "\\{\"generation\":\"$GENERATION\",\"status\":\"error\",\"at\":\"$ISO\",\"seq\":[1-9][0-9]{9,14}\\}" "$(applied)"
 : >"$state/events"
 expect "a mesma configuração de novo: a anterior volta, sem reiniciar" '1 rollback' "$(code_of wazuh-apply) $(events)"
 expect "  e o applied continua error" error "$(applied | grep -oE '"status":"[a-z]+"' | cut -d'"' -f4)"
@@ -318,6 +334,81 @@ echo healthy >"$state/health.seq"
 : >"$state/events"
 expect "uma configuração diferente é tentada, e a marca da que falhou sai" '0 restart ausente' \
   "$(code_of wazuh-apply) $(events) $([[ -f $run/wazuh-apply/failed ]] && echo marcada || echo ausente)"
+
+echo "== wazuh-apply.sh: o número de sequência do sinal applied conta cada troca da configuração do manager"
+scenario
+before=$(date -u +%s)
+expect "a primeira execução (manager parado, configuração para a próxima partida): aplicada" 0 "$(code_of wazuh-apply)"
+first=$(applied_seq)
+expect "  o contador nasce da hora do host e já conta essa troca" sim \
+  "$( ((first > before && first <= $(date -u +%s) + 1)) && echo sim || echo "não: $first")"
+expect "  o número do sinal é o do contador, guardado no disco do nó, fora do /run" "$first sim" \
+  "$(counter) $([[ $seq_dir != "$run"/* && -f $seq_dir/seq ]] && echo sim || echo não)"
+expect "  contador 0600 numa pasta 0700, sem arquivo temporário" '600 700 seq' \
+  "$(mode "$seq_dir/seq") $(mode "$seq_dir") $(listing "$seq_dir")"
+expect "manager parado e a mesma configuração: nenhuma troca" '0 0' "$(code_of wazuh-apply) $(seq_step "$first")"
+touch "$state/running"
+expect "manager no ar com a mesma configuração: nenhuma troca" '0 0' "$(code_of wazuh-apply) $(seq_step "$first")"
+printf '%s\n' "$HASH_B" >"$state/hash"
+echo healthy >"$state/health.seq"
+expect "configuração nova, manager saudável: uma troca" '0 1' "$(code_of wazuh-apply) $(seq_step "$first")"
+printf '%s\n' "$(printf 'c%.0s' {1..64})" >"$state/hash"
+printf '%s\n' "$HASH_B" >"$state/previous"
+printf 'unhealthy\nhealthy\n' >"$state/health.seq"
+expect "configuração nova que derruba o manager: a ida e a volta são duas trocas" '1 3 error' \
+  "$(code_of wazuh-apply) $(seq_step "$first") $(applied | grep -oE '"status":"[a-z]+"' | cut -d'"' -f4)"
+expect "a mesma que já derrubou o manager (não é tentada de novo): nenhuma troca" '1 3' \
+  "$(code_of wazuh-apply) $(seq_step "$first")"
+touch "$state/sources.fail"
+expect "o CLI sem o banco: nenhuma troca, e o sinal de erro leva o número" '1 3' \
+  "$(code_of wazuh-apply) $(seq_step "$first")"
+rm -f "$state/sources.fail"
+touch "$state/render.fail"
+expect "o gerador recusa a lista: nenhuma troca" '1 3' "$(code_of wazuh-apply) $(seq_step "$first")"
+rm -f "$state/render.fail"
+expect "o contador no disco acompanha o sinal" "$(applied_seq)" "$(counter)"
+
+# O reboot (ou o `start.sh down`) apaga o /run: o estado do script e o sinal somem, e o contador fica.
+rm -rf "$run/wazuh-apply" "$run/wazuh-signal"
+rm -f "$state/running"
+printf '%s\n' "$HASH_B" >"$state/hash"
+expect "depois do reboot (o /run vazio): o contador continua de onde estava, e a partida conta uma troca" '0 4' \
+  "$(code_of wazuh-apply) $(seq_step "$first")"
+
+# O script interrompido entre o reinício e o sinal: o número já andou no disco, o sinal fica o de antes, e a execução
+# seguinte não confia no que o manager roda: reinicia de novo e conta outra troca.
+touch "$state/running"
+printf '%s\n' "$HASH_A" >"$state/hash"
+touch "$state/restart.fail"
+signal_before=$(applied)
+expect "o reinício interrompido: erro, sem sinal novo" '1 igual' \
+  "$(code_of wazuh-apply) $(same "$signal_before" "$(applied)")"
+expect "  o contador já contou a troca, e o hash do que o manager rodava foi esquecido" "$((first + 5)) ausente" \
+  "$(counter) $([[ -f $run/wazuh-apply/running ]] && echo presente || echo ausente)"
+rm -f "$state/restart.fail"
+echo healthy >"$state/health.seq"
+: >"$state/events"
+expect "a execução seguinte reinicia de novo e conta outra troca: o worker vê um salto de dois" '0 restart 6' \
+  "$(code_of wazuh-apply) $(events) $(seq_step "$first")"
+
+# O contador perdido ou estragado recomeça da hora do host. No nó, as trocas são muito menos que uma por segundo: a hora
+# fica sempre acima do que já foi contado (aqui, um contador que nasceu ontem e já contou algumas trocas).
+counted=$(($(date -u +%s) - 86400 + 7))
+printf '%s\n' "$counted" >"$seq_dir/seq"
+expect "um contador no formato é mantido como está" "0 $counted" "$(code_of wazuh-apply) $(applied_seq)"
+for bad in '' 'abc' '007' '-3' '12 34' "$(printf '9%.0s' {1..20})"; do
+  printf '%s\n' "$bad" >"$seq_dir/seq"
+  clock=$(date -u +%s)
+  code_of wazuh-apply >/dev/null
+  reseeded=$(applied_seq)
+  expect "contador fora do formato (${bad:-vazio}): recomeça da hora do host, acima do que já foi contado" sim \
+    "$( ((reseeded >= clock && reseeded > counted)) && [[ $(counter) == "$reseeded" ]] && echo sim || echo "não: $reseeded")"
+done
+rm -f "$seq_dir/seq"
+clock=$(date -u +%s)
+code_of wazuh-apply >/dev/null
+expect "contador apagado: recomeça da hora do host" sim \
+  "$( (($(applied_seq) >= clock)) && echo sim || echo "não: $(applied_seq)")"
 
 echo "== wazuh-apply.sh com o gerador de verdade: a volta traz os profiles da AWS junto com a configuração"
 # A e B com o mesmo bucket do GuardDuty (lido pelo profile da A); a lista nova só com a B, e o manager não fica
@@ -365,13 +456,13 @@ scenario
 touch "$state/running" "$state/sources.fail"
 expect "CLI sem o banco: erro, sem chamar o gerador nem reiniciar" '1  ausente' \
   "$(code_of wazuh-apply) $(events) $([[ -f $state/render.in ]] && echo chamado || echo ausente)"
-expect "applied: error sem geração (a lista nem chegou)" "\\{\"generation\":null,\"status\":\"error\",\"at\":\"$ISO\"\\}" \
-  "$(applied)"
+expect "applied: error sem geração (a lista nem chegou)" \
+  "\\{\"generation\":null,\"status\":\"error\",\"at\":\"$ISO\",\"seq\":[1-9][0-9]{9,14}\\}" "$(applied)"
 scenario
 touch "$state/running" "$state/render.fail"
 expect "gerador recusa a lista: erro, sem reiniciar" '1 ' "$(code_of wazuh-apply) $(events)"
-expect "applied: error com a geração da lista recusada" "\\{\"generation\":\"$GENERATION\",\"status\":\"error\",\"at\":\"$ISO\"\\}" \
-  "$(applied)"
+expect "applied: error com a geração da lista recusada" \
+  "\\{\"generation\":\"$GENERATION\",\"status\":\"error\",\"at\":\"$ISO\",\"seq\":[1-9][0-9]{9,14}\\}" "$(applied)"
 scenario
 touch "$state/running"
 printf 'saída que não é hash\n' >"$state/hash"

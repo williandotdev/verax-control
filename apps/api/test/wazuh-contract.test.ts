@@ -12,7 +12,7 @@ import {
 import { describe, expect, it } from 'vitest';
 import { WAZUH_AWS_LOCATION } from '../src/alerts/cloudwatch-alert.js';
 import { WAF_CLOUDFRONT_PATH_REGION } from '../src/aws/discovery/catalogue.js';
-import { AWS_TOKEN_STALE_AFTER_MS, WAZUH_SIGNAL_FILES } from '../src/aws/wazuh-config.js';
+import { appliedSchema, AWS_TOKEN_STALE_AFTER_MS, WAZUH_SIGNAL_FILES } from '../src/aws/wazuh-config.js';
 import {
   WAZUH_PROGRESS_MAX_BYTES,
   WAZUH_PROGRESS_MAX_ENTRIES,
@@ -146,6 +146,68 @@ describe("AWS sem chave no Wazuh do nó: o template, o gerador, o host e o worke
     );
     // O mesmo usuário do worker em todo lugar que entrega a pasta ou os sinais a ele.
     for (const script of [startSh, awsToken, apply]) expect(script).toMatch(/^WORKER_UID=1000$/m);
+  });
+
+  it('o sinal applied: o que o host grava é o que o worker lê, com o número de sequência das trocas do manager', () => {
+    // O formato que o `wazuh-apply.sh` grava, preenchido como ele o preenche.
+    const format =
+      /printf '(\{"generation":%s,"status":"%s","at":"%s","seq":%s\})\\n'/.exec(apply)?.[1] ?? '';
+    expect(format).not.toBe('');
+    expect(apply).toContain('"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$seq"');
+    const signal = (generation: string, status: string, seq: string): unknown =>
+      JSON.parse(
+        [generation, status, '2026-11-23T12:00:00Z', seq].reduce(
+          (text, value) => text.replace('%s', value),
+          format,
+        ),
+      );
+    const generation = `"${'a'.repeat(64)}"`;
+    expect(Object.keys(signal(generation, 'ok', '1795000000') as object)).toEqual([
+      'generation',
+      'status',
+      'at',
+      'seq',
+    ]);
+    expect(appliedSchema.parse(signal(generation, 'ok', '1795000000'))).toMatchObject({ seq: 1_795_000_000 });
+    expect(appliedSchema.parse(signal(generation, 'error', '1795000002'))).toMatchObject({ status: 'error' });
+    // A lista que nem chegou ao gerador: a geração vai como `null`, sem aspas, e o número vai do mesmo jeito.
+    expect(apply).toContain('local file generation=null');
+    expect(appliedSchema.parse(signal('null', 'error', '0'))).toEqual({
+      generation: null,
+      status: 'error',
+      at: '2026-11-23T12:00:00Z',
+      seq: 0,
+    });
+    // Os únicos resultados que o script grava são os que o worker aceita.
+    const statuses = [...apply.matchAll(/^\s*signal_applied (?:"\$generation"|'') (\w+)$/gm)].map(
+      (match) => match[1],
+    );
+    expect(new Set(statuses)).toEqual(new Set(['ok', 'error']));
+    expect(statuses.length).toBe((apply.match(/^\s*signal_applied /gm) ?? []).length);
+
+    // O contador: no disco do nó, fora do /run (que o reboot e o `start.sh down` apagam), só com dígitos e dentro do
+    // que o worker lê como inteiro sem perda.
+    expect(constant(apply, /^seq_dir=(\S+)$/m)).toBe('/var/lib/verax/wazuh-apply');
+    expect(startSh).not.toContain('/var/lib/verax/wazuh-apply');
+    const digits = /\[\[ ! \$seq =~ \^\(0\|\[1-9\]\[0-9\]\{0,(\d+)\}\)\$ \]\]/.exec(apply)?.[1];
+    expect(digits).toBeDefined();
+    expect(10 ** (Number(digits) + 1) - 1).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER);
+    // Sem contador, ele recomeça da hora do host, em segundos: acima de qualquer valor que o worker já viu.
+    expect(apply).toContain('  seq=$(date -u +%s)\n  write_seq\n');
+    // Toda troca do que o manager roda é contada antes de acontecer: os dois reinícios e a configuração deixada para a
+    // próxima partida dele.
+    const lines = apply.split('\n');
+    const restarts = lines.flatMap((line, index) =>
+      line === 'compose restart wazuh.manager' ? [index] : [],
+    );
+    expect(restarts).toHaveLength(2);
+    for (const index of restarts) {
+      expect(lines.slice(index - 2, index)).toContain('count_change');
+    }
+    expect(apply).toContain(
+      '  if [[ $hash != "$running" ]]; then count_change; fi\n  printf \'%s\\n\' "$hash" >"$state/running"\n',
+    );
+    expect(apply.match(/\bcount_change\b/g)).toHaveLength(4);
   });
 
   it('a lista: a versão, os campos e os tetos que o worker e o CLI imprimem são os que o gerador aceita', () => {

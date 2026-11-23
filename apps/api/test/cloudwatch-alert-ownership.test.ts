@@ -126,6 +126,8 @@ describe('dono dos alertas do CloudWatch Logs: a prova pela configuração aplic
     dirs.push(dir);
     const key = `teste-${randomUUID().slice(0, 8)}`;
     let now = new Date(Math.floor(Date.now() / 1000) * 1000 - 6 * HOUR);
+    // O contador de trocas da configuração do manager, que o host guarda em disco (começa na hora dele, em segundos).
+    let seq = Math.floor(now.getTime() / 1000);
     let report: WazuhConfigReport | null = null;
     const documents: (Record<string, unknown> & { id: string })[] = [];
     const config = new WazuhConfig(prisma, dir, {
@@ -173,10 +175,23 @@ describe('dono dos alertas do CloudWatch Logs: a prova pela configuração aplic
       check,
       /**
        * O sinal do host: aplicou (ou tentou aplicar) a lista planejada de agora, ou a geração dada (null: a lista nem
-       * chegou ao gerador).
+       * chegou ao gerador). `changes` é quantas vezes essa execução do host trocou a configuração do manager, somadas
+       * ao número de sequência do sinal, como o `wazuh-apply.sh` faz: uma na aplicação que deu certo; duas na que
+       * derrubou o manager e voltou à anterior; nenhuma quando a lista nem chegou ao gerador. `'legacy'` é o sinal do
+       * script de uma versão anterior, sem o número.
        */
-      async applied(status: 'ok' | 'error' = 'ok', other?: string | null) {
-        const signal = { generation: other === undefined ? await generation() : other, status, at: iso(now) };
+      async applied(
+        status: 'ok' | 'error' = 'ok',
+        other?: string | null,
+        changes: number | 'legacy' = status === 'ok' ? 1 : other === null ? 0 : 2,
+      ) {
+        if (changes !== 'legacy') seq += changes;
+        const signal = {
+          generation: other === undefined ? await generation() : other,
+          status,
+          at: iso(now),
+          ...(changes !== 'legacy' && { seq }),
+        };
         await writeFile(join(dir, 'applied'), `${JSON.stringify(signal)}\n`);
       },
       /** O nó reiniciou: a pasta de sinais (em memória, no host) voltou vazia. */
@@ -558,6 +573,112 @@ describe('dono dos alertas do CloudWatch Logs: a prova pela configuração aplic
     expect(await n.record()).toMatchObject({ ownerTenantId: tenant, since: n.now() });
     expect(await findingsOf([unverified])).toEqual([]);
     expect(await unownedOf([unverified])).toEqual(reasons([unverified], 'ambiguous_source'));
+  });
+
+  it('duas trocas do host entre duas conferências: a do meio, que a tarefa nunca viu, derruba a prova pelo número de sequência', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (duas trocas sem ver)');
+    const cloud = await account(tenant);
+    await logGroup(cloud);
+    const n = await node([tenant]);
+    await n.applied();
+    await n.pass(1);
+    const since = n.now();
+    await n.pass(30);
+    expect(await n.record()).toMatchObject({ ownerTenantId: tenant, since });
+
+    // Entre duas conferências, o host troca a configuração duas vezes: primeiro uma lista que o worker nunca planejou
+    // (uma autorização desfeita em menos de 30 s, pega pelo timer do host), depois a planejada de novo. O sinal só
+    // guarda a última tentativa: a tarefa vê ok para a geração conferida, como se nada tivesse acontecido no meio.
+    await n.applied('ok', 'f'.repeat(64));
+    const hidden = n.alert();
+    await n.applied();
+    await n.pass(1);
+    // O número de sequência andou dois: a prova de antes cai, e a nova nasce agora, com outro começo.
+    const reborn = n.now();
+    expect(reborn.getTime()).toBeGreaterThan(since.getTime());
+    expect(await n.record()).toMatchObject({ ownerTenantId: tenant, since: reborn });
+    // O alerta do meio (o que a configuração não conferida entregou) fica dentro da margem da prova nova: vai para a
+    // fila sem dono, e nunca vira achado do cliente.
+    await n.pass(12);
+    expect(await n.sync()).toMatchObject({ created: 0, unowned: 1 });
+    expect(await findingsOf([hidden])).toEqual([]);
+    expect(await unownedOf([hidden])).toEqual(reasons([hidden], 'ambiguous_source'));
+
+    // Uma troca só, para a lista planejada, não derruba nada: o começo é o mesmo.
+    await logGroup(cloud);
+    await n.pass(1);
+    await n.applied();
+    await n.pass(1);
+    expect(await n.record()).toMatchObject({ ownerTenantId: tenant, since: reborn });
+    // A mesma lista aplicada de novo sem troca nenhuma (o timer do host, a cada 15 min) também não.
+    await n.applied('ok', undefined, 0);
+    await n.pass(1);
+    expect(await n.record()).toMatchObject({ ownerTenantId: tenant, since: reborn });
+  });
+
+  it('a tentativa que derrubou o manager e voltou à configuração anterior derruba a prova, mesmo com a geração conferida', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (volta da configuração)');
+    const cloud = await account(tenant);
+    await logGroup(cloud);
+    const n = await node([tenant]);
+    await n.applied();
+    await n.pass(1);
+    await n.pass(20);
+    expect(await n.record()).toMatchObject({ ownerTenantId: tenant });
+
+    // Outro grupo do mesmo dono; o manager não fica saudável com a lista nova, e o host volta a anterior: duas trocas
+    // (a ida e a volta), com erro para a geração planejada.
+    await logGroup(cloud);
+    await n.pass(1);
+    await n.applied('error');
+    await n.pass(1);
+    expect(await n.record()).toBeNull();
+    expect(n.proven()).toBe('unproven');
+    // A mesma lista não é tentada de novo (o sinal segue com erro, sem troca): nenhuma prova nasce de um erro.
+    await n.applied('error', undefined, 0);
+    await n.pass(3);
+    expect(await n.record()).toBeNull();
+    // Corrigida a lista e aplicada com sucesso, a prova nasce de novo, com outro começo.
+    await n.applied();
+    await n.pass(1);
+    expect(await n.record()).toMatchObject({ ownerTenantId: tenant, since: n.now() });
+  });
+
+  it('o sinal do host de uma versão anterior, sem o número de sequência, nunca é prova', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (host de versão anterior)');
+    const cloud = await account(tenant);
+    await logGroup(cloud);
+    const n = await node([tenant]);
+    // Durante a atualização do nó: o worker novo lê o sinal que o script anterior gravou.
+    await n.applied('ok', undefined, 'legacy');
+    await n.pass(20);
+    expect(await n.record()).toBeNull();
+    expect(n.proven()).toBe('unproven');
+    // O sinal continua valendo para o resto (a lista de agora consta como aplicada): só a prova não nasce dele.
+    expect((await n.check()).state).toBe('ok');
+    const during = n.alert();
+    await n.pass(12);
+    expect(await n.sync()).toMatchObject({ created: 0, unowned: 1 });
+    expect(await unownedOf([during])).toEqual(reasons([during], 'ambiguous_source'));
+
+    // O script novo grava o número: a prova nasce.
+    await n.applied();
+    await n.pass(1);
+    const since = n.now();
+    expect(await n.record()).toMatchObject({ ownerTenantId: tenant, since });
+    // E um sinal sem o número no meio (a volta de versão do nó) a derruba de novo.
+    await n.applied('ok', undefined, 'legacy');
+    await n.pass(1);
+    expect(await n.record()).toBeNull();
+    // A linha gravada antes de o número existir (a coluna vazia) também não vale: a tarefa a refaz.
+    await n.applied();
+    await n.pass(1);
+    await prisma.cloudWatchAlertOwnership.update({ where: { id: n.key }, data: { appliedSeq: null } });
+    const before = await n.record();
+    n.skip(1);
+    await n.check();
+    expect(await n.record()).toMatchObject({ ownerTenantId: tenant, since: n.now() });
+    expect(n.now().getTime()).toBeGreaterThan(before?.since.getTime() ?? 0);
   });
 
   it('a fila vence: o alerta que já foi para a fila sem dono não vira achado numa releitura, nem cabendo na prova', async () => {

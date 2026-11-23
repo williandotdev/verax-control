@@ -22,14 +22,32 @@ import type { CloudWatchSourceOwner } from './cloudwatch-alert.js';
  *   logs de no máximo um dono. `since` é a hora dessa conferência (ou a do sinal, se for mais tarde): o que o manager
  *   rodava antes disso não é conhecido;
  * - **continua**, com o mesmo `since`, enquanto cada conferência seguinte, a no máximo 5 min da anterior, mostra o
- *   manager numa geração conferida (a do registro ou a planejada de agora) e a lista planejada com no máximo esse
- *   dono. O dono vazio (nenhum grupo de logs em configuração nenhuma) vira o primeiro dono que aparecer, sem recomeçar:
- *   antes dele não havia de quem coletar. É o caso do cliente que autoriza o primeiro grupo num nó já no ar;
+ *   manager numa geração conferida (a do registro ou a planejada de agora), a lista planejada com no máximo esse
+ *   dono e o número de sequência do sinal sem salto (abaixo). O dono vazio (nenhum grupo de logs em configuração
+ *   nenhuma) vira o primeiro dono que aparecer, sem recomeçar: antes dele não havia de quem coletar. É o caso do
+ *   cliente que autoriza o primeiro grupo num nó já no ar;
  * - **acaba** (a linha é apagada) no instante em que a lista **planejada** passa a ter grupos de mais de um dono, antes
- *   de ela chegar ao manager; quando o dono planejado é outro; quando o sinal some, sai do formato ou cita uma geração
- *   que a tarefa não conferiu (o host aplicou, ou tentou aplicar, uma lista que o worker não viu); ou quando a tarefa
- *   fica mais de 5 min sem conferir (o worker parado não viu o que o host aplicou). Para valer de novo, ele nasce de
- *   novo, com outro `since`.
+ *   de ela chegar ao manager; quando o dono planejado é outro; quando o sinal some, sai do formato, vem sem o número
+ *   de sequência ou cita uma geração que a tarefa não conferiu (o host aplicou, ou tentou aplicar, uma lista que o
+ *   worker não viu); quando o número de sequência salta; ou quando a tarefa fica mais de 5 min sem conferir (o worker
+ *   parado não viu o que o host aplicou). Para valer de novo, ele nasce de novo, com outro `since`.
+ *
+ * **O número de sequência (`seq`)** fecha o que a geração sozinha não mostra. O sinal `applied` só guarda a última
+ * tentativa do host: duas trocas da configuração do manager entre duas conferências (uma lista que a tarefa nunca
+ * planejou, aplicada pelo timer do host, e logo depois a lista conferida) apareceriam como uma só, com a geração
+ * conferida. O host conta cada troca do que o manager roda (cada reinício dele com outra configuração, inclusive o da
+ * volta à anterior, e a configuração deixada para a próxima partida), num arquivo que sobrevive ao reboot, e grava o
+ * número no sinal. A tarefa guarda o último que viu, e o registro só continua em dois casos:
+ *
+ * - **o mesmo número:** nada foi trocado desde a última conferência; o sinal tem de dizer ok para uma geração
+ *   conferida, ou erro de uma tentativa que nem chegou ao manager (como antes);
+ * - **o número seguinte, com ok e uma geração conferida:** uma troca só, para uma lista que a tarefa conhece.
+ *
+ * Qualquer outro salto é uma troca que a tarefa não viu: a tentativa que derrubou o manager e voltou à configuração
+ * anterior (duas trocas), duas aplicações seguidas, o contador recomeçado. O número seguinte com erro também: o sinal
+ * de erro fala da última tentativa, e não diz qual configuração a troca contada deixou no manager. O sinal sem o número
+ * (o script do host de uma versão anterior, durante a atualização do nó) nunca é prova: o registro some e só nasce com
+ * um sinal que o traga.
  *
  * O sync (`cloudwatch-alert-sync.ts`) só atribui o alerta cujo horário está entre `since` mais a margem e a última
  * conferência menos a espera (`cloudWatchProof`):
@@ -50,8 +68,10 @@ import type { CloudWatchSourceOwner } from './cloudwatch-alert.js';
  * do worker, e `since` nunca fica antes da hora do sinal do host. No nó, os três processos estão na mesma máquina; a
  * margem e a espera absorvem uma diferença de minutos.
  *
- * O que a prova supõe, e não confere: com o worker no ar, a tarefa lê o sinal ao menos uma vez entre duas trocas de
- * configuração do host (cada troca reinicia o manager e espera o healthcheck dele; a tarefa roda a cada 30 s).
+ * O que a prova supõe, e não confere: o host grava o sinal no fim de cada execução do `wazuh-apply.sh`. A execução
+ * interrompida depois de reiniciar o manager e antes de gravar o sinal (o processo morto no meio) deixa o sinal
+ * anterior no lugar até a execução seguinte (o timer de 15 min), que conta outra troca: o salto aparece então, e o
+ * registro cai. Nesse intervalo, a tarefa ainda vê o sinal antigo.
  */
 
 /** A chave da linha do nó. Os testes, que dividem o banco, usam outras. */
@@ -68,6 +88,8 @@ export interface CloudWatchOwnership {
   owner: CloudWatchSourceOwner | null;
   /** A geração que o manager roda, a última conferida pelo sinal `applied`. */
   generation: string;
+  /** O número de sequência do sinal `applied` na última conferência (as trocas da configuração do manager). */
+  seq: number;
   since: Date;
   confirmedAt: Date;
 }
@@ -77,6 +99,11 @@ export interface AppliedObservation {
   generation: string | null;
   status: 'ok' | 'error';
   at: string;
+  /**
+   * Quantas vezes o host trocou a configuração do manager (`infra/node/bin/wazuh-apply.sh`); null no sinal de um host
+   * de versão anterior, que não o grava.
+   */
+  seq: number | null;
 }
 
 export interface CloudWatchOwnershipObservation {
@@ -118,6 +145,13 @@ export function nextCloudWatchOwnership(
 
   // Sem o sinal (o nó reiniciou, o host ainda não aplicou nada), não se sabe o que o manager roda.
   if (applied === null) return null;
+  // O sinal de um host de versão anterior, sem o número de sequência: não dá para saber quantas trocas ele esconde.
+  const { seq } = applied;
+  if (seq === null) return null;
+  // Quantas vezes o host trocou a configuração do manager desde a última conferência.
+  const step = current === null ? 0 : seq - current.seq;
+  // Um salto (duas trocas ou mais, ou o contador recomeçado): alguma configuração rodou sem a tarefa ver.
+  if (step !== 0 && step !== 1) current = null;
   const verified = (candidate: string | null): boolean =>
     candidate !== null && (candidate === generation || candidate === current?.generation);
 
@@ -129,11 +163,12 @@ export function nextCloudWatchOwnership(
       if (applied.generation !== generation) return null;
       const at = new Date(applied.at);
       const since = Number.isNaN(at.getTime()) ? now : later(now, at);
-      return { owner: planned, generation, since, confirmedAt: now };
+      return { owner: planned, generation, seq, since, confirmedAt: now };
     }
     return {
       owner: current.owner ?? planned,
       generation: applied.generation,
+      seq,
       since: current.since,
       confirmedAt: now,
     };
@@ -141,8 +176,11 @@ export function nextCloudWatchOwnership(
 
   // A última tentativa do host deu erro. Um registro nunca nasce assim.
   if (current === null) return null;
-  // Sem geração, a lista nem chegou ao gerador, e o manager ficou como estava. Com uma geração conferida, o manager
-  // rodou a lista dela por até 3 min e voltou para a anterior: as duas só têm grupos deste dono.
+  // Uma troca com erro: o sinal fala da última tentativa (que pode nem ter chegado ao manager), e não diz qual
+  // configuração a troca contada deixou rodando.
+  if (step !== 0) return null;
+  // Nenhuma troca: sem geração, a lista nem chegou ao gerador; com uma geração conferida, o gerador a recusou, ou ela
+  // é a que já tinha derrubado o manager e não foi tentada de novo. O manager segue com a configuração que rodava.
   if (applied.generation === null || verified(applied.generation)) {
     return { ...current, owner: current.owner ?? planned, confirmedAt: now };
   }
@@ -184,13 +222,25 @@ interface OwnershipRow {
   ownerTenantId: string | null;
   ownerAccountId: string | null;
   generation: string;
+  appliedSeq: bigint | null;
   since: Date;
   confirmedAt: Date;
 }
 
-/** A linha do banco conferida de novo no formato; fora dele, vale como sem registro. */
+/**
+ * O número de sequência gravado: null na linha de antes de ele existir, ou fora do que um número inteiro guarda sem
+ * perda (o contador do host começa na hora dele, em segundos, e só cresce de um em um).
+ */
+function toSeq(stored: bigint | null): number | null {
+  if (stored === null || stored < 0n || stored > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(stored);
+}
+
+/** A linha do banco conferida de novo no formato; fora dele, ou sem o número de sequência, vale como sem registro. */
 function toRecord(row: OwnershipRow | null): CloudWatchOwnership | null {
   if (row === null || !GENERATION.test(row.generation)) return null;
+  const seq = toSeq(row.appliedSeq);
+  if (seq === null) return null;
   const { ownerTenantId, ownerAccountId } = row;
   let owner: CloudWatchSourceOwner | null = null;
   if (ownerTenantId !== null || ownerAccountId !== null) {
@@ -198,7 +248,7 @@ function toRecord(row: OwnershipRow | null): CloudWatchOwnership | null {
     if (!TENANT_ID.test(ownerTenantId) || !ACCOUNT_ID.test(ownerAccountId)) return null;
     owner = { tenantId: ownerTenantId, accountId: ownerAccountId };
   }
-  return { owner, generation: row.generation, since: row.since, confirmedAt: row.confirmedAt };
+  return { owner, generation: row.generation, seq, since: row.since, confirmedAt: row.confirmedAt };
 }
 
 /**
@@ -229,6 +279,7 @@ export class CloudWatchOwnershipStore {
         ownerTenantId: next.owner?.tenantId ?? null,
         ownerAccountId: next.owner?.accountId ?? null,
         generation: next.generation,
+        appliedSeq: BigInt(next.seq),
         since: next.since,
         confirmedAt: next.confirmedAt,
       };
