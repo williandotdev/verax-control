@@ -14,6 +14,7 @@ on:
     paths:
       - 'apps/web/**'
       - 'packages/shared/**'
+      - 'infra/cloudformation/verax-control-reader.yaml'
       - 'pnpm-lock.yaml'
       - 'scripts/firebase-hosting-deploy.mjs'
       - 'scripts/scan-bundle.mjs'
