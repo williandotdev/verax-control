@@ -409,7 +409,7 @@ describe('conferências', () => {
     expect(codeOf(warned, 'assume_role')).toBe('region_disabled');
   });
 
-  it('o template: por ler, desatualizado (v1) e em dia', () => {
+  it('o template: por ler, desatualizado (v1), em dia, e com a tag da versão que não é um número', () => {
     const unread = deriveAwsOnboarding(
       facts({ account: account({ awsTemplateVersion: null, awsCapabilitiesCheckedAt: null }) }),
     );
@@ -421,6 +421,13 @@ describe('conferências', () => {
     expect(outdated.state).toBe('awaiting_sources');
     const current = deriveAwsOnboarding(facts({ account: account({ awsTemplateVersion: 3 }) }));
     expect(statusOf(current).template).toBe('ok');
+    // As tags foram lidas, mas a da versão não é um número: não é "em dia", e o estado da conta segue o passo dela.
+    const unreadable = deriveAwsOnboarding(facts({ account: account({ awsTemplateVersion: null }) }));
+    expect([statusOf(unreadable).template, codeOf(unreadable, 'template')]).toEqual([
+      'failed',
+      'template_unreadable',
+    ]);
+    expect(unreadable.state).toBe('awaiting_sources');
   });
 
   it('a descoberta: por pedir, pendente, em curso, parcial e falha', () => {

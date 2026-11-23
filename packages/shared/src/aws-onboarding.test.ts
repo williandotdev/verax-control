@@ -5,11 +5,9 @@ import {
   AWS_DISCOVERY_STATUSES,
   AWS_DISCOVERY_TRIGGERS,
   AWS_MAX_SOURCES_PER_ACCOUNT,
-  AWS_ONBOARDING_CAPABILITIES,
   AWS_ONBOARDING_CHECK_IDS,
   AWS_ONBOARDING_CHECK_STATUSES,
   AWS_ONBOARDING_STATES,
-  AWS_ONBOARDING_TEMPLATE_VERSION,
   AWS_SOURCE_ACTIVE_STATES,
   AWS_SOURCE_AVAILABILITIES,
   AWS_SOURCE_KIND_INFO,
@@ -23,7 +21,6 @@ import {
   type AwsSource,
   awsDiscoveryRunSchema,
   awsInfrastructureSummarySchema,
-  awsOnboardingRoleFacts,
   awsOnboardingSchema,
   awsSourceDetailsSchema,
   awsSourceIdleState,
@@ -35,6 +32,12 @@ import {
   isAwsSourceRegion,
   isAwsTemplateOutdated,
 } from './aws-onboarding.js';
+import {
+  AWS_CONNECTION_ERROR_CODES,
+  AWS_LOG_GROUP_TAG,
+  AWS_READER_CAPABILITIES,
+  AWS_READER_TEMPLATE_VERSION,
+} from './aws-reader.js';
 import * as shared from './index.js';
 
 const NOW = '2026-11-22T12:00:00.000Z';
@@ -216,117 +219,57 @@ describe('onboarding da AWS: enumerações do contrato', () => {
     }
   });
 
-  it('os nomes exportados não colidem com os que o template v2 traz para o aws-reader', () => {
-    // O `export *` do índice quebraria com o mesmo nome em dois módulos.
+  it('as capacidades, a versão do template e o erro do fim da janela são os do aws-reader, sem cópia aqui', () => {
+    // A capacidade de cada tipo é uma das do papel de leitura.
+    for (const kind of AWS_SOURCE_KINDS) {
+      expect(AWS_READER_CAPABILITIES).toContain(AWS_SOURCE_KIND_INFO[kind].capability);
+    }
+    // O fim da janela do "Conectar" é um erro da conexão como os outros.
+    expect(AWS_CONNECTION_ERROR_CODES).toContain('authorization_timeout');
+    // Este módulo não exporta de novo o que é do aws-reader (o índice quebraria com o mesmo nome em dois módulos).
     for (const name of [
-      'AWS_READER_TEMPLATE_VERSION',
-      'AWS_READER_CAPABILITIES',
-      'AWS_READER_ROLE_TAGS',
-      'AWS_READER_CAPABILITIES_SEPARATOR',
-      'AWS_LOG_GROUP_TAG',
-      'parseReaderRoleTags',
-      'prefillReaderTemplate',
+      'AWS_ONBOARDING_CAPABILITIES',
+      'AWS_ONBOARDING_TEMPLATE_VERSION',
+      'AWS_AUTHORIZATION_TIMEOUT_CODE',
+      'awsOnboardingRoleFacts',
     ]) {
       expect(Object.keys(shared)).not.toContain(name);
     }
-    expect(shared.AWS_ONBOARDING_CAPABILITIES).toBe(AWS_ONBOARDING_CAPABILITIES);
+    expect(shared.AWS_READER_CAPABILITIES).toBe(AWS_READER_CAPABILITIES);
   });
 });
 
-describe('tags do papel: versão do template e capacidades', () => {
-  it('a v2 com as capacidades ligadas, na ordem do catálogo; a descoberta está sempre ligada', () => {
-    expect(AWS_ONBOARDING_TEMPLATE_VERSION).toBe(2);
-    expect(AWS_ONBOARDING_CAPABILITIES).toEqual(['discovery', 'service-logs', 'findings', 'log-groups']);
-    // As capacidades vêm separadas por espaço (o valor de uma tag do IAM não aceita vírgula).
-    expect(
-      awsOnboardingRoleFacts({
-        'verax-control:template': '2',
-        'verax-control:capabilities': 'discovery service-logs findings log-groups',
-      }),
-    ).toEqual({ templateVersion: 2, capabilities: ['discovery', 'service-logs', 'findings', 'log-groups'] });
-    expect(
-      awsOnboardingRoleFacts({
-        'verax-control:template': '2',
-        'verax-control:capabilities': 'log-groups discovery findings',
-      }),
-    ).toEqual({ templateVersion: 2, capabilities: ['discovery', 'findings', 'log-groups'] });
-    expect(awsOnboardingRoleFacts({ 'verax-control:template': '2' })).toEqual({
-      templateVersion: 2,
-      capabilities: ['discovery'],
-    });
-    expect(
-      awsOnboardingRoleFacts({ 'verax-control:template': '2', 'verax-control:capabilities': '' }),
-    ).toEqual({ templateVersion: 2, capabilities: ['discovery'] });
-  });
-
-  it('a lista é lida com folga: espaço, vírgula, tabulação e quebra de linha, em qualquer quantidade', () => {
-    for (const listed of [
-      'findings,log-groups',
-      'findings, log-groups',
-      '  findings\tlog-groups  ',
-      'findings\nlog-groups',
-      'findings ,, log-groups',
-    ]) {
-      expect(
-        awsOnboardingRoleFacts({ 'verax-control:template': '2', 'verax-control:capabilities': listed }),
-      ).toEqual({ templateVersion: 2, capabilities: ['discovery', 'findings', 'log-groups'] });
-    }
-  });
-
-  it('sem a tag da versão (ou fora do formato) é o template v1: só a descoberta', () => {
-    const cases: Record<string, string>[] = [
-      {},
-      { Name: 'verax-control-reader' },
-      { 'verax-control:capabilities': 'discovery findings' },
-      { 'verax-control:template': '' },
-      { 'verax-control:template': 'v2' },
-      { 'verax-control:template': '0' },
-      { 'verax-control:template': '2.0' },
-      // Na v1, as outras capacidades não existem, mesmo que a tag as cite.
-      { 'verax-control:template': '1', 'verax-control:capabilities': 'findings' },
-    ];
-    for (const tags of cases) {
-      expect(awsOnboardingRoleFacts(tags)).toEqual({ templateVersion: 1, capabilities: ['discovery'] });
-    }
-  });
-
-  it('um nome desconhecido na lista é ignorado; uma versão futura é aceita como está', () => {
-    expect(
-      awsOnboardingRoleFacts({
-        'verax-control:template': '3',
-        'verax-control:capabilities': 'discovery resposta service-logs __proto__',
-      }),
-    ).toEqual({ templateVersion: 3, capabilities: ['discovery', 'service-logs'] });
-    // Chaves herdadas do protótipo não contam como tag.
-    expect(
-      awsOnboardingRoleFacts(Object.create({ 'verax-control:template': '2' }) as Record<string, string>),
-    ).toEqual({
-      templateVersion: 1,
-      capabilities: ['discovery'],
-    });
-  });
-
-  it('desatualizado: versão menor que a deste código; null (ainda não lido) não é', () => {
+describe('versão do template e tag de leitura dos grupos de logs', () => {
+  it('desatualizado: versão menor que a deste código; null (ainda não lido, ou a tag que não é um número) não é', () => {
+    expect(AWS_READER_TEMPLATE_VERSION).toBe(2);
     expect(isAwsTemplateOutdated(1)).toBe(true);
-    expect(isAwsTemplateOutdated(2)).toBe(false);
+    expect(isAwsTemplateOutdated(AWS_READER_TEMPLATE_VERSION)).toBe(false);
     expect(isAwsTemplateOutdated(3)).toBe(false);
     expect(isAwsTemplateOutdated(null)).toBe(false);
   });
 
-  it('a tag de leitura do grupo de logs é verax-control = leitura, exata', () => {
+  it('a tag de leitura do grupo de logs: o valor exato; a chave sem distinguir maiúsculas, como a condição do IAM', () => {
+    expect(AWS_LOG_GROUP_TAG).toEqual({ key: 'verax-control', value: 'leitura' });
     expect(hasAwsLogGroupReadTag({ 'verax-control': 'leitura' })).toBe(true);
     expect(hasAwsLogGroupReadTag({ 'verax-control': 'leitura', ambiente: 'producao' })).toBe(true);
+    // A política do papel compara `aws:ResourceTag/verax-control`, e a chave de uma tag não distingue caixa nela.
+    expect(hasAwsLogGroupReadTag({ 'Verax-Control': 'leitura' })).toBe(true);
     const cases: (Record<string, string> | undefined)[] = [
       undefined,
       {},
       { 'verax-control': 'Leitura' },
       { 'verax-control': 'leitura ' },
-      { 'Verax-Control': 'leitura' },
       { 'verax-control': '' },
+      { 'verax-control-x': 'leitura' },
+      { leitura: 'verax-control' },
     ];
     for (const tags of cases) {
       expect(hasAwsLogGroupReadTag(tags)).toBe(false);
     }
+    // Chaves herdadas do protótipo não contam como tag.
+    expect(
+      hasAwsLogGroupReadTag(Object.create({ 'verax-control': 'leitura' }) as Record<string, string>),
+    ).toBe(false);
   });
 });
 

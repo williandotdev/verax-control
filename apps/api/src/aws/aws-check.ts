@@ -1,5 +1,4 @@
 import {
-  AWS_AUTHORIZATION_TIMEOUT_CODE,
   AWS_CONNECT_WINDOW_MS,
   AWS_CONNECTION_WARNING_CODES,
   type AwsConnectionErrorCode,
@@ -71,8 +70,8 @@ const AWAITING_ROLE_CODES: ReadonlySet<AwsConnectionErrorCode> = new Set<AwsConn
   'token_invalid',
 ]);
 
-/** O código do erro gravado: um da conexão, ou o fim da janela do "Conectar". */
-export type AwsCheckFailureCode = AwsConnectionErrorCode | typeof AWS_AUTHORIZATION_TIMEOUT_CODE;
+/** O erro gravado quando a janela do "Conectar" fecha sem o papel. */
+const AUTHORIZATION_TIMEOUT = 'authorization_timeout' satisfies AwsConnectionErrorCode;
 
 /** Contagens de uma execução dos pedidos (vão para o log do agendador; nenhum dado de cliente). */
 export interface AwsCheckReport {
@@ -89,7 +88,7 @@ export interface AwsCheckReport {
   /** O pedido mudou durante a conferência (conta desativada ou removida): o resultado foi descartado. */
   stale: number;
   /** Códigos dos erros gravados. */
-  failures?: Partial<Record<AwsCheckFailureCode, number>>;
+  failures?: Partial<Record<AwsConnectionErrorCode, number>>;
 }
 
 /** Contagens de uma execução das conferências sem pedido (a cada 15 min por conta). */
@@ -107,7 +106,7 @@ export interface AwsRecheckReport {
   /** A conta mudou durante a conferência (pedido novo, desativada): o resultado foi descartado. */
   stale: number;
   /** Códigos dos erros gravados. */
-  failures?: Partial<Record<AwsCheckFailureCode, number>>;
+  failures?: Partial<Record<AwsConnectionErrorCode, number>>;
 }
 
 export interface AwsCheckOptions {
@@ -221,9 +220,9 @@ function stateOf(outcome: AwsCheckOutcome, memory: AccountMemory, stored: Connec
 }
 
 function countFailure(
-  report: { failures?: Partial<Record<AwsCheckFailureCode, number>> },
+  report: { failures?: Partial<Record<AwsConnectionErrorCode, number>> },
   outcome: AwsCheckOutcome,
-  code?: AwsCheckFailureCode,
+  code?: AwsConnectionErrorCode,
 ): void {
   if (outcome.ok) return;
   const failure = code ?? outcome.code;
@@ -381,13 +380,13 @@ export class AwsCheck {
       this.remember(memory, outcome, now);
       // A janela do "Conectar" fechou sem o papel: o erro diz isso, e não a recusa da última tentativa.
       const state: ConnectionState = awaitingRole
-        ? { connection: 'error', connectionError: AWS_AUTHORIZATION_TIMEOUT_CODE }
+        ? { connection: 'error', connectionError: AUTHORIZATION_TIMEOUT }
         : stateOf(outcome, memory, RESET_STATE);
       const facts = outcome.ok ? await this.readFacts(target, signal) : null;
       const result = await this.record(row, requestedAt, state, { facts, connect });
       report[result] += 1;
       if (result === 'failed') {
-        countFailure(report, outcome, awaitingRole ? AWS_AUTHORIZATION_TIMEOUT_CODE : undefined);
+        countFailure(report, outcome, awaitingRole ? AUTHORIZATION_TIMEOUT : undefined);
       }
     }
     return report;

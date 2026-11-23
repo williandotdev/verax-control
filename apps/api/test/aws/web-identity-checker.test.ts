@@ -710,6 +710,28 @@ describe('tags do papel: a versão do template e as capacidades (onboarding self
     }
   });
 
+  it('as tags são lidas como o template as grava: a chave sem distinguir caixa, a lista com folga, a versão só se for número', async () => {
+    const facts = async (values: Record<string, string>) =>
+      setup({ handlers: { GetRoleCommand: () => tags(values) } }).checker.readerFacts(target(), signal);
+    expect(
+      await facts({ 'Verax-Control:Template': '2', 'VERAX-CONTROL:CAPABILITIES': 'findings,log-groups' }),
+    ).toEqual({ templateVersion: 2, capabilities: ['discovery', 'findings', 'log-groups'] });
+    // Um nome desconhecido na lista não vira capacidade; a descoberta está sempre.
+    expect(
+      await facts({ 'verax-control:template': '2', 'verax-control:capabilities': 'resposta __proto__' }),
+    ).toEqual({
+      templateVersion: 2,
+      capabilities: ['discovery'],
+    });
+    // A tag da versão que não é um número: a versão fica null, e as capacidades continuam as da tag.
+    expect(
+      await facts({ 'verax-control:template': 'v2', 'verax-control:capabilities': 'service-logs' }),
+    ).toEqual({
+      templateVersion: null,
+      capabilities: ['discovery', 'service-logs'],
+    });
+  });
+
   it('uma falha passageira, ou a entrada no papel recusada, não diz nada: null (o gravado na conta fica)', async () => {
     const throttled = setup({
       handlers: { GetRoleCommand: () => Promise.reject(awsError('Throttling', 400)) },

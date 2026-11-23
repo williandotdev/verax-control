@@ -2,7 +2,7 @@ import {
   AWS_SOURCE_GLOBAL_REGION,
   AWS_SOURCE_NONE_RESOURCE,
   type AwsLogGroupCategory,
-  type AwsOnboardingCapability,
+  type AwsReaderCapability,
   type AwsSourceAvailability,
   type AwsSourceDetails,
   type AwsSourceKind,
@@ -47,7 +47,7 @@ export interface CatalogueContext {
   /** Os buckets do cadastro anterior da conta: o papel os lê inteiros (`LogBucketArns` da pilha). */
   legacyBuckets: LogBuckets;
   /** As capacidades do papel pelas tags; null quando não se sabe (template v1, ou a chave de leitura da VM própria). */
-  capabilities: readonly AwsOnboardingCapability[] | null;
+  capabilities: readonly AwsReaderCapability[] | null;
 }
 
 // --- O que os serviços responderam ---

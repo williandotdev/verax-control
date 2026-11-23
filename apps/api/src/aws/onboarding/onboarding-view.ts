@@ -1,7 +1,7 @@
 import {
   AWS_BUCKET_ERROR_CODES,
   AWS_DISCOVERY_MAX_ERRORS,
-  AWS_ONBOARDING_CAPABILITIES,
+  AWS_READER_CAPABILITIES,
   AWS_SOURCE_KIND_INFO,
   AWS_SOURCE_NOTES,
   type AwsDiscoveryError,
@@ -11,7 +11,7 @@ import {
   awsDiscoveryErrorSchema,
   type AwsInfrastructureSummary,
   awsInfrastructureSummarySchema,
-  type AwsOnboardingCapability,
+  type AwsReaderCapability,
   type AwsSource,
   type AwsSourceAvailability,
   type AwsSourceDetails,
@@ -226,6 +226,6 @@ export function runSummary(value: unknown): AwsInfrastructureSummary | null {
 }
 
 /** As capacidades gravadas na conta, na ordem do catálogo; um nome desconhecido fica de fora. */
-export function accountCapabilities(stored: readonly string[]): AwsOnboardingCapability[] {
-  return AWS_ONBOARDING_CAPABILITIES.filter((capability) => stored.includes(capability));
+export function accountCapabilities(stored: readonly string[]): AwsReaderCapability[] {
+  return AWS_READER_CAPABILITIES.filter((capability) => stored.includes(capability));
 }

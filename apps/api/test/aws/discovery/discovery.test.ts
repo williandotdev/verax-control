@@ -1,4 +1,8 @@
-import { awsInfrastructureSummarySchema, awsSourceDetailsSchema } from '@verax/shared';
+import {
+  AWS_READER_CAPABILITY_ACTIONS,
+  awsInfrastructureSummarySchema,
+  awsSourceDetailsSchema,
+} from '@verax/shared';
 import { describe, expect, it } from 'vitest';
 import type { DiscoveredSource } from '../../../src/aws/discovery/catalogue.js';
 import {
@@ -9,7 +13,13 @@ import {
 } from '../../../src/aws/discovery/discovery.js';
 import { isReadOnlyCommand } from '../../../src/aws/discovery/read-only.js';
 import { AwsConnectionError } from '../../../src/aws/web-identity.js';
-import { awsError, fakeDiscovery, type FakeDiscoveryAccount, type Handlers } from './fake-discovery.js';
+import {
+  awsError,
+  fakeDiscovery,
+  type FakeDiscoveryAccount,
+  type FakeDiscoveryCall,
+  type Handlers,
+} from './fake-discovery.js';
 
 const ACCOUNT = '111111111111';
 const NOW = new Date('2026-11-22T12:00:00.000Z');
@@ -46,6 +56,26 @@ const one = (result: DiscoveryResult, kind: string, match?: (source: DiscoveredS
   if (source === undefined || rest.length > 0) throw new Error(`esperava uma fonte ${kind}`);
   return source;
 };
+
+/** O prefixo do IAM de cada serviço, quando não é o nome do cliente. */
+const IAM_SERVICE: Record<string, string> = {
+  accessanalyzer: 'access-analyzer',
+  elbv2: 'elasticloadbalancing',
+};
+/** As operações cuja ação do IAM não tem o nome da operação. */
+const IAM_ACTION: Record<string, string> = {
+  's3:ListBuckets': 's3:ListAllMyBuckets',
+  's3:ListObjectsV2': 's3:ListBucket',
+  's3:GetPublicAccessBlock': 's3:GetBucketPublicAccessBlock',
+  // As operações V2 do Access Analyzer são cobertas pela ação da V1.
+  'access-analyzer:ListFindingsV2': 'access-analyzer:ListFindings',
+};
+
+/** A ação do IAM que uma chamada da descoberta exige. */
+function iamActionOf(call: FakeDiscoveryCall): string {
+  const operation = `${IAM_SERVICE[call.service] ?? call.service}:${call.command.replace(/Command$/, '')}`;
+  return IAM_ACTION[operation] ?? operation;
+}
 
 /** A trilha multirregião da conta fictícia, vista por toda região. */
 function trailHandlers(overrides: Record<string, unknown> = {}): Handlers {
@@ -392,6 +422,24 @@ describe('descoberta de uma conta AWS (clientes falsos, sem rede)', () => {
     expect(calls.length).toBeGreaterThan(40);
     for (const call of calls) {
       expect(isReadOnlyCommand({ constructor: { name: call.command } }), call.command).toBe(true);
+    }
+    // E cada uma é uma ação que a política do papel dá (o modelo 2 do template): a descoberta só chama o que a
+    // capacidade `discovery` permite, e cada sondagem, uma ação da capacidade do tipo.
+    const granted: Record<string, readonly string[]> = AWS_READER_CAPABILITY_ACTIONS;
+    const probes = new Set(['ListObjectsV2Command', 'GetObjectCommand', 'DescribeLogStreamsCommand']);
+    const findings = new Set(['guardduty', 'securityhub', 'inspector2', 'accessanalyzer']);
+    for (const call of calls) {
+      const action = iamActionOf(call);
+      const isFindingsProbe =
+        findings.has(call.service) && /^(ListFindings(V2)?|GetFindings)Command$/.test(call.command);
+      const capability = isFindingsProbe
+        ? 'findings'
+        : call.command === 'DescribeLogStreamsCommand'
+          ? 'log-groups'
+          : probes.has(call.command)
+            ? 'service-logs'
+            : 'discovery';
+      expect(granted[capability], `${call.service} ${call.command}`).toContain(action);
     }
     // A trilha multirregião aparece nas duas regiões e é conferida uma vez, na região dela.
     expect(calls.filter((call) => call.command === 'GetTrailStatusCommand')).toHaveLength(1);
@@ -1042,6 +1090,10 @@ describe('sondagens de permissão', () => {
       inspector: ['missing', 'inspector2:ListFindings'],
       access_analyzer: ['missing', 'access-analyzer:ListFindings'],
     });
+    // A ação que a sondagem diz faltar é uma das que a capacidade de achados dá no template.
+    for (const kind of ['guardduty', 'security_hub', 'inspector', 'access_analyzer']) {
+      expect(AWS_READER_CAPABILITY_ACTIONS.findings).toContain(one(result, kind).permissionDetail);
+    }
     // Sem saber a versão do template, a nota de atualizar a pilha não aparece: só a ação que faltou.
     expect(one(result, 'guardduty').notes).toEqual(['recommended']);
     expect(one(result, 'cloudtrail')).toMatchObject({ permission: 'granted', notes: [] });

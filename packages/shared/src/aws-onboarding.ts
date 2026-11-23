@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  AWS_LOG_GROUP_TAG,
+  AWS_READER_CAPABILITIES,
+  AWS_READER_TEMPLATE_VERSION,
+  type AwsReaderCapability,
+} from './aws-reader.js';
 import { bucketNameProblem, isAwsRegion } from './cloud-accounts.js';
 
 /**
@@ -14,76 +20,25 @@ import { bucketNameProblem, isAwsRegion } from './cloud-accounts.js';
  *   pelos tetos de quantidade e pela desautorização a qualquer momento.
  */
 
-// ---------------------------------------------------------------------------------------------------------------------
-// TODO(PR-T): depois do merge do template v2, importar de './aws-reader.js' no lugar destas cópias locais, que têm os
-// mesmos nomes e valores de lá: `AWS_READER_TEMPLATE_VERSION`, `AWS_READER_CAPABILITIES`, `AwsReaderCapability`,
-// `AWS_READER_ROLE_TAGS` e `AWS_LOG_GROUP_TAG`; e trocar `awsOnboardingRoleFacts` por `parseReaderRoleTags` (a mesma
-// regra: sem a tag da versão, template v1 só com `discovery`; as capacidades separadas por espaço, o
-// `AWS_READER_CAPABILITIES_SEPARATOR` de lá, lidas aqui com folga). Ficam sem `export` de propósito: dois módulos
-// exportando o mesmo nome quebrariam o `export *` do índice quando os dois PRs se encontrarem.
-// ---------------------------------------------------------------------------------------------------------------------
-const AWS_READER_TEMPLATE_VERSION = 2;
-const AWS_READER_CAPABILITIES = ['discovery', 'service-logs', 'findings', 'log-groups'] as const;
-type AwsReaderCapability = (typeof AWS_READER_CAPABILITIES)[number];
-/** As tags do papel (e, na VM própria do cliente, do usuário IAM de leitura). */
-const AWS_READER_ROLE_TAGS = {
-  template: 'verax-control:template',
-  capabilities: 'verax-control:capabilities',
-} as const;
-const AWS_LOG_GROUP_TAG = { key: 'verax-control', value: 'leitura' } as const;
-
 /**
- * As capacidades do papel de leitura (os parâmetros do template v2): a descoberta (sempre ligada), a leitura dos logs
- * dos serviços da AWS no S3, as APIs de achados e os grupos do CloudWatch Logs com a tag.
+ * O papel de uma versão anterior do template (sem as tags, a 1): o painel pede a atualização da pilha. As tags do papel
+ * (a versão e as capacidades) são lidas por `parseReaderRoleTags` (`aws-reader.ts`); null é a versão ainda não lida,
+ * ou a tag que não é um número de versão.
  */
-export const AWS_ONBOARDING_CAPABILITIES = AWS_READER_CAPABILITIES;
-export type AwsOnboardingCapability = AwsReaderCapability;
-
-/** A versão do template que este código espera; um papel de versão menor aparece como desatualizado. */
-export const AWS_ONBOARDING_TEMPLATE_VERSION = AWS_READER_TEMPLATE_VERSION;
-
-/** O papel de uma versão anterior do template (sem as tags, a 1): o painel pede a atualização da pilha. */
 export function isAwsTemplateOutdated(version: number | null): boolean {
   return version !== null && version < AWS_READER_TEMPLATE_VERSION;
 }
 
-/** O que as tags do papel dizem: a versão do template e as capacidades ligadas. */
-export interface AwsOnboardingRoleFacts {
-  templateVersion: number;
-  capabilities: AwsOnboardingCapability[];
-}
-
 /**
- * A versão e as capacidades pelas tags do papel (`iam:GetRole` no próprio papel; na VM própria do cliente, `iam:GetUser`
- * no próprio usuário de leitura). Sem a tag da versão (ou com ela fora do formato), é o template v1: só a descoberta,
- * e os buckets cadastrados antes continuam lidos; a leitura dos logs dos serviços, as APIs de achados e os grupos de
- * logs não estão liberados. A descoberta está sempre ligada, mesmo com a tag das capacidades vazia. A lista é lida com
- * folga (espaço, vírgula, tabulação ou quebra de linha entre os nomes), e um nome desconhecido é ignorado.
+ * O grupo de logs tem a tag que libera a leitura dele (`AWS_LOG_GROUP_TAG`: `verax-control = leitura`)? O valor é
+ * exato. A chave é comparada sem distinguir maiúsculas de minúsculas, como o IAM faz na condição
+ * `aws:ResourceTag/<chave>` da política do papel: o que a política aceitaria não fica de fora aqui (e a sondagem de
+ * leitura, que vem depois, é quem prova a permissão).
  */
-export function awsOnboardingRoleFacts(tags: Readonly<Record<string, string>>): AwsOnboardingRoleFacts {
-  const template = Object.hasOwn(tags, AWS_READER_ROLE_TAGS.template)
-    ? tags[AWS_READER_ROLE_TAGS.template]
-    : undefined;
-  if (template === undefined || !/^[1-9]\d{0,2}$/.test(template))
-    return { templateVersion: 1, capabilities: ['discovery'] };
-  const templateVersion = Number(template);
-  if (templateVersion < 2) return { templateVersion, capabilities: ['discovery'] };
-  const listed = Object.hasOwn(tags, AWS_READER_ROLE_TAGS.capabilities)
-    ? (tags[AWS_READER_ROLE_TAGS.capabilities] ?? '')
-    : '';
-  const found = new Set<string>(['discovery', ...listed.split(/[\s,]+/)]);
-  return {
-    templateVersion,
-    capabilities: AWS_READER_CAPABILITIES.filter((capability) => found.has(capability)),
-  };
-}
-
-/** O grupo de logs tem a tag que libera a leitura dele (`verax-control = leitura`)? */
 export function hasAwsLogGroupReadTag(tags: Readonly<Record<string, string>> | undefined): boolean {
-  return (
-    tags !== undefined &&
-    Object.hasOwn(tags, AWS_LOG_GROUP_TAG.key) &&
-    tags[AWS_LOG_GROUP_TAG.key] === AWS_LOG_GROUP_TAG.value
+  if (tags === undefined) return false;
+  return Object.keys(tags).some(
+    (key) => key.toLowerCase() === AWS_LOG_GROUP_TAG.key && tags[key] === AWS_LOG_GROUP_TAG.value,
   );
 }
 
@@ -116,7 +71,7 @@ export type AwsSourceMethod = (typeof AWS_SOURCE_METHODS)[number];
 /** O que cada tipo é: o método, a capacidade do papel que o libera, se já é coletado e se é sensível. */
 export interface AwsSourceKindInfo {
   method: AwsSourceMethod;
-  capability: AwsOnboardingCapability;
+  capability: AwsReaderCapability;
   /** Coletado nesta versão. Os outros aparecem como "ainda não coletado" e não aceitam autorização. */
   collectable: boolean;
   /** Pode trazer dado de aplicação: só entra citada uma a uma na autorização. */
@@ -547,16 +502,10 @@ export const AWS_DISCOVERY_MANUAL_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
  * Depois de "Conectar com AWS", o nó tenta entrar no papel por até 60 min, sem tratar a recusa como erro: a pilha ainda
- * está sendo criada. Passado o prazo sem o papel, `authorization_timeout`.
+ * está sendo criada. Passado o prazo sem o papel, o erro da conexão é `authorization_timeout`
+ * (`AWS_CONNECTION_ERROR_CODES`).
  */
 export const AWS_CONNECT_WINDOW_MS = 60 * 60 * 1000;
-
-/**
- * O erro da conexão quando o papel não apareceu dentro da janela do "Conectar" (`CloudAccount.connectionError`).
- * TODO(PR-T): depois do merge, entrar em `AWS_CONNECTION_ERROR_CODES` (`aws-reader.ts`), com a explicação em
- * `AWS_CONNECTION_ERROR_HINTS` do painel.
- */
-export const AWS_AUTHORIZATION_TIMEOUT_CODE = 'authorization_timeout';
 
 /**
  * O estado da conexão da conta, derivado pela API:
@@ -617,6 +566,7 @@ export type AwsOnboardingCheckStatus = (typeof AWS_ONBOARDING_CHECK_STATUSES)[nu
  * - `awaiting_stack`: dentro da janela do "Conectar", esperando o papel existir;
  * - `verifying`: um "Verificar" pendente;
  * - `template_outdated`: o papel (ou, na VM própria do cliente, o usuário IAM de leitura) é de um template anterior;
+ * - `template_unreadable`: a tag da versão do template existe e não é um número de versão;
  * - `awaiting_collector`: fonte autorizada, com o coletor ainda sem ler;
  * - `no_data`: sem medida ainda.
  */
@@ -625,6 +575,7 @@ export const AWS_ONBOARDING_CHECK_CODES = [
   'awaiting_stack',
   'verifying',
   'template_outdated',
+  'template_unreadable',
   'awaiting_collector',
   'no_data',
 ] as const;
@@ -661,9 +612,12 @@ export const awsOnboardingSchema = z.strictObject({
   }),
   checks: z.array(awsOnboardingCheckSchema).length(AWS_ONBOARDING_CHECK_IDS.length),
   template: z.strictObject({
-    /** A versão do template do papel (ou do usuário de leitura), pelas tags dele; null antes da primeira leitura. */
+    /**
+     * A versão do template do papel (ou do usuário de leitura), pelas tags dele; null antes da primeira leitura, e
+     * quando a tag não é um número de versão.
+     */
     version: z.number().int().positive().nullable(),
-    capabilities: z.array(z.enum(AWS_ONBOARDING_CAPABILITIES)).max(AWS_ONBOARDING_CAPABILITIES.length),
+    capabilities: z.array(z.enum(AWS_READER_CAPABILITIES)).max(AWS_READER_CAPABILITIES.length),
     outdated: z.boolean(),
     checkedAt: z.iso.datetime().nullable(),
   }),

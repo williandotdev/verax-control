@@ -1,7 +1,7 @@
 import type {
   AwsConnectionErrorCode,
   AwsConnectionWarningCode,
-  AwsOnboardingCapability,
+  AwsReaderCapability,
   LogSource,
 } from '@verax/shared';
 
@@ -56,14 +56,15 @@ export type AwsCheckOutcome =
     };
 
 /**
- * O que o papel de leitura diz de si mesmo, pelas tags dele (onboarding self-service): a versão do template e as
- * capacidades ligadas. Sem tag (ou sem a permissão de ler o próprio papel), é o template v1: só a descoberta, com os
- * buckets cadastrados antes ainda lidos. Na VM própria do cliente, que lê com a chave de um usuário IAM, as tags são as
- * do próprio usuário, com a mesma regra.
+ * O que o papel de leitura diz de si mesmo, pelas tags dele (onboarding self-service; `parseReaderRoleTags`): a versão
+ * do template e as capacidades ligadas. Sem tag (ou sem a permissão de ler o próprio papel), é o template v1: só a
+ * descoberta, com os buckets cadastrados antes ainda lidos. A versão é null quando a tag existe e não é um número de
+ * versão. Na VM própria do cliente, que lê com a chave de um usuário IAM, as tags são as do próprio usuário, com a
+ * mesma regra.
  */
 export interface AwsReaderFacts {
-  readonly templateVersion: number;
-  readonly capabilities: readonly AwsOnboardingCapability[];
+  readonly templateVersion: number | null;
+  readonly capabilities: readonly AwsReaderCapability[];
 }
 
 export interface AwsConnectionChecker {

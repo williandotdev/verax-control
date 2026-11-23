@@ -6,7 +6,7 @@ import {
   type AwsDiscoveryService,
   type AwsInfrastructureSummary,
   type AwsLogGroupCategory,
-  type AwsOnboardingCapability,
+  type AwsReaderCapability,
   type AwsSourceKind,
   isAwsRegion,
   type LogBuckets,
@@ -94,7 +94,7 @@ export interface DiscoveryTarget {
   /** As regiões monitoradas do cadastro: a primeira é a de partida, e todas valem se `DescribeRegions` for recusado. */
   regions: readonly string[];
   /** As capacidades do papel pelas tags; null quando não se sabe (template v1, ou a chave da VM própria). */
-  capabilities: readonly AwsOnboardingCapability[] | null;
+  capabilities: readonly AwsReaderCapability[] | null;
   /** O papel é de um template anterior: a fonte sem permissão ganha a nota de atualizar a pilha. */
   templateOutdated: boolean;
   /** Os buckets do cadastro anterior da conta. */

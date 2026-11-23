@@ -1,5 +1,4 @@
 import {
-  AWS_AUTHORIZATION_TIMEOUT_CODE,
   AWS_BUCKET_ERROR_CODES,
   AWS_CONNECT_WINDOW_MS,
   type AwsDiscoveryStatus,
@@ -133,8 +132,7 @@ export function deriveAwsOnboarding(facts: OnboardingFacts): OnboardingDerived {
   const { account, latestRun, sources } = facts;
   const active = account.status === 'active';
   const pending = active && account.checkRequestedAt !== null;
-  const timedOut =
-    account.connection === 'error' && account.connectionError === AWS_AUTHORIZATION_TIMEOUT_CODE;
+  const timedOut = account.connection === 'error' && account.connectionError === 'authorization_timeout';
   const bucketError = account.connection === 'error' && isBucketError(account.connectionError);
   /** O nó entrou no papel na última conferência (conectada, ou com erro só num bucket). */
   const entered = active && !pending && (account.connection === 'connected' || bucketError);
@@ -170,9 +168,12 @@ export function deriveAwsOnboarding(facts: OnboardingFacts): OnboardingDerived {
     ? check('template', 'skipped')
     : account.awsCapabilitiesCheckedAt === null
       ? check('template', 'pending')
-      : isAwsTemplateOutdated(account.awsTemplateVersion)
-        ? check('template', 'failed', 'template_outdated', account.awsCapabilitiesCheckedAt)
-        : check('template', 'ok', null, account.awsCapabilitiesCheckedAt);
+      : account.awsTemplateVersion === null
+        ? // As tags foram lidas, e a da versão não é um número de versão.
+          check('template', 'failed', 'template_unreadable', account.awsCapabilitiesCheckedAt)
+        : isAwsTemplateOutdated(account.awsTemplateVersion)
+          ? check('template', 'failed', 'template_outdated', account.awsCapabilitiesCheckedAt)
+          : check('template', 'ok', null, account.awsCapabilitiesCheckedAt);
 
   const discovery = !entered
     ? check('discovery', 'skipped')

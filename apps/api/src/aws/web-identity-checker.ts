@@ -18,12 +18,12 @@ import {
   AWS_READER_ROLE_NAME,
   type AwsConnectionWarningCode,
   awsAccountIdSchema,
-  awsOnboardingRoleFacts,
   awsReaderRoleArn,
   isAwsRegion,
   isNodeEgressIp,
   LOG_SOURCES,
   type LogSource,
+  parseReaderRoleTags,
 } from '@verax/shared';
 import { z } from 'zod';
 import type { AwsCredentialIdentity } from '../inventory/read-only-session.js';
@@ -174,7 +174,7 @@ const roleTagsSchema = z
   .max(50);
 
 /** O template v1: sem tags no papel, só com a descoberta (e os buckets cadastrados antes). */
-const TEMPLATE_V1: AwsReaderFacts = { templateVersion: 1, capabilities: ['discovery'] };
+const TEMPLATE_V1: AwsReaderFacts = parseReaderRoleTags([]);
 
 /** Um bucket a conferir e a primeira fonte que o usa (a fonte vai com o erro). */
 interface BucketToCheck {
@@ -447,12 +447,8 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
       );
       if (!found.ok) return found.transient ? null : TEMPLATE_V1;
       const tags = roleTagsSchema.safeParse(found.value ?? []);
-      if (!tags.success) return TEMPLATE_V1;
-      const byKey: Record<string, string> = {};
-      for (const tag of tags.data) {
-        if (tag.Key !== undefined && tag.Value !== undefined) byKey[tag.Key] = tag.Value;
-      }
-      return awsOnboardingRoleFacts(byKey);
+      // As tags vêm da conta do cliente: só a versão e os nomes das capacidades contam (`parseReaderRoleTags`).
+      return tags.success ? parseReaderRoleTags(tags.data) : TEMPLATE_V1;
     } catch (error) {
       if (signal.aborted) throw error;
       if (error instanceof AwsConnectionError) return null;

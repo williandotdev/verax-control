@@ -227,6 +227,9 @@ export const MAX_NODE_EGRESS_IPS = 4;
  * - `idp_unavailable`: o Google não respondeu à AWS ao conferir o token;
  * - `region_disabled`: o STS da região está desligado na conta;
  * - `account_mismatch`: a sessão é de outra conta que não a cadastrada;
+ * - `authorization_timeout` (onboarding self-service): o papel não apareceu dentro da janela do "Conectar com AWS"
+ *   (60 min, `AWS_CONNECT_WINDOW_MS`). Dentro dela, a entrada recusada só diz que a pilha ainda está sendo criada e não
+ *   vira erro; fechada a janela sem o papel, é este o erro gravado, e conectar de novo abre outra janela;
  * - `bucket_missing`, `bucket_denied` e `kms_denied`: um bucket cadastrado não existe, não pôde ser lido, ou a chave
  *   KMS dele não decifra para o papel. Gravados com a fonte do bucket (`bucket_denied:cloudtrail`, ver
  *   `awsConnectionErrorValue`);
@@ -249,6 +252,7 @@ export const AWS_CONNECTION_ERROR_CODES = [
   'idp_unavailable',
   'region_disabled',
   'account_mismatch',
+  'authorization_timeout',
   'bucket_missing',
   'bucket_denied',
   'kms_denied',

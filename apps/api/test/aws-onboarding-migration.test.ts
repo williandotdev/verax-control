@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   AWS_DISCOVERY_STATUSES,
   AWS_DISCOVERY_TRIGGERS,
-  AWS_ONBOARDING_CAPABILITIES,
+  AWS_READER_CAPABILITIES,
   AWS_SOURCE_AVAILABILITIES,
   AWS_SOURCE_KINDS,
   AWS_SOURCE_LOGGING_STATES,
@@ -175,7 +175,7 @@ describe(`migration ${MIGRATION}`, () => {
           await constraint(client, 'CloudAccount_aws_onboarding_check'),
           '"awsCapabilities" <@',
         ).sort(),
-      ).toEqual([...AWS_ONBOARDING_CAPABILITIES].sort());
+      ).toEqual([...AWS_READER_CAPABILITIES].sort());
     });
 
     it('as colunas do onboarding só existem na conta AWS', async () => {

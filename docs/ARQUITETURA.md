@@ -773,10 +773,10 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
 
 ## Onboarding AWS self-service
 
-_(em construção, em vários PRs. Feito no código: o contrato, o modelo de dados, o "Conectar" com validação automática,
-a descoberta e as rotas de autorização (PR-B). A construir: o template v2 do papel (PR-T), a coleta das fontes
-autorizadas pelo Wazuh e pelas APIs de achados (PR-C1 e PR-C2) e a tela nova (PR-U). Até lá, uma fonte autorizada fica
-"aguardando o coletor", e a tela de Contas cloud segue a de antes.)_
+_(em construção, em vários PRs. Feito no código: o template v2 do papel, com a descoberta e as três autorizações do
+cliente (PR-T); o contrato, o modelo de dados, o "Conectar" com validação automática, a descoberta e as rotas de
+autorização (PR-B). A construir: a coleta das fontes autorizadas pelo Wazuh e pelas APIs de achados (PR-C1 e PR-C2) e a
+tela nova (PR-U). Até lá, uma fonte autorizada fica "aguardando o coletor", e a tela de Contas cloud segue a de antes.)_
 
 O cliente conecta a conta AWS sozinho: clica em "Conectar com AWS", cria a pilha do papel de leitura no CloudFormation
 e, a partir daí, o nó valida a conexão, descobre as fontes de log da conta e mostra o que pode ser coletado. O cliente

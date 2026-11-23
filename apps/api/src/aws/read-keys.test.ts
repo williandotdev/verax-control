@@ -1,4 +1,10 @@
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
+import {
+  AWS_READER_ROLE_TAGS,
+  AWS_READER_TEMPLATE_VERSION,
+  awsReaderCapabilitiesTagValue,
+  awsReaderUserCommands,
+} from '@verax/shared';
 import { describe, expect, it } from 'vitest';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { CredentialRejected, CredentialSourceUnavailable } from '../credentials/credential-check.js';
@@ -340,17 +346,24 @@ describe('as tags do usuário IAM de leitura (VM própria): a versão do templat
   }
 
   it('lê as tags com um GetUser no próprio usuário (sem nome: o dono da chave), nunca com GetRole', async () => {
+    // As mesmas tags que os comandos do painel põem no usuário de leitura (`awsReaderUserCommands`).
+    const template = String(AWS_READER_TEMPLATE_VERSION);
+    const granted = awsReaderCapabilitiesTagValue(['findings']);
+    const commands = awsReaderUserCommands(ACCOUNT, ['findings']);
+    expect(commands).toContain(`Key=${AWS_READER_ROLE_TAGS.template},Value=${template}`);
+    expect(commands).toContain(`Key=${AWS_READER_ROLE_TAGS.capabilities},Value=${granted}`);
+
     const { checker, calls } = setup(() => ({
       User: {
         UserName: 'verax-control-reader',
         Tags: [
-          { Key: 'verax-control:template', Value: '2' },
-          { Key: 'verax-control:capabilities', Value: 'discovery findings' },
+          { Key: AWS_READER_ROLE_TAGS.template, Value: template },
+          { Key: AWS_READER_ROLE_TAGS.capabilities, Value: granted },
         ],
       },
     }));
     expect(await checker.readerFacts(target, signal)).toEqual({
-      templateVersion: 2,
+      templateVersion: AWS_READER_TEMPLATE_VERSION,
       capabilities: ['discovery', 'findings'],
     });
     expect(calls).toEqual([{ command: 'GetUserCommand', input: {} }]);

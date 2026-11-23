@@ -4,7 +4,7 @@ import {
   type AwsDiscoveryError,
   type AwsDiscoveryStatus,
   type AwsInfrastructureSummary,
-  type AwsOnboardingCapability,
+  type AwsReaderCapability,
   type AwsSourceKind,
   isAwsRegion,
   isAwsTemplateOutdated,
@@ -130,6 +130,7 @@ const ACCOUNT_SELECT = {
   wafBucket: true,
   awsTemplateVersion: true,
   awsCapabilities: true,
+  awsCapabilitiesCheckedAt: true,
   awsDiscoveredRegions: true,
 } as const satisfies Prisma.CloudAccountSelect;
 type AccountRow = Prisma.CloudAccountGetPayload<{ select: typeof ACCOUNT_SELECT }>;
@@ -164,14 +165,14 @@ function failureCode(error: unknown): string {
  * permissão de cada fonte é sondada.
  */
 function targetOf(account: AccountRow): DiscoveryTarget {
-  const version = account.awsTemplateVersion;
-  const capabilities: AwsOnboardingCapability[] | null =
-    version === null ? null : accountCapabilities(account.awsCapabilities);
+  // As tags lidas dizem as capacidades mesmo quando a da versão não é um número (a versão fica null).
+  const capabilities: AwsReaderCapability[] | null =
+    account.awsCapabilitiesCheckedAt === null ? null : accountCapabilities(account.awsCapabilities);
   return {
     accountId: account.accountId,
     regions: account.regions,
     capabilities,
-    templateOutdated: isAwsTemplateOutdated(version),
+    templateOutdated: isAwsTemplateOutdated(account.awsTemplateVersion),
     legacyBuckets: {
       cloudtrail: account.cloudtrailBucket,
       guardduty: account.guarddutyBucket,
