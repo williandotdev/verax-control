@@ -6564,3 +6564,12 @@ log-source-labels.ts`, `lib/api-types.ts` e `log-sources.test.tsx`; `apps/contro
 - **Riscos:** uma passagem do worker em curso na hora da exclusão pode terminar uma vez com erro de registro não
   encontrado ao gravar o resultado (nada é recriado). Na conta do console recriada por uma revisão maior, a credencial
   só volta se o console ainda tiver o envelope (o consumido precisa ser reenviado).
+
+## Detecções: a lista ao lado do radar no computador (pedido do responsável de 23/11/2026)
+
+- **O que muda:** da largura de 80rem (1280 px) para cima, a lista de alertas e incidentes fica ao lado do radar, sem aba própria; as análises ficam embaixo, a começar pelo Resumo. O detalhe abre no lugar do radar e devolve o radar ao fechar. Com o resumo recolhido, a lista usa a largura toda, com o detalhe ao lado, como antes. Abaixo de 80rem, nada muda.
+- **Arquivos:** `apps/web/src/pages/detections-page.tsx` e o teste, `features/detections/{detection-list,situation-strip}.tsx`, `features/detections/strip-preference.ts` (novo), `lib/use-media-query.ts`, `e2e/deteccoes.mock.spec.ts`.
+- **Ao lado do radar, a tabela cabe sem rolar por dentro** (1280, 1440 e 1920 px): a origem, o usuário ou IP e a hora vão embaixo do título; a partir de 110rem, todas as colunas.
+- **Corrigido junto:** os textos só para leitor de tela saíam da área que rola e alargavam a página.
+- **Dependências novas:** nenhuma. Sem mudança na API.
+- **Testes:** web 742 (6 novos); navegador nas telas tocadas, com acessibilidade nos dois temas.

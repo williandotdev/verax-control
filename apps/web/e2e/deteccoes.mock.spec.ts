@@ -176,15 +176,53 @@ test.describe('tela Detecções (modo mock)', () => {
     });
   }
 
-  test('recolher o resumo sobe a lista e fica lembrado depois de recarregar', async ({ page }) => {
+  test('no computador, a lista fica ao lado do radar e as análises embaixo, a começar pelo Resumo', async ({
+    page,
+  }) => {
+    for (const width of [1280, 1440, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      await open(page);
+      const radar = await page.getByRole('region', { name: 'Radar das últimas 24 horas' }).boundingBox();
+      const list = await page.getByRole('region', { name: 'Lista de alertas' }).boundingBox();
+      const summary = page.getByRole('tab', { name: 'Resumo' });
+      await expect(summary).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByRole('tab', { name: 'Lista' })).toHaveCount(0);
+      const tab = await summary.boundingBox();
+      if (!radar || !list || !tab) throw new Error('sem o radar, a lista ou as análises na tela');
+      expect(list.x).toBeGreaterThanOrEqual(radar.x + radar.width);
+      expect(list.y).toBeLessThan(radar.y + radar.height);
+      expect(tab.y).toBeGreaterThanOrEqual(list.y + list.height);
+      await noHorizontalScroll(page);
+      // Os alertas cabem na coluna ao lado do radar, sem rolar por dentro, nas duas visões.
+      for (const [view, name] of [
+        ['Alertas', 'Lista de alertas'],
+        ['Incidentes', 'Lista de incidentes'],
+      ] as const) {
+        await page.getByRole('button', { name: view, exact: true }).click();
+        const region = page.getByRole('region', { name });
+        await expect(region).toBeVisible();
+        expect(
+          await region.evaluate((element) => element.scrollWidth - element.clientWidth),
+          `${view} em ${width} px`,
+        ).toBeLessThanOrEqual(1);
+      }
+    }
+    // Na tela estreita, como antes: a lista é a primeira aba.
+    await page.setViewportSize({ width: 1100, height: 900 });
+    await open(page);
+    await expect(page.getByRole('tab', { name: 'Lista' })).toHaveAttribute('aria-selected', 'true');
+    await noHorizontalScroll(page);
+  });
+
+  test('recolher o resumo alarga a lista e fica lembrado depois de recarregar', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page);
-    const list = page.getByRole('table', { name: 'Alertas do cliente' });
-    const before = (await list.boundingBox())?.y ?? 0;
+    const list = page.getByRole('region', { name: 'Lista de alertas' });
+    const before = (await list.boundingBox())?.width ?? 0;
     // O botão do próprio resumo: o menu lateral tem o seu ("Recolher menu").
     const situation = page.getByRole('region', { name: 'Situação agora' });
     await situation.getByRole('button', { name: /^Recolher/ }).click();
-    await expect.poll(async () => (await list.boundingBox())?.y ?? 0).toBeLessThan(before - 200);
+    await expect.poll(async () => (await list.boundingBox())?.width ?? 0).toBeGreaterThan(before + 200);
     await page.reload();
     await expect(situation.getByRole('button', { name: /^Mostrar/ })).toHaveAttribute(
       'aria-expanded',

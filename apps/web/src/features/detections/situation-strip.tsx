@@ -39,14 +39,26 @@ import { selectionSearch, withChanges } from './url-state';
  * destaque, o motivo numa linha de texto, as decisões pendentes e a saúde da coleta num indicador (o detalhe numa
  * gaveta). Sem o semáforo (descontinuado em 17/11/2026): o radar e as decisões dizem a situação. Recolhível, para a
  * lista subir; a escolha fica neste navegador, por pessoa. No celular, começa recolhido: só as contagens.
+ * No computador, fica numa coluna, com a lista ao lado (`stacked`).
  */
-export function SituationStrip({ scope, userId }: { scope: string; userId: string }) {
+export function SituationStrip({
+  scope,
+  expanded,
+  onExpandedChange,
+  stacked = false,
+}: {
+  scope: string;
+  /** Aberto ou recolhido (`useStripPreference`). */
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  /** Numa coluna só, ao lado da lista: o radar em cima e as decisões embaixo. */
+  stacked?: boolean;
+}) {
   const tower = useQuery({
     queryKey: ['tower', scope],
     queryFn: () => api.get('/v1/tower', towerSummarySchema),
     refetchInterval: 60_000,
   });
-  const [expanded, setExpanded] = useStripPreference(userId);
   const contentId = useId();
   const titleId = useId();
   const summary = tower.data;
@@ -72,7 +84,7 @@ export function SituationStrip({ scope, userId }: { scope: string; userId: strin
           size="sm"
           aria-expanded={expanded}
           aria-controls={contentId}
-          onClick={() => setExpanded(!expanded)}
+          onClick={() => onExpandedChange(!expanded)}
         >
           {expanded ? <ChevronDown aria-hidden /> : <ChevronRight aria-hidden />}
           {expanded ? 'Recolher' : 'Mostrar'}
@@ -85,41 +97,11 @@ export function SituationStrip({ scope, userId }: { scope: string; userId: strin
         ) : !summary ? (
           <LoadingState rows={3} label="Carregando a situação" />
         ) : (
-          expanded && <ExpandedSituation summary={summary} />
+          expanded && <ExpandedSituation summary={summary} stacked={stacked} />
         )}
       </div>
     </section>
   );
-}
-
-const STORAGE_KEY = 'verax:deteccoes:resumo:';
-const NARROW = '(max-width: 47.99rem)';
-
-/**
- * Aberto ou recolhido, lembrado por pessoa neste navegador. O armazenamento pode faltar (janela privada, bloqueio): a
- * tela segue com o padrão, aberto no computador e recolhido no celular.
- */
-function useStripPreference(userId: string): [boolean, (expanded: boolean) => void] {
-  const key = `${STORAGE_KEY}${userId}`;
-  const [expanded, setState] = useState(() => {
-    try {
-      const stored = window.localStorage.getItem(key);
-      if (stored === 'aberto') return true;
-      if (stored === 'recolhido') return false;
-    } catch {
-      // Sem armazenamento: o padrão.
-    }
-    return typeof window.matchMedia === 'function' ? !window.matchMedia(NARROW).matches : true;
-  });
-  const set = (next: boolean) => {
-    setState(next);
-    try {
-      window.localStorage.setItem(key, next ? 'aberto' : 'recolhido');
-    } catch {
-      // Sem armazenamento, a escolha vale até sair da tela.
-    }
-  };
-  return [expanded, set];
 }
 
 /** Recolhido: as contagens, numa linha. */
@@ -142,10 +124,11 @@ function CompactSituation({ summary }: { summary: TowerSummary }) {
   );
 }
 
-function ExpandedSituation({ summary }: { summary: TowerSummary }) {
+function ExpandedSituation({ summary, stacked }: { summary: TowerSummary; stacked: boolean }) {
   const [params] = useSearchParams();
-  // O detalhe ao lado só existe na aba Lista: um ponto do radar aberto numa aba de análise volta para a lista.
-  const listParams = withChanges(params, { analysis: null }, { keepPage: true });
+  // Com a lista ao lado, a análise de baixo fica como está. Sem ela, o detalhe só existe na aba Lista: um ponto do radar
+  // aberto numa aba de análise volta para a lista.
+  const listParams = stacked ? params : withChanges(params, { analysis: null }, { keepPage: true });
   const links: RadarLinks = {
     finding: (id) => ({ search: selectionSearch(listParams, { kind: 'finding', id }) }),
     incident: (id) => ({ search: selectionSearch(listParams, { kind: 'incident', id }) }),
@@ -165,6 +148,7 @@ function ExpandedSituation({ summary }: { summary: TowerSummary }) {
         className={cn(
           'grid gap-6',
           summary.radar &&
+            !stacked &&
             'lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,28rem)_minmax(0,1fr)]',
         )}
       >
