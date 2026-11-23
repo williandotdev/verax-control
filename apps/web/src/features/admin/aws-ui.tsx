@@ -86,6 +86,44 @@ export function Section({
   );
 }
 
+/**
+ * Uma tabela dentro do quadro que rola de lado quando ela não cabe (no celular, ou com um texto mais largo). Toda
+ * tabela desta seção passa por aqui, para nenhuma ficar sem o que o quadro precisa: ele é uma região com o nome da
+ * tabela e recebe o foco do teclado, com o contorno de foco à vista. Sem mouse, é o foco no quadro que deixa rolar
+ * até as colunas da direita (uma tabela só de texto não tem outro ponto de foco). O mesmo padrão das outras tabelas do
+ * painel (`report-table.tsx`, `chart-table.tsx`).
+ */
+export function ScrollTable({
+  caption,
+  className,
+  tableClassName,
+  children,
+}: {
+  /** O nome da tabela, um para cada tabela da tela: a legenda dela e, com "Tabela: " na frente, o nome do quadro. */
+  caption: string;
+  className?: string;
+  tableClassName?: string;
+  /** O cabeçalho e o corpo da tabela (`thead` e `tbody`). */
+  children: ReactNode;
+}) {
+  return (
+    <div
+      role="region"
+      aria-label={`Tabela: ${caption}`}
+      tabIndex={0}
+      className={cn(
+        'overflow-x-auto rounded-md border focus-visible:outline-2 focus-visible:outline-ring',
+        className,
+      )}
+    >
+      <table className={cn('w-full', tableClassName)}>
+        <caption className="sr-only">{caption}</caption>
+        {children}
+      </table>
+    </div>
+  );
+}
+
 /** Link para fora do painel, em outra aba, sem dar à página aberta acesso a esta. */
 export function OutLink({
   href,

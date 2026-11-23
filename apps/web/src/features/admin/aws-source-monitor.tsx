@@ -19,7 +19,7 @@ import {
 } from '@/features/admin/aws-source-parts';
 import { groupAwsSources } from '@/features/admin/aws-sources';
 import { awsConnectionErrorHint } from '@/features/admin/labels';
-import { Section, Tag, ToneBadge } from '@/features/admin/aws-ui';
+import { ScrollTable, Section, Tag, ToneBadge } from '@/features/admin/aws-ui';
 import { formatGb } from '@/features/plan/plan-format';
 import { formatDay, formatDuration, formatRelative } from '@/lib/format';
 
@@ -100,140 +100,139 @@ export function AwsSourceMonitor({
           {awsOnboardingErrorText(revoke.error)}
         </p>
       ) : null}
-      <div className="overflow-x-auto rounded-lg border">
-        <table className="w-full min-w-[64rem] text-sm">
-          <caption className="sr-only">
-            Fontes autorizadas da conta AWS e a saúde da coleta de cada uma
-          </caption>
-          <thead className="bg-foreground/[0.03] text-left text-xs text-muted-foreground">
-            <tr>
-              {[
-                'Fonte',
-                'Região',
-                'Estado',
-                'Último evento',
-                'Última leitura',
-                'Atraso',
-                'Volume (24 h)',
-                'Ações',
-              ].map((header) => (
-                <th key={header} scope="col" className="whitespace-nowrap px-3 py-2 font-medium">
-                  {header}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="tabular-nums">
-            {authorized.map((source) => {
-              const health = awsSourceHealthText(source);
-              const legacy = source.origin === 'legacy';
-              const name = awsSourceName(source);
-              const label = `${AWS_SOURCE_KIND_TEXTS[source.kind].label} ${name}`.trim();
-              const retryable = RETRYABLE_STATES.includes(source.state);
-              return (
-                <Fragment key={source.id}>
-                  <tr className="border-t">
-                    <th scope="row" className="min-w-64 space-y-1 px-3 py-2 text-left align-top font-normal">
-                      <p>
-                        <span className="font-medium">{AWS_SOURCE_KIND_TEXTS[source.kind].label}</span>
-                        {name !== '' && (
-                          <>
-                            {' · '}
-                            <span className="font-mono text-xs wrap-anywhere">{name}</span>
-                          </>
-                        )}
-                      </p>
-                      <p className="flex flex-wrap gap-1">
-                        {legacy && <Tag>Cadastrada manualmente</Tag>}
-                        {source.sensitive && <SensitiveTag />}
-                      </p>
-                      <SourceLocation source={source} />
-                      {source.collectFrom !== null && (
-                        <p className="text-xs text-muted-foreground">
-                          Coleta desde {formatDay(source.collectFrom)}
-                        </p>
-                      )}
-                    </th>
-                    <td className="whitespace-nowrap px-3 py-2 align-top">
-                      <SourceRegion region={source.region} />
-                    </td>
-                    <td className="min-w-44 space-y-1 px-3 py-2 align-top">
-                      <ToneBadge tone={health.tone}>{health.label}</ToneBadge>
-                      {health.detail !== null && (
-                        <p className="text-xs text-muted-foreground">{health.detail}</p>
-                      )}
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-top">
-                      <When at={source.health.lastEventAt} never="nenhum ainda" />
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-top">
-                      <When at={source.health.lastSyncAt} never="nenhuma ainda" />
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-top">
-                      {source.health.lagSeconds === null ? (
-                        <span className="text-muted-foreground">sem medida</span>
-                      ) : (
-                        formatDuration(source.health.lagSeconds)
-                      )}
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2 align-top">
-                      <Volume source={source} />
-                    </td>
-                    <td className="min-w-40 space-y-2 px-3 py-2 align-top">
-                      {legacy ? (
-                        <p className="text-xs text-muted-foreground">
-                          Muda em{' '}
-                          <a href="#aws-buckets" className="underline">
-                            Avançado: buckets fora do padrão
-                          </a>
-                          .
-                        </p>
-                      ) : canWrite ? (
+      <ScrollTable
+        caption="Saúde da coleta de cada fonte autorizada"
+        className="rounded-lg"
+        tableClassName="min-w-[64rem] text-sm"
+      >
+        <thead className="bg-foreground/[0.03] text-left text-xs text-muted-foreground">
+          <tr>
+            {[
+              'Fonte',
+              'Região',
+              'Estado',
+              'Último evento',
+              'Última leitura',
+              'Atraso',
+              'Volume (24 h)',
+              'Ações',
+            ].map((header) => (
+              <th key={header} scope="col" className="whitespace-nowrap px-3 py-2 font-medium">
+                {header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="tabular-nums">
+          {authorized.map((source) => {
+            const health = awsSourceHealthText(source);
+            const legacy = source.origin === 'legacy';
+            const name = awsSourceName(source);
+            const label = `${AWS_SOURCE_KIND_TEXTS[source.kind].label} ${name}`.trim();
+            const retryable = RETRYABLE_STATES.includes(source.state);
+            return (
+              <Fragment key={source.id}>
+                <tr className="border-t">
+                  <th scope="row" className="min-w-64 space-y-1 px-3 py-2 text-left align-top font-normal">
+                    <p>
+                      <span className="font-medium">{AWS_SOURCE_KIND_TEXTS[source.kind].label}</span>
+                      {name !== '' && (
                         <>
-                          {retryable && active && (
-                            <RetryButton source={source} retry={retry} label="Tentar de novo" />
-                          )}
-                          <ConfirmButton
-                            label="Revogar"
-                            ariaLabel={`Revogar: ${label}`}
-                            size="sm"
-                            confirmLabel="Confirmar revogação"
-                            busy={revoke.isPending}
-                            warning="O Verax para de ler esta fonte. O que já foi coletado continua no histórico, e você pode autorizar de novo depois (a coleta recomeça no dia da nova autorização)."
-                            onConfirm={() => revoke.mutate(source.id)}
-                          />
+                          {' · '}
+                          <span className="font-mono text-xs wrap-anywhere">{name}</span>
                         </>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
                       )}
+                    </p>
+                    <p className="flex flex-wrap gap-1">
+                      {legacy && <Tag>Cadastrada manualmente</Tag>}
+                      {source.sensitive && <SensitiveTag />}
+                    </p>
+                    <SourceLocation source={source} />
+                    {source.collectFrom !== null && (
+                      <p className="text-xs text-muted-foreground">
+                        Coleta desde {formatDay(source.collectFrom)}
+                      </p>
+                    )}
+                  </th>
+                  <td className="whitespace-nowrap px-3 py-2 align-top">
+                    <SourceRegion region={source.region} />
+                  </td>
+                  <td className="min-w-44 space-y-1 px-3 py-2 align-top">
+                    <ToneBadge tone={health.tone}>{health.label}</ToneBadge>
+                    {health.detail !== null && (
+                      <p className="text-xs text-muted-foreground">{health.detail}</p>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 align-top">
+                    <When at={source.health.lastEventAt} never="nenhum ainda" />
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 align-top">
+                    <When at={source.health.lastSyncAt} never="nenhuma ainda" />
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 align-top">
+                    {source.health.lagSeconds === null ? (
+                      <span className="text-muted-foreground">sem medida</span>
+                    ) : (
+                      formatDuration(source.health.lagSeconds)
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 align-top">
+                    <Volume source={source} />
+                  </td>
+                  <td className="min-w-40 space-y-2 px-3 py-2 align-top">
+                    {legacy ? (
+                      <p className="text-xs text-muted-foreground">
+                        Muda em{' '}
+                        <a href="#aws-buckets" className="underline">
+                          Avançado: buckets fora do padrão
+                        </a>
+                        .
+                      </p>
+                    ) : canWrite ? (
+                      <>
+                        {retryable && active && (
+                          <RetryButton source={source} retry={retry} label="Tentar de novo" />
+                        )}
+                        <ConfirmButton
+                          label="Revogar"
+                          ariaLabel={`Revogar: ${label}`}
+                          size="sm"
+                          confirmLabel="Confirmar revogação"
+                          busy={revoke.isPending}
+                          warning="O Verax para de ler esta fonte. O que já foi coletado continua no histórico, e você pode autorizar de novo depois (a coleta recomeça no dia da nova autorização)."
+                          onConfirm={() => revoke.mutate(source.id)}
+                        />
+                      </>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </td>
+                </tr>
+                {source.state === 'permission_error' && !legacy && (
+                  <tr>
+                    <td colSpan={8} className="px-3 pb-3">
+                      <PermissionFix
+                        source={source}
+                        account={account}
+                        onboarding={onboarding}
+                        again="Tentar de novo"
+                      />
                     </td>
                   </tr>
-                  {source.state === 'permission_error' && !legacy && (
-                    <tr>
-                      <td colSpan={8} className="px-3 pb-3">
-                        <PermissionFix
-                          source={source}
-                          account={account}
-                          onboarding={onboarding}
-                          again="Tentar de novo"
-                        />
-                      </td>
-                    </tr>
-                  )}
-                  {source.state === 'permission_error' && legacy && (
-                    <tr>
-                      <td colSpan={8} className="px-3 pb-3 text-xs">
-                        {legacyBucketHint(source) ?? 'O Verax não conseguiu ler este bucket.'} Corrija e
-                        clique em Verificar conexão.
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                )}
+                {source.state === 'permission_error' && legacy && (
+                  <tr>
+                    <td colSpan={8} className="px-3 pb-3 text-xs">
+                      {legacyBucketHint(source) ?? 'O Verax não conseguiu ler este bucket.'} Corrija e clique
+                      em Verificar conexão.
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </ScrollTable>
     </Section>
   );
 }

@@ -20,7 +20,7 @@ import {
   type Tone,
 } from '@/features/admin/aws-onboarding-labels';
 import { isAuthorizedSource } from '@/features/admin/aws-sources';
-import { Notice, Section, ToneBadge } from '@/features/admin/aws-ui';
+import { Notice, ScrollTable, Section, ToneBadge } from '@/features/admin/aws-ui';
 import { formatRelative, plural } from '@/lib/format';
 
 const numberFormat = new Intl.NumberFormat('pt-BR');
@@ -170,25 +170,26 @@ function DiscoveryErrors({ onboarding }: { onboarding: AwsOnboarding }) {
     </tr>
   ));
   const table = (visible: typeof rows) => (
-    <div className="overflow-x-auto rounded-md border bg-surface">
-      <table className="w-full text-xs">
-        <caption className="sr-only">O que a descoberta não conseguiu ler</caption>
-        <thead className="text-left text-muted-foreground">
-          <tr>
-            <th scope="col" className="px-3 py-1.5 font-medium">
-              Serviço
-            </th>
-            <th scope="col" className="px-3 py-1.5 font-medium">
-              Região
-            </th>
-            <th scope="col" className="px-3 py-1.5 font-medium">
-              Motivo
-            </th>
-          </tr>
-        </thead>
-        <tbody>{visible}</tbody>
-      </table>
-    </div>
+    <ScrollTable
+      caption="O que a descoberta não conseguiu ler"
+      className="bg-surface"
+      tableClassName="text-xs"
+    >
+      <thead className="text-left text-muted-foreground">
+        <tr>
+          <th scope="col" className="px-3 py-1.5 font-medium">
+            Serviço
+          </th>
+          <th scope="col" className="px-3 py-1.5 font-medium">
+            Região
+          </th>
+          <th scope="col" className="px-3 py-1.5 font-medium">
+            Motivo
+          </th>
+        </tr>
+      </thead>
+      <tbody>{visible}</tbody>
+    </ScrollTable>
   );
   return (
     <Notice

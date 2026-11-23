@@ -805,7 +805,11 @@ describe('o que encontramos', () => {
     const found = await screen.findByRole('region', { name: 'O que encontramos' });
     expect(found).toHaveTextContent('Última descoberta: parcial');
     expect(found).toHaveTextContent('Descoberta parcial: 3 leituras ficaram de fora.');
-    const rows = within(within(found).getByRole('table', { name: 'O que a descoberta não conseguiu ler' }))
+    // A tabela rola dentro de um quadro com nome, que recebe o foco do teclado (ela não tem botão nem link).
+    const frame = within(found).getByRole('region', { name: 'Tabela: O que a descoberta não conseguiu ler' });
+    expect(frame).toHaveAttribute('tabindex', '0');
+    expect(within(frame).queryByRole('button')).not.toBeInTheDocument();
+    const rows = within(within(frame).getByRole('table', { name: 'O que a descoberta não conseguiu ler' }))
       .getAllByRole('row')
       .slice(1)
       .map((row) =>

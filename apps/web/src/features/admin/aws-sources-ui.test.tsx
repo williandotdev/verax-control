@@ -869,10 +869,24 @@ describe('fontes autorizadas: a saúde de cada uma, revogar e tentar de novo', (
     expect(await sourcesRegion()).not.toHaveTextContent('exemplo-trilha');
   });
 
-  it('quem só lê vê a saúde das fontes, sem ações', async () => {
+  it('quem só lê vê a saúde das fontes, sem ações; a tabela rola dentro de um quadro que recebe o foco', async () => {
+    const user = userEvent.setup();
     open([authorizedSourceFixture('guardduty', 'collecting', { name: 'GuardDuty' })], { canWrite: false });
     const monitor = await monitorRegion();
     expect(within(monitor).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(monitor).queryByRole('link')).not.toBeInTheDocument();
+    // Sem botão nem link na tabela, o quadro dela é o único ponto de foco: é ele que deixa rolar pelo teclado.
+    const frame = within(monitor).getByRole('region', {
+      name: 'Tabela: Saúde da coleta de cada fonte autorizada',
+    });
+    expect(frame).toHaveAttribute('tabindex', '0');
+    expect(
+      within(frame).getByRole('table', { name: 'Saúde da coleta de cada fonte autorizada' }),
+    ).toBeInTheDocument();
+    frame.focus();
+    expect(frame).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(frame).not.toHaveFocus();
   });
 });
 
