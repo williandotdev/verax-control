@@ -5,13 +5,20 @@ import {
   ListDetectorsCommand,
   ListPublishingDestinationsCommand,
 } from '@aws-sdk/client-guardduty';
-import { IAMClient, SimulatePrincipalPolicyCommand } from '@aws-sdk/client-iam';
+import {
+  GetRoleCommand,
+  GetUserCommand,
+  IAMClient,
+  SimulatePrincipalPolicyCommand,
+} from '@aws-sdk/client-iam';
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   AWS_CONNECTION_WARNING_CODES,
+  AWS_READER_ROLE_NAME,
   type AwsConnectionWarningCode,
   awsAccountIdSchema,
+  awsOnboardingRoleFacts,
   awsReaderRoleArn,
   isAwsRegion,
   isNodeEgressIp,
@@ -20,7 +27,12 @@ import {
 } from '@verax/shared';
 import { z } from 'zod';
 import type { AwsCredentialIdentity } from '../inventory/read-only-session.js';
-import type { AwsCheckOutcome, AwsCheckTarget, AwsConnectionChecker } from './aws-connection-check.js';
+import type {
+  AwsCheckOutcome,
+  AwsCheckTarget,
+  AwsConnectionChecker,
+  AwsReaderFacts,
+} from './aws-connection-check.js';
 import {
   AWS_CLIENT_OPTIONS,
   AwsConnectionError,
@@ -66,6 +78,11 @@ import { isIamUserArn } from './aws-key-check.js';
  * - tempo esgotado, 5xx e limite: `aws_unavailable` (pode passar); qualquer outro: `check_unavailable` (pode passar).
  * Uma falha depois da entrada no papel descarta a sessão guardada da conta: a próxima conferência entra de novo (uma
  * sessão revogada pelo "Revoke active sessions" não fica em uso até vencer).
+ *
+ * As tags do papel (`readerFacts`, onboarding self-service): um `iam:GetRole` no próprio papel, pela sessão da conta,
+ * que a tarefa `aws-check` pede depois de uma conferência sem erro, no "Verificar" e uma vez por dia. As tags dizem a
+ * versão do template e as capacidades ligadas; negado (o template v1 não dava essa permissão) ou sem tags, é a v1, só
+ * com a descoberta. Na VM própria, as mesmas tags ficam no usuário IAM de leitura, lidas com `iam:GetUser` nele mesmo.
  *
  * Na VM própria do cliente (`NODE_PLATFORM=vm`), a sessão é a chave do usuário IAM de leitura, do cofre
  * (`vault-key-credentials.ts`; `ReaderSession.principal` é `iam_user`), e só muda quem a AWS vê: o `GetCallerIdentity`
@@ -151,6 +168,13 @@ const destinationsSchema = z.array(
   }),
 );
 const evaluationsSchema = z.array(z.object({ EvalDecision: z.string().optional() }));
+/** As tags do papel: o IAM aceita até 50, com chave de até 128 e valor de até 256 caracteres. */
+const roleTagsSchema = z
+  .array(z.object({ Key: z.string().max(128).optional(), Value: z.string().max(256).optional() }))
+  .max(50);
+
+/** O template v1: sem tags no papel, só com a descoberta (e os buckets cadastrados antes). */
+const TEMPLATE_V1: AwsReaderFacts = { templateVersion: 1, capabilities: ['discovery'] };
 
 /** Um bucket a conferir e a primeira fonte que o usa (a fonte vai com o erro). */
 interface BucketToCheck {
@@ -392,6 +416,47 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
         retryable: error.retryable,
         ...(error.source !== undefined && { source: error.source }),
       };
+    } finally {
+      clients?.destroy();
+    }
+  }
+
+  /**
+   * A versão do template e as capacidades do papel, pelas tags dele (`iam:GetRole` no próprio papel, uma chamada). Na
+   * VM própria do cliente, as tags são as do usuário IAM de leitura (`iam:GetUser` sem nome: o dono da chave). A
+   * leitura negada (o template v1 não a permitia) ou sem tags é a v1; uma falha passageira, ou a sessão que não abriu,
+   * devolve null (o gravado na conta fica).
+   */
+  async readerFacts(target: AwsCheckTarget, signal: AbortSignal): Promise<AwsReaderFacts | null> {
+    let clients: CheckClients | null = null;
+    try {
+      const region = regionsOf(target)[0] ?? STS_FALLBACK_REGION;
+      const session = await this.#credentials.session(target.accountId, region, signal);
+      const iam = new CheckClients(this.#clients, session.credentials.identity());
+      clients = iam;
+      const found = await this.#attempt(
+        async () =>
+          session.principal === 'iam_user'
+            ? (await iam.iam().send(new GetUserCommand({}), { abortSignal: signal })).User?.Tags
+            : (
+                await iam
+                  .iam()
+                  .send(new GetRoleCommand({ RoleName: AWS_READER_ROLE_NAME }), { abortSignal: signal })
+              ).Role?.Tags,
+        signal,
+      );
+      if (!found.ok) return found.transient ? null : TEMPLATE_V1;
+      const tags = roleTagsSchema.safeParse(found.value ?? []);
+      if (!tags.success) return TEMPLATE_V1;
+      const byKey: Record<string, string> = {};
+      for (const tag of tags.data) {
+        if (tag.Key !== undefined && tag.Value !== undefined) byKey[tag.Key] = tag.Value;
+      }
+      return awsOnboardingRoleFacts(byKey);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (error instanceof AwsConnectionError) return null;
+      throw error;
     } finally {
       clients?.destroy();
     }

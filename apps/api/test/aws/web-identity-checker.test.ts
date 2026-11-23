@@ -665,3 +665,76 @@ describe('conferência real da conexão da AWS (PR-V5)', () => {
     expect(scenarios[0]?.log()).toContain('STS da região desligado');
   });
 });
+
+describe('tags do papel: a versão do template e as capacidades (onboarding self-service)', () => {
+  const tags = (values: Record<string, string>) => ({
+    Role: { Tags: Object.entries(values).map(([Key, Value]) => ({ Key, Value })) },
+  });
+
+  it('lê as tags com um GetRole no próprio papel, pela sessão da conta', async () => {
+    const { checker, calls, assumed } = setup({
+      handlers: {
+        GetRoleCommand: () =>
+          tags({
+            'verax-control:template': '2',
+            'verax-control:capabilities': 'discovery service-logs log-groups',
+            Name: 'verax-control-reader',
+          }),
+      },
+    });
+    expect(await checker.readerFacts(target(), signal)).toEqual({
+      templateVersion: 2,
+      capabilities: ['discovery', 'service-logs', 'log-groups'],
+    });
+    expect(calls).toEqual([
+      { region: 'global', command: 'GetRoleCommand', input: { RoleName: 'verax-control-reader' } },
+    ]);
+    // A sessão é a da conferência: ler as tags logo depois dela não entra no papel de novo.
+    await checker.check(target(), signal);
+    await checker.readerFacts(target(), signal);
+    expect(assumed).toEqual(['sa-east-1']);
+  });
+
+  it('o papel sem tags, com a leitura negada (o template v1 não a permitia) ou que não existe mais: v1, só a descoberta', async () => {
+    const v1 = { templateVersion: 1, capabilities: ['discovery'] };
+    for (const GetRoleCommand of [
+      () => ({ Role: { RoleName: 'verax-control-reader' } }),
+      () => tags({ Name: 'verax-control-reader' }),
+      () => Promise.reject(awsError('AccessDenied')),
+      () => Promise.reject(awsError('NoSuchEntity', 404)),
+      // Tags fora do formato não viram capacidade.
+      () => ({ Role: { Tags: 'verax-control:template=2' } }),
+    ]) {
+      const { checker } = setup({ handlers: { GetRoleCommand } });
+      expect(await checker.readerFacts(target(), signal)).toEqual(v1);
+    }
+  });
+
+  it('uma falha passageira, ou a entrada no papel recusada, não diz nada: null (o gravado na conta fica)', async () => {
+    const throttled = setup({
+      handlers: { GetRoleCommand: () => Promise.reject(awsError('Throttling', 400)) },
+    });
+    expect(await throttled.checker.readerFacts(target(), signal)).toBeNull();
+    const unavailable = setup({
+      handlers: { GetRoleCommand: () => Promise.reject(awsError('ServiceUnavailable', 503)) },
+    });
+    expect(await unavailable.checker.readerFacts(target(), signal)).toBeNull();
+    const refused = setup({ sts: () => Promise.reject(awsError('AccessDenied')) });
+    expect(await refused.checker.readerFacts(target(), signal)).toBeNull();
+    expect(refused.calls).toEqual([]);
+  });
+
+  it('o sinal do agendador interrompe a leitura, e nada do papel vai para o log', async () => {
+    const controller = new AbortController();
+    const { checker, log } = setup({
+      handlers: {
+        GetRoleCommand: () => {
+          controller.abort(new DOMException('o worker está parando', 'AbortError'));
+          return Promise.reject(awsError('AccessDenied'));
+        },
+      },
+    });
+    await expect(checker.readerFacts(target(), controller.signal)).rejects.toThrow();
+    expect(log()).not.toMatch(/verax-control:|detalhe da AWS/);
+  });
+});

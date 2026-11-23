@@ -1,14 +1,20 @@
 import 'reflect-metadata';
 import { randomInt } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { cloudAccountSchema, type Role } from '@verax/shared';
+import { AWS_CONNECT_WINDOW_MS, awsOnboardingSchema, cloudAccountSchema, type Role } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { AWS_CHECK_RETRY_WINDOW_MS, AwsCheck, ingestDayFor } from '../src/aws/aws-check.js';
+import {
+  AWS_CHECK_RETRY_WINDOW_MS,
+  AwsCheck,
+  awsConnectRetryDelayMs,
+  ingestDayFor,
+} from '../src/aws/aws-check.js';
 import {
   type AwsCheckOutcome,
   type AwsCheckTarget,
   type AwsConnectionChecker,
+  type AwsReaderFacts,
   UnavailableAwsConnectionChecker,
 } from '../src/aws/aws-connection-check.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
@@ -43,6 +49,26 @@ class FakeAwsChecker implements AwsConnectionChecker {
   check(target: AwsCheckTarget): Promise<AwsCheckOutcome> {
     this.calls.push(target);
     return this.answers.get(target.accountId)?.(target) ?? Promise.resolve({ ok: true });
+  }
+}
+
+/** A conferência falsa que também lê as tags do papel: a resposta por conta AWS (sem resposta, o template v2 inteiro). */
+class FakeTaggedChecker extends FakeAwsChecker {
+  readonly factsCalls: string[] = [];
+  private readonly facts = new Map<string, AwsReaderFacts | null>();
+
+  tag(awsAccountId: string, facts: AwsReaderFacts | null) {
+    this.facts.set(awsAccountId, facts);
+  }
+
+  readerFacts(target: AwsCheckTarget): Promise<AwsReaderFacts | null> {
+    this.factsCalls.push(target.accountId);
+    const answer = this.facts.get(target.accountId);
+    return Promise.resolve(
+      answer !== undefined
+        ? answer
+        : { templateVersion: 2, capabilities: ['discovery', 'service-logs', 'findings', 'log-groups'] },
+    );
   }
 }
 
@@ -508,6 +534,551 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
       await expect(new AwsCheck(prisma, checker).runOnce(controller.signal)).rejects.toThrow();
       expect(checker.calls).toEqual([]);
       expect((await rowOf(account.id)).checkRequestedAt).not.toBeNull();
+    });
+  });
+
+  describe('"Conectar com AWS" (onboarding self-service)', () => {
+    const connect = (session: TestSession, id: string) =>
+      write(session, 'post', `/v1/cloud-accounts/${id}/aws/connect`);
+    const onboardingOf = async (session: TestSession, id: string) =>
+      awsOnboardingSchema.parse(
+        (await get(session, `/v1/cloud-accounts/${id}/aws/onboarding`).expect(200)).body,
+      );
+    const connectRow = (id: string) =>
+      prisma.cloudAccount.findUniqueOrThrow({
+        where: { id },
+        select: {
+          connection: true,
+          connectionError: true,
+          checkRequestedAt: true,
+          awsConnectRequestedAt: true,
+          ingestFrom: true,
+          awsTemplateVersion: true,
+          awsCapabilities: true,
+          awsCapabilitiesCheckedAt: true,
+        },
+      });
+    const runsOf = (id: string) =>
+      prisma.awsDiscoveryRun.findMany({ where: { cloudAccountId: id }, orderBy: { requestedAt: 'asc' } });
+
+    /** Clica em "Conectar" e devolve o horário gravado do pedido. */
+    async function connected(session: TestSession, id: string): Promise<Date> {
+      await connect(session, id).expect(202);
+      const { checkRequestedAt } = await connectRow(id);
+      if (checkRequestedAt === null) throw new Error('o pedido não foi gravado');
+      return checkRequestedAt;
+    }
+
+    it('antes do "Conectar": não iniciada, com a entrada no papel por pedir', async () => {
+      const account = await awsAccount(adminA);
+      const onboarding = await onboardingOf(adminA, account.id);
+      expect(onboarding).toMatchObject({
+        cloudAccountId: account.id,
+        state: 'not_started',
+        credentialMode: 'role',
+        connect: { requestedAt: null, waitingUntil: null },
+        template: { version: null, capabilities: [], outdated: false, checkedAt: null },
+        discovery: { run: null, lastCompletedAt: null, regions: [] },
+        infrastructure: null,
+        sources: [],
+      });
+      expect(onboarding.checks[0]).toEqual({
+        id: 'assume_role',
+        status: 'pending',
+        code: 'not_requested',
+        checkedAt: null,
+      });
+      // Quem só lê também vê o estado.
+      expect((await onboardingOf(sessions.get('leitura') as TestSession, account.id)).state).toBe(
+        'not_started',
+      );
+    });
+
+    it('grava o pedido do "Conectar" e o da verificação com o mesmo horário (202); pedir de novo não renova; auditado', async () => {
+      const account = await awsAccount(adminA);
+      const first = await connect(adminA, account.id).expect(202);
+      const onboarding = awsOnboardingSchema.parse(first.body);
+      const row = await connectRow(account.id);
+      expect(row).toMatchObject({ connection: 'waiting', connectionError: null });
+      expect(row.checkRequestedAt).not.toBeNull();
+      expect(row.awsConnectRequestedAt).toEqual(row.checkRequestedAt);
+      const requestedAt = row.checkRequestedAt as Date;
+      // O nó espera o papel por 60 min; enquanto isso, o estado diz que a pilha ainda não foi vista.
+      expect(onboarding).toMatchObject({
+        state: 'awaiting_authorization',
+        connect: {
+          requestedAt: requestedAt.toISOString(),
+          waitingUntil: new Date(requestedAt.getTime() + AWS_CONNECT_WINDOW_MS).toISOString(),
+        },
+      });
+      expect(onboarding.checks.slice(0, 2)).toEqual([
+        { id: 'assume_role', status: 'pending', code: 'awaiting_stack', checkedAt: null },
+        { id: 'identity', status: 'pending', code: null, checkedAt: null },
+      ]);
+
+      // Clicar de novo não adia o fim da janela.
+      const again = awsOnboardingSchema.parse((await connect(adminA, account.id).expect(202)).body);
+      expect(again.connect).toEqual(onboarding.connect);
+      expect((await connectRow(account.id)).checkRequestedAt).toEqual(requestedAt);
+
+      expect(await entryOf(first)).toMatchObject({
+        action: 'cloud_account.aws_connect',
+        outcome: 'success',
+        tenantId: tenantA,
+        resourceType: 'cloud_account',
+        resourceId: account.id,
+        before: { connection: 'waiting', checkRequestedAt: null, awsConnectRequestedAt: null },
+        after: {
+          connection: 'waiting',
+          connectionError: null,
+          checkRequestedAt: requestedAt.toISOString(),
+          awsConnectRequestedAt: requestedAt.toISOString(),
+        },
+      });
+    });
+
+    it('um "Verificar" pendente vira o pedido do "Conectar" (a janela conta do clique)', async () => {
+      const account = await awsAccount(adminA);
+      const verifyAt = await requested(adminA, account.id);
+      expect((await onboardingOf(adminA, account.id)).checks[0]).toMatchObject({
+        status: 'pending',
+        code: 'verifying',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const connectAt = await connected(adminA, account.id);
+      expect(connectAt.getTime()).toBeGreaterThan(verifyAt.getTime());
+      expect((await connectRow(account.id)).awsConnectRequestedAt).toEqual(connectAt);
+    });
+
+    it('recusa conta de outro provedor e conta inativa (400); A não conecta a conta de B (404); só administradores', async () => {
+      const gcp = cloudAccountSchema.parse(
+        (
+          await write(adminA, 'post', '/v1/cloud-accounts')
+            .send({ provider: 'gcp', accountId: `vx-${randomInt(1_000_000, 9_999_999)}-con` })
+            .expect(201)
+        ).body,
+      );
+      await connect(adminA, gcp.id).expect(400);
+      await get(adminA, `/v1/cloud-accounts/${gcp.id}/aws/onboarding`).expect(400);
+      const inactive = await awsAccount(adminA);
+      await write(adminA, 'delete', `/v1/cloud-accounts/${inactive.id}`).expect(204);
+      expect((await connect(adminA, inactive.id).expect(400)).body).toMatchObject({
+        message: 'Reative o monitoramento antes de conectar a conta.',
+      });
+      expect((await connectRow(inactive.id)).awsConnectRequestedAt).toBeNull();
+
+      const ofB = await awsAccount(adminB);
+      const denied = await connect(adminA, ofB.id).expect(404);
+      await get(adminA, `/v1/cloud-accounts/${ofB.id}/aws/onboarding`).expect(404);
+      expect(await connectRow(ofB.id)).toMatchObject({ checkRequestedAt: null, awsConnectRequestedAt: null });
+      expect(await entryOf(denied)).toMatchObject({
+        action: 'cloud_account.aws_connect',
+        outcome: 'failure',
+        tenantId: tenantA,
+      });
+
+      const expected: Record<Role, number> = {
+        admin_verax: 202,
+        admin_cliente: 202,
+        analista_cliente: 403,
+        leitura: 403,
+      };
+      for (const [role, status] of Object.entries(expected) as [Role, number][]) {
+        const account = await awsAccount(adminA);
+        await connect(sessions.get(role) as TestSession, account.id).expect(status);
+        expect((await connectRow(account.id)).awsConnectRequestedAt === null).toBe(status === 403);
+      }
+    });
+
+    it('a conta que a Verax cadastrou pelo console também é conectada pelo cliente', async () => {
+      const account = await awsAccount(adminA);
+      await prisma.cloudAccount.update({
+        where: { id: account.id },
+        data: { origin: 'control_plane', controlPlaneRevision: 1 },
+      });
+      // O cadastro continua do console; conectar, verificar e autorizar fontes são do cliente.
+      await write(adminA, 'patch', `/v1/cloud-accounts/${account.id}`)
+        .send({ regions: ['us-east-1'] })
+        .expect(409);
+      await connect(adminA, account.id).expect(202);
+      expect((await connectRow(account.id)).awsConnectRequestedAt).not.toBeNull();
+    });
+
+    it('dentro da janela, a entrada recusada não é o erro da conta: tenta a 20 s, 40 s e depois a cada 60 s', async () => {
+      expect([1, 2, 3, 4, 10].map(awsConnectRetryDelayMs)).toEqual([20_000, 40_000, 60_000, 60_000, 60_000]);
+      const account = await awsAccount(adminA);
+      const requestedAt = await connected(adminA, account.id);
+      const checker = new FakeTaggedChecker();
+      checker.respond(account.accountId, { ok: false, code: 'trust_denied', retryable: true });
+      let now = requestedAt.getTime();
+      const task = new AwsCheck(prisma, checker, { now: () => new Date(now) });
+      const attemptsAt: number[] = [];
+      // A tarefa roda a cada 10 s neste teste: a tentativa sai na primeira execução depois da hora marcada.
+      for (let elapsed = 0; elapsed <= 200_000; elapsed += 10_000) {
+        now = requestedAt.getTime() + elapsed;
+        const before = checker.callsFor(account.accountId).length;
+        const report = await task.runOnce();
+        expect(report).toMatchObject({ pending: 1, retrying: 1, failed: 0, connected: 0 });
+        if (checker.callsFor(account.accountId).length > before) attemptsAt.push(elapsed / 1000);
+      }
+      expect(attemptsAt).toEqual([0, 20, 60, 120, 180]);
+      // Muito além dos 10 min do "Verificar", a conta continua aguardando, sem erro.
+      now = requestedAt.getTime() + 45 * MINUTE;
+      expect(await task.runOnce()).toMatchObject({ retrying: 1, failed: 0 });
+      expect(await connectRow(account.id)).toMatchObject({
+        connection: 'waiting',
+        connectionError: null,
+        checkRequestedAt: requestedAt,
+      });
+      expect((await onboardingOf(adminA, account.id)).state).toBe('awaiting_authorization');
+      expect(
+        await prisma.auditLog.count({ where: { action: 'cloud_account.aws_check', resourceId: account.id } }),
+      ).toBe(0);
+    });
+
+    it('a janela fecha sem o papel: authorization_timeout; "tentar de novo" abre outra janela', async () => {
+      const denied = await awsAccount(adminA);
+      const token = await awsAccount(adminA);
+      const requestedAt = await connected(adminA, denied.id);
+      await connected(adminA, token.id);
+      const checker = new FakeTaggedChecker();
+      checker.respond(denied.accountId, { ok: false, code: 'trust_denied', retryable: true });
+      // O token recusado também só diz, dentro da janela, que o papel ainda não está lá.
+      checker.respond(token.accountId, { ok: false, code: 'token_invalid', retryable: false });
+      const almost = new Date(requestedAt.getTime() + AWS_CONNECT_WINDOW_MS - MINUTE);
+      expect(await new AwsCheck(prisma, checker, { now: () => almost }).runOnce()).toMatchObject({
+        pending: 2,
+        retrying: 2,
+        failed: 0,
+      });
+      const late = new Date(requestedAt.getTime() + AWS_CONNECT_WINDOW_MS + MINUTE);
+      expect(await new AwsCheck(prisma, checker, { now: () => late }).runOnce()).toEqual({
+        pending: 2,
+        connected: 0,
+        failed: 2,
+        retrying: 0,
+        stale: 0,
+        failures: { authorization_timeout: 2 },
+      });
+      for (const account of [denied, token]) {
+        expect(await connectRow(account.id)).toMatchObject({
+          connection: 'error',
+          connectionError: 'authorization_timeout',
+          checkRequestedAt: null,
+          ingestFrom: null,
+        });
+        const onboarding = await onboardingOf(adminA, account.id);
+        expect(onboarding).toMatchObject({ state: 'authorization_timeout', connect: { waitingUntil: null } });
+        expect(onboarding.checks[0]).toMatchObject({ status: 'failed', code: 'authorization_timeout' });
+        // A conta cloud mostra o código (o painel antigo o exibe como tipo do erro).
+        expect((await get(adminA, `/v1/cloud-accounts/${account.id}`).expect(200)).body).toMatchObject({
+          connection: 'error',
+          connectionError: 'authorization_timeout',
+        });
+      }
+      const audit = await prisma.auditLog.findMany({
+        where: { action: 'cloud_account.aws_check', resourceId: denied.id },
+      });
+      expect(audit).toHaveLength(1);
+      expect(audit[0]).toMatchObject({
+        actorType: 'system',
+        tenantId: tenantA,
+        after: { connection: 'error', connectionError: 'authorization_timeout' },
+      });
+      expect(await runsOf(denied.id)).toEqual([]);
+
+      // "Tentar de novo": outro clique, outra janela, e o papel agora existe.
+      const again = await connected(adminA, denied.id);
+      expect(again.getTime()).toBeGreaterThan(requestedAt.getTime());
+      expect((await onboardingOf(adminA, denied.id)).state).toBe('awaiting_authorization');
+      checker.respond(denied.accountId, { ok: true });
+      await new AwsCheck(prisma, checker, { now: () => new Date(again.getTime() + MINUTE) }).runOnce();
+      expect(await connectRow(denied.id)).toMatchObject({ connection: 'connected', connectionError: null });
+    });
+
+    it('um erro que não é a falta do papel é gravado na hora, mesmo na janela; a AWS fora espera a janela e sai com o próprio código', async () => {
+      const mismatch = await awsAccount(adminA);
+      const unavailable = await awsAccount(adminA);
+      const requestedAt = await connected(adminA, mismatch.id);
+      await connected(adminA, unavailable.id);
+      const checker = new FakeTaggedChecker();
+      checker.respond(mismatch.accountId, { ok: false, code: 'account_mismatch', retryable: false });
+      checker.respond(unavailable.accountId, { ok: false, code: 'aws_unavailable', retryable: true });
+      const soon = new Date(requestedAt.getTime() + MINUTE);
+      expect(await new AwsCheck(prisma, checker, { now: () => soon }).runOnce()).toMatchObject({
+        failed: 1,
+        retrying: 1,
+        failures: { account_mismatch: 1 },
+      });
+      expect(await connectRow(mismatch.id)).toMatchObject({
+        connection: 'error',
+        connectionError: 'account_mismatch',
+      });
+      expect((await onboardingOf(adminA, mismatch.id)).state).toBe('disconnected');
+      const late = new Date(requestedAt.getTime() + AWS_CONNECT_WINDOW_MS + MINUTE);
+      expect(await new AwsCheck(prisma, checker, { now: () => late }).runOnce()).toMatchObject({
+        failed: 1,
+        failures: { aws_unavailable: 1 },
+      });
+      expect(await connectRow(unavailable.id)).toMatchObject({
+        connection: 'error',
+        connectionError: 'aws_unavailable',
+      });
+    });
+
+    it('o "Verificar" comum continua com a janela de 10 min e o erro da entrada recusada', async () => {
+      const account = await awsAccount(adminA);
+      // Um "Conectar" antigo não muda o pedido de agora.
+      await prisma.cloudAccount.update({
+        where: { id: account.id },
+        data: { awsConnectRequestedAt: new Date('2026-11-01T00:00:00.000Z') },
+      });
+      const requestedAt = await requested(adminA, account.id);
+      const checker = new FakeTaggedChecker();
+      checker.respond(account.accountId, { ok: false, code: 'trust_denied', retryable: true });
+      const late = new Date(requestedAt.getTime() + AWS_CHECK_RETRY_WINDOW_MS + MINUTE);
+      expect(await new AwsCheck(prisma, checker, { now: () => late }).runOnce()).toMatchObject({
+        failed: 1,
+        failures: { trust_denied: 1 },
+      });
+      expect(await connectRow(account.id)).toMatchObject({
+        connection: 'error',
+        connectionError: 'trust_denied',
+      });
+    });
+
+    it('a primeira entrada no papel: grava as tags, pede a descoberta e dá o início da coleta às fontes dos buckets', async () => {
+      const trail = bucket();
+      const account = await awsAccount(adminA, { cloudtrail: trail });
+      const requestedAt = await connected(adminA, account.id);
+      const checker = new FakeTaggedChecker();
+      checker.tag(account.accountId, { templateVersion: 2, capabilities: ['discovery', 'findings'] });
+      const now = new Date(requestedAt.getTime() + 3 * MINUTE);
+      expect(await new AwsCheck(prisma, checker, { now: () => now }).runOnce()).toEqual({
+        pending: 1,
+        connected: 1,
+        failed: 0,
+        retrying: 0,
+        stale: 0,
+      });
+      expect(checker.factsCalls).toEqual([account.accountId]);
+      expect(await connectRow(account.id)).toMatchObject({
+        connection: 'connected',
+        checkRequestedAt: null,
+        // O horário do clique fica: é o histórico de quando o cliente conectou.
+        awsConnectRequestedAt: requestedAt,
+        ingestFrom: ingestDayFor(now),
+        awsTemplateVersion: 2,
+        awsCapabilities: ['discovery', 'findings'],
+        awsCapabilitiesCheckedAt: now,
+      });
+      const runs = await runsOf(account.id);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({
+        tenantId: tenantA,
+        trigger: 'connect',
+        status: 'pending',
+        requestedAt: now,
+        requestedBy: null,
+      });
+      // A fonte do bucket cadastrado ganha a data de início da coleta junto com a conta.
+      const legacy = await prisma.awsSource.findMany({ where: { cloudAccountId: account.id } });
+      expect(legacy).toHaveLength(1);
+      expect(legacy[0]).toMatchObject({
+        kind: 'cloudtrail',
+        origin: 'legacy',
+        name: trail,
+        state: 'authorized',
+        collectFrom: ingestDayFor(now),
+      });
+
+      const audit = await prisma.auditLog.findFirstOrThrow({
+        where: { action: 'cloud_account.aws_check', resourceId: account.id },
+      });
+      expect(audit.after).toMatchObject({
+        connection: 'connected',
+        awsTemplateVersion: 2,
+        awsCapabilities: ['discovery', 'findings'],
+        discoveryRequested: true,
+      });
+
+      const onboarding = await onboardingOf(adminA, account.id);
+      expect(onboarding).toMatchObject({
+        state: 'discovering',
+        connect: { requestedAt: requestedAt.toISOString(), waitingUntil: null },
+        template: {
+          version: 2,
+          capabilities: ['discovery', 'findings'],
+          outdated: false,
+          checkedAt: now.toISOString(),
+        },
+        discovery: { run: { trigger: 'connect', status: 'pending' }, lastCompletedAt: null },
+      });
+      expect(Object.fromEntries(onboarding.checks.map((check) => [check.id, check.status]))).toMatchObject({
+        assume_role: 'ok',
+        identity: 'ok',
+        template: 'ok',
+        discovery: 'pending',
+      });
+      // A linha do bucket cadastrado aparece autorizada, com a permissão que a conferência provou.
+      expect(onboarding.sources).toHaveLength(1);
+      expect(onboarding.sources[0]).toMatchObject({
+        origin: 'legacy',
+        state: 'authorized',
+        stateCode: 'awaiting_collector',
+        permission: 'granted',
+        collectFrom: ingestDayFor(now).toISOString().slice(0, 10),
+      });
+    });
+
+    it('o papel de template anterior (sem tags): v1, desatualizado, e a descoberta é pedida do mesmo jeito', async () => {
+      const account = await awsAccount(adminA);
+      const requestedAt = await connected(adminA, account.id);
+      const checker = new FakeTaggedChecker();
+      checker.tag(account.accountId, { templateVersion: 1, capabilities: ['discovery'] });
+      await new AwsCheck(prisma, checker, { now: () => new Date(requestedAt.getTime() + MINUTE) }).runOnce();
+      const onboarding = await onboardingOf(adminA, account.id);
+      expect(onboarding.template).toMatchObject({ version: 1, capabilities: ['discovery'], outdated: true });
+      expect(onboarding.checks.find((check) => check.id === 'template')).toMatchObject({
+        status: 'failed',
+        code: 'template_outdated',
+      });
+      expect(await runsOf(account.id)).toHaveLength(1);
+    });
+
+    it('verificar de novo sem mudança não pede outra descoberta; com as tags mudadas, pede', async () => {
+      const account = await awsAccount(adminA);
+      const first = await requested(adminA, account.id);
+      const checker = new FakeTaggedChecker();
+      // A primeira verificação bem-sucedida pede a descoberta, mesmo sem o "Conectar".
+      await new AwsCheck(prisma, checker, { now: () => new Date(first.getTime() + MINUTE) }).runOnce();
+      expect((await runsOf(account.id)).map((run) => run.trigger)).toEqual(['connect']);
+      await prisma.awsDiscoveryRun.updateMany({
+        where: { cloudAccountId: account.id },
+        data: { status: 'succeeded', startedAt: first, finishedAt: first },
+      });
+
+      const second = await requested(adminA, account.id);
+      await new AwsCheck(prisma, checker, { now: () => new Date(second.getTime() + MINUTE) }).runOnce();
+      expect(await runsOf(account.id)).toHaveLength(1);
+
+      // O cliente desligou uma capacidade na pilha: o que o papel pode ler mudou.
+      checker.tag(account.accountId, { templateVersion: 2, capabilities: ['discovery', 'service-logs'] });
+      const third = await requested(adminA, account.id);
+      await new AwsCheck(prisma, checker, { now: () => new Date(third.getTime() + MINUTE) }).runOnce();
+      expect(await runsOf(account.id)).toHaveLength(2);
+      expect((await connectRow(account.id)).awsCapabilities).toEqual(['discovery', 'service-logs']);
+
+      // Com uma descoberta ainda pendente, um "Conectar" bem-sucedido não cria outra.
+      const fourth = await connected(adminA, account.id);
+      await new AwsCheck(prisma, checker, { now: () => new Date(fourth.getTime() + MINUTE) }).runOnce();
+      expect(await runsOf(account.id)).toHaveLength(2);
+    });
+
+    it('as tags que não puderam ser lidas agora deixam o que estava gravado; sem leitura das tags, nada é gravado', async () => {
+      const account = await awsAccount(adminA);
+      await prisma.cloudAccount.update({
+        where: { id: account.id },
+        data: {
+          ingestFrom: new Date('2026-11-01T00:00:00.000Z'),
+          awsTemplateVersion: 2,
+          awsCapabilities: ['discovery', 'findings'],
+          awsCapabilitiesCheckedAt: new Date('2026-11-10T00:00:00.000Z'),
+        },
+      });
+      const first = await requested(adminA, account.id);
+      const checker = new FakeTaggedChecker();
+      checker.tag(account.accountId, null);
+      await new AwsCheck(prisma, checker, { now: () => new Date(first.getTime() + MINUTE) }).runOnce();
+      expect(await connectRow(account.id)).toMatchObject({
+        connection: 'connected',
+        awsTemplateVersion: 2,
+        awsCapabilities: ['discovery', 'findings'],
+        awsCapabilitiesCheckedAt: new Date('2026-11-10T00:00:00.000Z'),
+      });
+      expect(await runsOf(account.id)).toEqual([]);
+      // A conferência que não lê tags (o nó sem a identidade, os testes antigos) não mexe nelas.
+      const second = await requested(adminA, account.id);
+      await new AwsCheck(prisma, new FakeAwsChecker(), {
+        now: () => new Date(second.getTime() + MINUTE),
+      }).runOnce();
+      expect((await connectRow(account.id)).awsCapabilitiesCheckedAt).toEqual(
+        new Date('2026-11-10T00:00:00.000Z'),
+      );
+    });
+
+    it('na célula compartilhada (onboarding desligado), a conferência segue como antes: sem tags e sem descoberta', async () => {
+      const account = await awsAccount(adminA);
+      const requestedAt = await connected(adminA, account.id);
+      const checker = new FakeTaggedChecker();
+      await new AwsCheck(prisma, checker, {
+        now: () => new Date(requestedAt.getTime() + MINUTE),
+        onboarding: false,
+      }).runOnce();
+      expect(checker.factsCalls).toEqual([]);
+      expect(await connectRow(account.id)).toMatchObject({
+        connection: 'connected',
+        awsTemplateVersion: null,
+        awsCapabilities: [],
+        awsCapabilitiesCheckedAt: null,
+      });
+      expect(await runsOf(account.id)).toEqual([]);
+    });
+
+    it('revogação: com o papel removido, a conta fica desconectada, e as fontes continuam lá', async () => {
+      const account = await awsAccount(adminA);
+      const requestedAt = await connected(adminA, account.id);
+      const checker = new FakeTaggedChecker();
+      const clock = { now: new Date(requestedAt.getTime() + MINUTE) };
+      const task = new AwsCheck(prisma, checker, { now: () => clock.now, tenantIds: [tenantA] });
+      await task.runOnce();
+      // A descoberta terminou e o cliente autorizou uma fonte.
+      await prisma.awsDiscoveryRun.updateMany({
+        where: { cloudAccountId: account.id },
+        data: { status: 'succeeded', startedAt: clock.now, finishedAt: clock.now },
+      });
+      const source = await prisma.awsSource.create({
+        data: {
+          tenantId: tenantA,
+          cloudAccountId: account.id,
+          kind: 'guardduty',
+          region: 'sa-east-1',
+          resourceId: 'det1',
+          name: 'GuardDuty',
+          method: 'api',
+          availability: 'available',
+          permission: 'granted',
+          authorizedAt: clock.now,
+          authorizedBy: 'usuario-de-teste',
+          collectFrom: new Date('2026-11-22T00:00:00.000Z'),
+          state: 'authorized',
+          stateCode: 'awaiting_collector',
+        },
+      });
+      expect((await onboardingOf(adminA, account.id)).state).toBe('configuring');
+
+      // O cliente apaga a pilha: a conferência periódica passa a ser recusada e, depois da janela, grava o erro.
+      checker.respond(account.accountId, { ok: false, code: 'trust_denied', retryable: true });
+      for (const minutes of [20, 21, 23, 27, 31, 35]) {
+        clock.now = new Date(requestedAt.getTime() + minutes * MINUTE);
+        await task.recheck();
+      }
+      expect(await connectRow(account.id)).toMatchObject({
+        connection: 'error',
+        connectionError: 'trust_denied',
+      });
+      const onboarding = await onboardingOf(adminA, account.id);
+      expect(onboarding.state).toBe('disconnected');
+      expect(onboarding.checks[0]).toMatchObject({
+        id: 'assume_role',
+        status: 'failed',
+        code: 'trust_denied',
+      });
+      // A fonte e a autorização dela ficam: reconectada a conta, a coleta volta sem autorizar de novo.
+      expect(
+        onboarding.sources.map((item) => [item.id, item.state, item.authorization.authorizedBy]),
+      ).toEqual([[source.id, 'authorized', 'usuario-de-teste']]);
+      expect(await prisma.awsSource.findUniqueOrThrow({ where: { id: source.id } })).toEqual(source);
     });
   });
 });

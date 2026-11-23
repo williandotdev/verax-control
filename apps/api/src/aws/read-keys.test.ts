@@ -300,3 +300,76 @@ describe('a conferência da conexão com a chave do usuário IAM (VM própria)',
     });
   });
 });
+
+describe('as tags do usuário IAM de leitura (VM própria): a versão do template e as capacidades', () => {
+  const target: AwsCheckTarget = {
+    cloudAccountId: randomUUID(),
+    accountId: ACCOUNT,
+    regions: ['sa-east-1'],
+    buckets: { cloudtrail: null, guardduty: null, waf: null },
+    daily: true,
+  };
+
+  function setup(GetUserCommand: (input: Record<string, unknown>) => unknown) {
+    const calls: { command: string; input: Record<string, unknown> }[] = [];
+    const client = {
+      send: (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        calls.push({ command: command.constructor.name, input: command.input });
+        if (command.constructor.name !== 'GetUserCommand')
+          return Promise.reject(awsError('NotSimulated', 400));
+        try {
+          return Promise.resolve(GetUserCommand(command.input));
+        } catch (error) {
+          return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      },
+    };
+    const clients = { iam: () => client } as unknown as AwsCheckClients;
+    const credentials: AwsReaderCredentials = {
+      session: (): Promise<ReaderSession> =>
+        Promise.resolve({
+          credentials: new TemporaryCredentials({ accessKeyId: awsKeyId(), secretAccessKey: awsSecret() }),
+          stsRegion: 'us-east-1',
+          regionFallback: false,
+          principal: 'iam_user',
+        }),
+      credentialsFor: () => () => Promise.reject(new Error('não usado')),
+      forget: () => undefined,
+    };
+    return { checker: new WebIdentityAwsConnectionChecker({ credentials, clients }), calls };
+  }
+
+  it('lê as tags com um GetUser no próprio usuário (sem nome: o dono da chave), nunca com GetRole', async () => {
+    const { checker, calls } = setup(() => ({
+      User: {
+        UserName: 'verax-control-reader',
+        Tags: [
+          { Key: 'verax-control:template', Value: '2' },
+          { Key: 'verax-control:capabilities', Value: 'discovery findings' },
+        ],
+      },
+    }));
+    expect(await checker.readerFacts(target, signal)).toEqual({
+      templateVersion: 2,
+      capabilities: ['discovery', 'findings'],
+    });
+    expect(calls).toEqual([{ command: 'GetUserCommand', input: {} }]);
+  });
+
+  it('sem tags, ou com a leitura negada: v1, só a descoberta; uma falha passageira: null', async () => {
+    const v1 = { templateVersion: 1, capabilities: ['discovery'] };
+    expect(await setup(() => ({ User: { UserName: 'leitor' } })).checker.readerFacts(target, signal)).toEqual(
+      v1,
+    );
+    expect(
+      await setup(() => {
+        throw awsError('AccessDenied');
+      }).checker.readerFacts(target, signal),
+    ).toEqual(v1);
+    expect(
+      await setup(() => {
+        throw awsError('Throttling', 400);
+      }).checker.readerFacts(target, signal),
+    ).toBeNull();
+  });
+});
