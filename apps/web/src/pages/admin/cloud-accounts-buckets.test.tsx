@@ -178,6 +178,8 @@ describe('buckets fora do padrão da conta AWS (painel)', { timeout: FORM_TIMEOU
     await user.click(within(section).getByRole('button', { name: 'Salvar buckets' }));
     expect(await within(section).findByRole('status')).toHaveTextContent(/a lista mudou/);
     await waitFor(() => expect(steps).toHaveTextContent('(LogBucketArns): vazio'));
+    // A seção não fecha sozinha com o aviso dentro: quem abre e fecha é a pessoa.
+    expect(section.closest('details')).toHaveAttribute('open');
     expect(
       within(steps)
         .getByText(/^aws cloudformation deploy/)
@@ -221,6 +223,8 @@ describe('buckets fora do padrão da conta AWS (painel)', { timeout: FORM_TIMEOU
       expect.stringContaining(EMPTY_BUCKET_MESSAGE),
     );
     expect(rowOf(buckets, 1).getByLabelText('Nome do bucket')).not.toHaveAttribute('aria-invalid');
+    // O erro numa linha abre o "Avançado": ele nunca fica escondido.
+    expect(advanced).toHaveAttribute('open');
     await user.click(within(buckets).getByRole('button', { name: 'Remover o bucket 2 (GuardDuty)' }));
     expect(within(buckets).getByRole('button', { name: 'Adicionar bucket' })).toHaveFocus();
 

@@ -338,6 +338,8 @@ function CreateAccount() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [bucketRows, setBucketRows] = useState<BucketRow[]>([]);
   const [bucketErrors, setBucketErrors] = useState<Record<number, string>>({});
+  // Os buckets fora do padrão ficam recolhidos; quem abre é a pessoa, ou um erro numa linha (que não pode ficar escondido).
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const create = useCreateCloudAccount();
   const set = (key: keyof CreateValues) => (event: { target: { value: string } }) =>
     setValues((current) => ({ ...current, [key]: event.target.value }));
@@ -371,6 +373,7 @@ function CreateAccount() {
     if (!input.success || Object.keys(rowErrors).length > 0) {
       setErrors(withoutBucketErrors(schemaErrors));
       setBucketErrors(rowErrors);
+      if (Object.keys(rowErrors).length > 0) setAdvancedOpen(true);
       return;
     }
     setErrors({});
@@ -414,8 +417,11 @@ function CreateAccount() {
             Onde fica a maior parte dos recursos da conta. As outras regiões o Verax encontra sozinho depois
             de conectar: não é preciso informar buckets, ARNs nem nomes de grupos.
           </p>
-          {/* Aberto quando há linha: um erro de bucket nunca fica escondido. */}
-          <details className="space-y-3" open={bucketRows.length > 0 ? true : undefined}>
+          <details
+            className="space-y-3"
+            open={advancedOpen}
+            onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+          >
             <summary className="cursor-pointer text-sm font-medium">Avançado: buckets fora do padrão</summary>
             <p className="text-xs text-muted-foreground">
               Só para exceções. O Verax lê sozinho os logs que a AWS grava em AWSLogs/&lt;conta&gt;/. Cadastre
@@ -522,15 +528,7 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
         <>
           {/* Conectar, descobrir e autorizar as fontes são do cliente também na conta que a Verax cadastrou. */}
           <AwsOnboardingSection account={account} canWrite={canWrite} />
-          {/* Os buckets cadastrados à mão: só para o que fica fora do padrão AWSLogs. Fechado, a não ser que haja um. */}
-          <details
-            id="aws-buckets"
-            className="space-y-3"
-            open={logBucketNames(account.buckets).length > 0 ? true : undefined}
-          >
-            <summary className="cursor-pointer text-sm font-medium">Avançado: buckets fora do padrão</summary>
-            <AwsLogBuckets account={account} canWrite={canEditSource} managed={managed} />
-          </details>
+          <AwsAdvancedBuckets account={account} canWrite={canEditSource} managed={managed} />
         </>
       ) : (
         <ProviderSteps account={account} canWrite={canWrite} canEditSource={canEditSource} />
@@ -549,6 +547,45 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
         </div>
       )}
     </div>
+  );
+}
+
+/** O endereço da seção dos buckets fora do padrão: as fontes que dependem dela apontam para cá. */
+const ADVANCED_BUCKETS_ID = 'aws-buckets';
+
+/**
+ * "Avançado: buckets fora do padrão", no detalhe da conta AWS: os buckets cadastrados à mão, só para o que fica fora de
+ * `AWSLogs/<conta>/`. Começa aberto na conta que já tem bucket cadastrado e fechado nas outras; depois disso, quem abre
+ * e fecha é a pessoa (salvar a lista vazia não fecha a seção com o aviso dentro). Um link da tela que aponta para cá
+ * (a fonte com prefixo antes de `AWSLogs/`, a fonte de um bucket cadastrado) abre a seção.
+ */
+function AwsAdvancedBuckets({
+  account,
+  canWrite,
+  managed,
+}: {
+  account: CloudAccount;
+  canWrite: boolean;
+  managed: boolean;
+}) {
+  const [open, setOpen] = useState(() => logBucketNames(account.buckets).length > 0);
+  useEffect(() => {
+    const onHashChange = () => {
+      if (window.location.hash === `#${ADVANCED_BUCKETS_ID}`) setOpen(true);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+  return (
+    <details
+      id={ADVANCED_BUCKETS_ID}
+      className="space-y-3"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="cursor-pointer text-sm font-medium">Avançado: buckets fora do padrão</summary>
+      <AwsLogBuckets account={account} canWrite={canWrite} managed={managed} />
+    </details>
   );
 }
 

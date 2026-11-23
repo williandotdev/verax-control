@@ -204,14 +204,13 @@ export function AwsSourceGroups({
   const retryingId = retry.isPending ? (retry.variables ?? null) : null;
 
   const toggle = (sourceId: string) => {
-    setPicked((current) => {
-      const next = new Set(current);
-      if (next.has(sourceId)) next.delete(sourceId);
-      else next.add(sourceId);
-      return next;
-    });
-    // Outra lista de fontes pede outra confirmação.
+    const next = new Set(picked);
+    if (next.has(sourceId)) next.delete(sourceId);
+    else next.add(sourceId);
+    setPicked(next);
+    // Outra lista de fontes pede outra confirmação; sem nenhuma marcada, a confirmação fecha.
     setConfirmed(false);
+    if (next.size === 0) setConfirming(false);
     authorize.reset();
   };
   const cancel = () => {
