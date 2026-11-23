@@ -28,6 +28,7 @@ import {
   CellUsageReports,
 } from './cell/cell-usage-reports.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
+import { CloudflareClient } from './cloudflare/cloudflare.client.js';
 import { controlPlaneSyncTask } from './control-plane-sync/control-plane-sync-task.js';
 import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
@@ -39,6 +40,13 @@ import {
   CONNECT_ATTEMPTS_PURGE_TASK,
   ConnectAttemptsPurge,
 } from './cloudflare/oauth/connect-attempts.js';
+import {
+  CLOUDFLARE_CONNECT_BUDGET_MS,
+  CLOUDFLARE_CONNECT_POLL_MS,
+  CLOUDFLARE_CONNECT_TASK,
+  CloudflareConnectJob,
+} from './cloudflare/oauth/connect-job.js';
+import { PublicClientTokens } from './cloudflare/oauth/oauth-tokens.js';
 import { CREDENTIAL_REKEY_INTERVAL_MS, CredentialRekey } from './credentials/credential-rekey.js';
 import { GcpAuditSync } from './gcp/gcp-audit-sync.js';
 import {
@@ -189,7 +197,8 @@ async function awsConnectionSetup(
  * Com o cofre de credenciais (as chaves privadas num arquivo do tmpfs do nó, só no nó de cliente), entra também a tarefa diária
  * `credential-rekey`, que recifra com a versão corrente as credenciais (e as concessões do Cloudflare) guardadas com uma
  * versão antiga da chave. A tarefa `cloudflare-oauth-purge`, de hora em hora, vence e apaga as tentativas de conectar o
- * Cloudflare por OAuth.
+ * Cloudflare por OAuth. No nó gerenciado, com o cofre, a tarefa `cloudflare-oauth` troca o código de quem conecta, descobre
+ * e liga as contas e revoga as autorizações soltas.
  *
  * A tarefa `aws-check` (a cada 30 s) responde o "Verificar" das contas AWS e, sem pedido, confere de novo cada conta já
  * verificada a cada 15 min, com a trilha, o export do GuardDuty e a permissão demais uma vez por dia (PR-V5'). A
@@ -479,6 +488,22 @@ async function main(): Promise<void> {
         intervalMs: CREDENTIAL_REKEY_INTERVAL_MS,
         budgetMs: SYNC_BUDGET_MS,
         run: (signal) => rekey.runOnce(signal),
+      });
+    }
+    // Conexão do Cloudflare por OAuth (CF-4), só no nó gerenciado: a troca do código, a descoberta, a ligação das contas e a
+    // revogação. Roda mesmo com o OAuth desligado: as autorizações soltas ainda são revogadas.
+    if (keyring !== null && config.NODE_MODE === 'dedicated' && config.NODE_PLATFORM === 'gcp') {
+      const connect = new CloudflareConnectJob(prisma, keyring, plans, {
+        oauth: new PublicClientTokens(),
+        // As provas são uma leitura pequena por conta: sem novas tentativas dentro da chamada, e com prazo curto.
+        client: new CloudflareClient({ timeoutMs: 10_000, retryDelaysMs: [] }),
+        logger,
+      });
+      tasks.push({
+        name: CLOUDFLARE_CONNECT_TASK,
+        intervalMs: CLOUDFLARE_CONNECT_POLL_MS,
+        budgetMs: CLOUDFLARE_CONNECT_BUDGET_MS,
+        run: (signal) => connect.watch(signal),
       });
     }
     // Canal da célula com o plano de controle (CE-05): os comandos, a caixa de saída dos relatórios e o estado de cada

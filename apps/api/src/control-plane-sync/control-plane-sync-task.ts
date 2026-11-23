@@ -30,11 +30,29 @@ type ControlPlaneSyncEnv = Pick<
   WorkerEnv,
   | 'controlPlaneSync'
   | 'NODE_PLATFORM'
+  | 'PLAN'
+  | 'SYNC_SOURCES'
   | 'credentialsKeyring'
   | 'NODE_EGRESS_IPS'
   | 'NODE_SA_UNIQUE_ID'
   | 'AWS_WEB_IDENTITY_AUDIENCE'
 >;
+
+/**
+ * O nó anuncia a capacidade `cloudflare_oauth`? Só o nó dedicado gerenciado de cliente (a sincronização não existe na
+ * célula), com as chaves do cofre e o coletor que vai ler as contas. Na VM própria, o Cloudflare é lido só por token
+ * colado; o nó da própria Verax (`PLAN=interno`) também fica de fora.
+ */
+export function announcesCloudflareOauth(
+  config: Pick<ControlPlaneSyncEnv, 'NODE_PLATFORM' | 'PLAN' | 'SYNC_SOURCES' | 'credentialsKeyring'>,
+): boolean {
+  return (
+    config.NODE_PLATFORM === 'gcp' &&
+    config.PLAN !== 'interno' &&
+    config.credentialsKeyring !== null &&
+    config.SYNC_SOURCES.includes('cloudflare')
+  );
+}
 
 /**
  * A tarefa `control-plane-sync` do worker, ou null com a sincronização desligada (`CONTROL_PLANE_SYNC`, que a
@@ -63,6 +81,7 @@ export async function controlPlaneSyncTask(
       audience: config.AWS_WEB_IDENTITY_AUDIENCE ?? AWS_READER_AUDIENCE,
     },
     plans: deps.plans,
+    announceCloudflareOauth: announcesCloudflareOauth(config),
     checks:
       deps.checks ??
       panelCredentialChecks(

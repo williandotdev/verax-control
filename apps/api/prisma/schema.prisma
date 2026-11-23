@@ -440,6 +440,14 @@ model CloudflareConnectAttempt {
   errorCode          String?          @db.VarChar(64)
   /// As contas da autorização (ID, nome e situação), para o cliente escolher. Nenhum segredo.
   accounts           Json             @default("[]")
+  /// A configuração do app com que a tentativa começou (sem segredo): a troca usa a mesma, mesmo que ela mude no meio.
+  config             Json?
+  /// Quando o worker terminou de descobrir as contas: antes disso, `choosing` ainda é trabalho dele.
+  discoveredAt       DateTime?        @db.Timestamptz(3)
+  /// O Cloudflare não listou as contas: o cliente digita o ID.
+  accountIdRequired  Boolean          @default(false)
+  /// As contas que o cliente escolheu, para o worker provar e ligar.
+  chosenAccountIds   String[]         @default([])
   expiresAt          DateTime         @db.Timestamptz(3)
   /// Quando o retorno do Cloudflare foi aceito: vale uma vez.
   consumedAt         DateTime?        @db.Timestamptz(3)
@@ -1306,16 +1314,19 @@ model ControlPlaneSyncItem {
 /// controle recusa a repetida); `generation`, a última geração do estado desejado recebida. A próxima chamada e as
 /// falhas seguidas guardam a espera entre uma partida e outra do worker. Só o worker grava.
 model ControlPlaneSync {
-  id            String    @id @default("node") @db.VarChar(16)
-  sequence      BigInt    @default(0)
-  generation    Int?
-  lastAttemptAt DateTime? @db.Timestamptz(3)
-  lastSuccessAt DateTime? @db.Timestamptz(3)
-  lastErrorCode String?   @db.VarChar(64)
+  id              String    @id @default("node") @db.VarChar(16)
+  sequence        BigInt    @default(0)
+  generation      Int?
+  lastAttemptAt   DateTime? @db.Timestamptz(3)
+  lastSuccessAt   DateTime? @db.Timestamptz(3)
+  lastErrorCode   String?   @db.VarChar(64)
   /// Chamadas seguidas que falharam (a espera crescente com o plano de controle fora do ar).
-  failures      Int       @default(0)
+  failures        Int       @default(0)
   /// A próxima chamada (o `pollAfterSeconds` da resposta ou a espera depois de uma falha).
-  nextAttemptAt DateTime? @db.Timestamptz(3)
+  nextAttemptAt   DateTime? @db.Timestamptz(3)
+  /// A última configuração do "Conectar com Cloudflare" (o app, sem segredo) que o plano de controle mandou; null,
+  /// desligado. Conferida pelo contrato ao gravar e ao ler.
+  cloudflareOauth Json?
 }
 
 /// Estado do agente do Wazuh, como o manager do nó informa.

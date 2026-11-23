@@ -131,6 +131,19 @@ const zonesPageSchema = z.object({
   result_info: z.object({ total_pages: z.number().int().min(0).nullish() }).nullish(),
 });
 
+/** Uma conta do Cloudflare, na lista das contas ou dentro de uma zona: só o ID e o nome. */
+const accountSchema = z.object({
+  id: z.string().max(64),
+  name: z.string().max(512).nullish(),
+});
+const zoneAccountSchema = z.object({ account: accountSchema });
+
+const accountsPageSchema = z.object({
+  success: z.literal(true),
+  result: z.array(z.unknown()).max(1000).nullish(),
+  result_info: z.object({ total_pages: z.number().int().min(0).nullish() }).nullish(),
+});
+
 /**
  * O envelope da API GraphQL: `data` (validado por quem consulta) e `errors`, com a mensagem de cada erro (cortada; só
  * serve para o código). Os demais campos de cada erro (`path`, `extensions`) não são usados.
@@ -222,6 +235,13 @@ export interface AccountZones {
   complete: boolean;
 }
 
+/** Uma conta que a credencial alcança. */
+export interface ReachableAccount {
+  id: string;
+  /** Como o Cloudflare a chama, sem quebra de linha e cortado; null quando a resposta não traz. */
+  name: string | null;
+}
+
 export interface CloudflareClientOptions {
   /** Só para os testes (servidor falso em 127.0.0.1); fora deles, o host oficial. */
   baseUrl?: string;
@@ -240,6 +260,26 @@ export const CLOUDFLARE_MAX_BODY_BYTES = 16 * 1024 * 1024;
 /** Zonas por página (o máximo da API) e teto de páginas por leitura. */
 const ZONES_PER_PAGE = 50;
 const MAX_ZONE_PAGES = 20;
+/** Contas por página e teto de contas lidas numa autorização (o painel liga até 50 de uma vez). */
+const ACCOUNTS_PER_PAGE = 50;
+const MAX_ACCOUNT_PAGES = 2;
+const MAX_REACHABLE_ACCOUNTS = 50;
+const ACCOUNT_NAME_MAX = 120;
+
+/** Uma conta na lista, se o ID é o do Cloudflare (entra no caminho da URL) e ainda cabe. */
+function addAccount(
+  found: Map<string, ReachableAccount>,
+  account: z.infer<typeof accountSchema> | undefined,
+): void {
+  if (account === undefined || !isHex32(account.id)) return;
+  if (found.has(account.id) || found.size >= MAX_REACHABLE_ACCOUNTS) return;
+  const name = [...(account.name ?? '')]
+    .filter((char) => char >= ' ' && char !== '\u007f')
+    .join('')
+    .trim()
+    .slice(0, ACCOUNT_NAME_MAX);
+  found.set(account.id, { id: account.id, name: name === '' ? null : name });
+}
 
 export class CloudflareClient {
   readonly #baseUrl: string;
@@ -314,6 +354,40 @@ export class CloudflareClient {
       if (last) return { names, ids, complete: true };
     }
     return { names, ids, complete: false };
+  }
+
+  /** As contas que a credencial alcança (`GET /accounts`), até o teto. */
+  async accounts(token: CloudflareBearer, signal?: AbortSignal): Promise<ReachableAccount[]> {
+    const found = new Map<string, ReachableAccount>();
+    for (let page = 1; page <= MAX_ACCOUNT_PAGES; page += 1) {
+      const query = new URLSearchParams({ per_page: String(ACCOUNTS_PER_PAGE), page: String(page) });
+      const { text } = await this.get('/accounts', query, token, signal);
+      const body = accountsPageSchema.safeParse(parseJson(text));
+      if (!body.success) throw new CloudflareApiError('bad_response', 200);
+      const result = body.data.result ?? [];
+      for (const item of result) addAccount(found, accountSchema.safeParse(item).data);
+      const totalPages = body.data.result_info?.total_pages ?? undefined;
+      const last = totalPages === undefined ? result.length < ACCOUNTS_PER_PAGE : page >= totalPages;
+      if (last || found.size >= MAX_REACHABLE_ACCOUNTS) break;
+    }
+    return [...found.values()];
+  }
+
+  /** As contas donas das zonas que a credencial lê (`GET /zones`, sem filtro): para quando a lista das contas não vem. */
+  async zoneAccounts(token: CloudflareBearer, signal?: AbortSignal): Promise<ReachableAccount[]> {
+    const found = new Map<string, ReachableAccount>();
+    for (let page = 1; page <= MAX_ZONE_PAGES; page += 1) {
+      const query = new URLSearchParams({ per_page: String(ZONES_PER_PAGE), page: String(page) });
+      const { text } = await this.get('/zones', query, token, signal);
+      const body = zonesPageSchema.safeParse(parseJson(text));
+      if (!body.success) throw new CloudflareApiError('bad_response', 200);
+      const result = body.data.result ?? [];
+      for (const item of result) addAccount(found, zoneAccountSchema.safeParse(item).data?.account);
+      const totalPages = body.data.result_info?.total_pages ?? undefined;
+      const last = totalPages === undefined ? result.length < ZONES_PER_PAGE : page >= totalPages;
+      if (last || found.size >= MAX_REACHABLE_ACCOUNTS) break;
+    }
+    return [...found.values()];
   }
 
   /**

@@ -39,6 +39,7 @@ import {
   serializeChosenCapabilities,
 } from '../aws/onboarding/chosen-capabilities.js';
 import { syncLegacyAwsSources } from '../aws/onboarding/legacy-sources.js';
+import { detachAccount } from '../cloudflare/oauth/grant-store.js';
 import { recordDeletedInPanel } from '../control-plane-sync/deleted-in-panel.js';
 import { assertLogOriginsFree, type LogOrigins } from './log-origins.js';
 
@@ -211,7 +212,7 @@ export class CloudAccountsService {
       bucketsChanged ||
       (input.pubsubSubscription !== undefined && input.pubsubSubscription !== beforeRow.pubsubSubscription);
     const statusChanged = input.status !== undefined && input.status !== beforeRow.status;
-    if (input.status === 'inactive') await this.wipeCredential(id);
+    if (input.status === 'inactive') await this.wipeCredential(auth, id);
     const row = await this.prisma.scoped().cloudAccount.update({
       where: { id },
       data: {
@@ -258,7 +259,7 @@ export class CloudAccountsService {
       });
       throw consoleManaged();
     }
-    await this.wipeCredential(id);
+    await this.wipeCredential(auth, id);
     const row = await this.prisma.scoped().cloudAccount.update({
       where: { id },
       data: { status: 'inactive', ...RESET_CONNECTION },
@@ -313,7 +314,7 @@ export class CloudAccountsService {
         revision: before.controlPlaneRevision,
       });
     }
-    await this.wipeCredential(id);
+    await this.wipeCredential(auth, id);
     await this.prisma.scoped().cloudAccount.delete({ where: { id }, select: { id: true } });
     this.audit.describe({ before: { ...toAccount(before, this.node), origin: before.origin }, after: null });
   }
@@ -390,11 +391,24 @@ export class CloudAccountsService {
   /**
    * Conta desativada (ou excluída) não guarda credencial: a linha do cofre sai na mesma transação, sob o lock da conta
    * (o mesmo da troca pelo painel e da recifragem), com um registro próprio na trilha (`cloud_credential.wipe`, só
-   * metadados).
+   * metadados). Nem autorização do Cloudflare: a conta solta a concessão dela, e a que ficou sem conta espera a revogação
+   * (`cloudflare_grant.release`).
    */
-  private async wipeCredential(id: string): Promise<void> {
+  private async wipeCredential(auth: RequestAuth, id: string): Promise<void> {
     await lockCredential(this.prisma.db(), id);
     const db = this.prisma.scoped();
+    const detached = await detachAccount(
+      this.prisma.db(),
+      { id, tenantId: auth.scopeTenantId as string },
+      new Date(),
+    );
+    if (detached !== null && detached.released) {
+      this.audit.also({
+        action: 'cloudflare_grant.release',
+        resourceType: 'cloudflare_grant',
+        resourceId: detached.grantId,
+      });
+    }
     const credential = await db.cloudCredential.findUnique({
       where: { cloudAccountId: id },
       select: { kind: true, keyIdSuffix: true, expiresAt: true },
