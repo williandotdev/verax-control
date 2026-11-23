@@ -822,7 +822,12 @@ Na primeira entrada, no "Conectar" e quando as tags mudam, ela pede a descoberta
 
 **Descoberta (tarefa `aws-discovery` do worker, `apps/api/src/aws/discovery/`):** a cada 30 s, sob concessão no banco,
 executa os pedidos pendentes (do "Conectar", do painel e um por dia por conta, pelo `CollectorCursor` do fluxo
-`aws_discovery`). No máximo uma execução pendente ou em curso por conta; a manual, no máximo uma a cada 5 min. Para a
+`aws_discovery`). No máximo uma execução pendente ou em curso por conta; a manual, no máximo uma a cada 5 min. Toda
+execução começa lendo as tags do papel (`aws/reader-tags.ts`), e são elas que valem até o fim, não as gravadas na
+conta: quem atualizou a pilha e pediu a descoberta vê as fontes liberadas na hora. As tags vão para a conta junto com o
+resultado (a mudança entra na trilha, `aws_template`). A leitura recusada é o template v1; se a recusa for de uma
+sessão que deixou de valer, nada mais é lido, a execução falha e a conta fica como está. Com a leitura sem resposta
+(uma falha passageira), valem as gravadas, e a falha fica no registro da execução (`iam × global × código`). Para a
 conta: as regiões habilitadas (`DescribeRegions`) e, em cada uma, com teto de chamadas simultâneas e de tempo por
 chamada, as trilhas, os flow logs, as Web ACLs e o logging delas, os detectores do GuardDuty e os exports, o Security
 Hub, o Inspector, os analisadores do Access Analyzer, os grupos do CloudWatch Logs (com a tag), o Config e os load
@@ -867,7 +872,10 @@ tag (`ListTagsForResource`); (3) só então a permissão é sondada, e o resulta
 para uma fonte conhecida. No grupo de logs, a leitura das tags negada é a permissão que falta
 (`logs:ListTagsForResource`), e não a tag. A fonte que não está mais lá (apagada, desligada, ou com o log num destino
 que vira outro tipo de fonte) só desfaz o pedido e pede uma descoberta da conta, que é quem tira ou marca a linha. A
-conta que não entra no papel, a leitura recusada e a sondagem que não termina só desfazem o pedido.
+conta que não entra no papel, a leitura recusada e a sondagem que não termina só desfazem o pedido. Essa descoberta é
+pedida pelo sistema e não entra no limite de 5 min da manual; o que a contém é o resto: no máximo uma execução pendente
+ou em curso por conta, e no máximo um "Tentar de novo" a cada 30 s por fonte (429 `SOURCE_RETRY_RATE_LIMITED`; o
+horário do último pedido fica em `lastProbeRequestAt`, que a resposta não desfaz).
 
 **Estado da conta (`GET …/aws/onboarding`):** derivado pela API a cada leitura (`aws/onboarding/onboarding-state.ts`),
 nunca guardado nem escrito à mão: `not_started`, `awaiting_authorization`, `authenticated`, `discovering`,

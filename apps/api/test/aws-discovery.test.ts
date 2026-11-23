@@ -178,6 +178,19 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
       where: { action: 'cloud_account.aws_discovery', resourceId: id },
       orderBy: { occurredAt: 'asc' },
     });
+  const templateAuditOf = (id: string) =>
+    prisma.auditLog.findMany({
+      where: { action: 'cloud_account.aws_template', resourceId: id },
+      orderBy: { occurredAt: 'asc' },
+    });
+  /** O papel do template v1: não tem a permissão de ler as próprias tags. */
+  const V1_ROLE: Record<string, Handlers> = {
+    'iam:global': {
+      GetRoleCommand: () => {
+        throw awsError('AccessDenied', 403);
+      },
+    },
+  };
   const cursorOf = (cloudAccountId: string) =>
     prisma.collectorCursor.findUnique({
       where: { cloudAccountId_stream_region: { cloudAccountId, stream: AWS_DISCOVERY_STREAM, region: '' } },
@@ -570,7 +583,7 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
     const tenant = await createTenant(app, 'Cliente Demo A (template v1)');
     const cloud = await connectedAccount(tenant, { awsTemplateVersion: 1, awsCapabilities: ['discovery'] });
     await request(cloud);
-    const { task, calls } = setup([tenant]);
+    const { task, calls } = setup([tenant], account({ handlers: V1_ROLE }));
     await task.runOnce();
     const sources = await sourcesOf(cloud.id);
     for (const key of [
@@ -588,6 +601,141 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
     expect(
       calls().some((call) => ['ListObjectsV2Command', 'ListFindingsCommand'].includes(call.command)),
     ).toBe(false);
+    // As tags foram pedidas ao papel no começo (e recusadas, como no template v1): a conta continua v1, sem trilha.
+    expect(calls()[0]).toMatchObject({ service: 'iam', command: 'GetRoleCommand' });
+    expect(await accountOf(cloud.id)).toMatchObject({
+      awsTemplateVersion: 1,
+      awsCapabilities: ['discovery'],
+    });
+    expect(await templateAuditOf(cloud.id)).toEqual([]);
+  });
+
+  describe('as tags do papel, lidas no começo de toda descoberta', () => {
+    const KEYS = [`cloudtrail:sa-east-1:${TRAIL_ARN}`, 'waf:sa-east-1:acl-1', 'guardduty:sa-east-1:det1'];
+
+    it('pilha atualizada (capacidades ligadas): a descoberta manual pedida em seguida já mostra as fontes sem capability_off', async () => {
+      const tenant = await createTenant(app, 'Cliente Demo A (pilha atualizada, descoberta)');
+      // Gravado na conta: o template v1, só com a descoberta.
+      const cloud = await connectedAccount(tenant, { awsTemplateVersion: 1, awsCapabilities: ['discovery'] });
+      await request(cloud);
+      const { task, calls, clock, become } = setup([tenant], account({ handlers: V1_ROLE }));
+      expect(await task.runOnce()).toMatchObject({ succeeded: 1 });
+      const before = await sourcesOf(cloud.id);
+      for (const key of KEYS) {
+        expect(before[key], key).toMatchObject({ permission: 'missing', permissionDetail: 'capability_off' });
+      }
+
+      // O cliente atualiza a pilha (o papel passa a ter tudo ligado) e pede a descoberta no painel, na hora.
+      become(account());
+      clock.advance(MINUTE);
+      await request(cloud, 'manual', clock.now());
+      expect(await task.runOnce()).toMatchObject({ pending: 1, succeeded: 1, partial: 0, failed: 0 });
+      expect(calls()[0]).toMatchObject({
+        service: 'iam',
+        command: 'GetRoleCommand',
+        input: { RoleName: 'verax-control-reader' },
+      });
+      const sources = await sourcesOf(cloud.id);
+      for (const key of KEYS) {
+        expect(sources[key], key).toMatchObject({
+          permission: 'granted',
+          permissionDetail: null,
+          permissionCheckedAt: clock.now(),
+          state: 'available',
+        });
+        expect(sources[key]?.notes, key).not.toContain('stack_update_required');
+      }
+      // As tags novas ficam na conta, junto com o resultado, e a mudança entra na trilha do cliente.
+      const after = await accountOf(cloud.id);
+      expect(after).toMatchObject({ awsTemplateVersion: 2, awsCapabilitiesCheckedAt: clock.now() });
+      expect([...after.awsCapabilities].sort()).toEqual([
+        'discovery',
+        'findings',
+        'log-groups',
+        'service-logs',
+      ]);
+      expect(await templateAuditOf(cloud.id)).toMatchObject([
+        {
+          tenantId: tenant,
+          actorType: 'system',
+          before: { awsTemplateVersion: 1, awsCapabilities: ['discovery'] },
+          after: { awsTemplateVersion: 2 },
+        },
+      ]);
+      // A execução já rodou com as tags novas: nenhuma outra descoberta é pedida por causa delas.
+      expect((await runsOf(cloud.id)).map((run) => [run.trigger, run.status])).toEqual([
+        ['connect', 'succeeded'],
+        ['manual', 'succeeded'],
+      ]);
+    });
+
+    it('tags sem resposta (falha passageira): valem as capacidades gravadas, e a falha fica no registro da execução, que não falha', async () => {
+      const tenant = await createTenant(app, 'Cliente Demo A (tags sem resposta, descoberta)');
+      const cloud = await connectedAccount(tenant, { awsCapabilities: ['discovery', 'findings'] });
+      await request(cloud);
+      const { task, clock } = setup(
+        [tenant],
+        account({
+          handlers: {
+            'iam:global': {
+              GetRoleCommand: () => {
+                throw awsError('Throttling', 400);
+              },
+            },
+          },
+        }),
+      );
+      clock.advance(MINUTE);
+      expect(await task.runOnce()).toMatchObject({ pending: 1, partial: 1, succeeded: 0, failed: 0 });
+      expect((await runsOf(cloud.id))[0]).toMatchObject({
+        status: 'partial',
+        errors: [{ service: 'iam', region: 'global', code: 'Throttling' }],
+      });
+      // As gravadas: os achados ligados, os logs de serviço não.
+      const sources = await sourcesOf(cloud.id);
+      expect(sources['guardduty:sa-east-1:det1']).toMatchObject({ permission: 'granted' });
+      expect(sources[`cloudtrail:sa-east-1:${TRAIL_ARN}`]).toMatchObject({
+        permission: 'missing',
+        permissionDetail: 'capability_off',
+      });
+      // Nada muda na conta.
+      expect(await accountOf(cloud.id)).toMatchObject({
+        awsTemplateVersion: 2,
+        awsCapabilities: ['discovery', 'findings'],
+        awsCapabilitiesCheckedAt: START,
+      });
+      expect(await templateAuditOf(cloud.id)).toEqual([]);
+    });
+
+    it('tags recusadas com o resto lido: o papel é do template v1, e a conta passa a dizer isso, na trilha', async () => {
+      const tenant = await createTenant(app, 'Cliente Demo A (tags recusadas, descoberta)');
+      // Gravado na conta: o template v2, com tudo ligado.
+      const cloud = await connectedAccount(tenant);
+      await request(cloud);
+      const { task, clock } = setup([tenant], account({ handlers: V1_ROLE }));
+      clock.advance(MINUTE);
+      expect(await task.runOnce()).toMatchObject({ pending: 1, succeeded: 1 });
+      const sources = await sourcesOf(cloud.id);
+      for (const key of KEYS) {
+        expect(sources[key], key).toMatchObject({
+          permission: 'missing',
+          permissionDetail: 'capability_off',
+        });
+        expect(sources[key]?.notes, key).toContain('stack_update_required');
+      }
+      expect(await accountOf(cloud.id)).toMatchObject({
+        awsTemplateVersion: 1,
+        awsCapabilities: ['discovery'],
+        awsCapabilitiesCheckedAt: clock.now(),
+      });
+      expect(await templateAuditOf(cloud.id)).toMatchObject([
+        {
+          before: { awsTemplateVersion: 2 },
+          after: { awsTemplateVersion: 1, awsCapabilities: ['discovery'] },
+        },
+      ]);
+      expect(await runsOf(cloud.id)).toHaveLength(1);
+    });
   });
 
   it('a descoberta diária: pedida quando a última tem mais de 24 h, só para a conta que entra no papel', async () => {
@@ -698,6 +846,11 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
     });
     expect(credentials.forgotten).toEqual([cloud.accountId]);
     expect(await sourcesOf(cloud.id)).toEqual({});
+    // As tags do papel também foram recusadas, mas isso não diz que o papel é do template v1: a conta fica como está.
+    const after = await accountOf(cloud.id);
+    expect(after).toMatchObject({ awsTemplateVersion: 2, awsCapabilitiesCheckedAt: START });
+    expect(after.awsCapabilities).toHaveLength(4);
+    expect(await templateAuditOf(cloud.id)).toEqual([]);
   });
 
   it('a conta que não entra mais no papel, ou foi desativada: a execução falha sem chamar a AWS', async () => {
@@ -1215,6 +1368,52 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
         awsCapabilities: ['discovery'],
         awsCapabilitiesCheckedAt: START,
       });
+    });
+
+    it('tags recusadas: nada é gravado na conta; a gravada como v1 vale, a de outro template é sondada na AWS', async () => {
+      const tenantA = await createTenant(app, 'Cliente Demo A (tags recusadas, v1)');
+      const tenantB = await createTenant(app, 'Cliente Demo B (tags recusadas, v2)');
+      const v1 = await connectedAccount(tenantA, { awsTemplateVersion: 1, awsCapabilities: ['discovery'] });
+      const v2 = await connectedAccount(tenantB);
+      const detectorOf = (cloud: { id: string; tenantId: string }) =>
+        source(cloud, {
+          kind: 'guardduty',
+          region: 'sa-east-1',
+          resourceId: 'det1',
+          details: { detectorId: 'det1' },
+          method: 'api',
+          permission: 'missing',
+          permissionDetail: 'guardduty:ListFindings',
+        });
+      const ofV1 = await detectorOf(v1);
+      const ofV2 = await detectorOf(v2);
+      await noDaily(v1.id);
+      await noDaily(v2.id);
+
+      // A conta gravada como v1: a recusa confirma o que está gravado, e a fonte pede a pilha, sem sondagem.
+      const first = setup([tenantA], account({ handlers: V1_ROLE }), { scheduleEveryMs: 24 * HOUR });
+      expect(await first.task.runOnce()).toMatchObject({ probes: 1 });
+      expect(callsOf(first.calls())).not.toContain('guardduty:ListFindings');
+      const afterV1 = await sourceOf(ofV1.id);
+      expect(afterV1).toMatchObject({ permission: 'missing', permissionDetail: 'capability_off' });
+      expect(afterV1.notes).toContain('stack_update_required');
+
+      // A conta gravada com tudo ligado: a recusa pode ser de uma sessão que deixou de valer. As capacidades gravadas
+      // não decidem (a fonte é sondada), e a conta não vira v1.
+      const second = setup([tenantB], account({ handlers: V1_ROLE }), { scheduleEveryMs: 24 * HOUR });
+      expect(await second.task.runOnce()).toMatchObject({ probes: 1 });
+      expect(callsOf(second.calls())).toContain('guardduty:ListFindings');
+      expect(await sourceOf(ofV2.id)).toMatchObject({ permission: 'granted', state: 'available' });
+
+      for (const cloud of [v1, v2]) {
+        expect(await accountOf(cloud.id)).toMatchObject({
+          awsTemplateVersion: cloud.awsTemplateVersion,
+          awsCapabilities: cloud.awsCapabilities,
+          awsCapabilitiesCheckedAt: START,
+        });
+        expect(await templateAuditOf(cloud.id)).toEqual([]);
+        expect(await runsOf(cloud.id)).toEqual([]);
+      }
     });
 
     it('na VM própria do cliente, as tags lidas de novo são as do usuário de leitura (GetUser)', async () => {

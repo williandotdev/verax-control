@@ -498,6 +498,13 @@ export type AwsDiscoveryRun = z.infer<typeof awsDiscoveryRunSchema>;
 /** A descoberta manual: no máximo uma a cada 5 min por conta, e nenhuma com outra pendente ou em curso. */
 export const AWS_DISCOVERY_MANUAL_INTERVAL_MS = 5 * 60 * 1000;
 
+/**
+ * O "Tentar de novo" de uma fonte: no máximo um pedido a cada 30 s por fonte (um pedido ainda pendente não conta: ele
+ * não é renovado). A sondagem de uma fonte que sumiu pede uma descoberta da conta, fora do limite da manual; este
+ * limite e o de uma execução por vez na conta contêm quantas descobertas o botão consegue pedir.
+ */
+export const AWS_SOURCE_RETRY_INTERVAL_MS = 30 * 1000;
+
 // --- Conexão e estado da conta ---
 
 /**
@@ -688,6 +695,7 @@ export type AwsSourcesAuthorize = z.infer<typeof awsSourcesAuthorizeSchema>;
  * - `SOURCE_LIMIT_REACHED`: o teto de fontes autorizadas da conta;
  * - `ACCOUNT_NOT_CONNECTED`: a conta não está conectada (a descoberta e a sondagem precisam do papel);
  * - `DISCOVERY_RATE_LIMITED`: descoberta manual pedida há menos de 5 min;
+ * - `SOURCE_RETRY_RATE_LIMITED`: "Tentar de novo" pedido para a mesma fonte há menos de 30 s;
  * - `DISCOVERY_UNAVAILABLE`: este nó não descobre as fontes sozinho (a célula compartilhada, por enquanto).
  */
 export const AWS_ONBOARDING_ERROR_CODES = [
@@ -701,6 +709,7 @@ export const AWS_ONBOARDING_ERROR_CODES = [
   'SOURCE_LIMIT_REACHED',
   'ACCOUNT_NOT_CONNECTED',
   'DISCOVERY_RATE_LIMITED',
+  'SOURCE_RETRY_RATE_LIMITED',
   'DISCOVERY_UNAVAILABLE',
 ] as const;
 export type AwsOnboardingErrorCode = (typeof AWS_ONBOARDING_ERROR_CODES)[number];

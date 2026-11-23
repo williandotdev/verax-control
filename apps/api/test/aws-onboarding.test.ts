@@ -5,6 +5,7 @@ import {
   AWS_DISCOVERY_MANUAL_INTERVAL_MS,
   AWS_MAX_AUTHORIZED_LOG_GROUPS,
   AWS_ONBOARDING_CHECK_IDS,
+  AWS_SOURCE_RETRY_INTERVAL_MS,
   awsOnboardingSchema,
   cloudAccountSchema,
   type Role,
@@ -982,6 +983,44 @@ describe('onboarding self-service da AWS: estado, descoberta manual e autorizaç
       });
       await post(adminA, `${base(cloud.id)}/sources/${denied.id}/retry`).expect(202);
       expect((await sourceRow(denied.id)).probeRequestedAt).toEqual(requestedAt);
+    });
+
+    it('no máximo um pedido a cada 30 s por fonte (429), mesmo já respondido; outra fonte não conta', async () => {
+      const cloud = await discoveredAccount(tenantA);
+      const first = await source(cloud, { permission: 'missing', state: 'needs_permission' });
+      const other = await source(cloud, { permission: 'missing', state: 'needs_permission' });
+      await post(adminA, `${base(cloud.id)}/sources/${first.id}/retry`).expect(202);
+      const requested = await sourceRow(first.id);
+      expect(requested.lastProbeRequestAt).toEqual(requested.probeRequestedAt);
+
+      // O worker respondeu (o pedido foi desfeito), e o cliente clica de novo em seguida.
+      await prisma.awsSource.update({ where: { id: first.id }, data: { probeRequestedAt: null } });
+      const limited = await post(adminA, `${base(cloud.id)}/sources/${first.id}/retry`).expect(429);
+      expect(limited.body).toMatchObject({ code: 'SOURCE_RETRY_RATE_LIMITED' });
+      expect(await sourceRow(first.id)).toMatchObject({
+        probeRequestedAt: null,
+        lastProbeRequestAt: requested.lastProbeRequestAt,
+      });
+      expect(await entryOf(limited)).toMatchObject({
+        action: 'cloud_account.aws_source_retry',
+        outcome: 'failure',
+        statusCode: 429,
+        actorId: adminA.userId,
+        tenantId: tenantA,
+      });
+
+      // O limite é por fonte: outra fonte da mesma conta segue valendo.
+      await post(adminA, `${base(cloud.id)}/sources/${other.id}/retry`).expect(202);
+
+      // Passados os 30 s, vale de novo.
+      await prisma.awsSource.update({
+        where: { id: first.id },
+        data: { lastProbeRequestAt: new Date(Date.now() - AWS_SOURCE_RETRY_INTERVAL_MS - 1000) },
+      });
+      await post(adminA, `${base(cloud.id)}/sources/${first.id}/retry`).expect(202);
+      const again = await sourceRow(first.id);
+      expect(again.probeRequestedAt).not.toBeNull();
+      expect(again.lastProbeRequestAt).toEqual(again.probeRequestedAt);
     });
 
     it('só na conta em que o nó entra no papel (409); inativa, 400; fonte que não existe, 404', async () => {

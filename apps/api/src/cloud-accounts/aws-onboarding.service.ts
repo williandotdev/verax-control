@@ -5,6 +5,7 @@ import {
   AWS_MAX_AUTHORIZED_S3_SOURCES,
   AWS_MAX_SOURCES_PER_ACCOUNT,
   AWS_SOURCE_KIND_INFO,
+  AWS_SOURCE_RETRY_INTERVAL_MS,
   type AwsOnboarding,
   type AwsOnboardingErrorCode,
   type AwsSourceKind,
@@ -288,7 +289,10 @@ export class AwsOnboardingService {
 
   /**
    * "Tentar de novo" numa fonte: pede ao worker que confira de novo a permissão dela (depois de o cliente pôr a tag no
-   * grupo, atualizar a pilha ou corrigir a política do bucket). Um pedido ainda pendente não é renovado.
+   * grupo, atualizar a pilha ou corrigir a política do bucket). Um pedido ainda pendente não é renovado. Respondido o
+   * pedido, o seguinte para a mesma fonte só vale 30 s depois dele (429 `SOURCE_RETRY_RATE_LIMITED`): a sondagem de uma
+   * fonte que sumiu pede uma descoberta da conta, fora do limite da manual, e este limite (com o de uma execução por vez
+   * na conta) contém quantas descobertas o botão consegue pedir.
    */
   async retry(id: string, sourceId: string): Promise<AwsOnboarding> {
     this.audit.describe({
@@ -298,16 +302,29 @@ export class AwsOnboardingService {
     });
     const account = await this.find(id);
     this.assertActive(account, 'Reative o monitoramento antes de conferir uma fonte.');
+    // O lock da conta: dois pedidos ao mesmo tempo não passam os dois pelo limite.
+    await lockAwsOnboarding(this.prisma.db(), id);
     const row = await this.findSource(id, sourceId);
     this.assertNotLegacy(row);
     this.assertDiscovers(account);
     const now = new Date();
+    if (
+      row.probeRequestedAt === null &&
+      row.lastProbeRequestAt !== null &&
+      now.getTime() - row.lastProbeRequestAt.getTime() < AWS_SOURCE_RETRY_INTERVAL_MS
+    ) {
+      throw refusal(
+        HttpStatus.TOO_MANY_REQUESTS,
+        'Esta fonte acabou de ser conferida. Tente de novo em alguns segundos.',
+        'SOURCE_RETRY_RATE_LIMITED',
+      );
+    }
     const after =
       row.probeRequestedAt !== null
         ? row
         : await this.prisma.scoped().awsSource.update({
             where: { id: sourceId },
-            data: { probeRequestedAt: now },
+            data: { probeRequestedAt: now, lastProbeRequestAt: now },
             select: SOURCE_SELECT,
           });
     this.audit.describe({

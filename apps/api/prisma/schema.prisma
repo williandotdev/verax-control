@@ -460,6 +460,8 @@ model AwsSource {
   permissionCheckedAt DateTime?    @db.Timestamptz(3)
   /// "Tentar de novo" pedido no painel e ainda não respondido pela tarefa `aws-discovery`.
   probeRequestedAt    DateTime?    @db.Timestamptz(3)
+  /// Quando o último "Tentar de novo" foi pedido. A resposta não o desfaz: é o limite de um pedido a cada 30 s por fonte.
+  lastProbeRequestAt  DateTime?    @db.Timestamptz(3)
   sensitive           Boolean      @default(false)
   /// Avisos de custo e de pré-requisito (códigos).
   notes               String[]     @default([])

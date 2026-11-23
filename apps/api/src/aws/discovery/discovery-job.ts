@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   AWS_DISCOVERY_MAX_ERRORS,
+  AWS_SOURCE_GLOBAL_REGION,
   type AwsDiscoveryError,
   type AwsDiscoveryStatus,
   type AwsInfrastructureSummary,
@@ -24,13 +25,15 @@ import {
   sourceDetails,
   type SourceRow,
 } from '../onboarding/onboarding-view.js';
-import { recordReaderFacts } from '../onboarding/reader-facts.js';
-import { readReaderFacts } from '../reader-tags.js';
+import type { AwsReaderFacts } from '../aws-connection-check.js';
+import { readerFactsChanged, recordReaderFacts } from '../onboarding/reader-facts.js';
+import { readReaderTags, TEMPLATE_V1_FACTS } from '../reader-tags.js';
 import { AwsConnectionError, type AwsReaderCredentials, STS_FALLBACK_REGION } from '../web-identity.js';
 import type { CatalogueContext } from './catalogue.js';
 import { type DiscoveryClientFactory, DiscoveryRunClients } from './clients.js';
 import {
   discoverAccount,
+  discoveryErrorCode,
   type DiscoveryResult,
   type DiscoveryTarget,
   DiscoveryUnavailable,
@@ -163,9 +166,9 @@ function failureCode(error: unknown): string {
 }
 
 /**
- * O que a descoberta precisa saber da conta. Com as tags do papel lidas, as capacidades são as gravadas (no template v1,
+ * O que a descoberta precisa saber da conta. Com as tags do papel lidas, as capacidades são as delas (no template v1,
  * só a descoberta: as outras não estão liberadas, e as fontes pedem a atualização da pilha). Sem as tags lidas ainda, a
- * permissão de cada fonte é sondada.
+ * permissão de cada fonte é sondada. A conta que chega aqui já traz as tags lidas no começo da execução (`withFacts`).
  */
 function targetOf(account: AccountRow): DiscoveryTarget {
   // As tags lidas dizem as capacidades mesmo quando a da versão não é um número (a versão fica null).
@@ -181,6 +184,16 @@ function targetOf(account: AccountRow): DiscoveryTarget {
       guardduty: account.guarddutyBucket,
       waf: account.wafBucket,
     },
+  };
+}
+
+/** A conta com as tags do papel lidas agora no lugar das gravadas. */
+function withFacts(account: AccountRow, facts: AwsReaderFacts, now: Date): AccountRow {
+  return {
+    ...account,
+    awsTemplateVersion: facts.templateVersion,
+    awsCapabilities: [...facts.capabilities],
+    awsCapabilitiesCheckedAt: now,
   };
 }
 
@@ -218,7 +231,12 @@ interface ProbeSession {
  *    `AWS_DISCOVERY_BATCH`: cada um é tomado (`pending` para `running`), executado (`discoverAccount`) e gravado numa
  *    transação pelo escopo do cliente da conta: as fontes (`applyDiscovery`), as regiões da conta e o fim da execução,
  *    com a concessão conferida e o lock da conta (o mesmo da autorização pelo painel). A conta que não entra no papel,
- *    foi desativada ou é de um cliente parado termina a execução como falha, sem chamar a AWS.
+ *    foi desativada ou é de um cliente parado termina a execução como falha, sem chamar a AWS. **Toda execução começa
+ *    lendo as tags do papel** (`readReaderTags`: a versão do template e as capacidades), e são elas que valem até o
+ *    fim, não as gravadas na conta: o cliente que atualizou a pilha e pediu a descoberta vê as fontes liberadas na
+ *    hora. As tags vão para a conta junto com o resultado, pela regra de `onboarding/reader-facts.ts` (a mudança entra
+ *    na trilha). Com a leitura das tags sem resposta (uma falha passageira), valem as gravadas, e a falha fica no
+ *    registro da execução (`iam × global × código`), que termina `partial`.
  * 4. **As sondagens pedidas no painel** ("Tentar de novo" numa fonte): as tags do papel e a própria fonte são lidas de
  *    novo na AWS, e só então a permissão é sondada (`answerProbes`). Nada do que está gravado decide a resposta.
  *
@@ -456,14 +474,36 @@ export class AwsDiscovery {
     let clients: DiscoveryRunClients | null = null;
     try {
       // A entrada no papel primeiro: recusada, nenhuma outra chamada.
-      await this.credentials.session(account.accountId, home, signal);
+      const session = await this.credentials.session(account.accountId, home, signal);
       clients = new DiscoveryRunClients(
         this.clients(this.credentials.credentialsFor(account.accountId, home), home),
         home,
         signal,
       );
-      const result = await discoverAccount(targetOf(account), clients, { signal, now: startedAt });
-      const persisted = await this.persist(run, account, result, startedAt);
+      // As tags do papel, lidas agora, valem para a execução inteira. A leitura recusada é o template v1: se for uma
+      // sessão que deixou de valer, nada mais é lido, a execução falha e nada disso é gravado.
+      const tags = await readReaderTags(clients.iam(), session.principal, signal);
+      const facts =
+        tags.status === 'read' ? tags.facts : tags.status === 'refused' ? TEMPLATE_V1_FACTS : null;
+      const result = await discoverAccount(
+        targetOf(facts === null ? account : withFacts(account, facts, startedAt)),
+        clients,
+        { signal, now: startedAt },
+      );
+      if (tags.status === 'unavailable') {
+        // Sem as tags agora, valeram as capacidades gravadas na conta: fica dito no registro da execução.
+        const unread: AwsDiscoveryError = {
+          service: 'iam',
+          region: AWS_SOURCE_GLOBAL_REGION,
+          code: discoveryErrorCode(tags.error),
+        };
+        const known = result.errors.some(
+          (error) =>
+            error.service === unread.service && error.region === unread.region && error.code === unread.code,
+        );
+        if (!known) result.errors.unshift(unread);
+      }
+      const persisted = await this.persist(run, account, result, startedAt, facts);
       if (persisted === 'lost') {
         ownership.abort(new DiscoveryLeaseLost());
         signal.throwIfAborted();
@@ -527,15 +567,17 @@ export class AwsDiscovery {
   }
 
   /**
-   * Grava o resultado numa transação só, pelo escopo do cliente da conta: as fontes, as regiões da conta, o fim da
-   * execução e a auditoria. A concessão é conferida e renovada na própria transação, o lock da conta serializa com a
-   * autorização pelo painel, e a conta precisa continuar ativa (senão, nada é gravado).
+   * Grava o resultado numa transação só, pelo escopo do cliente da conta: as tags do papel lidas no começo (`facts`;
+   * null quando não puderam ser lidas), as fontes, as regiões da conta, o fim da execução e a auditoria. A concessão é
+   * conferida e renovada na própria transação, o lock da conta serializa com a autorização pelo painel, e a conta
+   * precisa continuar ativa (senão, nada é gravado).
    */
   private persist(
     run: DiscoveryRunRow,
     account: AccountRow,
     result: DiscoveryResult,
     startedAt: Date,
+    facts: AwsReaderFacts | null,
   ): Promise<ApplyReport | 'stale' | 'lost'> {
     return this.prisma.$transaction(
       async (tx) => {
@@ -548,6 +590,10 @@ export class AwsDiscovery {
         });
         if (current === null) return 'stale';
         const now = this.now();
+        // A execução já rodou com estas tags: a mudança entra na trilha, sem pedir outra descoberta.
+        if (facts !== null) {
+          await recordReaderFacts(tx, this.audit, account, facts, now, { requestDiscovery: false });
+        }
         const applied = await applyDiscovery(db, {
           tenantId: account.tenantId,
           cloudAccountId: account.id,
@@ -612,8 +658,8 @@ export class AwsDiscovery {
    * As sondagens pedidas no painel ("Tentar de novo" numa fonte). O cliente pede a sondagem depois de mudar algo na conta
    * dele (a tag no grupo de logs, a pilha, a política do bucket ou da chave, o destino de um log); por isso a resposta
    * sai do que a AWS diz agora, e não do que a última descoberta gravou:
-   * 1. as tags do papel são lidas de novo, uma vez por conta (`openProbeSession`): a capacidade ligada numa atualização
-   *    da pilha vale na hora;
+   * 1. as tags do papel são lidas de novo, uma vez por conta (`openProbeSession`), como no começo de toda descoberta:
+   *    a capacidade ligada numa atualização da pilha vale na hora;
    * 2. a fonte é lida de novo (`readSource`): o destino, o prefixo, o formato, a tag do grupo e o estado do serviço;
    * 3. a permissão é sondada sobre o que foi lido (`probeInto`), e o resultado é gravado com as regras da descoberta
    *    para uma fonte conhecida (`applySourceReading`).
@@ -677,10 +723,15 @@ export class AwsDiscovery {
 
   /**
    * A conta de um lote de sondagens: a sessão de leitura, os clientes e as tags do papel lidas agora (`iam:GetRole` no
-   * próprio papel ou, na VM própria, `iam:GetUser`), gravadas na conta pela mesma regra da conferência diária (a mudança
-   * entra na trilha e pede uma descoberta). Com as tags sem resposta agora, as capacidades ficam desconhecidas e toda
-   * fonte é sondada na AWS: as gravadas na conta não decidem. Null quando a conta não entra no papel ou a sessão foi
-   * recusada.
+   * próprio papel ou, na VM própria, `iam:GetUser`).
+   * - **Lidas:** valem para o lote e são gravadas na conta pela regra da conferência diária (a mudança entra na trilha
+   *   e pede uma descoberta, para as outras fontes).
+   * - **Recusadas:** pode ser o papel do template v1 ou uma sessão que deixou de valer, e aqui não há outra leitura para
+   *   desempatar. Nada é gravado. Se a conta já está gravada como v1, a recusa só confirma, e valem as gravadas.
+   * - **Recusadas numa conta gravada com outro template, ou sem resposta:** as capacidades ficam desconhecidas, e toda
+   *   fonte é sondada na AWS. As gravadas na conta não decidem.
+   *
+   * Null quando a conta não entra no papel ou a sessão foi recusada.
    */
   private async openProbeSession(
     row: Pick<SourceRow, 'cloudAccountId' | 'tenantId'>,
@@ -706,21 +757,21 @@ export class AwsDiscovery {
         home,
         signal,
       );
-      const facts = await readReaderFacts(clients.iam(), session.principal, signal);
+      const tags = await readReaderTags(clients.iam(), session.principal, signal);
       const now = this.now();
-      if (facts !== null) {
-        await this.prisma.$transaction((tx) => recordReaderFacts(tx, this.audit, account, facts, now));
+      let known: AccountRow;
+      if (tags.status === 'read') {
+        const { facts } = tags;
+        await this.prisma.$transaction((tx) =>
+          recordReaderFacts(tx, this.audit, account, facts, now, { requestDiscovery: true }),
+        );
+        known = withFacts(account, facts, now);
+      } else if (tags.status === 'refused' && !readerFactsChanged(account, TEMPLATE_V1_FACTS)) {
+        known = account;
+      } else {
+        known = { ...account, awsCapabilitiesCheckedAt: null };
       }
-      const target = targetOf(
-        facts === null
-          ? { ...account, awsCapabilitiesCheckedAt: null }
-          : {
-              ...account,
-              awsTemplateVersion: facts.templateVersion,
-              awsCapabilities: [...facts.capabilities],
-              awsCapabilitiesCheckedAt: now,
-            },
-      );
+      const target = targetOf(known);
       return {
         clients,
         templateOutdated: target.templateOutdated,

@@ -53,6 +53,7 @@ export const SOURCE_SELECT = {
   permissionDetail: true,
   permissionCheckedAt: true,
   probeRequestedAt: true,
+  lastProbeRequestAt: true,
   sensitive: true,
   notes: true,
   origin: true,

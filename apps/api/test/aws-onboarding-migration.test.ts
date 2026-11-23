@@ -29,6 +29,8 @@ import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
  */
 
 const MIGRATION = '20261124120000_aws_onboarding';
+/** A que veio depois, no mesmo trabalho: a coluna do limite do "Tentar de novo" de uma fonte. */
+const RETRY_LIMIT = '20261124130000_aws_source_retry_limit';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -71,12 +73,21 @@ function listedAfter(definition: string, marker: string): string[] {
 }
 
 describe(`migration ${MIGRATION}`, () => {
-  it('é a última da lista e só acrescenta: nada é apagado nem reescrito', () => {
-    expect(migrations.at(-1)).toBe(MIGRATION);
-    const sql = sqlOf(MIGRATION);
-    expect(sql).not.toMatch(/\bDROP\b|DELETE FROM|^\s*UPDATE\b|\bTRUNCATE\b|ALTER COLUMN/im);
-    // Os buckets cadastrados continuam nas colunas da conta.
-    expect(sql).not.toMatch(/DROP COLUMN/i);
+  it('só acrescenta, ela e a do limite do "Tentar de novo", que vem depois: nada é apagado nem reescrito', () => {
+    expect(migrations.slice(migrations.indexOf(MIGRATION) + 1)).toEqual([RETRY_LIMIT]);
+    for (const name of [MIGRATION, RETRY_LIMIT]) {
+      const sql = sqlOf(name);
+      expect(sql, name).not.toMatch(/\bDROP\b|DELETE FROM|^\s*UPDATE\b|\bTRUNCATE\b|ALTER COLUMN/im);
+      // Os buckets cadastrados continuam nas colunas da conta.
+      expect(sql, name).not.toMatch(/DROP COLUMN/i);
+    }
+    // A segunda é uma coluna só, sem valor obrigatório: as fontes que já existem ficam como estão.
+    const statements = sqlOf(RETRY_LIMIT)
+      .split('\n')
+      .filter((line) => line.trim().length > 0 && !line.startsWith('--'));
+    expect(statements).toEqual([
+      'ALTER TABLE "AwsSource" ADD COLUMN     "lastProbeRequestAt" TIMESTAMPTZ(3);',
+    ]);
   });
 
   describe('banco novo (o banco de teste, migrado do zero)', () => {

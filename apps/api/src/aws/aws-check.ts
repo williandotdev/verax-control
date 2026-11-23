@@ -481,7 +481,9 @@ export class AwsCheck {
    * nova.
    */
   private async recordFacts(row: AccountRow, facts: AwsReaderFacts): Promise<void> {
-    await this.prisma.$transaction((tx) => recordReaderFacts(tx, this.audit, row, facts, this.now()));
+    await this.prisma.$transaction((tx) =>
+      recordReaderFacts(tx, this.audit, row, facts, this.now(), { requestDiscovery: true }),
+    );
   }
 
   /** Uma conferência com resultado: a próxima periódica conta daqui, e as diárias concluídas ficam lembradas. */

@@ -74,7 +74,7 @@ export class AwsOnboardingController {
     return this.onboarding.revoke(id, sourceId);
   }
 
-  /** "Tentar de novo": pede ao worker que confira de novo a permissão da fonte (202). */
+  /** "Tentar de novo": pede ao worker que confira de novo a permissão da fonte (202); um a cada 30 s por fonte (429). */
   @Post(':id/aws/sources/:sourceId/retry')
   @HttpCode(HttpStatus.ACCEPTED)
   @RequirePermission('cloud_accounts:write')

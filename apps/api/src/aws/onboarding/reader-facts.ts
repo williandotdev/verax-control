@@ -6,8 +6,8 @@ import { requestAwsDiscovery } from '../discovery/discovery-runs.js';
 
 /**
  * As tags do papel de leitura gravadas na conta (`awsTemplateVersion`, `awsCapabilities` e o horário da leitura), num
- * lugar só para quem as lê fora de um "Verificar": a conferência diária (`aws-check.ts`) e o "Tentar de novo" de uma
- * fonte (`discovery/discovery-job.ts`).
+ * lugar só para quem as lê fora de um "Verificar": a conferência diária (`aws-check.ts`) e a tarefa `aws-discovery`
+ * (`discovery/discovery-job.ts`), em toda descoberta e no "Tentar de novo" de uma fonte.
  */
 
 /** O que a gravação precisa da conta: o que está gravado hoje, para saber se mudou. */
@@ -34,11 +34,19 @@ export function readerFactsChanged(
   );
 }
 
+export interface RecordReaderFactsOptions {
+  /**
+   * Pede uma descoberta da conta quando as tags mudaram (o que o papel pode ler mudou). A própria descoberta não pede
+   * outra: ela já roda com as tags que acabou de ler.
+   */
+  requestDiscovery: boolean;
+}
+
 /**
  * Grava as tags do papel lidas agora, na transação de quem chama e pelo escopo do cliente da conta. Sem mudança, só o
  * horário da leitura; com outra versão do template ou outras capacidades, a mudança entra na trilha do cliente
- * (`cloud_account.aws_template`, ator sistema) e a conta ganha uma descoberta nova: o que o papel pode ler mudou.
- * Devolve se mudou. A conta que deixou de estar ativa não é tocada.
+ * (`cloud_account.aws_template`, ator sistema) e, com `requestDiscovery`, a conta ganha uma descoberta nova. Devolve
+ * se mudou. A conta que deixou de estar ativa não é tocada.
  */
 export async function recordReaderFacts(
   tx: Prisma.TransactionClient,
@@ -46,6 +54,7 @@ export async function recordReaderFacts(
   account: ReaderFactsAccount,
   facts: AwsReaderFacts,
   now: Date,
+  { requestDiscovery }: RecordReaderFactsOptions,
 ): Promise<boolean> {
   const db = scopeToTenant(tx, account.tenantId);
   const { count } = await db.cloudAccount.updateMany({
@@ -57,12 +66,14 @@ export async function recordReaderFacts(
     },
   });
   if (count === 0 || !readerFactsChanged(account, facts)) return false;
-  await requestAwsDiscovery(tx, {
-    tenantId: account.tenantId,
-    cloudAccountId: account.id,
-    trigger: 'scheduled',
-    now,
-  });
+  if (requestDiscovery) {
+    await requestAwsDiscovery(tx, {
+      tenantId: account.tenantId,
+      cloudAccountId: account.id,
+      trigger: 'scheduled',
+      now,
+    });
+  }
   await audit.write(tx, {
     actor: { type: 'system', tenantId: account.tenantId },
     action: 'cloud_account.aws_template',
