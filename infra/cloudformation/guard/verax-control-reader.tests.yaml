@@ -2,13 +2,23 @@
 # usuário, uma chave ou um segredo na pilha; cada condição da confiança tirada, afrouxada ou trocada; outro principal
 # ou outra ação; o papel sem o limite ou com sessão, nome ou política a mais; sem o Deny de IP; GetObject em qualquer
 # recurso) e as formas que uma regra frouxa deixaria passar (GetAtt em lista ou em texto, ação ou recurso em lista,
-# curinga no StringLike ou no StringEquals, uma chave ou um operador a mais).
+# curinga no StringLike ou no StringEquals, uma chave ou um operador a mais). Do modelo 2: a exceção do Deny de IP para o
+# serviço que age em nome do papel, tirada, invertida ou trocada; cada autorização do cliente fora do interruptor dela;
+# cada declaração de uma autorização afrouxada (o bucket inteiro, a pasta de outra conta, a listagem sem o separador, o
+# Decrypt sem o S3, um grupo de log sem a etiqueta, uma escrita entre os achados); e as etiquetas do papel trocadas.
 - name: modelo (o mínimo do template, como o cfn-guard o lê)
   input:
     Parameters:
       NodeServiceAccountId: { Type: String, AllowedPattern: '^[0-9]{21}$' }
       NodeEgressIps: { Type: String }
       Audience: { Type: String, Default: 'https://control.veraxsistemas.com.br/aws-reader' }
+      ReadAwsServiceLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadSecurityFindings: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadTaggedLogGroups: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+    Conditions:
+      ReadsServiceLogs: { Fn::Equals: [{ Ref: ReadAwsServiceLogs }, 'true'] }
+      ReadsFindings: { Fn::Equals: [{ Ref: ReadSecurityFindings }, 'true'] }
+      ReadsLogGroups: { Fn::Equals: [{ Ref: ReadTaggedLogGroups }, 'true'] }
     Resources:
       ReaderPolicy:
         Type: AWS::IAM::ManagedPolicy
@@ -16,6 +26,86 @@
           ManagedPolicyName: VeraxControlReader
           PolicyDocument:
             Statement:
+              - Sid: AutoInspecao
+                Effect: Allow
+                Action: [iam:GetRole, iam:SimulatePrincipalPolicy]
+                Resource:
+                  Fn::Sub: 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/verax/verax-control-reader'
+              - Sid: PosturaEAtivos
+                Effect: Allow
+                Resource: '*'
+                Action: [iam:ListUsers, ec2:DescribeInstances]
+              - Sid: DescobrirFontes
+                Effect: Allow
+                Resource: '*'
+                Action:
+                  - inspector2:BatchGetAccountStatus
+                  - logs:DescribeLogGroups
+                  - logs:ListTagsForResource
+                  - s3:GetBucketLocation
+                  - wafv2:ListWebACLs
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: LerLogsDaAwsDestaConta
+                    Effect: Allow
+                    Action: s3:GetObject
+                    Resource:
+                      - Fn::Sub: 'arn:${AWS::Partition}:s3:::*/AWSLogs/${AWS::AccountId}/*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:s3:::*/AWSLogs/o-*/${AWS::AccountId}/*'
+                  - { Ref: AWS::NoValue }
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: ListarLogsDaAwsDestaConta
+                    Effect: Allow
+                    Action: s3:ListBucket
+                    Resource: { Fn::Sub: 'arn:${AWS::Partition}:s3:::*' }
+                    Condition:
+                      StringLike:
+                        s3:prefix:
+                          - Fn::Sub: 'AWSLogs/${AWS::AccountId}/*'
+                          - Fn::Sub: 'AWSLogs/o-*/${AWS::AccountId}/*'
+                  - { Ref: AWS::NoValue }
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: VerPrimeiroNivelDosBuckets
+                    Effect: Allow
+                    Action: s3:ListBucket
+                    Resource: { Fn::Sub: 'arn:${AWS::Partition}:s3:::*' }
+                    Condition: { StringEquals: { s3:delimiter: /, s3:prefix: ['', AWSLogs, AWSLogs/] } }
+                  - { Ref: AWS::NoValue }
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: DecifrarLogsDaAwsSoPeloS3
+                    Effect: Allow
+                    Action: kms:Decrypt
+                    Resource: '*'
+                    Condition: { StringLike: { kms:ViaService: s3.*.amazonaws.com } }
+                  - { Ref: AWS::NoValue }
+              - Fn::If:
+                  - ReadsFindings
+                  - Sid: LerAchadosDeSeguranca
+                    Effect: Allow
+                    Resource: '*'
+                    Action:
+                      - access-analyzer:GetFinding
+                      - access-analyzer:ListFindings
+                      - guardduty:GetFindings
+                      - guardduty:ListFindings
+                      - inspector2:ListCoverage
+                      - inspector2:ListFindings
+                      - securityhub:GetEnabledStandards
+                      - securityhub:GetFindings
+                  - { Ref: AWS::NoValue }
+              - Fn::If:
+                  - ReadsLogGroups
+                  - Sid: LerGruposDeLogEtiquetados
+                    Effect: Allow
+                    Action: [logs:DescribeLogStreams, logs:FilterLogEvents, logs:GetLogEvents]
+                    Resource:
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*:*'
+                    Condition: { StringEquals: { aws:ResourceTag/verax-control: leitura } }
+                  - { Ref: AWS::NoValue }
               - Fn::If:
                   - HasLogBuckets
                   - Sid: LerObjetosDeLog
@@ -31,15 +121,6 @@
                     Resource: { Ref: LogKmsKeyArns }
                     Condition: { StringLike: { kms:ViaService: s3.*.amazonaws.com } }
                   - { Ref: AWS::NoValue }
-              - Sid: AutoInspecao
-                Effect: Allow
-                Action: iam:SimulatePrincipalPolicy
-                Resource:
-                  Fn::Sub: 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/verax/verax-control-reader'
-              - Sid: PosturaEAtivos
-                Effect: Allow
-                Resource: '*'
-                Action: [iam:ListUsers, ec2:DescribeInstances]
       GuardrailsPolicy:
         Type: AWS::IAM::ManagedPolicy
         Properties:
@@ -50,7 +131,9 @@
                 Effect: Deny
                 Action: '*'
                 Resource: '*'
-                Condition: { NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } } }
+                Condition:
+                  NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+                  Bool: { aws:ViaAWSService: 'false' }
       ReaderRole:
         Type: AWS::IAM::Role
         Properties:
@@ -59,6 +142,16 @@
           MaxSessionDuration: 3600
           PermissionsBoundary: { Ref: ReaderPolicy }
           ManagedPolicyArns: [{ Ref: ReaderPolicy }, { Ref: GuardrailsPolicy }]
+          Tags:
+            - { Key: 'verax-control:template', Value: '2' }
+            - Key: 'verax-control:capabilities'
+              Value:
+                Fn::Join:
+                  - ''
+                  - - discovery
+                    - Fn::If: [ReadsServiceLogs, ' service-logs', '']
+                    - Fn::If: [ReadsFindings, ' findings', '']
+                    - Fn::If: [ReadsLogGroups, ' log-groups', '']
           AssumeRolePolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -86,6 +179,14 @@
       nega_fora_do_ip_do_no: PASS
       leitura_so_le: PASS
       conteudo_so_nos_recursos_informados: PASS
+      autorizacoes_sao_interruptores: PASS
+      objetos_so_em_awslogs_desta_conta: PASS
+      listagem_so_das_pastas_desta_conta: PASS
+      primeiro_nivel_so_com_o_separador: PASS
+      decrypt_dos_logs_so_pelo_s3: PASS
+      achados_so_com_leitura: PASS
+      grupos_de_log_so_com_a_etiqueta: PASS
+      etiquetas_do_papel: PASS
       waf_e_guardduty_intocados: PASS
 
 # --- Usuário, chave e segredo ---
@@ -646,7 +747,9 @@
                 Effect: Deny
                 Action: '*'
                 Resource: '*'
-                Condition: { NotIpAddress: { aws:SourceIp: ['0.0.0.0/0'] } }
+                Condition:
+                  NotIpAddress: { aws:SourceIp: ['0.0.0.0/0'] }
+                  Bool: { aws:ViaAWSService: 'false' }
   expectations:
     rules:
       nega_fora_do_ip_do_no: FAIL
@@ -666,6 +769,7 @@
                 Resource: '*'
                 Condition:
                   NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+                  Bool: { aws:ViaAWSService: 'false' }
                   StringEquals: { aws:RequestedRegion: us-east-1 }
   expectations:
     rules:
@@ -688,6 +792,7 @@
                   NotIpAddress:
                     aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] }
                     aws:VpcSourceIp: 10.0.0.0/8
+                  Bool: { aws:ViaAWSService: 'false' }
   expectations:
     rules:
       nega_fora_do_ip_do_no: FAIL
@@ -706,7 +811,87 @@
                 Action: '*'
                 Resource: '*'
                 NotResource: 'arn:aws:s3:::*'
+                Condition:
+                  NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+                  Bool: { aws:ViaAWSService: 'false' }
+  expectations:
+    rules:
+      nega_fora_do_ip_do_no: FAIL
+
+- name: Deny de IP sem a exceção do serviço que age em nome do papel (barraria o S3 pedindo ao KMS)
+  input:
+    Resources:
+      GuardrailsPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlGuardrails
+          PolicyDocument:
+            Statement:
+              - Sid: SoDoNoDaVerax
+                Effect: Deny
+                Action: '*'
+                Resource: '*'
                 Condition: { NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } } }
+  expectations:
+    rules:
+      nega_fora_do_ip_do_no: FAIL
+
+- name: Deny de IP com a exceção invertida (só negaria o serviço; a sessão vazada valeria de qualquer IP)
+  input:
+    Resources:
+      GuardrailsPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlGuardrails
+          PolicyDocument:
+            Statement:
+              - Sid: SoDoNoDaVerax
+                Effect: Deny
+                Action: '*'
+                Resource: '*'
+                Condition:
+                  NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+                  Bool: { aws:ViaAWSService: 'true' }
+  expectations:
+    rules:
+      nega_fora_do_ip_do_no: FAIL
+
+- name: Deny de IP com outra chave ao lado do aws:ViaAWSService
+  input:
+    Resources:
+      GuardrailsPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlGuardrails
+          PolicyDocument:
+            Statement:
+              - Sid: SoDoNoDaVerax
+                Effect: Deny
+                Action: '*'
+                Resource: '*'
+                Condition:
+                  NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+                  Bool: { aws:ViaAWSService: 'false', aws:SecureTransport: 'false' }
+  expectations:
+    rules:
+      nega_fora_do_ip_do_no: FAIL
+
+- name: Deny de IP com a exceção por outro operador (BoolIfExists)
+  input:
+    Resources:
+      GuardrailsPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlGuardrails
+          PolicyDocument:
+            Statement:
+              - Sid: SoDoNoDaVerax
+                Effect: Deny
+                Action: '*'
+                Resource: '*'
+                Condition:
+                  NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+                  BoolIfExists: { aws:ViaAWSService: 'false' }
   expectations:
     rules:
       nega_fora_do_ip_do_no: FAIL
@@ -945,3 +1130,809 @@
   expectations:
     rules:
       waf_e_guardduty_intocados: FAIL
+
+# --- As três autorizações do cliente (modelo 2) ---
+
+- name: as três autorizações como interruptores, sem nenhuma declaração delas (o mínimo que passa)
+  input:
+    Parameters:
+      ReadAwsServiceLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadSecurityFindings: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadTaggedLogGroups: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+    Conditions:
+      ReadsServiceLogs: { Fn::Equals: [{ Ref: ReadAwsServiceLogs }, 'true'] }
+      ReadsFindings: { Fn::Equals: [{ Ref: ReadSecurityFindings }, 'true'] }
+      ReadsLogGroups: { Fn::Equals: [{ Ref: ReadTaggedLogGroups }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - { Sid: PosturaEAtivos, Effect: Allow, Resource: '*', Action: [iam:ListUsers] }
+  expectations:
+    rules:
+      autorizacoes_sao_interruptores: PASS
+
+- name: autorização desligada por padrão
+  input:
+    Parameters:
+      ReadAwsServiceLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'false' }
+      ReadSecurityFindings: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadTaggedLogGroups: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+    Conditions:
+      ReadsServiceLogs: { Fn::Equals: [{ Ref: ReadAwsServiceLogs }, 'true'] }
+      ReadsFindings: { Fn::Equals: [{ Ref: ReadSecurityFindings }, 'true'] }
+      ReadsLogGroups: { Fn::Equals: [{ Ref: ReadTaggedLogGroups }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - { Sid: PosturaEAtivos, Effect: Allow, Resource: '*', Action: [iam:ListUsers] }
+  expectations:
+    rules:
+      autorizacoes_sao_interruptores: FAIL
+
+- name: autorização com um valor livre além de true e false
+  input:
+    Parameters:
+      ReadAwsServiceLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadSecurityFindings: { Type: String, AllowedValues: ['true', 'false', 'sim'], Default: 'true' }
+      ReadTaggedLogGroups: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+    Conditions:
+      ReadsServiceLogs: { Fn::Equals: [{ Ref: ReadAwsServiceLogs }, 'true'] }
+      ReadsFindings: { Fn::Equals: [{ Ref: ReadSecurityFindings }, 'true'] }
+      ReadsLogGroups: { Fn::Equals: [{ Ref: ReadTaggedLogGroups }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - { Sid: PosturaEAtivos, Effect: Allow, Resource: '*', Action: [iam:ListUsers] }
+  expectations:
+    rules:
+      autorizacoes_sao_interruptores: FAIL
+
+- name: condição invertida (a leitura valeria justamente com a autorização desligada)
+  input:
+    Parameters:
+      ReadAwsServiceLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadSecurityFindings: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadTaggedLogGroups: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+    Conditions:
+      ReadsServiceLogs: { Fn::Equals: [{ Ref: ReadAwsServiceLogs }, 'true'] }
+      ReadsFindings: { Fn::Equals: [{ Ref: ReadSecurityFindings }, 'true'] }
+      ReadsLogGroups: { Fn::Equals: [{ Ref: ReadTaggedLogGroups }, 'false'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - { Sid: PosturaEAtivos, Effect: Allow, Resource: '*', Action: [iam:ListUsers] }
+  expectations:
+    rules:
+      autorizacoes_sao_interruptores: FAIL
+
+- name: declaração de uma autorização fora do Fn::If (desligar o parâmetro não tiraria a leitura)
+  input:
+    Parameters:
+      ReadAwsServiceLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadSecurityFindings: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadTaggedLogGroups: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+    Conditions:
+      ReadsServiceLogs: { Fn::Equals: [{ Ref: ReadAwsServiceLogs }, 'true'] }
+      ReadsFindings: { Fn::Equals: [{ Ref: ReadSecurityFindings }, 'true'] }
+      ReadsLogGroups: { Fn::Equals: [{ Ref: ReadTaggedLogGroups }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Sid: LerAchadosDeSeguranca
+                Effect: Allow
+                Resource: '*'
+                Action: [guardduty:GetFindings, guardduty:ListFindings]
+  expectations:
+    rules:
+      autorizacoes_sao_interruptores: FAIL
+      conteudo_so_nos_recursos_informados: FAIL
+      achados_so_com_leitura: FAIL
+
+- name: declaração de uma autorização sob a condição de outra
+  input:
+    Parameters:
+      ReadAwsServiceLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadSecurityFindings: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadTaggedLogGroups: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+    Conditions:
+      ReadsServiceLogs: { Fn::Equals: [{ Ref: ReadAwsServiceLogs }, 'true'] }
+      ReadsFindings: { Fn::Equals: [{ Ref: ReadSecurityFindings }, 'true'] }
+      ReadsLogGroups: { Fn::Equals: [{ Ref: ReadTaggedLogGroups }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsFindings
+                  - Sid: LerGruposDeLogEtiquetados
+                    Effect: Allow
+                    Action: [logs:DescribeLogStreams, logs:FilterLogEvents, logs:GetLogEvents]
+                    Resource:
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*:*'
+                    Condition: { StringEquals: { aws:ResourceTag/verax-control: leitura } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      autorizacoes_sao_interruptores: FAIL
+      grupos_de_log_so_com_a_etiqueta: PASS
+
+- name: declaração de uma autorização sob a condição dos buckets adicionais (valeria com a autorização desligada)
+  input:
+    Parameters:
+      ReadAwsServiceLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadSecurityFindings: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadTaggedLogGroups: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+    Conditions:
+      ReadsServiceLogs: { Fn::Equals: [{ Ref: ReadAwsServiceLogs }, 'true'] }
+      ReadsFindings: { Fn::Equals: [{ Ref: ReadSecurityFindings }, 'true'] }
+      ReadsLogGroups: { Fn::Equals: [{ Ref: ReadTaggedLogGroups }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - HasLogBuckets
+                  - Sid: DecifrarLogsDaAwsSoPeloS3
+                    Effect: Allow
+                    Action: kms:Decrypt
+                    Resource: '*'
+                    Condition: { StringLike: { kms:ViaService: s3.*.amazonaws.com } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      autorizacoes_sao_interruptores: FAIL
+      decrypt_dos_logs_so_pelo_s3: PASS
+
+- name: outra declaração pendurada na condição de uma autorização
+  input:
+    Parameters:
+      ReadAwsServiceLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadSecurityFindings: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      ReadTaggedLogGroups: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+    Conditions:
+      ReadsServiceLogs: { Fn::Equals: [{ Ref: ReadAwsServiceLogs }, 'true'] }
+      ReadsFindings: { Fn::Equals: [{ Ref: ReadSecurityFindings }, 'true'] }
+      ReadsLogGroups: { Fn::Equals: [{ Ref: ReadTaggedLogGroups }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: LerOutraCoisa
+                    Effect: Allow
+                    Action: s3:GetObject
+                    Resource: { Ref: LogBucketArns }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      autorizacoes_sao_interruptores: FAIL
+
+# --- Logs da AWS no S3 ---
+
+- name: logs da AWS com todos os objetos de todos os buckets
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: LerLogsDaAwsDestaConta
+                    Effect: Allow
+                    Action: s3:GetObject
+                    Resource: 'arn:aws:s3:::*/*'
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      objetos_so_em_awslogs_desta_conta: FAIL
+
+- name: logs da AWS com a pasta AWSLogs de qualquer conta (sem o ID desta)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: LerLogsDaAwsDestaConta
+                    Effect: Allow
+                    Action: s3:GetObject
+                    Resource:
+                      - Fn::Sub: 'arn:${AWS::Partition}:s3:::*/AWSLogs/*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:s3:::*/AWSLogs/o-*/${AWS::AccountId}/*'
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      objetos_so_em_awslogs_desta_conta: FAIL
+
+- name: logs da AWS com um recurso a mais na lista
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: LerLogsDaAwsDestaConta
+                    Effect: Allow
+                    Action: s3:GetObject
+                    Resource:
+                      - Fn::Sub: 'arn:${AWS::Partition}:s3:::*/AWSLogs/${AWS::AccountId}/*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:s3:::*/AWSLogs/o-*/${AWS::AccountId}/*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:s3:::*/backups/*'
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      objetos_so_em_awslogs_desta_conta: FAIL
+
+- name: logs da AWS com outra ação junto da leitura do objeto
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: LerLogsDaAwsDestaConta
+                    Effect: Allow
+                    Action: [s3:GetObject, s3:GetObjectVersion]
+                    Resource:
+                      - Fn::Sub: 'arn:${AWS::Partition}:s3:::*/AWSLogs/${AWS::AccountId}/*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:s3:::*/AWSLogs/o-*/${AWS::AccountId}/*'
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      objetos_so_em_awslogs_desta_conta: FAIL
+
+- name: listagem dos logs da AWS sem a condição do prefixo (o bucket inteiro)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: ListarLogsDaAwsDestaConta
+                    Effect: Allow
+                    Action: s3:ListBucket
+                    Resource: { Fn::Sub: 'arn:${AWS::Partition}:s3:::*' }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      listagem_so_das_pastas_desta_conta: FAIL
+
+- name: listagem dos logs da AWS com a pasta de qualquer conta
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: ListarLogsDaAwsDestaConta
+                    Effect: Allow
+                    Action: s3:ListBucket
+                    Resource: { Fn::Sub: 'arn:${AWS::Partition}:s3:::*' }
+                    Condition: { StringLike: { s3:prefix: ['AWSLogs/*'] } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      listagem_so_das_pastas_desta_conta: FAIL
+
+- name: primeiro nível dos buckets sem o separador (a listagem desceria o bucket inteiro)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: VerPrimeiroNivelDosBuckets
+                    Effect: Allow
+                    Action: s3:ListBucket
+                    Resource: { Fn::Sub: 'arn:${AWS::Partition}:s3:::*' }
+                    Condition: { StringEquals: { s3:prefix: ['', AWSLogs, AWSLogs/] } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      primeiro_nivel_so_com_o_separador: FAIL
+
+- name: primeiro nível dos buckets com um prefixo a mais (a pasta de outra conta)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: VerPrimeiroNivelDosBuckets
+                    Effect: Allow
+                    Action: s3:ListBucket
+                    Resource: { Fn::Sub: 'arn:${AWS::Partition}:s3:::*' }
+                    Condition:
+                      StringEquals:
+                        s3:delimiter: /
+                        s3:prefix: ['', AWSLogs, AWSLogs/, AWSLogs/222222222222/]
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      primeiro_nivel_so_com_o_separador: FAIL
+
+- name: primeiro nível dos buckets com curinga no prefixo (qualquer pasta)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: VerPrimeiroNivelDosBuckets
+                    Effect: Allow
+                    Action: s3:ListBucket
+                    Resource: { Fn::Sub: 'arn:${AWS::Partition}:s3:::*' }
+                    Condition:
+                      StringEquals: { s3:delimiter: / }
+                      StringLike: { s3:prefix: '*' }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      primeiro_nivel_so_com_o_separador: FAIL
+
+- name: Decrypt dos logs da AWS sem o S3 no meio (qualquer chave, direto no KMS)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - { Sid: DecifrarLogsDaAwsSoPeloS3, Effect: Allow, Action: kms:Decrypt, Resource: '*' }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      decrypt_dos_logs_so_pelo_s3: FAIL
+      conteudo_so_nos_recursos_informados: FAIL
+
+- name: Decrypt dos logs da AWS por qualquer serviço
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsServiceLogs
+                  - Sid: DecifrarLogsDaAwsSoPeloS3
+                    Effect: Allow
+                    Action: kms:Decrypt
+                    Resource: '*'
+                    Condition: { StringLike: { kms:ViaService: '*.amazonaws.com' } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      decrypt_dos_logs_so_pelo_s3: FAIL
+
+# --- Achados de segurança ---
+
+- name: achados com uma ação que arquiva
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsFindings
+                  - Sid: LerAchadosDeSeguranca
+                    Effect: Allow
+                    Resource: '*'
+                    Action:
+                      - access-analyzer:GetFinding
+                      - access-analyzer:ListFindings
+                      - guardduty:ArchiveFindings
+                      - guardduty:GetFindings
+                      - guardduty:ListFindings
+                      - inspector2:ListCoverage
+                      - inspector2:ListFindings
+                      - securityhub:GetEnabledStandards
+                      - securityhub:GetFindings
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      achados_so_com_leitura: FAIL
+      leitura_so_le: FAIL
+
+- name: achados com um curinga de leitura no lugar das ações exatas
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsFindings
+                  - Sid: LerAchadosDeSeguranca
+                    Effect: Allow
+                    Resource: '*'
+                    Action: ['guardduty:Get*', 'guardduty:List*', 'securityhub:Get*', 'inspector2:List*']
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      achados_so_com_leitura: FAIL
+      leitura_so_le: PASS
+
+# --- Grupos do CloudWatch Logs ---
+
+- name: grupos de log sem a condição da etiqueta (todo grupo da conta)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsLogGroups
+                  - Sid: LerGruposDeLogEtiquetados
+                    Effect: Allow
+                    Action: [logs:DescribeLogStreams, logs:FilterLogEvents, logs:GetLogEvents]
+                    Resource:
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*:*'
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      grupos_de_log_so_com_a_etiqueta: FAIL
+
+- name: grupos de log com qualquer valor na etiqueta
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsLogGroups
+                  - Sid: LerGruposDeLogEtiquetados
+                    Effect: Allow
+                    Action: [logs:DescribeLogStreams, logs:FilterLogEvents, logs:GetLogEvents]
+                    Resource:
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*:*'
+                    Condition: { StringLike: { aws:ResourceTag/verax-control: '*' } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      grupos_de_log_so_com_a_etiqueta: FAIL
+
+- name: grupos de log com a etiqueta opcional (StringEqualsIfExists passa sem etiqueta)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsLogGroups
+                  - Sid: LerGruposDeLogEtiquetados
+                    Effect: Allow
+                    Action: [logs:DescribeLogStreams, logs:FilterLogEvents, logs:GetLogEvents]
+                    Resource:
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*:*'
+                    Condition: { StringEqualsIfExists: { aws:ResourceTag/verax-control: leitura } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      grupos_de_log_so_com_a_etiqueta: FAIL
+
+- name: grupos de log de qualquer conta
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsLogGroups
+                  - Sid: LerGruposDeLogEtiquetados
+                    Effect: Allow
+                    Action: [logs:DescribeLogStreams, logs:FilterLogEvents, logs:GetLogEvents]
+                    Resource: '*'
+                    Condition: { StringEquals: { aws:ResourceTag/verax-control: leitura } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      grupos_de_log_so_com_a_etiqueta: FAIL
+
+- name: grupos de log com a consulta do Logs Insights (leria por outro caminho)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ReadsLogGroups
+                  - Sid: LerGruposDeLogEtiquetados
+                    Effect: Allow
+                    Action:
+                      [logs:DescribeLogStreams, logs:FilterLogEvents, logs:GetLogEvents, logs:StartQuery]
+                    Resource:
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*'
+                      - Fn::Sub: 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:*:*'
+                    Condition: { StringEquals: { aws:ResourceTag/verax-control: leitura } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      grupos_de_log_so_com_a_etiqueta: FAIL
+      leitura_so_le: FAIL
+
+# --- Conteúdo fora das autorizações e a leitura do próprio papel ---
+
+- name: evento de log lido pela descoberta (sem depender de autorização nem de etiqueta)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Sid: DescobrirFontes
+                Effect: Allow
+                Resource: '*'
+                Action: [logs:DescribeLogGroups, logs:ListTagsForResource, logs:GetLogEvents]
+  expectations:
+    rules:
+      leitura_so_le: PASS
+      conteudo_so_nos_recursos_informados: FAIL
+
+- name: listagem de qualquer bucket pela descoberta
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Sid: DescobrirFontes
+                Effect: Allow
+                Resource: '*'
+                Action: [s3:GetBucketLocation, s3:ListBucket]
+  expectations:
+    rules:
+      leitura_so_le: PASS
+      conteudo_so_nos_recursos_informados: FAIL
+
+- name: achado lido numa declaração dos buckets adicionais (fora da autorização dos achados)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - HasLogBuckets
+                  - Sid: LerObjetosDeLog
+                    Effect: Allow
+                    Action: [s3:GetObject, guardduty:GetFindings]
+                    Resource: { Ref: LogBucketArns }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      leitura_so_le: PASS
+      conteudo_so_nos_recursos_informados: FAIL
+
+- name: leitura das etiquetas e simulação em qualquer papel da conta
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Sid: AutoInspecao
+                Effect: Allow
+                Action: [iam:GetRole, iam:SimulatePrincipalPolicy]
+                Resource: '*'
+  expectations:
+    rules:
+      leitura_so_le: FAIL
+
+- name: leitura de outros papéis numa declaração da postura
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Sid: AutoInspecao
+                Effect: Allow
+                Action: [iam:GetRole, iam:SimulatePrincipalPolicy]
+                Resource:
+                  Fn::Sub: 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/verax/verax-control-reader'
+              - { Sid: PosturaEAtivos, Effect: Allow, Resource: '*', Action: [iam:ListUsers, iam:GetRole] }
+  expectations:
+    rules:
+      leitura_so_le: FAIL
+
+# --- Etiquetas do papel ---
+
+- name: papel sem as etiquetas (o nó o leria como o modelo 1)
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Path: /verax/
+  expectations:
+    rules:
+      etiquetas_do_papel: FAIL
+
+- name: etiquetas com a lista separada por vírgula (o IAM recusa a vírgula no valor)
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Tags:
+            - { Key: 'verax-control:template', Value: '2' }
+            - Key: 'verax-control:capabilities'
+              Value:
+                Fn::Join:
+                  - ','
+                  - - discovery
+                    - Fn::If: [ReadsServiceLogs, service-logs, { Ref: AWS::NoValue }]
+                    - Fn::If: [ReadsFindings, findings, { Ref: AWS::NoValue }]
+                    - Fn::If: [ReadsLogGroups, log-groups, { Ref: AWS::NoValue }]
+  expectations:
+    rules:
+      etiquetas_do_papel: FAIL
+
+- name: etiquetas com outra versão do modelo
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Tags:
+            - { Key: 'verax-control:template', Value: '1' }
+            - Key: 'verax-control:capabilities'
+              Value:
+                Fn::Join:
+                  - ''
+                  - - discovery
+                    - Fn::If: [ReadsServiceLogs, ' service-logs', '']
+                    - Fn::If: [ReadsFindings, ' findings', '']
+                    - Fn::If: [ReadsLogGroups, ' log-groups', '']
+  expectations:
+    rules:
+      etiquetas_do_papel: FAIL
+
+- name: etiquetas com uma autorização fixa (diria que foi autorizado o que não foi)
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Tags:
+            - { Key: 'verax-control:template', Value: '2' }
+            - Key: 'verax-control:capabilities'
+              Value:
+                Fn::Join:
+                  - ''
+                  - - discovery
+                    - ' service-logs'
+                    - Fn::If: [ReadsFindings, ' findings', '']
+                    - Fn::If: [ReadsLogGroups, ' log-groups', '']
+  expectations:
+    rules:
+      etiquetas_do_papel: FAIL
+
+- name: etiquetas com uma autorização pendurada na condição de outra
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Tags:
+            - { Key: 'verax-control:template', Value: '2' }
+            - Key: 'verax-control:capabilities'
+              Value:
+                Fn::Join:
+                  - ''
+                  - - discovery
+                    - Fn::If: [ReadsFindings, ' service-logs', '']
+                    - Fn::If: [ReadsFindings, ' findings', '']
+                    - Fn::If: [ReadsLogGroups, ' log-groups', '']
+  expectations:
+    rules:
+      etiquetas_do_papel: FAIL

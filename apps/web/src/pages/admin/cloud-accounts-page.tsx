@@ -1445,9 +1445,11 @@ function AwsKeySteps({ account, canWrite }: { account: CloudAccount; canWrite: b
       <ol className="list-decimal space-y-3 pl-5 text-sm">
         <li className="space-y-2">
           <p>
-            Crie as duas políticas com o conteúdo abaixo: a de leitura (os buckets de log cadastrados, a
-            configuração para Ativos e Postura) e a de negações (nada de alterar logs nem ampliar o próprio
-            acesso{account.egressIps.length > 0 ? ', e nada de fora do IP da VM' : ''}).
+            Crie as duas políticas com o conteúdo abaixo: a de leitura (a configuração da conta, para
+            descobrir as fontes de log e para Ativos e Postura; os logs que a AWS grava no S3 em AWSLogs/
+            {account.accountId}/; os achados de segurança; os grupos do CloudWatch Logs que você etiquetar com
+            verax-control=leitura; e os buckets de log cadastrados) e a de negações (nada de alterar logs nem
+            ampliar o próprio acesso{account.egressIps.length > 0 ? ', e nada de fora do IP da VM' : ''}).
           </p>
           <PolicyBlock file={AWS_READER_POLICY_FILE} policy={awsReaderUserPolicy(values)} />
           <PolicyBlock file={AWS_GUARDRAILS_POLICY_FILE} policy={awsGuardrailsPolicy(values)} />
