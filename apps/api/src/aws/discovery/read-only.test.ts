@@ -1,3 +1,10 @@
+import {
+  CreateAnalyzerCommand,
+  GetFindingV2Command,
+  ListAnalyzersCommand,
+  ListFindingsV2Command,
+  UpdateFindingsCommand,
+} from '@aws-sdk/client-accessanalyzer';
 import { DeleteTrailCommand, DescribeTrailsCommand, StopLoggingCommand } from '@aws-sdk/client-cloudtrail';
 import {
   DeleteLogGroupCommand,
@@ -12,19 +19,30 @@ import {
   RunInstancesCommand,
 } from '@aws-sdk/client-ec2';
 import {
+  ArchiveFindingsCommand,
   CreateDetectorCommand,
+  GetFindingsCommand as GetGuardDutyFindingsCommand,
   ListDetectorsCommand,
+  ListFindingsCommand as ListGuardDutyFindingsCommand,
   UpdateDetectorCommand,
 } from '@aws-sdk/client-guardduty';
 import { AttachRolePolicyCommand, CreateAccessKeyCommand, GetRoleCommand } from '@aws-sdk/client-iam';
-import { BatchGetAccountStatusCommand, EnableCommand } from '@aws-sdk/client-inspector2';
+import {
+  BatchGetAccountStatusCommand,
+  EnableCommand,
+  ListFindingsCommand as ListInspectorFindingsCommand,
+} from '@aws-sdk/client-inspector2';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
 } from '@aws-sdk/client-s3';
-import { EnableSecurityHubCommand, GetFindingsCommand } from '@aws-sdk/client-securityhub';
+import {
+  BatchUpdateFindingsCommand,
+  EnableSecurityHubCommand,
+  GetFindingsCommand,
+} from '@aws-sdk/client-securityhub';
 import { AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { ListWebACLsCommand, PutLoggingConfigurationCommand } from '@aws-sdk/client-wafv2';
 import { describe, expect, it, vi } from 'vitest';
@@ -42,6 +60,16 @@ const READS = [
   new GetRoleCommand({ RoleName: 'verax-control-reader' }),
   new GetFindingsCommand({}),
   new BatchGetAccountStatusCommand({}),
+  // O que a tarefa `aws-findings` chama, além do `GetFindings` do Security Hub e do que divide com a descoberta.
+  new ListGuardDutyFindingsCommand({ DetectorId: 'det1' }),
+  new GetGuardDutyFindingsCommand({ DetectorId: 'det1', FindingIds: ['0a1b2c3d4e5f60718293a4b5c6d7e8f9'] }),
+  new ListInspectorFindingsCommand({}),
+  new ListAnalyzersCommand({}),
+  new ListFindingsV2Command({ analyzerArn: 'arn:aws:access-analyzer:sa-east-1:111111111111:analyzer/conta' }),
+  new GetFindingV2Command({
+    analyzerArn: 'arn:aws:access-analyzer:sa-east-1:111111111111:analyzer/conta',
+    id: '11111111-2222-3333-4444-555555555555',
+  }),
 ];
 
 const WRITES = [
@@ -59,6 +87,14 @@ const WRITES = [
   new UpdateDetectorCommand({ DetectorId: 'd', Enable: false }),
   new EnableCommand({ resourceTypes: ['EC2'] }),
   new EnableSecurityHubCommand({}),
+  // Mexer num achado na origem (arquivar, mudar o fluxo de trabalho) também é escrita: o painel nunca fecha nada lá.
+  new ArchiveFindingsCommand({ DetectorId: 'det1', FindingIds: ['0a1b2c3d4e5f60718293a4b5c6d7e8f9'] }),
+  new BatchUpdateFindingsCommand({ FindingIdentifiers: [] }),
+  new UpdateFindingsCommand({
+    analyzerArn: 'arn:aws:access-analyzer:sa-east-1:111111111111:analyzer/conta',
+    status: 'ARCHIVED',
+  }),
+  new CreateAnalyzerCommand({ analyzerName: 'conta', type: 'ACCOUNT' }),
   new PutLoggingConfigurationCommand({
     LoggingConfiguration: { ResourceArn: 'arn:aws:wafv2:x', LogDestinationConfigs: [] },
   }),

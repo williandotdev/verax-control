@@ -525,6 +525,67 @@ describe('conferências', () => {
     );
     expect(statusOf(onTime).lag).toBe('ok');
   });
+
+  it('a fonte de achados (lida por API): saudável sem achado nenhum, e a leitura atrasada não é fonte "parada"', () => {
+    // Lida sem erro e sem achado até agora: coletando, com todas as conferências da coleta passando.
+    const quiet = deriveAwsOnboarding(
+      facts({
+        sources: [collecting({ method: 'api', stateCode: 'no_findings_yet', lagSeconds: 60 })],
+      }),
+    );
+    expect(quiet.state).toBe('collecting');
+    expect(statusOf(quiet)).toMatchObject({
+      collector_config: 'ok',
+      events: 'ok',
+      last_sync: 'ok',
+      lag: 'ok',
+    });
+    // O coletor sem ler há mais de 2 h: a conferência acusa a leitura atrasada, com o código próprio.
+    const late = deriveAwsOnboarding(
+      facts({ sources: [collecting({ method: 'api', lagSeconds: AWS_LAG_LIMIT_SECONDS + 1 })] }),
+    );
+    expect([statusOf(late).lag, codeOf(late, 'lag')]).toEqual(['failed', 'sync_delayed']);
+    // Junto de uma fonte contínua atrasada, ou parada, vale o código da fonte parada.
+    const mixed = deriveAwsOnboarding(
+      facts({
+        sources: [
+          collecting({ method: 'api', lagSeconds: AWS_LAG_LIMIT_SECONDS + 1 }),
+          collecting({ method: 's3', lagSeconds: AWS_LAG_LIMIT_SECONDS + 1 }),
+        ],
+      }),
+    );
+    expect(codeOf(mixed, 'lag')).toBe('stalled');
+    const continuous = deriveAwsOnboarding(
+      facts({ sources: [collecting({ method: 's3', lagSeconds: AWS_LAG_LIMIT_SECONDS + 1 })] }),
+    );
+    expect(codeOf(continuous, 'lag')).toBe('stalled');
+    // A falha repetida do coletor e a permissão negada aparecem no estado da conta, com o código da fonte.
+    const failing = deriveAwsOnboarding(
+      facts({
+        sources: [collecting({ method: 'api', state: 'ingestion_error', stateCode: 'throttled' })],
+      }),
+    );
+    expect(failing.state).toBe('ingestion_failure');
+    expect([statusOf(failing).events, codeOf(failing, 'events')]).toEqual(['failed', 'throttled']);
+    const denied = deriveAwsOnboarding(
+      facts({
+        sources: [
+          collecting({
+            method: 'api',
+            state: 'permission_error',
+            stateCode: 'guardduty:ListFindings',
+            permission: 'missing',
+            permissionDetail: 'guardduty:ListFindings',
+          }),
+        ],
+      }),
+    );
+    expect(denied.state).toBe('permission_error');
+    expect([statusOf(denied).permission, codeOf(denied, 'permission')]).toEqual([
+      'failed',
+      'guardduty:ListFindings',
+    ]);
+  });
 });
 
 describe('retomada depois de uma falha no meio', () => {

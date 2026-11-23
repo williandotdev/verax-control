@@ -187,7 +187,9 @@ async function awsConnectionSetup(
  * (a cada 5 min olha as contas; cada conta já verificada é inventariada uma vez por dia, PR-14', e a postura nativa sai
  * da mesma coleta, PR-15'). Com ela, no nó dedicado, entra também a tarefa `aws-discovery` (onboarding self-service): a
  * cada 30 s executa as descobertas pedidas (pelo "Conectar", pelo painel e uma por dia por conta) e responde as
- * sondagens de permissão das fontes. Na célula, a descoberta fica de fora até a coleta da AWS existir lá.
+ * sondagens de permissão das fontes. Na célula, a descoberta fica de fora até a coleta da AWS existir lá. Junto com ela
+ * entra a tarefa `aws-findings`: a cada 5 min lê, pela API de cada serviço, os achados das fontes autorizadas do
+ * GuardDuty, do Security Hub, do Inspector e do Access Analyzer (`aws/findings/`).
  *
  * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
  * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos
@@ -351,6 +353,16 @@ async function main(): Promise<void> {
           intervalMs: discovery.AWS_DISCOVERY_TICK_MS,
           budgetMs: discovery.AWS_DISCOVERY_BUDGET_MS,
           run: (signal) => discover.runOnce(signal),
+        });
+        // Achados das fontes autorizadas lidas por API (GuardDuty, Security Hub, Inspector e Access Analyzer): a mesma
+        // sessão e os mesmos clientes com a trava de só leitura. Fora da célula, como a descoberta.
+        const findings = await import('./aws/findings/findings-job.js');
+        const collect = new findings.AwsFindings(prisma, aws.credentials, sdkDiscoveryClients);
+        tasks.push({
+          name: findings.AWS_FINDINGS_SYNC,
+          intervalMs: findings.AWS_FINDINGS_TICK_MS,
+          budgetMs: findings.AWS_FINDINGS_BUDGET_MS,
+          run: (signal) => collect.runOnce(signal),
         });
       }
     }

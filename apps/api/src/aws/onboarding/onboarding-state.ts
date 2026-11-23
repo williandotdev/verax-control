@@ -6,6 +6,7 @@ import {
   type AwsOnboardingCheckId,
   type AwsOnboardingCheckStatus,
   type AwsOnboardingState,
+  type AwsSourceMethod,
   type AwsSourcePermission,
   type AwsSourceState,
   type CloudAccountConnection,
@@ -60,6 +61,11 @@ export interface OnboardingRunFacts {
 export interface OnboardingSourceFacts {
   state: AwsSourceState;
   stateCode: string | null;
+  /**
+   * Como a fonte é lida. Na lida por API (achados), o atraso é o tempo desde a última leitura sem erro do coletor: ela
+   * nunca fica "parada" por não ter achado, e o atraso alto é `sync_delayed`.
+   */
+  method?: AwsSourceMethod;
   permission: AwsSourcePermission;
   permissionDetail: string | null;
   authorizedAt: Date | null;
@@ -237,12 +243,19 @@ export function deriveAwsOnboarding(facts: OnboardingFacts): OnboardingDerived {
     );
     const lags = authorized.flatMap((source) => (source.lagSeconds === null ? [] : [source.lagSeconds]));
     const stalled = authorized.some((source) => source.state === 'stalled');
+    const late = authorized.filter(
+      (source) => source.lagSeconds !== null && source.lagSeconds > AWS_LAG_LIMIT_SECONDS,
+    );
+    // A fonte contínua sem eventos está parada; a de achados com a leitura atrasada só está sem ser lida.
+    const lateCode = late.every((source) => source.method === 'api') ? 'sync_delayed' : 'stalled';
     checks.push(
-      stalled || lags.some((lag) => lag > AWS_LAG_LIMIT_SECONDS)
+      stalled
         ? check('lag', 'failed', 'stalled')
-        : lags.length === authorized.length
-          ? check('lag', 'ok')
-          : check('lag', 'pending', 'no_data'),
+        : late.length > 0
+          ? check('lag', 'failed', lateCode)
+          : lags.length === authorized.length
+            ? check('lag', 'ok')
+            : check('lag', 'pending', 'no_data'),
     );
   }
 

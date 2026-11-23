@@ -29,6 +29,7 @@ import {
 } from '@verax/shared';
 import type { Prisma } from '../../generated/prisma/client.js';
 import type { DiscoveryRunRow } from '../discovery/discovery-runs.js';
+import { apiSourceLagSeconds } from '../findings/finding-health.js';
 import type { OnboardingSourceFacts } from './onboarding-state.js';
 
 /**
@@ -134,22 +135,35 @@ export function legacyPermission(
   };
 }
 
+/**
+ * O atraso de uma fonte na hora da leitura. Na fonte lida por API (achados), é o tempo desde a última leitura sem erro
+ * do coletor (`aws-findings`), calculado agora; nas outras, o que o coletor delas gravou.
+ */
+function lagSecondsOf(row: SourceRow, now: Date): number | null {
+  return apiSourceLagSeconds(row, now) ?? row.lagSeconds;
+}
+
 /** O que a derivação do estado da conta lê de uma fonte, já com a permissão da linha de um bucket cadastrado. */
-export function sourceFacts(row: SourceRow, account: LegacyAccountFacts): OnboardingSourceFacts {
+export function sourceFacts(
+  row: SourceRow,
+  account: LegacyAccountFacts,
+  now: Date = new Date(),
+): OnboardingSourceFacts {
   const { permission, permissionDetail, state, stateCode } = legacyPermission(row, account);
   return {
     state: state as AwsSourceState,
     stateCode,
+    method: row.method as AwsSourceMethod,
     permission: permission as AwsSourcePermission,
     permissionDetail,
     authorizedAt: row.authorizedAt,
     revokedAt: row.revokedAt,
     lastSyncAt: row.lastSyncAt,
-    lagSeconds: row.lagSeconds,
+    lagSeconds: lagSecondsOf(row, now),
   };
 }
 
-export function toSource(row: SourceRow, account: LegacyAccountFacts): AwsSource {
+export function toSource(row: SourceRow, account: LegacyAccountFacts, now: Date = new Date()): AwsSource {
   const kind = row.kind as AwsSourceKind;
   const { permission, permissionDetail, state, stateCode } = legacyPermission(row, account);
   return {
@@ -187,7 +201,7 @@ export function toSource(row: SourceRow, account: LegacyAccountFacts): AwsSource
       lastSyncAt: iso(row.lastSyncAt),
       lastEventAt: iso(row.lastEventAt),
       lastIngestedAt: iso(row.lastIngestedAt),
-      lagSeconds: row.lagSeconds,
+      lagSeconds: lagSecondsOf(row, now),
       eventsLast24h: row.eventsLast24h,
       // O volume de um dia cabe com folga num número (o BIGINT é só a coluna).
       bytesLast24h: row.bytesLast24h === null ? null : Number(row.bytesLast24h),
