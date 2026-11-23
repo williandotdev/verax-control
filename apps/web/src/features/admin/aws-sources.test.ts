@@ -183,8 +183,21 @@ describe('releitura do estado: só enquanto uma mudança é esperada', () => {
     for (const state of ['awaiting_authorization', 'discovering', 'configuring'] as const) {
       expect(interval(state), state).toBe(AWS_ONBOARDING_FAST_POLL_MS);
     }
-    // Acabou de entrar: a descoberta vem em seguida.
-    expect(interval('authenticated')).toBe(AWS_ONBOARDING_FAST_POLL_MS);
+    // Acabou de entrar (as etiquetas do papel lidas há pouco, ou o "Conectar" recente): a descoberta vem em seguida.
+    const now = Date.parse('2026-11-23T12:00:00.000Z');
+    const authenticated = (template: string | null, connect: string | null) =>
+      awsOnboardingPollInterval(
+        onboardingFixture(ACCOUNT, 'authenticated', {
+          template: { version: 2, capabilities: ['discovery'], outdated: false, checkedAt: template },
+          connect: { requestedAt: connect, waitingUntil: null },
+        }),
+        now,
+      );
+    expect(authenticated('2026-11-23T11:59:00.000Z', null)).toBe(AWS_ONBOARDING_FAST_POLL_MS);
+    expect(authenticated(null, '2026-11-23T11:58:00.000Z')).toBe(AWS_ONBOARDING_FAST_POLL_MS);
+    // Autenticada há tempo e sem descoberta (um ambiente que não descobre sozinho): reler não traria nada.
+    expect(authenticated('2026-11-23T09:00:00.000Z', '2026-11-20T09:00:00.000Z')).toBe(false);
+    expect(authenticated(null, null)).toBe(false);
   });
 
   it('a cada 60 s com fontes autorizadas; a cada 5 s se a descoberta ou uma conferência estiver em curso', () => {

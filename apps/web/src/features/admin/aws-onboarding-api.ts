@@ -22,6 +22,20 @@ export const AWS_ONBOARDING_SLOW_POLL_MS = 60_000;
 
 /** Por quanto tempo a fonte recém-configurada, ainda sem evento, conta como "para mudar logo". */
 const SETTLING_WINDOW_MS = 2 * 60_000;
+/** Por quanto tempo, depois de entrar na conta, a primeira descoberta ainda é esperada. */
+const FIRST_DISCOVERY_WINDOW_MS = 5 * 60_000;
+
+/**
+ * A conta acabou de ser autenticada (o "Conectar" ou a leitura das etiquetas do papel foram há pouco)? Só aí a
+ * primeira descoberta está para chegar; num ambiente que não descobre as fontes sozinho, a conta fica autenticada sem
+ * descoberta, e reler a cada 5 s não traria nada.
+ */
+function justAuthenticated(onboarding: AwsOnboarding, now: number): boolean {
+  const moments = [onboarding.template.checkedAt, onboarding.connect.requestedAt].flatMap((at) =>
+    at === null ? [] : [Date.parse(at)],
+  );
+  return moments.some((at) => now - at < FIRST_DISCOVERY_WINDOW_MS);
+}
 
 /**
  * A fonte autorizada está para mudar de estado sozinha? Enquanto o coletor dela é configurado, sim; configurada e
@@ -36,8 +50,8 @@ function isSettling(source: AwsSource, now: number): boolean {
 /**
  * De quanto em quanto tempo reler o estado, ou `false` para não reler:
  * - a cada 5 s enquanto uma transição é esperada: a espera pelo papel, a autenticação que acabou de passar (a
- *   descoberta vem em seguida), a descoberta pendente ou em curso, os coletores sendo configurados (da conta ou de uma
- *   fonte recém-autorizada) e a conferência de uma fonte pedida no painel;
+ *   descoberta vem em seguida, por uns minutos), a descoberta pendente ou em curso, os coletores sendo configurados (da
+ *   conta ou de uma fonte recém-autorizada) e a conferência de uma fonte pedida no painel;
  * - a cada 60 s com fontes autorizadas (coletando, parcial ou com erro): a saúde da coleta;
  * - nunca quando só o cliente pode mudar algo: antes de conectar, com o tempo esgotado, desconectada, ou esperando a
  *   escolha das fontes.
@@ -57,8 +71,10 @@ export function awsOnboardingPollInterval(
     case 'configuring':
       return AWS_ONBOARDING_FAST_POLL_MS;
     case 'authenticated':
-      // A descoberta que falhou inteira não anda sozinha: fica parada até alguém pedir outra.
-      return run === null || discovering || probing ? AWS_ONBOARDING_FAST_POLL_MS : false;
+      // A descoberta que falhou inteira não anda sozinha: fica parada até alguém pedir outra. Sem descoberta
+      // nenhuma, a primeira só é esperada logo depois da entrada na conta.
+      if (discovering || probing) return AWS_ONBOARDING_FAST_POLL_MS;
+      return run === null && justAuthenticated(onboarding, now) ? AWS_ONBOARDING_FAST_POLL_MS : false;
     case 'collecting':
     case 'partial':
     case 'permission_error':
