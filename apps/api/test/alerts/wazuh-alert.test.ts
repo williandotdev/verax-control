@@ -484,7 +484,8 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
     const invalid = [
       { ...cloudTrailAlert(), rule: { id: '80254', level: 99, description: 'x' } },
       { ...cloudTrailAlert(), timestamp: 'ontem' },
-      withAws(cloudTrailAlert(), { source: 'vpc' }),
+      // Uma fonte que o módulo tem e a Verax não coleta (os logs de acesso do load balancer).
+      withAws(cloudTrailAlert(), { source: 'alb' }),
       withAws(cloudTrailAlert(), { log_info: {} }),
     ];
     for (const document of invalid) {

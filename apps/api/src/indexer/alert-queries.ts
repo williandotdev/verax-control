@@ -18,6 +18,8 @@ export const FILTER_FIELDS = [
   'data.aws.aws_account_id',
   'data.aws.source',
   'agent.id',
+  /** De onde o manager leu o evento (`Wazuh-AWS` no módulo da AWS). */
+  'location',
 ] as const;
 export type FilterField = (typeof FILTER_FIELDS)[number];
 

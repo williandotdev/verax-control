@@ -147,6 +147,9 @@ model Tenant {
   cellBootstrap            CellTenantBootstrap?
   /// Nó dedicado: o resultado de cada item que a sincronização com o plano de controle trouxe do console.
   controlPlaneSyncItems    ControlPlaneSyncItem[]
+  /// Onboarding self-service da AWS: as execuções da descoberta e as fontes de log de cada conta.
+  awsDiscoveryRuns         AwsDiscoveryRun[]
+  awsSources               AwsSource[]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -311,71 +314,192 @@ enum CloudAccountConnection {
 /// com o token que o Google assina para a conta de serviço dele; na GCP, o nó lê com a identidade dele, sem chave. Só
 /// o token do Cloudflare fica cifrado à parte, em `CloudCredential` (cofre do nó). Cada conta pertence a um só cliente.
 model CloudAccount {
-  id                   String                 @id @default(uuid(7)) @db.Uuid
-  tenantId             String                 @db.Uuid
-  tenant               Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  provider             CloudProvider          @default(aws)
+  id                       String                 @id @default(uuid(7)) @db.Uuid
+  tenantId                 String                 @db.Uuid
+  tenant                   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  provider                 CloudProvider          @default(aws)
   /// 12 dígitos (AWS), ID do projeto (GCP, até 30) ou 32 hexadecimais (Cloudflare).
-  accountId            String                 @db.VarChar(32)
+  accountId                String                 @db.VarChar(32)
   /// AWS: regiões monitoradas.
-  regions              String[]
+  regions                  String[]
   /// Obsoleto (o ExternalId do conector antigo): a API não lê nem grava desde o PR-V3', e a migration dele apagou os
   /// valores. A coluna fica só para a versão anterior da API, numa volta de versão, encontrar o que ela lê; sai numa
   /// migration de contração.
-  externalId           String?                @db.VarChar(128)
+  externalId               String?                @db.VarChar(128)
   /// AWS: buckets de onde o Wazuh lê os logs desta conta (T5.2 vincula cada alerta pelo bucket de origem).
-  cloudtrailBucket     String?                @db.VarChar(63)
-  guarddutyBucket      String?                @db.VarChar(63)
-  wafBucket            String?                @db.VarChar(63)
+  cloudtrailBucket         String?                @db.VarChar(63)
+  guarddutyBucket          String?                @db.VarChar(63)
+  wafBucket                String?                @db.VarChar(63)
   /// GCP: assinatura do Pub/Sub que o nó lê, pelo nome completo (`projects/<projeto>/subscriptions/<id>`).
-  pubsubSubscription   String?                @db.VarChar(320)
+  pubsubSubscription       String?                @db.VarChar(320)
   /// GCP, projeto de cliente: identidade de escrita do sink que o cliente criou no projeto dele, colada no painel
   /// (`serviceAccount:service-<número>@gcp-sa-logging.iam.gserviceaccount.com`). Não é segredo: é a quem o Terraform
   /// do nó deixa publicar no tópico do projeto.
-  sinkWriterIdentity   String?                @db.VarChar(128)
+  sinkWriterIdentity       String?                @db.VarChar(128)
   /// Cloudflare: zonas (domínios) monitoradas.
-  zones                String[]               @default([])
+  zones                    String[]               @default([])
   /// Horário do alerta mais recente desta conta, gravado pelo sync (T5.3).
-  lastEventAt          DateTime?              @db.Timestamptz(3)
+  lastEventAt              DateTime?              @db.Timestamptz(3)
   /// Estado da coleta, gravado pelo sync da conta (ver `CloudAccountConnection`).
-  connection           CloudAccountConnection @default(waiting)
+  connection               CloudAccountConnection @default(waiting)
   /// Tipo do último erro de coleta (o nome da classe do erro). Nunca a mensagem, que pode carregar dado ou segredo.
-  connectionError      String?                @db.VarChar(64)
+  connectionError          String?                @db.VarChar(64)
   /// AWS: aviso da coleta pelo Wazuh do nó (`aws_token_stale` ou `wazuh_apply_failed`, PR-V4'), à parte da conexão:
   /// só a tarefa `wazuh-config` do worker o grava, e a conferência da conexão (`aws-check`) só grava `connectionError`.
   /// Só conta AWS, e só os códigos da coleta (CHECK da migration).
-  collectionError      String?                @db.VarChar(64)
+  collectionError          String?                @db.VarChar(64)
   /// Última leitura bem-sucedida da fonte desta conta, com ou sem evento. Só vale como sinal de vida na Torre nos
   /// provedores coletados por API (Cloudflare); na AWS e na GCP, o sinal é o evento.
-  lastCollectedAt      DateTime?              @db.Timestamptz(3)
+  lastCollectedAt          DateTime?              @db.Timestamptz(3)
   /// AWS: "Verificar" pedido no painel e ainda não respondido pela tarefa `aws-check` do worker, que confere a entrada
   /// no papel e a leitura dos buckets e grava a conexão (`src/aws/aws-check.ts`). Null sem pedido pendente. A
   /// migration confere por CHECK que só conta AWS tem o pedido.
-  checkRequestedAt     DateTime?              @db.Timestamptz(3)
+  checkRequestedAt         DateTime?              @db.Timestamptz(3)
   /// AWS: dia a partir do qual o Wazuh lê os logs dos buckets (`only_logs_after`): o da primeira verificação
   /// bem-sucedida, menos um dia. Gravado uma vez só, pelo worker; sem ele, o Wazuh leria todo o histórico do bucket.
   /// Só conta AWS (CHECK da migration).
-  ingestFrom           DateTime?              @db.Date
+  ingestFrom               DateTime?              @db.Date
   /// AWS: o momento da primeira verificação bem-sucedida (CE-09), gravado uma vez só, junto com `ingestFrom`: o volume
   /// medido na origem (tarefa `aws-volume`) só conta objetos criados a partir dele, e o histórico anterior nunca é
   /// cobrado. Só conta AWS (CHECK da migration).
-  meteredFrom          DateTime?              @db.Timestamptz(3)
-  status               CloudAccountStatus     @default(active)
+  meteredFrom              DateTime?              @db.Timestamptz(3)
+  status                   CloudAccountStatus     @default(active)
   /// Quem cadastrou: o cliente no painel ou a Verax pelo console (a sincronização com o plano de controle, tarefa
   /// `control-plane-sync` do worker). A do console não muda pelo painel (409 `CONSOLE_MANAGED`).
-  origin               ManagedOrigin          @default(panel)
+  origin                   ManagedOrigin          @default(panel)
   /// A última revisão do console aplicada no cadastro; só na conta do console (CHECK da migration).
-  controlPlaneRevision Int?
-  createdAt            DateTime               @default(now()) @db.Timestamptz(3)
-  updatedAt            DateTime               @updatedAt @db.Timestamptz(3)
-  cursors              CollectorCursor[]
-  volumeObjects        AwsVolumeObject[]
-  credential           CloudCredential?
+  controlPlaneRevision     Int?
+  /// AWS, onboarding self-service: quando o cliente clicou em "Conectar com AWS" pela última vez. O pedido de verificação
+  /// com o mesmo horário (`checkRequestedAt`) é o da janela do "Conectar": a tarefa `aws-check` espera o papel por até
+  /// 60 min antes de gravar `authorization_timeout`. Só conta AWS (CHECK da migration, como as quatro abaixo).
+  awsConnectRequestedAt    DateTime?              @db.Timestamptz(3)
+  /// AWS: a versão do template do papel de leitura, pelas tags dele (`iam:GetRole` no próprio papel; na VM própria do
+  /// cliente, `iam:GetUser` no usuário de leitura; sem tag, a 1). Null antes da primeira leitura.
+  awsTemplateVersion       Int?
+  /// AWS: as capacidades ligadas no papel (`discovery`, `service-logs`, `findings`, `log-groups`), pelas tags.
+  awsCapabilities          String[]               @default([])
+  /// AWS: a última leitura das tags do papel (no "Verificar" e uma vez por dia).
+  awsCapabilitiesCheckedAt DateTime?              @db.Timestamptz(3)
+  /// AWS: as regiões com recurso ou fonte de log, pela última descoberta que entrou na conta.
+  awsDiscoveredRegions     String[]               @default([])
+  /// AWS, onboarding self-service: as autorizações que o cliente marcou no painel na última vez em que as confirmou (no
+  /// "Conectar com AWS" ou no "Verificar" depois de atualizar a pilha), separadas por espaço e na ordem do catálogo
+  /// (`service-logs findings log-groups`; vazio: só a descoberta). Null sem escolha gravada. É só a escolha, para a tela
+  /// devolver as mesmas caixas marcadas e avisar quando o papel na AWS ficou diferente dela: o que o papel pode ler
+  /// está em `awsCapabilities`, pelas tags dele. Só conta AWS (CHECK da migration).
+  awsChosenCapabilities    String?                @db.VarChar(64)
+  createdAt                DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime               @updatedAt @db.Timestamptz(3)
+  cursors                  CollectorCursor[]
+  volumeObjects            AwsVolumeObject[]
+  credential               CloudCredential?
+  awsDiscoveryRuns         AwsDiscoveryRun[]
+  awsSources               AwsSource[]
 
   @@unique([provider, accountId])
   /// Alvo da chave estrangeira composta da `CloudCredential`: a credencial é sempre do mesmo cliente da conta.
   @@unique([id, tenantId])
   @@index([tenantId])
+}
+
+/// Uma execução da descoberta de uma conta AWS (onboarding self-service; tarefa `aws-discovery` do worker,
+/// `src/aws/discovery/`): as regiões habilitadas, as fontes de log e o retrato da infraestrutura, só com chamadas de
+/// leitura. Pedida pelo "Conectar" (a primeira entrada no papel), pelo painel ou uma vez por dia. `partial` é um
+/// resultado válido: as leituras recusadas ficam em `errors` (`{service, region, code}`, só o nome do erro da AWS).
+/// No máximo uma pendente ou em curso por conta (o lock da conta em `aws/discovery/discovery-runs.ts`). Os valores de
+/// `trigger` e `status` são os do contrato (`packages/shared/src/aws-onboarding.ts`), conferidos por CHECK.
+model AwsDiscoveryRun {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  tenantId       String       @db.Uuid
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  cloudAccountId String       @db.Uuid
+  /// Chave estrangeira composta (conta e cliente): o banco recusa a execução de um cliente na conta de outro.
+  cloudAccount   CloudAccount @relation(fields: [cloudAccountId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  trigger        String       @db.VarChar(16)
+  status         String       @default("pending") @db.VarChar(16)
+  requestedAt    DateTime     @default(now()) @db.Timestamptz(3)
+  startedAt      DateTime?    @db.Timestamptz(3)
+  finishedAt     DateTime?    @db.Timestamptz(3)
+  /// As regiões habilitadas na conta que a execução leu.
+  regions        String[]     @default([])
+  errors         Json         @default("[]")
+  /// O retrato da infraestrutura (contagens); null até a execução terminar.
+  summary        Json?
+  /// O usuário que pediu a descoberta manual; null na automática.
+  requestedBy    String?      @db.VarChar(64)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@index([tenantId])
+  @@index([cloudAccountId, requestedAt(sort: Desc)])
+  @@index([status, requestedAt])
+}
+
+/// Uma fonte de log de uma conta AWS (onboarding self-service): o que a descoberta achou (uma trilha, um flow log, uma
+/// Web ACL, um detector, um grupo do CloudWatch Logs...) ou um bucket cadastrado antes dela (`origin = legacy`, o
+/// espelho de `cloudtrailBucket`, `guarddutyBucket` e `wafBucket`, mantido por `aws/onboarding/legacy-sources.ts`).
+/// Uma linha por conta, tipo, região (ou `global`) e recurso. A descoberta nunca apaga nem muda em silêncio uma fonte
+/// autorizada: a que some fica `source_missing`. A autorização é do cliente (quem, quando) e vale a partir do dia dela
+/// (`collectFrom`, sem histórico). A saúde (`lastSyncAt` em diante) é gravada pelos coletores. Os valores das colunas de
+/// texto são os do contrato (`packages/shared/src/aws-onboarding.ts`), conferidos por CHECK na migration.
+model AwsSource {
+  id                  String       @id @default(uuid(7)) @db.Uuid
+  tenantId            String       @db.Uuid
+  tenant              Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  cloudAccountId      String       @db.Uuid
+  /// Chave estrangeira composta (conta e cliente): o banco recusa a fonte de um cliente na conta de outro.
+  cloudAccount        CloudAccount @relation(fields: [cloudAccountId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  kind                String       @db.VarChar(32)
+  /// A região da AWS, ou `global`.
+  region              String       @db.VarChar(32)
+  /// O identificador estável do recurso dentro do tipo (o ARN da trilha, o ID do flow log, o nome do grupo...).
+  resourceId          String       @db.VarChar(512)
+  name                String       @db.VarChar(512)
+  /// O destino e a configuração conforme o tipo (bucket, prefixo, organização, chave KMS, Web ACL, detector...).
+  details             Json         @default("{}")
+  method              String       @db.VarChar(16)
+  availability        String       @db.VarChar(32)
+  loggingState        String?      @db.VarChar(16)
+  permission          String       @default("unknown") @db.VarChar(16)
+  /// A ação do IAM negada ou o código (`tag_missing`, `kms_denied`, `capability_off`...); nunca a mensagem da AWS.
+  permissionDetail    String?      @db.VarChar(96)
+  permissionCheckedAt DateTime?    @db.Timestamptz(3)
+  /// "Tentar de novo" pedido no painel e ainda não respondido pela tarefa `aws-discovery`.
+  probeRequestedAt    DateTime?    @db.Timestamptz(3)
+  /// Quando o último "Tentar de novo" foi pedido. A resposta não o desfaz: é o limite de um pedido a cada 30 s por fonte.
+  lastProbeRequestAt  DateTime?    @db.Timestamptz(3)
+  sensitive           Boolean      @default(false)
+  /// Avisos de custo e de pré-requisito (códigos).
+  notes               String[]     @default([])
+  origin              String       @default("discovered") @db.VarChar(16)
+  firstSeenAt         DateTime     @default(now()) @db.Timestamptz(3)
+  lastSeenAt          DateTime     @default(now()) @db.Timestamptz(3)
+  /// Desde quando a descoberta não acha mais a fonte.
+  missingSince        DateTime?    @db.Timestamptz(3)
+  authorizedAt        DateTime?    @db.Timestamptz(3)
+  /// O usuário que autorizou; null na linha de um bucket cadastrado antes da descoberta.
+  authorizedBy        String?      @db.VarChar(64)
+  revokedAt           DateTime?    @db.Timestamptz(3)
+  /// O dia a partir do qual a fonte é coletada: o da autorização (na linha de um bucket cadastrado, o `ingestFrom` da
+  /// conta).
+  collectFrom         DateTime?    @db.Date
+  state               String       @db.VarChar(24)
+  stateCode           String?      @db.VarChar(64)
+  stateSince          DateTime     @default(now()) @db.Timestamptz(3)
+  /// Saúde da coleta, gravada pelos coletores: a última leitura sem erro, o evento mais recente, a entrada dele no nó, o
+  /// atraso e o volume das últimas 24 h.
+  lastSyncAt          DateTime?    @db.Timestamptz(3)
+  lastEventAt         DateTime?    @db.Timestamptz(3)
+  lastIngestedAt      DateTime?    @db.Timestamptz(3)
+  lagSeconds          Int?
+  eventsLast24h       Int?
+  bytesLast24h        BigInt?
+  createdAt           DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@unique([cloudAccountId, kind, region, resourceId])
+  @@index([tenantId])
+  @@index([cloudAccountId, state])
 }
 
 /// Cursor de um coletor (fase 2): até onde cada fluxo de cada conta já foi lido e quando ler de novo. Um por conta,
@@ -484,13 +608,14 @@ model Finding {
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   /// Conta do provedor de onde veio o evento (12 dígitos, ID do projeto ou ID do Cloudflare).
   accountId       String           @db.VarChar(32)
-  /// Sistema de origem do alerta (`wazuh` ou `gcp`).
+  /// Sistema de origem do alerta: `wazuh`, `gcp`, `cloudflare` ou `aws` (os achados lidos pela API do Security Hub, do
+  /// Inspector e do Access Analyzer; o GuardDuty lido pela API sai como `wazuh`, com a chave do caminho do bucket).
   source          String           @db.VarChar(16)
   /// Chave do achado na origem, a mesma a cada releitura do evento (no Wazuh, `wazuh/<conta>/<tipo>:<id>:<regra>`).
   sourceEventId   String           @db.VarChar(128)
   /// Só no Wazuh: ID do alerta da primeira leitura, por onde o detalhe busca o evento bruto no indexer.
   rawEventId      String?          @db.VarChar(128)
-  /// Fonte de log: `cloudtrail`, `guardduty`, `waf`.
+  /// Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `security_hub`, `inspector`...
   logSource       String           @db.VarChar(32)
   occurredAt      DateTime         @db.Timestamptz(3)
   severity        FindingSeverity
@@ -516,8 +641,9 @@ model Finding {
   incident        Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
   /// Primeira vez que alguém tirou o achado de "novo" (relatório de tempo até a triagem).
   triagedAt       DateTime?        @db.Timestamptz(3)
-  /// Só no GuardDuty: a versão do achado na origem (o `updatedAt` do GuardDuty, que só avança). Decide a reincidência:
-  /// a versão mais nova de um achado já triado vira outro achado; a de um ainda não triado só avança esta data.
+  /// A versão do achado na origem (o `updatedAt`, que só avança). No GuardDuty, decide a reincidência: a versão mais
+  /// nova de um achado já triado vira outro achado; a de um ainda não triado só avança esta data. Nos achados de estado
+  /// lidos pela API da AWS (Security Hub, Inspector, Access Analyzer), a versão nova só avança esta data.
   lastSeenAt      DateTime?        @db.Timestamptz(3)
   /// Só no GuardDuty: a chave do achado inteiro na origem (`wazuh/<conta>/guardduty:<id>:<regra>`), a mesma no
   /// original, nas recorrências e, na sondagem de porta, no achado de cada IP. A cadeia da reincidência é lida por aqui.
@@ -616,6 +742,38 @@ model SyncState {
   leaseOwner      String?   @db.VarChar(64)
   leaseUntil      DateTime? @db.Timestamptz(3)
   updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+}
+
+/// A prova de quem é o dono dos alertas do CloudWatch Logs deste nó (onboarding self-service da AWS). O evento de um
+/// grupo de logs chega ao indexer sem a conta e sem o grupo: só pode ser atribuído se, em todo o intervalo em que pode
+/// ter sido coletado, a configuração aplicada no manager do Wazuh só tinha grupos de logs de uma conta de um cliente.
+/// Esta linha guarda desde quando isso vale (`since`), para quem (`ownerTenantId` e `ownerAccountId`; os dois vazios
+/// enquanto nenhuma configuração aplicada teve grupo de logs) e até quando foi conferido (`confirmedAt`). Quem a grava
+/// é só a tarefa `wazuh-config` do worker, pelo sinal `applied` do host (`alerts/cloudwatch-ownership.ts`); quem a lê é
+/// só o sync dos alertas do CloudWatch Logs. Sem a linha, nenhum alerta é atribuído.
+///
+/// Sem `tenantId` de propósito, como a fila sem dono: não é dado do cliente, não entra no escopo de cliente nenhum e
+/// nenhuma rota a devolve. Sem chave estrangeira: o cliente ou a conta apagados deixam a linha sem efeito (o dono dela
+/// deixa de ser o dono de agora), e a tarefa a refaz.
+model CloudWatchAlertOwnership {
+  /// Uma linha só por nó (`node`).
+  id             String   @id @db.VarChar(32)
+  ownerTenantId  String?  @db.Uuid
+  /// O ID da conta AWS (12 dígitos) dos grupos de logs.
+  ownerAccountId String?  @db.VarChar(12)
+  /// A geração (o SHA-256 da lista) que o manager roda, a última que a tarefa conferiu pelo sinal `applied`.
+  generation     String   @db.VarChar(64)
+  /// O número de sequência do sinal `applied` na última conferência: o host o aumenta a cada troca da configuração do
+  /// manager (`infra/node/bin/wazuh-apply.sh`). A prova só continua com o mesmo número, ou com o seguinte e uma geração
+  /// conferida; qualquer outro salto é uma troca que a tarefa não viu. Null só na linha gravada antes de o número
+  /// existir, que não vale como prova.
+  appliedSeq     BigInt?
+  /// Desde quando toda configuração aplicada só teve grupos de logs deste dono (ou nenhum). Nunca anda para trás: a
+  /// linha que perde a prova é apagada, e a nova começa de novo.
+  since          DateTime @db.Timestamptz(3)
+  /// A última conferência da tarefa. O sync só atribui o alerta mais antigo que ela, com folga.
+  confirmedAt    DateTime @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
 }
 
 /// Prazo de histórico do expurgo diário do nó inteiro (fase 2, PR-19). Desde o CE-02 o prazo é de cada cliente

@@ -44,6 +44,26 @@ trilha ou log que já exista na conta.
 - gravar ou apagar em qualquer bucket que não seja o do nó;
 - ler parâmetros do SSM que não sejam do nó (a política do Session Manager, sozinha, liberaria todos).
 
+## O que cada permissão libera (papel de leitura sem chave)
+
+Este guia é do nó hospedado na AWS, que lê as contas monitoradas pelo papel do conector. O nó que roda fora da AWS (o
+padrão de hoje) não usa este template: ele entra em cada conta pelo papel `verax-control-reader`, criado pela pilha
+`verax-control-reader.yaml`. O que esse papel pode ler está em `README.md`, na seção "O que cada permissão libera". Em
+resumo, e sempre só leitura:
+
+- **Descoberta e postura (vale sempre):** só configuração, para o painel mostrar as fontes de log que a conta já tem.
+  Nenhum evento de log, achado, objeto ou dado de banco.
+- **Logs que a AWS grava no S3 (`ReadAwsServiceLogs`):** em qualquer bucket, só os objetos da pasta
+  `AWSLogs/<conta>/`. O papel também vê os nomes do primeiro nível de cada bucket, mas só lê conteúdo nessa pasta.
+- **Achados de segurança (`ReadSecurityFindings`):** os achados do GuardDuty, do Security Hub, do Inspector e do IAM
+  Access Analyzer. O papel não ativa nem altera nenhum deles.
+- **Grupos do CloudWatch Logs (`ReadTaggedLogGroups`):** só os grupos que você etiquetar:
+  `aws logs tag-resource --resource-arn <arn do log group> --tags verax-control=leitura`.
+
+Para conectar, o botão **Conectar com AWS** do painel baixa o `verax-control-reader.yaml` já preenchido com os valores
+do nó e abre o console do CloudFormation: você envia o arquivo, revisa e confirma. Para revogar, ponha a autorização
+em `false` e atualize a pilha, ou apague a pilha.
+
 ## Antes de começar
 
 - Use um usuário ou papel com permissão de administrador na conta que vai hospedar o nó. O stack cria papéis com nome

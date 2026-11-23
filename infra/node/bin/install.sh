@@ -249,8 +249,8 @@ else
   install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/
 fi
 # Perfil standard: o Wazuh (o compose.wazuh.yaml, a cópia de infra/wazuh que o deploy.sh põe no pacote, a aplicação da
-# configuração do manager com as contas AWS, a renovação do token do Google para a AWS e a limpeza diária dos alertas
-# antigos). O nó da Verax (lean) não recebe nada disso.
+# configuração do manager com as contas AWS, a renovação do token do Google para a AWS, a exportação dos marcadores da
+# leitura da AWS para o worker e a limpeza diária dos alertas antigos). O nó da Verax (lean) não recebe nada disso.
 standard=false
 if [[ ${NODE_PROFILE:-lean} == standard ]]; then standard=true; fi
 if $standard; then
@@ -264,7 +264,8 @@ if $standard; then
   chown -R root:root /opt/verax/wazuh
   find /opt/verax/wazuh -type d -exec chmod 0755 {} +
   find /opt/verax/wazuh -type f -exec chmod 0644 {} +
-  install -m 0750 "$here/bin/wazuh-apply.sh" "$here/bin/wazuh-alerts-cleanup.sh" "$here/bin/aws-token.sh" /opt/verax/bin/
+  install -m 0750 "$here/bin/wazuh-apply.sh" "$here/bin/wazuh-alerts-cleanup.sh" "$here/bin/aws-token.sh" \
+    "$here/bin/wazuh-progress.sh" /opt/verax/bin/
   # Todas as unidades do Wazuh. No modo vm, o verax-aws-token renova as sessões da chave de leitura de cada conta AWS
   # (no lugar do token do Google; o aws-token.sh escolhe pelo NODE_PLATFORM).
   install -m 0644 "$here"/systemd/wazuh/*.service "$here"/systemd/wazuh/*.timer "$here"/systemd/wazuh/*.path \
@@ -441,13 +442,14 @@ systemctl start verax-backup.timer
 if ! $vm; then systemctl enable --now verax-update.timer >/dev/null; fi
 # Standard: o restart do verax-node sobe o verax-wazuh junto (o Wants do drop-in, mesmo se ele tinha falhado); o
 # `start` espera o Wazuh ficar saudável (nada acontece a mais se já estiver subindo).
-# O token do Google (no modo vm, as sessões da chave de leitura da AWS) renovado a cada 10 min e a configuração do
-# manager refeita quando o worker grava uma geração nova das contas AWS (e a cada 15 min): os dois não fazem nada
-# enquanto o Wazuh não estiver no ar.
+# O token do Google (no modo vm, as sessões da chave de leitura da AWS) renovado a cada 10 min, a configuração do
+# manager refeita quando o worker grava uma geração nova das contas AWS (e a cada 15 min) e os marcadores da leitura da
+# AWS exportados para o worker a cada 5 min: os três não fazem nada enquanto o Wazuh não estiver no ar. O nó que já
+# estava instalado ganha o timer novo aqui, na atualização (o update.sh roda este script).
 if $standard; then
   systemctl start verax-wazuh.service
   systemctl enable --now verax-wazuh-alerts.timer verax-aws-token.timer verax-wazuh-apply.timer \
-    verax-wazuh-apply.path >/dev/null
+    verax-wazuh-apply.path verax-wazuh-progress.timer >/dev/null
 fi
 # A lista dos agentes, depois do Wazuh no ar. Desligado o interruptor num nó que já o teve, o timer para (o script, se
 # rodar, só apaga a lista da memória).

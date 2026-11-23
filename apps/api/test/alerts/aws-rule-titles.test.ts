@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { AWS_RULE_TITLES, awsAlertTitle } from '../../src/alerts/aws-rule-titles.js';
+import { VPC_FLOW_CORRELATION_RULES } from '../../src/alerts/wazuh-alert.js';
 
 /** As regras locais do Wazuh, como estão no bundle (o modelo das regras do papel inclusive). */
 const RULES_DIR = new URL('../../../../infra/wazuh/config/manager/rules/', import.meta.url);
@@ -45,6 +46,21 @@ describe('títulos em português das regras da AWS (fase 2, PR-V7)', () => {
       const title = AWS_RULE_TITLES.get(rule.id);
       expect(title, rule.id).toBeDefined();
       expect(rule.description.startsWith(`Verax Control: ${title ?? ''}`), rule.id).toBe(true);
+    }
+  });
+
+  it('as correlações dos flow logs do bundle (100400 a 100499) são as que a API reconhece, com título', () => {
+    const flow = rules.filter((rule) => /^1004\d{2}$/.test(rule.id));
+    expect(flow.map((rule) => rule.file)).toEqual(flow.map(() => 'verax_aws_flow_rules.xml'));
+    expect(rules.filter((rule) => rule.file === 'verax_aws_flow_rules.xml')).toEqual(flow);
+    // A API troca a identidade do registro pela do endereço de origem só nestas regras.
+    expect(flow.map((rule) => rule.id).sort()).toEqual([...VPC_FLOW_CORRELATION_RULES].sort());
+    for (const rule of flow) {
+      const title = AWS_RULE_TITLES.get(rule.id);
+      expect(title, rule.id).toBeDefined();
+      expect(rule.description.startsWith(`Verax Control: ${title ?? ''} (`), rule.id).toBe(true);
+      // Do nível 7 para cima (média ou alta): a contagem já passou do limite.
+      expect(rule.level, rule.id).toBeGreaterThanOrEqual(7);
     }
   });
 

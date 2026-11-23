@@ -54,9 +54,16 @@ import {
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import {
+  advanceAwsAccount,
+  type AwsOnboardingStore,
+  createAwsOnboardingHandlers,
+  demoAwsOnboardingStore,
+  readAwsChoice,
+  storeAwsChoice,
+} from './aws-onboarding';
+import {
   DEMO_ACCOUNTS,
   DEMO_ALFA_MORE_BUCKETS,
-  DEMO_AWS_CHECK_DELAY_MS,
   DEMO_CLOUDFLARE_TOKEN_SUFFIX,
   DEMO_EGRESS_IPS,
   DEMO_EXPIRED_LINK_TOKEN,
@@ -81,6 +88,8 @@ export interface AdminStore {
   exceptions: Map<string, AlertException[]>;
   /** A preferência de aviso por e-mail de quem entra na demonstração (pelo id da sessão; fase 2, PR-17'). */
   noticePreferences: Map<string, boolean>;
+  /** O onboarding self-service das contas AWS (a descoberta, as fontes e a autorização), por conta. */
+  awsOnboarding: AwsOnboardingStore;
 }
 
 const VERAX = { id: 'demo-equipe-verax', name: 'Equipe Verax' };
@@ -247,7 +256,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       updatedAt: at(20),
     });
 
-  return {
+  const store: Omit<AdminStore, 'awsOnboarding'> = {
     tenants: [
       tenant(
         alfa,
@@ -425,6 +434,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       [beta, []],
     ]),
   };
+  return { ...store, awsOnboarding: demoAwsOnboardingStore([...store.accounts.values()].flat(), now) };
 }
 
 const NO_BUCKETS: LogBuckets = { cloudtrail: null, guardduty: null, waf: null };
@@ -527,25 +537,6 @@ function demoResend(contact: EscalationContact | null): EscalationContact | Resp
 type Denied = { ok: false; error: Response };
 type Allowed = { ok: true; me: Me };
 type Scoped = { ok: true; me: Me; tenantId: string };
-
-/**
- * O "worker" da demonstração: responde o "Verificar" pendente há mais de `DEMO_AWS_CHECK_DELAY_MS`. A homologação da
- * demonstração continua recusada (`trust_denied`); qualquer outra conta conecta e ganha o dia de início da coleta (o
- * anterior), uma vez só, como a tarefa `aws-check`.
- */
-function answerAwsCheck(account: CloudAccount, now: Date = new Date()): void {
-  if (account.checkRequestedAt === null) return;
-  if (now.getTime() - Date.parse(account.checkRequestedAt) < DEMO_AWS_CHECK_DELAY_MS) return;
-  const refused = account.accountId === DEMO_ACCOUNTS.alfaHomologacao;
-  const yesterday = new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
-  Object.assign(account, {
-    checkRequestedAt: null,
-    connection: refused ? 'error' : 'connected',
-    connectionError: refused ? 'trust_denied' : null,
-    ingestFrom: refused ? account.ingestFrom : (account.ingestFrom ?? yesterday),
-    updatedAt: now.toISOString(),
-  });
-}
 
 export function createAdminHandlers(state: MockState, store: AdminStore) {
   /** Permissão de leitura ou escrita (com CSRF) e, quando pedido, o cliente da sessão. */
@@ -799,7 +790,8 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       const query = cloudAccountListQuerySchema.safeParse(queryOf(request));
       if (!query.success) return problem(400, 'Filtro inválido');
       const accounts = listOf(store.accounts, scope.tenantId);
-      for (const account of accounts) answerAwsCheck(account);
+      // O "worker" da demonstração responde o que o tempo já deixou: o "Verificar", o "Conectar" e a descoberta.
+      for (const account of accounts) advanceAwsAccount(store.awsOnboarding, account);
       const items = accounts.filter((account) => !query.data.status || account.status === query.data.status);
       return HttpResponse.json(paginate(items, query.data.page, query.data.pageSize));
     }),
@@ -905,18 +897,22 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       return HttpResponse.json(account);
     }),
     // "Verificar" a conta AWS, como a API: grava o pedido (a conexão volta a aguardar) e responde na hora (202); o
-    // pedido pendente não é renovado. Quem responde é o "worker" da demonstração, na leitura da lista.
-    http.post(url('/v1/cloud-accounts/:id/aws/verify'), ({ params, request }) => {
+    // pedido pendente não é renovado. Quem responde é o "worker" da demonstração, na leitura da lista. Com as
+    // autorizações marcadas na tela (depois de atualizar a pilha), a escolha é gravada junto.
+    http.post(url('/v1/cloud-accounts/:id/aws/verify'), async ({ params, request }) => {
       const scope = scoped('cloud_accounts:write', request);
       if (!scope.ok) return scope.error;
       const account = listOf(store.accounts, scope.tenantId).find(
         (candidate) => candidate.id === params['id'],
       );
       if (!account) return problem(404, 'Conta não encontrada');
+      const input = await readAwsChoice(request);
+      if (input === null) return problem(400, 'Dados inválidos');
       if (account.provider !== 'aws') return problem(400, 'Só uma conta AWS é verificada assim.');
       if (account.status !== 'active') {
         return problem(400, 'Reative o monitoramento antes de verificar a conta.');
       }
+      storeAwsChoice(store.awsOnboarding, account, input.capabilities);
       if (account.checkRequestedAt === null) {
         const now = new Date().toISOString();
         Object.assign(account, {
@@ -927,6 +923,21 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         });
       }
       return HttpResponse.json(account, { status: 202 });
+    }),
+    // O onboarding self-service da AWS (conectar, descobrir e autorizar as fontes), em `aws-onboarding.ts`.
+    ...createAwsOnboardingHandlers({
+      store: store.awsOnboarding,
+      credentialMode: () => (state.nodePlatform === 'vm' ? 'access_key' : 'role'),
+      findAccount: (id, write) => {
+        const scope = scoped(write ? 'cloud_accounts:write' : 'cloud_accounts:read', write ?? undefined);
+        if (!scope.ok) return scope;
+        const account = listOf(store.accounts, scope.tenantId).find((candidate) => candidate.id === id);
+        if (!account) return { ok: false, error: problem(404, 'Conta não encontrada') };
+        if (account.provider !== 'aws') {
+          return { ok: false, error: problem(400, 'Só uma conta AWS tem fontes da AWS.') };
+        }
+        return { ok: true, account, userId: scope.me.userId };
+      },
     }),
     // Credencial de leitura (token do Cloudflare). O mock não fala com o Cloudflare: todo token no formato é aceito,
     // com um ID fictício, e nada do valor colado fica no estado (só o fim do ID, como na API).

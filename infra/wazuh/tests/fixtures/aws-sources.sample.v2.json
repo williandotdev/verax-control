@@ -1,0 +1,102 @@
+{
+  "version": 2,
+  "accounts": [
+    {
+      "accountId": "111122223333",
+      "region": "sa-east-1",
+      "s3": [
+        {
+          "type": "cloudtrail",
+          "bucket": "verax-control-cloudtrail-111122223333-sa-east-1",
+          "onlyLogsAfter": "2026-NOV-01",
+          "legacy": true
+        },
+        {
+          "type": "waf",
+          "bucket": "aws-waf-logs-verax-control-111122223333-sa-east-1",
+          "onlyLogsAfter": "2026-NOV-01",
+          "legacy": true
+        },
+        {
+          "type": "cloudtrail",
+          "bucket": "trilha-da-organizacao",
+          "onlyLogsAfter": "2026-NOV-20",
+          "regions": ["sa-east-1", "us-east-1"],
+          "organizationId": "o-exemplo1234"
+        },
+        {
+          "type": "vpcflow",
+          "bucket": "fluxo-111122223333",
+          "onlyLogsAfter": "2026-NOV-21",
+          "regions": ["sa-east-1"],
+          "traffic": "rejected"
+        },
+        {
+          "type": "vpcflow",
+          "bucket": "verax-control-cloudtrail-111122223333-sa-east-1",
+          "onlyLogsAfter": "2026-NOV-21",
+          "regions": ["us-east-1"],
+          "traffic": "all",
+          "prefix": "rede/fluxo"
+        },
+        {
+          "type": "guardduty",
+          "bucket": "achados-111122223333",
+          "onlyLogsAfter": "2026-NOV-22",
+          "regions": ["sa-east-1"]
+        },
+        {
+          "type": "waf",
+          "bucket": "aws-waf-logs-painel-111122223333",
+          "onlyLogsAfter": "2026-NOV-22",
+          "webAcl": "painel",
+          "scope": "sa-east-1"
+        },
+        {
+          "type": "waf",
+          "bucket": "aws-waf-logs-painel-111122223333",
+          "onlyLogsAfter": "2026-NOV-23",
+          "webAcl": "site_Publico-2",
+          "scope": "cloudfront"
+        }
+      ],
+      "logGroups": [
+        {
+          "region": "sa-east-1",
+          "names": ["/aws/lambda/cobranca", "/aws/rds/instance/banco/postgresql"],
+          "onlyLogsAfter": "2026-NOV-20"
+        },
+        {
+          "region": "sa-east-1",
+          "names": ["API-Gateway-Execution-Logs_a1b2c3/producao"],
+          "onlyLogsAfter": "2026-NOV-23"
+        },
+        {
+          "region": "us-east-1",
+          "names": ["/aws/route53/exemplo.com.br"],
+          "onlyLogsAfter": "2026-NOV-20"
+        }
+      ]
+    },
+    {
+      "accountId": "444455556666",
+      "region": "us-east-1",
+      "s3": [
+        {
+          "type": "cloudtrail",
+          "bucket": "trilha-da-organizacao",
+          "onlyLogsAfter": "2026-NOV-20",
+          "regions": ["us-east-1"],
+          "organizationId": "o-exemplo1234"
+        }
+      ],
+      "logGroups": [
+        {
+          "region": "us-east-1",
+          "names": ["/aws/eks/producao/cluster"],
+          "onlyLogsAfter": "2026-NOV-22"
+        }
+      ]
+    }
+  ]
+}

@@ -3,10 +3,12 @@ import { type Logger, pino } from 'pino';
 import { WazuhAgentsSync } from './agents/agents-sync.js';
 import { AgentAlertSync } from './alerts/agent-alert-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
+import { CLOUDWATCH_ALERT_SYNC, CloudWatchAlertSync } from './alerts/cloudwatch-alert-sync.js';
 import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
 import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
 import type { AwsReaderCredentials } from './aws/web-identity.js';
 import { WAZUH_CONFIG_INTERVAL_MS, WazuhConfig } from './aws/wazuh-config.js';
+import type { WazuhStallProbe } from './aws/wazuh-source-health.js';
 import { CELL_COMMANDS_INTERVAL_MS, CELL_COMMANDS_TASK, CellCommands } from './cell/cell-commands.js';
 import { CellReportOutbox } from './cell/cell-report-outbox.js';
 import {
@@ -170,7 +172,8 @@ async function awsConnectionSetup(
  *
  * A fonte `wazuh` vira duas tarefas, cada uma com estado e concessão próprios: `wazuh` (os alertas do manager, das
  * contas AWS) e `wazuh-agent-alerts` (os dos agentes nas instâncias do cliente, atribuídos ao cliente do nó só com os
- * agentes ligados; desligados, vão para a fila sem dono).
+ * agentes ligados; desligados, vão para a fila sem dono). Fora da célula, entra a terceira,
+ * `wazuh-cloudwatch-alerts`: os alertas dos grupos do CloudWatch Logs autorizados no onboarding self-service da AWS.
  *
  * A fonte `cloudflare` (auditoria das contas do Cloudflare e, pelo GraphQL, os eventos de segurança das zonas) roda no
  * mesmo intervalo: a auditoria de cada conta a cada `CLOUDFLARE_AUDIT_INTERVAL_SECONDS`, e os eventos em janelas de
@@ -185,7 +188,11 @@ async function awsConnectionSetup(
  * verificada a cada 15 min, com a trilha, o export do GuardDuty e a permissão demais uma vez por dia (PR-V5'). A
  * conferência real só liga com `NODE_SA_UNIQUE_ID` (`awsConnectionSetup`), e com ela entra a tarefa `aws-inventory`
  * (a cada 5 min olha as contas; cada conta já verificada é inventariada uma vez por dia, PR-14', e a postura nativa sai
- * da mesma coleta, PR-15').
+ * da mesma coleta, PR-15'). Com ela, no nó dedicado, entra também a tarefa `aws-discovery` (onboarding self-service): a
+ * cada 30 s executa as descobertas pedidas (pelo "Conectar", pelo painel e uma por dia por conta) e responde as
+ * sondagens de permissão das fontes. Na célula, a descoberta fica de fora até a coleta da AWS existir lá. Junto com ela
+ * entra a tarefa `aws-findings`: a cada 5 min lê, pela API de cada serviço, os achados das fontes autorizadas do
+ * GuardDuty, do Security Hub, do Inspector e do Access Analyzer (`aws/findings/`).
  *
  * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
  * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos
@@ -255,6 +262,18 @@ async function main(): Promise<void> {
             budgetMs: SYNC_BUDGET_MS,
             run: () => new AgentAlertSync(prisma, indexer, agentsTenantId).runOnce(),
           },
+          // Os alertas dos grupos do CloudWatch Logs que o cliente autorizou (onboarding self-service da AWS). Fora da
+          // célula: lá, vários clientes dividem o manager, e o evento não diz de quem é.
+          ...(loaded.NODE_MODE === 'cell'
+            ? []
+            : [
+                {
+                  name: CLOUDWATCH_ALERT_SYNC,
+                  intervalMs,
+                  budgetMs: SYNC_BUDGET_MS,
+                  run: () => new CloudWatchAlertSync(prisma, indexer).runOnce(),
+                },
+              ]),
         ];
       }
       if (source === 'cloudflare') {
@@ -298,7 +317,10 @@ async function main(): Promise<void> {
     // Conexão da AWS: a API só grava o pedido do "Verificar"; o worker, o único contêiner com o metadata, responde e,
     // sem pedido, confere de novo as contas já verificadas.
     aws = await awsConnectionSetup(loaded, prisma, logger);
-    const awsCheck = new AwsCheck(prisma, aws.checker);
+    // Onboarding self-service: as tags do papel e a descoberta das fontes só no nó dedicado. Na célula compartilhada, a
+    // coleta da AWS ainda não foi construída (CE-11/CE-12), e a conferência segue como antes.
+    const awsOnboarding = config.NODE_MODE !== 'cell';
+    const awsCheck = new AwsCheck(prisma, aws.checker, { onboarding: awsOnboarding });
     tasks.push({
       name: 'aws-check',
       intervalMs: AWS_CHECK_INTERVAL_MS,
@@ -335,12 +357,49 @@ async function main(): Promise<void> {
         budgetMs: inventory.AWS_INVENTORY_BUDGET_MS,
         run: (signal) => sync.runOnce(signal),
       });
+      // Descoberta das fontes de log (onboarding self-service): pela mesma sessão, só com chamadas de leitura. Os
+      // clientes dos serviços que ela lê (CloudWatch Logs, WAF, Security Hub, Inspector...) só são carregados aqui.
+      if (awsOnboarding) {
+        const discovery = await import('./aws/discovery/discovery-job.js');
+        const { sdkDiscoveryClients } = await import('./aws/discovery/sdk-clients.js');
+        const discover = new discovery.AwsDiscovery(prisma, aws.credentials, sdkDiscoveryClients);
+        tasks.push({
+          name: 'aws-discovery',
+          intervalMs: discovery.AWS_DISCOVERY_TICK_MS,
+          budgetMs: discovery.AWS_DISCOVERY_BUDGET_MS,
+          run: (signal) => discover.runOnce(signal),
+        });
+        // Achados das fontes autorizadas lidas por API (GuardDuty, Security Hub, Inspector e Access Analyzer): a mesma
+        // sessão e os mesmos clientes com a trava de só leitura. Fora da célula, como a descoberta.
+        const findings = await import('./aws/findings/findings-job.js');
+        const collect = new findings.AwsFindings(prisma, aws.credentials, sdkDiscoveryClients);
+        tasks.push({
+          name: findings.AWS_FINDINGS_SYNC,
+          intervalMs: findings.AWS_FINDINGS_TICK_MS,
+          budgetMs: findings.AWS_FINDINGS_BUDGET_MS,
+          run: (signal) => collect.runOnce(signal),
+        });
+      }
     }
 
     // Wazuh do nó (perfil standard): a geração das contas AWS para o host aplicar no manager, e o estado da coleta que o
     // host devolve, pela pasta dos sinais (sem segredo; quem escreve a configuração do manager é só o gerador).
     if (config.WAZUH_SIGNAL_DIR !== undefined) {
-      const wazuhConfig = new WazuhConfig(prisma, config.WAZUH_SIGNAL_DIR);
+      // Onboarding self-service (só no nó dedicado): a tarefa também grava a saúde de cada fonte lida pelo Wazuh, pelo
+      // sinal `progress` do host. Com a sessão de leitura das contas, confere na origem a fonte contínua que parou de
+      // andar (uma listagem do bucket, só leitura); sem ela, nenhuma fonte é marcada como parada.
+      let stallProbe: WazuhStallProbe | null = null;
+      if (awsOnboarding && aws.credentials !== null) {
+        const [{ S3StallProbe }, { sdkDiscoveryClients }] = await Promise.all([
+          import('./aws/wazuh-stall-probe.js'),
+          import('./aws/discovery/sdk-clients.js'),
+        ]);
+        stallProbe = new S3StallProbe(aws.credentials, sdkDiscoveryClients);
+      }
+      const wazuhConfig = new WazuhConfig(prisma, config.WAZUH_SIGNAL_DIR, {
+        sourceHealth: awsOnboarding,
+        stallProbe,
+      });
       tasks.push({
         name: 'wazuh-config',
         intervalMs: WAZUH_CONFIG_INTERVAL_MS,

@@ -1,4 +1,5 @@
 import {
+  AWS_CONNECT_WINDOW_MS,
   AWS_CONNECTION_WARNING_CODES,
   type AwsConnectionErrorCode,
   type AwsConnectionWarningCode,
@@ -10,7 +11,15 @@ import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
-import type { AwsCheckOutcome, AwsCheckTarget, AwsConnectionChecker } from './aws-connection-check.js';
+import type {
+  AwsCheckOutcome,
+  AwsCheckTarget,
+  AwsConnectionChecker,
+  AwsReaderFacts,
+} from './aws-connection-check.js';
+import { requestAwsDiscovery } from './discovery/discovery-runs.js';
+import { syncLegacyAwsSources } from './onboarding/legacy-sources.js';
+import { readerFactsChanged, recordReaderFacts } from './onboarding/reader-facts.js';
 
 /** A cada 30 s: o "Verificar" do painel é respondido logo, e o painel consulta a conta enquanto espera. */
 export const AWS_CHECK_INTERVAL_MS = 30_000;
@@ -38,6 +47,32 @@ export const AWS_CHECK_RETRY_MAX_MS = 4 * 60 * 1000;
 export function awsCheckRetryDelayMs(attempts: number): number {
   return Math.min(AWS_CHECK_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), AWS_CHECK_RETRY_MAX_MS);
 }
+
+/**
+ * Dentro da janela do "Conectar com AWS" (`AWS_CONNECT_WINDOW_MS`, 60 min), as tentativas são mais próximas: 20 s, 40 s
+ * e depois a cada 60 s. O cliente está criando a pilha agora, e o painel acompanha ao vivo. A tarefa roda a cada 30 s:
+ * a tentativa sai na primeira execução depois da hora marcada.
+ */
+export const AWS_CONNECT_RETRY_BASE_MS = 20_000;
+export const AWS_CONNECT_RETRY_MAX_MS = 60_000;
+
+/** A espera antes da próxima tentativa do "Conectar", depois de `attempts` tentativas sem o papel. */
+export function awsConnectRetryDelayMs(attempts: number): number {
+  return Math.min(AWS_CONNECT_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), AWS_CONNECT_RETRY_MAX_MS);
+}
+
+/**
+ * Os erros que, dentro da janela do "Conectar", só dizem que o papel ainda não existe (a pilha do CloudFormation está
+ * sendo criada, ou o IAM ainda não propagou): a entrada recusada e o token recusado. Não viram o erro da conta até a
+ * janela fechar; aí o erro é `authorization_timeout`.
+ */
+const AWAITING_ROLE_CODES: ReadonlySet<AwsConnectionErrorCode> = new Set<AwsConnectionErrorCode>([
+  'trust_denied',
+  'token_invalid',
+]);
+
+/** O erro gravado quando a janela do "Conectar" fecha sem o papel. */
+const AUTHORIZATION_TIMEOUT = 'authorization_timeout' satisfies AwsConnectionErrorCode;
 
 /** Contagens de uma execução dos pedidos (vão para o log do agendador; nenhum dado de cliente). */
 export interface AwsCheckReport {
@@ -79,6 +114,13 @@ export interface AwsCheckOptions {
   audit?: AuditService;
   now?: () => Date;
   retryWindowMs?: number;
+  /** A janela do "Conectar com AWS" (os testes encurtam). */
+  connectWindowMs?: number;
+  /**
+   * A leitura das tags do papel e o pedido da descoberta (o padrão). Desligado na célula compartilhada, onde a coleta
+   * da AWS ainda não foi construída e a tarefa `aws-discovery` não roda: lá, a conferência segue como antes.
+   */
+  onboarding?: boolean;
   batch?: number;
   recheckIntervalMs?: number;
   dailyIntervalMs?: number;
@@ -98,6 +140,9 @@ const ACCOUNT_SELECT = {
   connectionError: true,
   checkRequestedAt: true,
   ingestFrom: true,
+  awsConnectRequestedAt: true,
+  awsTemplateVersion: true,
+  awsCapabilities: true,
 } as const satisfies Prisma.CloudAccountSelect;
 type AccountRow = Prisma.CloudAccountGetPayload<{ select: typeof ACCOUNT_SELECT }>;
 
@@ -178,9 +223,19 @@ function stateOf(outcome: AwsCheckOutcome, memory: AccountMemory, stored: Connec
 function countFailure(
   report: { failures?: Partial<Record<AwsConnectionErrorCode, number>> },
   outcome: AwsCheckOutcome,
+  code?: AwsConnectionErrorCode,
 ): void {
   if (outcome.ok) return;
-  report.failures = { ...report.failures, [outcome.code]: (report.failures?.[outcome.code] ?? 0) + 1 };
+  const failure = code ?? outcome.code;
+  report.failures = { ...report.failures, [failure]: (report.failures?.[failure] ?? 0) + 1 };
+}
+
+/**
+ * O pedido pendente é o do "Conectar com AWS"? O "Conectar" grava o pedido e o `awsConnectRequestedAt` com o mesmo
+ * horário; um "Verificar" comum, não.
+ */
+function isConnectRequest(row: AccountRow, requestedAt: Date): boolean {
+  return row.awsConnectRequestedAt !== null && row.awsConnectRequestedAt.getTime() === requestedAt.getTime();
 }
 
 /**
@@ -203,6 +258,18 @@ function countFailure(
  * - Uma exceção da conferência (não um resultado) conta como `check_unavailable` que pode passar; o sinal do agendador
  *   (parada do worker, orçamento) interrompe a execução.
  *
+ * **"Conectar com AWS" (onboarding self-service):** o pedido que nasce do "Conectar" (o `awsConnectRequestedAt` com o
+ * mesmo horário do pedido) tem uma janela própria, de 60 min. Nela, a entrada recusada e o token recusado só dizem que o
+ * papel ainda não existe (a pilha está sendo criada): o pedido continua pendente, com as tentativas a 20 s, 40 s e
+ * depois a cada 60 s. Fechada a janela sem o papel, o erro gravado é `authorization_timeout`. Um erro que não é a falta
+ * do papel (outra conta, um bucket negado) é gravado na hora, como no "Verificar".
+ *
+ * **As tags do papel e a descoberta:** depois de uma conferência sem erro, no pedido e uma vez por dia, a tarefa lê as
+ * tags do papel (`readerFacts`: a versão do template e as capacidades) e as grava na conta, com o horário. Na primeira
+ * verificação bem-sucedida, no "Conectar" e quando as tags mudam, pede uma descoberta da conta (`AwsDiscoveryRun`, que
+ * a tarefa `aws-discovery` executa); com outra pendente ou em curso, não pede outra. A primeira verificação também põe
+ * o início da coleta nas fontes dos buckets cadastrados (`syncLegacyAwsSources`).
+ *
  * **Sem pedido (`recheck`, PR-V5'):** cada conta já verificada (com `ingestFrom`), conectada ou com erro, é conferida
  * de novo a cada `AWS_RECHECK_INTERVAL_MS`, com as diárias a cada `AWS_DAILY_CHECK_INTERVAL_MS`. Só uma mudança da
  * conexão é gravada, com auditoria; a conta corrigida pelo cliente volta a "conectada" sozinha. Numa conta conectada,
@@ -217,6 +284,8 @@ export class AwsCheck {
   private readonly audit: AuditService;
   private readonly now: () => Date;
   private readonly retryWindowMs: number;
+  private readonly connectWindowMs: number;
+  private readonly onboarding: boolean;
   private readonly batch: number;
   private readonly recheckIntervalMs: number;
   private readonly dailyIntervalMs: number;
@@ -230,6 +299,8 @@ export class AwsCheck {
       audit = new AuditService(),
       now = () => new Date(),
       retryWindowMs = AWS_CHECK_RETRY_WINDOW_MS,
+      connectWindowMs = AWS_CONNECT_WINDOW_MS,
+      onboarding = true,
       batch = AWS_CHECK_BATCH,
       recheckIntervalMs = AWS_RECHECK_INTERVAL_MS,
       dailyIntervalMs = AWS_DAILY_CHECK_INTERVAL_MS,
@@ -241,6 +312,8 @@ export class AwsCheck {
     this.audit = audit;
     this.now = now;
     this.retryWindowMs = retryWindowMs;
+    this.connectWindowMs = connectWindowMs;
+    this.onboarding = onboarding;
     this.batch = batch;
     this.recheckIntervalMs = recheckIntervalMs;
     this.dailyIntervalMs = dailyIntervalMs;
@@ -274,17 +347,35 @@ export class AwsCheck {
         report.retrying += 1;
         continue;
       }
-      const outcome = await this.checkOne(targetOf(row, true), signal);
+      const target = targetOf(row, true);
+      const outcome = await this.checkOne(target, signal);
       const now = this.now().getTime();
-      if (!outcome.ok && outcome.retryable && now - requestedAt.getTime() < this.retryWindowMs) {
-        this.scheduleRetry(memory, episode, requestedAt.getTime(), now);
+      // O "Conectar" espera o papel por mais tempo, e nele a entrada recusada ainda não é o erro da conta.
+      const connect = isConnectRequest(row, requestedAt);
+      const awaitingRole = connect && !outcome.ok && AWAITING_ROLE_CODES.has(outcome.code);
+      const windowMs = connect ? this.connectWindowMs : this.retryWindowMs;
+      if (!outcome.ok && (outcome.retryable || awaitingRole) && now - requestedAt.getTime() < windowMs) {
+        this.scheduleRetry(
+          memory,
+          episode,
+          requestedAt.getTime(),
+          now,
+          connect ? awsConnectRetryDelayMs : awsCheckRetryDelayMs,
+        );
         report.retrying += 1;
         continue;
       }
       this.remember(memory, outcome, now);
-      const result = await this.record(row, requestedAt, stateOf(outcome, memory, RESET_STATE));
+      // A janela do "Conectar" fechou sem o papel: o erro diz isso, e não a recusa da última tentativa.
+      const state: ConnectionState = awaitingRole
+        ? { connection: 'error', connectionError: AUTHORIZATION_TIMEOUT }
+        : stateOf(outcome, memory, RESET_STATE);
+      const facts = outcome.ok ? await this.readFacts(target, signal) : null;
+      const result = await this.record(row, requestedAt, state, { facts, connect });
       report[result] += 1;
-      if (result === 'failed') countFailure(report, outcome);
+      if (result === 'failed') {
+        countFailure(report, outcome, awaitingRole ? AUTHORIZATION_TIMEOUT : undefined);
+      }
     }
     return report;
   }
@@ -320,7 +411,8 @@ export class AwsCheck {
       if (!due) continue;
       budget -= 1;
       const daily = memory.dailyAt === undefined || startedAt - memory.dailyAt >= this.dailyIntervalMs;
-      const outcome = await this.checkOne(targetOf(row, daily), signal);
+      const target = targetOf(row, daily);
+      const outcome = await this.checkOne(target, signal);
       report.checked += 1;
       const now = this.now().getTime();
       if (!outcome.ok && outcome.retryable && row.connection === 'connected') {
@@ -333,6 +425,11 @@ export class AwsCheck {
       }
       this.remember(memory, outcome, now);
       if (outcome.ok && outcome.daily !== undefined) report.daily += 1;
+      // Uma vez por dia, junto das diárias: as tags do papel (o cliente pode ter atualizado a pilha).
+      if (outcome.ok && daily) {
+        const facts = await this.readFacts(target, signal);
+        if (facts !== null) await this.recordFacts(row, facts);
+      }
       const state = stateOf(outcome, memory, row);
       if (state.connection === row.connection && state.connectionError === row.connectionError) continue;
       const result = await this.recordRecheck(row, state);
@@ -352,9 +449,41 @@ export class AwsCheck {
   }
 
   /** A próxima tentativa de um erro que pode passar, espaçada pelo número de falhas seguidas do mesmo episódio. */
-  private scheduleRetry(memory: AccountMemory, episode: string, since: number, now: number): void {
+  private scheduleRetry(
+    memory: AccountMemory,
+    episode: string,
+    since: number,
+    now: number,
+    delayMs: (attempts: number) => number = awsCheckRetryDelayMs,
+  ): void {
     const attempts = memory.retry?.episode === episode ? memory.retry.attempts + 1 : 1;
-    memory.retry = { episode, since, attempts, nextAt: now + awsCheckRetryDelayMs(attempts) };
+    memory.retry = { episode, since, attempts, nextAt: now + delayMs(attempts) };
+  }
+
+  /**
+   * As tags do papel, depois de uma conferência sem erro. Null quando a conferência não as lê (o nó sem a identidade)
+   * ou não conseguiu agora: o que está gravado na conta fica. Só o sinal abortado passa adiante.
+   */
+  private async readFacts(target: AwsCheckTarget, signal: AbortSignal): Promise<AwsReaderFacts | null> {
+    if (!this.onboarding || this.checker.readerFacts === undefined) return null;
+    try {
+      return await this.checker.readerFacts(target, signal);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return null;
+    }
+  }
+
+  /**
+   * Grava as tags do papel lidas numa conferência sem pedido (uma vez por dia), pela regra de
+   * `onboarding/reader-facts.ts`: sem mudança, só o horário da leitura; com outra versão do template ou outras
+   * capacidades, a mudança entra na trilha do cliente (`cloud_account.aws_template`) e a conta ganha uma descoberta
+   * nova.
+   */
+  private async recordFacts(row: AccountRow, facts: AwsReaderFacts): Promise<void> {
+    await this.prisma.$transaction((tx) =>
+      recordReaderFacts(tx, this.audit, row, facts, this.now(), { requestDiscovery: true }),
+    );
   }
 
   /** Uma conferência com resultado: a próxima periódica conta daqui, e as diárias concluídas ficam lembradas. */
@@ -377,11 +506,16 @@ export class AwsCheck {
     }
   }
 
-  /** Grava o resultado do pedido conferido, se ele ainda for o pendente, com a auditoria na trilha do cliente. */
+  /**
+   * Grava o resultado do pedido conferido, se ele ainda for o pendente, com a auditoria na trilha do cliente. Conectada,
+   * grava também as tags do papel (quando lidas) e pede a descoberta da conta na primeira verificação, no "Conectar" e
+   * quando as tags mudaram.
+   */
   private record(
     row: AccountRow,
     requestedAt: Date,
     state: ConnectionState,
+    { facts, connect }: { facts: AwsReaderFacts | null; connect: boolean },
   ): Promise<'connected' | 'failed' | 'stale'> {
     return this.prisma.$transaction(async (tx) => {
       const db = scopeToTenant(tx, row.tenantId);
@@ -395,15 +529,46 @@ export class AwsCheck {
       // A primeira verificação bem-sucedida marca de onde o Wazuh começa a ler e, no mesmo instante, de onde o volume
       // medido na origem começa a contar (CE-09: o histórico anterior nunca é cobrado). Só uma vez: a linha está presa
       // pela gravação acima até o fim da transação.
+      let discoveryRequested = false;
       if (connected) {
-        await db.cloudAccount.updateMany({
+        const first = await db.cloudAccount.updateMany({
           where: { id: row.id, ingestFrom: null },
           data: { ingestFrom: ingestDayFor(now), meteredFrom: now },
         });
+        // As fontes dos buckets cadastrados passam a ter o início da coleta (o espelho das colunas da conta).
+        if (first.count === 1) await syncLegacyAwsSources(db, row.id, now);
+        if (facts !== null) {
+          await db.cloudAccount.updateMany({
+            where: { id: row.id },
+            data: {
+              awsTemplateVersion: facts.templateVersion,
+              awsCapabilities: [...facts.capabilities],
+              awsCapabilitiesCheckedAt: now,
+            },
+          });
+        }
+        if (
+          this.onboarding &&
+          (first.count === 1 || connect || (facts !== null && readerFactsChanged(row, facts)))
+        ) {
+          const requested = await requestAwsDiscovery(tx, {
+            tenantId: row.tenantId,
+            cloudAccountId: row.id,
+            trigger: 'connect',
+            now,
+          });
+          discoveryRequested = requested.created;
+        }
       }
       const after = await db.cloudAccount.findUniqueOrThrow({
         where: { id: row.id },
-        select: { connection: true, connectionError: true, ingestFrom: true },
+        select: {
+          connection: true,
+          connectionError: true,
+          ingestFrom: true,
+          awsTemplateVersion: true,
+          awsCapabilities: true,
+        },
       });
       await this.audit.write(tx, {
         actor: { type: 'system', tenantId: row.tenantId },
@@ -416,6 +581,13 @@ export class AwsCheck {
           connection: after.connection,
           connectionError: after.connectionError,
           ingestFrom: isoDay(after.ingestFrom),
+          // Só quando as tags do papel foram lidas nesta verificação.
+          ...(connected &&
+            facts !== null && {
+              awsTemplateVersion: after.awsTemplateVersion,
+              awsCapabilities: after.awsCapabilities,
+            }),
+          ...(discoveryRequested && { discoveryRequested: true }),
         },
       });
       return connected ? 'connected' : 'failed';

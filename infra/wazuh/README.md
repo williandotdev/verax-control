@@ -74,8 +74,8 @@ Bundle do Wazuh single-node (manager e indexer 4.14.9, sem dashboard). Roda em d
 Dois serviços do systemd: o `verax-node` (`start.sh up`: a guarda do metadata, os arquivos de ambiente e a pilha da
 aplicação: banco, API, worker e túnel) e, depois dele, o `verax-wazuh` (`start.sh wazuh-up`), nesta ordem:
 `certs-init`, `security-init`, o indexer (espera o healthcheck), o `security-admin.sh`, o `configure-indexer.sh`, o
-`infra/node/bin/wazuh-apply.sh` (o `ossec.conf` do nó; no PR-W1, sem contas AWS), o manager (espera o healthcheck), o
-`smoke-test.sh` e a conferência de que manager e indexer não alcançam o servidor de metadados da VM (sem isso, os dois
+`infra/node/bin/wazuh-apply.sh` (o `ossec.conf` do nó, com as fontes da AWS do banco), o manager (espera o healthcheck),
+o `smoke-test.sh` e a conferência de que manager e indexer não alcançam o servidor de metadados da VM (sem isso, os dois
 param e o serviço falha). Serviços separados de propósito: uma falha do Wazuh fica no `verax-wazuh`, e o banco, a API,
 o worker, o túnel e o backup diário seguem no ar. `sudo systemctl restart verax-node` reinicia os dois e sobe o
 `verax-wazuh` de novo mesmo quando ele tinha falhado (drop-in `verax-node.service.d/wazuh.conf`, com `Wants=`, que o
@@ -179,23 +179,35 @@ cliente"; no EC2:
 - **TLS:** o certificado do indexer é emitido para esse nome, e o certificado público da CA é publicado no parâmetro
   `indexer_ca_parameter` a cada deploy. A API valida a cadeia e o nome; não existe opção de pular a validação.
 
-## Contas AWS dos clientes (CloudTrail, GuardDuty e WAF)
+## Contas AWS dos clientes (CloudTrail, Flow Logs, GuardDuty, WAF e CloudWatch Logs)
 
-No nó de cliente (fase 2, PR-V4'), o manager lê os buckets de cada conta com o papel de leitura sem chave
-(`verax-control-reader`, `infra/cloudformation`), com o token que o Google assina para a conta de serviço do nó. O
-desenho inteiro está em `docs/ARQUITETURA.md` ("Por que papel sem chave", passo "Coletar"); aqui, o que é deste bundle.
+No nó de cliente (fase 2, PR-V4'), o manager lê os buckets e os grupos de logs autorizados de cada conta com o papel
+de leitura sem chave (`verax-control-reader`, `infra/cloudformation`), com o token que o Google assina para a conta de
+serviço do nó. O desenho inteiro está em `docs/ARQUITETURA.md` ("Por que papel sem chave", passo "Coletar", e
+"Onboarding AWS self-service", "Coleta pelo Wazuh"); aqui, o que é deste bundle.
 
 A lista das contas vem do banco do nó: o CLI `wazuh-sources` da API imprime as contas AWS ativas que já passaram pela
-verificação e têm bucket, cada uma com a conta, a primeira região, a data de início (`onlyLogsAfter`, no formato
-`2026-NOV-01`) e os buckets. Nada nela é segredo. Um exemplo, com contas fictícias, está em
-`tests/fixtures/aws-sources.example.json`. O `infra/node/bin/wazuh-apply.sh` a passa ao gerador pela entrada padrão,
-com o IP de saída do nó em `VERAX_NODE_EGRESS_IPS`, e o `scripts/render-manager-config.py` valida a lista inteira
-(qualquer valor fora do formato para tudo, sem escrever nada) e gera:
+verificação, cada uma com a conta, a primeira região e as fontes autorizadas que o Wazuh lê. Nada nela é segredo. O
+formato é o 2, um objeto com a versão (`{"version": 2, "accounts": [...]}`; o gerador recusa uma versão que não
+conhece): em `s3`, os buckets do cadastro anterior (`"legacy": true`) e as fontes descobertas no onboarding
+self-service (a trilha, os flow logs, o export do GuardDuty e o WAF por Web ACL), cada uma com a data de início dela
+(`onlyLogsAfter`, no formato `2026-NOV-01`); em `logGroups`, os grupos do CloudWatch Logs por região. Um exemplo com
+todo elemento, com contas fictícias, está em `tests/fixtures/aws-sources.sample.v2.json`. A lista simples de antes
+(`tests/fixtures/aws-sources.example.json`) continua aceita e dá a mesma configuração. O
+`infra/node/bin/wazuh-apply.sh` passa a lista ao gerador pela entrada padrão, com o IP de saída do nó em
+`VERAX_NODE_EGRESS_IPS`, e o `scripts/render-manager-config.py` valida a lista inteira (qualquer valor fora do formato
+para tudo, sem escrever nada) e gera:
 
 - o `ossec.conf` do manager, com o módulo `aws-s3`: um bucket por fonte de cada conta, cada um só lido
-  (`remove_from_bucket` em `no`), o WAF sem as requisições liberadas, e um bucket do GuardDuty ou do WAF listado por
-  mais de uma conta lido uma vez só (pelo papel da conta de menor ID, desde a data mais antiga);
-- as regras locais: as correlações por conta e as regras críticas como estão no bundle, e `verax_reader_rules.xml`, do
+  (`remove_from_bucket` em `no`), o WAF sem as requisições liberadas, e um bucket do GuardDuty ou do WAF do cadastro
+  anterior listado por mais de uma conta lido uma vez só (pelo papel da conta de menor ID, desde a data mais antiga).
+  As fontes descobertas saem com a pasta exata (`aws_account_id`, `regions` e, na trilha de organização,
+  `aws_organization_id`; no WAF, o `path` da Web ACL), os flow logs sem o tráfego aceito (`discard_regex` em `ACCEPT`,
+  salvo `"traffic": "all"`), e os grupos de logs num serviço `cloudwatchlogs` por conta, região e data de início, com
+  `remove_log_streams` em `no`. Os buckets do cadastro anterior saem byte a byte como antes
+  (`tests/fixtures/golden/`);
+- as regras locais: as correlações por conta, as regras críticas e as dos flow logs como estão no bundle, e
+  `verax_reader_rules.xml`, do
   modelo `config/manager/rules/verax_reader_rules.xml.tmpl` com o IP do nó (leitura do próprio nó, nível 0; a sessão
   de outro IP, nível 12; alteração do papel, nível 5);
 - o `/root/.aws/config`, com um profile por conta que entra em `arn:aws:iam::<conta>:role/verax/verax-control-reader`
@@ -208,6 +220,23 @@ ele muda e, se o manager não ficar saudável em 180 s, devolve a configuração
 juntos em `<config>/.prev`, que o init da imagem não copia; o token do Google fica como o host o deixou) com
 `VERAX_MANAGER_CONFIG_ROLLBACK=1`. O `scripts/test-aws-profile.sh` (no CI) confere
 na imagem, sem rede, que o boto3 do manager entra no papel por esses profiles.
+
+No fim de cada execução, o `wazuh-apply.sh` grava para o worker o sinal `applied` (`/run/verax/wazuh-signal/applied`,
+sem segredo): a geração da lista (o SHA-256 dela), `ok` ou `error`, a hora e `seq`, o número de sequência das trocas
+da configuração que o manager roda. O contador fica no disco do nó (`/var/lib/verax/wazuh-apply/seq`) e aumenta antes
+de cada reinício do manager com outra configuração (o da volta à anterior também); o worker usa o salto do número
+para saber que perdeu uma troca (`docs/ARQUITETURA.md`, "Dono dos alertas do CloudWatch Logs").
+
+O `scripts/test-aws-sources.sh` confere, também na imagem e sem rede, o que as fontes do onboarding self-service
+combinam com o módulo: o leitor de configuração do Wazuh (`wazuh-modulesd -t`) aceita o `ossec.conf` gerado para a
+lista de exemplo (e recusa uma etiqueta desconhecida), cada entrada passa pelos validadores do próprio módulo, as
+regiões do gerador são as do módulo, e os marcadores que o código do módulo grava são lidos de volta pelo exportador.
+
+**Marcadores da leitura.** O `scripts/export-aws-progress.py` roda dentro do contêiner do manager (o host o chama a
+cada 5 min, `infra/node/bin/wazuh-progress.sh`) e só lê: abre para leitura os bancos SQLite em que o módulo guarda o que
+já leu (`/var/ossec/wodles/aws/s3_cloudtrail.db` e `aws_services.db`) e imprime, numa linha de JSON, o último objeto
+lido de cada bucket, conta e região e o último evento de cada grupo de logs. O worker usa esse sinal para mostrar no
+painel o estado de cada fonte. Nenhum conteúdo de log sai dali.
 
 **EC2 legado.** O fluxo antigo do EC2 (o papel `VeraxControlReadOnly` com `ExternalId`, pela credencial da instância)
 não existe mais: o gerador recusa a lista com `externalId`, e o deploy do EC2 só sobe sem contas AWS
@@ -248,6 +277,45 @@ e nenhuma regra crítica casa leitura. O título em português de cada regra, fi
 (`apps/api/src/alerts/aws-rule-titles.ts`), e a descrição de cada regra começa por ele; os padrões que olham a
 política, o grupo de segurança e o snapshot estão explicados no comentário do arquivo. O XML do Wazuh recusa o
 conteúdo de um elemento com 2.048 caracteres ou mais, e o `test-rules.sh` confere o tamanho.
+
+### Regras de Flow Logs
+
+O `config/manager/rules/verax_aws_flow_rules.xml` (100400 a 100499) traz as duas correlações dos flow logs da VPC
+(onboarding self-service da AWS). O Wazuh só classifica cada registro (80401 no aceito, nível 3; 80402 no rejeitado,
+nível 4), abaixo do corte dos alertas do nó (`log_alert_level` 5): sem estas duas, o tráfego rejeitado é lido e medido,
+e nada vira alerta. As regras do Wazuh ficam como estão. **Os limites:**
+
+| Regra  | Nível     | O que conta                                                                                                 | Limite      | Ignore | MITRE |
+| ------ | --------- | ----------------------------------------------------------------------------------------------------------- | ----------- | ------ | ----- |
+| 100400 | 8 (média) | Varredura: registros rejeitados da mesma conta e do mesmo endereço de origem, para qualquer destino e porta | 40 em 120 s | 60 s   | T1046 |
+| 100401 | 10 (alta) | Insistência em porta de administração remota: os mesmos, para o mesmo destino e a mesma porta, 22 ou 3389   | 15 em 120 s | 60 s   | T1110 |
+
+- **Cada registro é um fluxo**, e não um pacote: a AWS soma numa linha os pacotes do mesmo fluxo (origem, destino,
+  portas e protocolo) numa interface e numa janela de captura. 15 registros para a porta 22 são 15 conexões diferentes.
+- **Os 120 s contam a chegada ao analysisd**, e não o horário do tráfego: o módulo lê os objetos novos do bucket a cada
+  5 min e entrega os registros de cada objeto de uma vez. Na prática, o limite vale para o que uma leitura traz (uns 5 a
+  10 min de tráfego).
+- **Só o tráfego rejeitado conta** (a mãe das duas é a 80402): o aceito casa com a 80401 e, no nó, nem chega ao
+  analysisd.
+- **Cada regra só soma registros da mesma conta** (`aws.aws_account_id`), como as correlações por conta.
+- **A passada pela porta 22 de várias máquinas não é insistência** (o destino tem de ser o mesmo): conta para a
+  varredura. As portas 22 e 3389 não somam entre si, e os registros de uma insistência não somam para a varredura (o
+  Wazuh não conta de novo o registro que já entrou num alerta de nível igual ou maior).
+- **O ignore é da regra, e não do endereço** (é assim no Wazuh): nos 60 s depois de um alerta, uma segunda origem que
+  passe do limite também fica sem alerta dessa regra. Como uma leitura do bucket chega em segundos, o efeito é no máximo
+  um alerta de cada regra por leitura (a cada 5 min); a origem que continua volta a contar na leitura seguinte. É o
+  preço de uma rajada virar um alerta só. Sem o ignore, a mesma rajada daria um alerta a cada 40 (ou 15) registros, e o
+  achado continuaria um só.
+
+**Para ajustar um limite:** mude o número no arquivo das regras e, junto, na guarda dos limites do
+`scripts/test-rules.sh`, nesta tabela e na de `docs/ARQUITETURA.md` ("Regras de Flow Logs"). O `test-rules.sh` confere
+no `wazuh-logtest` da imagem: abaixo do limite, nada; no limite, um alerta, com o nível, o MITRE, a conta e o endereço;
+a rajada que continua dentro do ignore, nenhum outro; o tráfego aceito, dois endereços e duas contas não somam. A regra
+nova entra no nó na atualização seguinte (o hash da configuração muda, e o manager reinicia uma vez).
+
+Na API, o alerta de cada uma vira um achado por regra, conta e endereço de origem, com o título fixo do dicionário
+(`apps/api/src/alerts/aws-rule-titles.ts`); a rajada do mesmo endereço em outra hora só vira outro achado se o primeiro
+já foi triado (`apps/api/src/alerts/wazuh-alert.ts`, `VPC_FLOW_CORRELATION_RULES`).
 
 ## Retenção e backup
 

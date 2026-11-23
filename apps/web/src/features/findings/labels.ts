@@ -8,10 +8,19 @@ export const FINDING_STATUS_LABELS: Readonly<Record<FindingStatus, { label: stri
   resolved: { label: 'Resolvido', icon: CircleCheck },
 };
 
+/**
+ * De onde veio o alerta. Os serviços da AWS levam o nome do produto, o mesmo das fontes de log em Contas cloud (o
+ * Security Hub, o Inspector e o IAM Access Analyzer chegam pela API de achados de cada um).
+ */
 export const FINDING_SOURCE_LABELS: Readonly<Record<FindingSource, string>> = {
   cloudtrail: 'CloudTrail',
   guardduty: 'GuardDuty',
   waf: 'WAF',
+  security_hub: 'Security Hub',
+  inspector: 'Inspector',
+  access_analyzer: 'IAM Access Analyzer',
+  vpc_flow: 'VPC Flow Logs',
+  cloudwatch_logs: 'CloudWatch Logs',
   gcp_audit: 'GCP (auditoria)',
   cloudflare_audit: 'Cloudflare (auditoria)',
   cloudflare_waf: 'Cloudflare (eventos de segurança)',

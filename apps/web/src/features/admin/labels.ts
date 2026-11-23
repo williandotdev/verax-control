@@ -54,9 +54,10 @@ export const CONNECTION_LABELS: Readonly<Record<CloudAccountConnection, string>>
 };
 
 /**
- * O que o selo quer dizer em cada provedor: na AWS, a entrada no papel de leitura sem chave (o "Verificar" pendente ou
- * o resultado dele); na GCP e no Cloudflare, a leitura do nó. A conta AWS que já entrou no papel uma vez (com
- * `ingestFrom`) e voltou a aguardar mudou de buckets (ou foi reativada): a pilha pode precisar do `LogBucketArns` novo.
+ * O que o selo quer dizer em cada provedor: na AWS, a entrada no papel de leitura sem chave (o "Conectar" ou o
+ * "Verificar" pendente, ou o resultado deles); na GCP e no Cloudflare, a leitura do nó. A conta AWS que já entrou no
+ * papel uma vez (com `ingestFrom`) e voltou a aguardar mudou de buckets (ou foi reativada): a pilha pode precisar do
+ * `LogBucketArns` novo.
  */
 export function connectionHint(
   account: Pick<CloudAccount, 'provider' | 'connection' | 'checkRequestedAt' | 'ingestFrom'>,
@@ -69,7 +70,7 @@ export function connectionHint(
       return 'Verificando: o Verax está entrando no papel de leitura da conta.';
     return account.ingestFrom
       ? 'Aguardando uma nova verificação: se os buckets mudaram, atualize a pilha na conta; depois, clique em Verificar.'
-      : 'Aguardando o papel de leitura: crie a pilha na conta e clique em Verificar.';
+      : 'Aguardando a conexão: conecte a conta, em "Conectar com AWS".';
   }
   if (connection === 'error') return 'A última leitura falhou.';
   return provider === 'gcp'
@@ -122,6 +123,8 @@ export const AWS_CONNECTION_ERROR_HINTS: Readonly<Record<AwsConnectionErrorCode,
   region_disabled:
     'O STS da região da conta está desligado. O Verax entrou pelo de us-east-1, mas a coleta usa o da região: religue-o no console do IAM (Account settings, Security Token Service) ou fale com a Verax.',
   account_mismatch: 'O papel respondeu de outra conta AWS. Confira o ID da conta cadastrada.',
+  authorization_timeout:
+    'O papel de leitura não apareceu nesta conta em 60 minutos. Confira no CloudFormation se a pilha verax-control-reader terminou de ser criada e conecte a conta de novo.',
   bucket_missing: 'não existe nesta conta. Confira o nome do bucket com a Verax.',
   bucket_denied:
     'o papel não lista ou não lê os objetos. Confira se o ARN dele está em LogBucketArns da pilha (atualize a pilha) e, num bucket de outra conta, a política do bucket.',

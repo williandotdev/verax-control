@@ -12,11 +12,13 @@ import { createQueryClient } from '@/lib/query-client';
 import { DEMO_ACCOUNTS, demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
+import { readerTemplateHandler } from '@/test/aws-reader-template';
 
 /** Os formulários são preenchidos por colagem, mas a suíte inteira em paralelo passa dos 5 s padrão. */
 const FORM_TIMEOUT = 15_000;
-/** As contas da demonstração (`account(1, ...)` e `account(4, ...)` em mocks/admin.ts). */
+/** As contas da demonstração (`account(1, ...)`, `account(2, ...)` e `account(4, ...)` em mocks/admin.ts). */
 const DEMO_AWS_ALFA_ID = '018f2c1e-0000-7000-8000-0000000c0001';
+const DEMO_AWS_HOMOLOGACAO_ID = '018f2c1e-0000-7000-8000-0000000c0002';
 const DEMO_GCP_ALFA_ID = '018f2c1e-0000-7000-8000-0000000c0004';
 
 const server = setupServer();
@@ -38,7 +40,7 @@ function captureCredentialBodies(): { bodies: unknown[]; handler: Parameters<typ
 }
 
 function renderAt(path: string, state: MockState, overrides: Parameters<typeof server.use> = []) {
-  server.use(...overrides, ...createHandlers(state));
+  server.use(...overrides, readerTemplateHandler(), ...createHandlers(state));
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   render(
     <QueryClientProvider client={createQueryClient()}>
@@ -83,8 +85,11 @@ describe('Contas cloud na VM própria do cliente: as chaves de leitura', () => {
       const section = await screen.findByRole('region', {
         name: `Conectar a conta ${DEMO_ACCOUNTS.alfaProducao}`,
       });
-      // Nada do papel sem chave: sem template, sem os valores da pilha.
+      // Nada do papel sem chave: sem template, sem os valores da pilha, sem o "Conectar com AWS".
       expect(within(section).queryByText(/Baixar o template/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Conectar com AWS' })).not.toBeInTheDocument();
+      // As três autorizações valem aqui também: entram na política de leitura e nas etiquetas do usuário.
+      expect(within(section).getByRole('checkbox', { name: 'Achados de segurança' })).toBeChecked();
       expect(within(section).getByText('verax-control-reader.json')).toBeInTheDocument();
       expect(within(section).getByText('verax-control-guardrails.json')).toBeInTheDocument();
       expect(section).toHaveTextContent(
@@ -124,6 +129,10 @@ describe('Contas cloud na VM própria do cliente: as chaves de leitura', () => {
       expect(document.body.innerHTML).not.toContain(secret);
       // O "Verificar" segue, no texto da chave.
       expect(section).toHaveTextContent(/Guardada a chave, clique em Verificar/);
+      // Conectada, a conta da VM própria tem a mesma descoberta, as fontes e a saúde das outras.
+      const sheet = screen.getByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaProducao}` });
+      expect(within(sheet).getByRole('region', { name: 'Usuário de leitura na AWS' })).toBeInTheDocument();
+      expect(within(sheet).queryByRole('region', { name: 'Pilha na AWS' })).not.toBeInTheDocument();
     },
     FORM_TIMEOUT,
   );
@@ -179,12 +188,14 @@ describe('Contas cloud na VM própria do cliente: as chaves de leitura', () => {
     FORM_TIMEOUT,
   );
 
-  it('no nó da GCP, as instruções sem chave de sempre (o papel e o sink), sem formulário de chave', async () => {
-    renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`, { me: demoMe('admin_cliente') });
+  it('no nó da GCP, o papel sem chave de sempre (a pilha e o template), sem formulário de chave', async () => {
+    renderAt(`/cadastros/contas?conta=${DEMO_AWS_HOMOLOGACAO_ID}`, { me: demoMe('admin_cliente') });
+    // A homologação da demonstração está desconectada: o caminho para criar a pilha de novo está na tela.
     const section = await screen.findByRole('region', {
-      name: `Conectar a conta ${DEMO_ACCOUNTS.alfaProducao}`,
+      name: `Conectar de novo a conta ${DEMO_ACCOUNTS.alfaHomologacao}`,
     });
     expect(within(section).getByText(/Baixar o template/)).toBeInTheDocument();
-    expect(within(section).queryByLabelText('Chave secreta')).not.toBeInTheDocument();
+    expect(await within(section).findByRole('button', { name: 'Conectar com AWS' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Chave secreta')).not.toBeInTheDocument();
   });
 });

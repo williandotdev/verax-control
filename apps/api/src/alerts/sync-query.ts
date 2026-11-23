@@ -1,5 +1,6 @@
 import { alertsAfter, type AlertCursor, type AlertSearch } from '../indexer/alert-queries.js';
 import { MANAGER_AGENT_ID } from './agent-alert.js';
+import { WAZUH_AWS_LOCATION } from './cloudwatch-alert.js';
 import { AWS_SOURCES } from './wazuh-alert.js';
 
 /**
@@ -47,6 +48,17 @@ export const AGENT_MIN_LEVEL = 7;
 
 /** As regras de leitura do sync dos agentes: as da AWS, com o nível mínimo próprio. */
 export const DEFAULT_AGENT_SYNC_SETTINGS: Readonly<SyncSettings> = {
+  ...DEFAULT_SYNC_SETTINGS,
+  minLevel: AGENT_MIN_LEVEL,
+};
+
+/**
+ * As regras de leitura do sync dos alertas do CloudWatch Logs (onboarding self-service da AWS): o nível mínimo dos
+ * agentes, 7, e não o 5 da AWS. Um grupo de logs traz a linha de log crua de uma aplicação ou de um serviço (o Lambda,
+ * o RDS, o API Gateway), lida pelas regras genéricas do Wazuh, como o log de uma instância: os níveis 5 e 6 são eventos
+ * do dia a dia. As regras da AWS do nível 5 para cima (a trilha, o GuardDuty, o WAF) são outras, e não mudam.
+ */
+export const DEFAULT_CLOUDWATCH_SYNC_SETTINGS: Readonly<SyncSettings> = {
   ...DEFAULT_SYNC_SETTINGS,
   minLevel: AGENT_MIN_LEVEL,
 };
@@ -102,6 +114,30 @@ export function agentSyncPage(
     size: settings.pageSize,
     filters: [
       { field: 'agent.id', notEquals: MANAGER_AGENT_ID },
+      { field: 'rule.level', atLeast: settings.minLevel },
+    ],
+  });
+}
+
+/**
+ * Uma página dos alertas do CloudWatch Logs: os do próprio manager (`agent.id` 000) que o módulo da AWS leu
+ * (`location` `Wazuh-AWS`) e que não são eventos de bucket (`data.integration` diferente de `aws`, inclusive ausente), a
+ * partir do nível mínimo. Nunca traz um alerta das outras duas páginas: a da AWS só lê os de `data.integration = aws`,
+ * e a dos agentes só os que não vieram do manager.
+ */
+export function cloudWatchSyncPage(
+  windowStart: string,
+  cursor: AlertCursor | null,
+  settings: SyncSettings,
+): AlertSearch {
+  return alertsAfter({
+    cursor,
+    since: windowStart,
+    size: settings.pageSize,
+    filters: [
+      { field: 'agent.id', equals: MANAGER_AGENT_ID },
+      { field: 'location', equals: WAZUH_AWS_LOCATION },
+      { field: 'data.integration', notEquals: 'aws' },
       { field: 'rule.level', atLeast: settings.minLevel },
     ],
   });

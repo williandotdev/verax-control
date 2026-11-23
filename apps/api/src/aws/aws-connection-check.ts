@@ -1,4 +1,9 @@
-import type { AwsConnectionErrorCode, AwsConnectionWarningCode, LogSource } from '@verax/shared';
+import type {
+  AwsConnectionErrorCode,
+  AwsConnectionWarningCode,
+  AwsReaderCapability,
+  LogSource,
+} from '@verax/shared';
 
 /**
  * A conferência de uma conta AWS pelo papel de leitura sem chave (fase 2; `docs/ARQUITETURA.md`, "Por que papel sem
@@ -50,8 +55,26 @@ export type AwsCheckOutcome =
       readonly source?: LogSource;
     };
 
+/**
+ * O que o papel de leitura diz de si mesmo, pelas tags dele (onboarding self-service; `parseReaderRoleTags`): a versão
+ * do template e as capacidades ligadas. Sem tag (ou sem a permissão de ler o próprio papel), é o template v1: só a
+ * descoberta, com os buckets cadastrados antes ainda lidos. A versão é null quando a tag existe e não é um número de
+ * versão. Na VM própria do cliente, que lê com a chave de um usuário IAM, as tags são as do próprio usuário, com a
+ * mesma regra.
+ */
+export interface AwsReaderFacts {
+  readonly templateVersion: number | null;
+  readonly capabilities: readonly AwsReaderCapability[];
+}
+
 export interface AwsConnectionChecker {
   check(target: AwsCheckTarget, signal: AbortSignal): Promise<AwsCheckOutcome>;
+  /**
+   * As tags do papel (`iam:GetRole` no próprio papel, pela sessão da conta; na VM própria, `iam:GetUser` no próprio
+   * usuário de leitura), lidas pela tarefa `aws-check` depois de uma conferência sem erro, no "Verificar" e uma vez por dia. Null quando não deu para ler agora (falha passageira): o
+   * que está gravado fica. Opcional: a conferência que não fala com a AWS não a tem.
+   */
+  readerFacts?(target: AwsCheckTarget, signal: AbortSignal): Promise<AwsReaderFacts | null>;
 }
 
 /**

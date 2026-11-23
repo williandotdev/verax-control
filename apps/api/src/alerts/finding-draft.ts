@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { type FindingSeverity, wazuhAgentRef } from '@verax/shared';
+import { type FindingSeverity, type FindingSource, wazuhAgentRef } from '@verax/shared';
 import type { WazuhAgentAlert } from './agent-alert.js';
 import type { AgentAlertOwner } from './agent-owner.js';
 import type { AlertOwner } from './alert-owner.js';
 import { awsAlertTitle } from './aws-rule-titles.js';
+import type { CloudWatchAlertOwner, WazuhCloudWatchAlert } from './cloudwatch-alert.js';
 import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
 
 /**
@@ -19,10 +20,11 @@ export interface FindingDraft {
   /** A conta de onde veio o evento ou, nos alertas das instâncias, o agente (`agent:<id>`). */
   accountId: string;
   /**
-   * Sistema de origem: o Wazuh (contas AWS e agentes nas instâncias do cliente) ou a própria leitura dos logs da GCP e
-   * do Cloudflare.
+   * Sistema de origem: o Wazuh (contas AWS e agentes nas instâncias do cliente), a própria leitura dos logs da GCP e do
+   * Cloudflare, ou a leitura dos achados da AWS pela API de cada serviço (`aws`: Security Hub, Inspector e Access
+   * Analyzer; o GuardDuty lido pela API sai como `wazuh`, com a mesma chave do que chega pelo bucket).
    */
-  source: 'wazuh' | 'gcp' | 'cloudflare';
+  source: 'wazuh' | 'gcp' | 'cloudflare' | 'aws';
   /** Chave do achado na origem: a mesma a cada releitura do mesmo evento (`wazuhFindingKey`, `gcpEventIdFor`). */
   sourceEventId: string;
   /** Só no Wazuh: o ID do alerta, por onde o detalhe busca o evento bruto no indexer. A GCP não guarda o evento. */
@@ -36,8 +38,11 @@ export interface FindingDraft {
    * regra; nos agentes, a descrição. O resumo do incidente em português vem do dicionário da T7.9.
    */
   title: string;
-  /** Fonte de log: `cloudtrail`, `guardduty`, `waf`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`. */
-  logSource: AwsSource | 'gcp_audit' | 'cloudflare_audit' | 'cloudflare_waf' | 'wazuh_agent';
+  /**
+   * Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `vpc_flow`, `cloudwatch_logs`, `security_hub`,
+   * `inspector`, `access_analyzer`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`.
+   */
+  logSource: FindingSource;
   eventName: string | null;
   region: string | null;
   resource: string | null;
@@ -51,9 +56,18 @@ export interface FindingDraft {
    * Só no GuardDuty, com id nativo: a versão do achado na origem (`updatedAt`), a chave do achado inteiro
    * (`chainKey`: a mesma no original, nas recorrências e, na sondagem de porta, no achado de cada IP) e a chave que a
    * versão nova ganha se a cadeia já estiver triada (a chave do achado inteiro mais o horário). A gravação decide a
-   * reincidência por aqui.
+   * reincidência por aqui. As correlações dos flow logs da VPC usam a mesma regra: o achado é a regra, a conta e o
+   * endereço de origem, e a versão é a hora da rajada.
    */
   recurrence?: { lastSeenAt: string; chainKey: string; sourceEventId: string };
+  /**
+   * Só nos achados de estado lidos pela API da AWS (Security Hub, Inspector e Access Analyzer): a versão do achado na
+   * origem (`updatedAt`). Esses achados descrevem uma condição que continua valendo (um controle reprovado, uma
+   * vulnerabilidade, um acesso externo), e a origem os atualiza a cada reavaliação: a versão nova nunca vira outro
+   * achado, seja qual for o status. Ela só avança o `lastSeenAt` do que já existe e, se mudaram, a severidade, a regra
+   * e o título (`FindingStore.revise`).
+   */
+  revision?: { lastSeenAt: string };
 }
 
 /**
@@ -89,12 +103,20 @@ export function severityOfLevel(level: number): FindingSeverity {
 
 const unique = (values: readonly string[]): string[] => [...new Set(values)].sort();
 
+/** A fonte de log do achado de cada fonte do módulo aws-s3 (o `aws.source` dos flow logs é `vpc`). */
+const AWS_LOG_SOURCE: Readonly<Record<AwsSource, FindingSource>> = {
+  cloudtrail: 'cloudtrail',
+  guardduty: 'guardduty',
+  waf: 'waf',
+  vpc: 'vpc_flow',
+};
+
 /** Até onde cabe na chave única do achado (`sourceEventId`, 128). */
 const MAX_EVENT_ID = 128;
 
 /**
  * Chave do achado do Wazuh (fase 2, PR-W2): `wazuh/<conta>/<tipo>:<id>:<regra>`.
- * - O id é o do evento na própria AWS (`nativeId`), com o tipo da fonte (`cloudtrail`, `guardduty`, `waf`). O mesmo
+ * - O id é o do evento na própria AWS (`nativeId`), com o tipo da fonte (`cloudtrail`, `guardduty`, `waf`, `vpc`). O mesmo
  *   evento lido de novo (snapshot restaurado, `--reparse`, achado do GuardDuty atualizado) ganha outro `id` de alerta,
  *   mas cai na mesma chave e não duplica. Sem id nativo, vale o `id` do alerta, com o tipo `alert`.
  *   O `nativeId` já separa o que a AWS repete em eventos diferentes: cada IP da sondagem de porta do GuardDuty e
@@ -109,6 +131,10 @@ const MAX_EVENT_ID = 128;
  *   sem a conta, um id repetido de propósito no bucket de um cliente apagaria, como duplicado, o achado de outro.
  * - A regra separa a correlação (rajada de logins com falha, de bloqueios no WAF) do evento simples: o evento que
  *   fecha uma correlação, relido sem os anteriores, casa só com a regra simples, e cada regra vira o próprio achado.
+ * - Nas correlações dos flow logs da VPC (a varredura e a insistência em porta de administração remota), o id é só o
+ *   endereço de origem: `wazuh/<conta>/vpc:<endereço>:<regra>`. A rajada do mesmo endereço em outra hora segue a
+ *   regra do GuardDuty acima, com a hora cheia no lugar do `updatedAt`: `...:<regra>@<hora em ISO>` se o achado já
+ *   foi triado.
  * Um id que passaria do tamanho da chave entra pelo resumo SHA-256 (com o horário da recorrência, 111 no máximo).
  */
 export function wazuhFindingKey(
@@ -154,7 +180,7 @@ export function toFindingDraft(
     ruleId: alert.rule.id,
     ruleLevel: alert.rule.level,
     title: awsAlertTitle(alert.rule),
-    logSource: alert.source,
+    logSource: AWS_LOG_SOURCE[alert.source],
     eventName: alert.eventName ?? null,
     region: alert.region ?? null,
     resource: alert.resource ?? null,
@@ -165,6 +191,55 @@ export function toFindingDraft(
     mitreTactics: unique(alert.rule.mitre.tactics),
     mitreTechniques: unique(alert.rule.mitre.ids),
     ...(recurrence && { recurrence }),
+  };
+}
+
+/**
+ * A chave do achado de um alerta do CloudWatch Logs numa conta: `wazuh/<conta>/alert:<id>:<regra>`, a mesma forma do
+ * alerta da AWS sem id nativo. A linha de log não traz um id próprio; o id do alerta é o mesmo a cada releitura do
+ * documento no indexer.
+ */
+export function cloudWatchFindingKey(
+  alert: Pick<WazuhCloudWatchAlert, 'id' | 'rule'>,
+  accountId: string,
+): string {
+  return wazuhFindingKey(
+    { id: alert.id, nativeId: undefined, source: 'cloudtrail', rule: alert.rule },
+    accountId,
+  );
+}
+
+/**
+ * Achado de um alerta do CloudWatch Logs, com o dono decidido pelo sync (`cloudwatch-alert-sync.ts`: um só cliente e
+ * uma só conta com grupo autorizado no nó, e a prova de que o manager só coletou os grupos dele). A chave leva o id do
+ * alerta (`cloudWatchFindingKey`). A severidade vem do nível da regra, e o MITRE, da regra. O recurso fica vazio: o
+ * evento não diz de que grupo veio. O IP e o usuário vêm da linha de log, só para mostrar e agrupar.
+ */
+export function toCloudWatchFindingDraft(
+  alert: WazuhCloudWatchAlert,
+  owner: Extract<CloudWatchAlertOwner, { owned: true }>,
+): FindingDraft {
+  return {
+    tenantId: owner.tenantId,
+    accountId: owner.accountId,
+    source: 'wazuh',
+    sourceEventId: cloudWatchFindingKey(alert, owner.accountId),
+    rawEventId: alert.id,
+    occurredAt: alert.timestamp,
+    severity: severityOfLevel(alert.rule.level),
+    ruleId: alert.rule.id,
+    ruleLevel: alert.rule.level,
+    title: alert.rule.description,
+    logSource: 'cloudwatch_logs',
+    eventName: alert.decoder ?? null,
+    region: null,
+    resource: null,
+    actorUser: alert.user ?? null,
+    actorType: null,
+    accessKeyId: null,
+    sourceIp: alert.sourceIp ?? null,
+    mitreTactics: unique(alert.rule.mitre.tactics),
+    mitreTechniques: unique(alert.rule.mitre.ids),
   };
 }
 

@@ -8,6 +8,7 @@ import { type AwsConnectionWarningCode, cloudAccountSchema } from '@verax/shared
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { AwsCheck } from '../src/aws/aws-check.js';
+import { syncLegacyAwsSources } from '../src/aws/onboarding/legacy-sources.js';
 import type {
   AwsCheckOutcome,
   AwsCheckTarget,
@@ -44,9 +45,13 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
   let prisma: PrismaService;
   const dirs: string[] = [];
 
-  /** Uma conta AWS como o worker a deixa depois da primeira verificação: conectada, com o início da coleta. */
+  /**
+   * Uma conta AWS como o worker a deixa depois da primeira verificação: conectada, com o início da coleta e com as
+   * linhas dos buckets do cadastro (`AwsSource`, `origin = legacy`), que é de onde a lista do Wazuh sai. Quem grava um
+   * bucket pela API sincroniza as linhas na mesma transação; aqui a conta nasce direto no banco.
+   */
   async function awsAccount(tenantId: string, data: Partial<Prisma.CloudAccountUncheckedCreateInput> = {}) {
-    return prisma.cloudAccount.create({
+    const account = await prisma.cloudAccount.create({
       data: {
         tenantId,
         provider: 'aws',
@@ -59,6 +64,14 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
       },
       select: { id: true, accountId: true },
     });
+    await syncLegacyAwsSources(prisma.forTenant(tenantId), account.id);
+    return account;
+  }
+
+  /** Troca os buckets do cadastro de uma conta, com as linhas deles, como a API faz. */
+  async function setBuckets(tenantId: string, id: string, data: Prisma.CloudAccountUncheckedUpdateInput) {
+    await prisma.cloudAccount.update({ where: { id }, data });
+    await syncLegacyAwsSources(prisma.forTenant(tenantId), id);
   }
 
   const rowOf = (id: string) =>
@@ -130,25 +143,35 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
       data: { tenantId: tenant, provider: 'gcp', accountId: `projeto-${randomInt(100_000, 999_999)}` },
     });
 
-    const sources = toWazuhSources(await findWazuhSourceRows(prisma, [tenant]));
+    const list = toWazuhSources(await findWazuhSourceRows(prisma, [tenant]));
+    expect(list.version).toBe(2);
     // Um erro da conta não a tira do manager: só a desativação ou a falta de verificação e de bucket.
-    expect(sources.map((source) => source.accountId)).toEqual([first.accountId, second.accountId].sort());
-    const source = sources.find((item) => item.accountId === first.accountId);
-    expect(source).toMatchObject({ region: 'sa-east-1', onlyLogsAfter: '2026-NOV-01' });
-    expect(Object.keys(source ?? {})).toEqual([
-      'accountId',
-      'region',
-      'onlyLogsAfter',
-      'cloudtrailBucket',
-      'guarddutyBucket',
+    expect(list.accounts.map((item) => item.accountId)).toEqual([first.accountId, second.accountId].sort());
+    const source = list.accounts.find((item) => item.accountId === first.accountId);
+    expect(source).toMatchObject({ region: 'sa-east-1', logGroups: [] });
+    expect(Object.keys(source ?? {})).toEqual(['accountId', 'region', 's3', 'logGroups']);
+    // Os buckets do cadastro, na ordem de sempre, cada um com a marca dele e o início da coleta da conta.
+    expect(source?.s3).toEqual([
+      {
+        type: 'cloudtrail',
+        bucket: expect.stringMatching(/^trilha-/) as string,
+        onlyLogsAfter: '2026-NOV-01',
+        legacy: true,
+      },
+      {
+        type: 'guardduty',
+        bucket: expect.stringMatching(/^guardduty-/) as string,
+        onlyLogsAfter: '2026-NOV-01',
+        legacy: true,
+      },
     ]);
-    expect(source?.cloudtrailBucket).toMatch(/^trilha-/);
-    expect(source?.guarddutyBucket).toMatch(/^guardduty-/);
 
     // O CLI lê todos os clientes do nó: as contas deste aparecem, as outras não.
     const line = await wazuhSourcesLine(prisma);
     expect(line).not.toContain('\n');
-    const printed = (JSON.parse(line) as { accountId: string }[]).map((item) => item.accountId);
+    const printed = (JSON.parse(line) as { accounts: { accountId: string }[] }).accounts.map(
+      (item) => item.accountId,
+    );
     expect(printed).toEqual(expect.arrayContaining([first.accountId, second.accountId]));
     for (const account of excluded) expect(printed).not.toContain(account.accountId);
     expect(line).not.toMatch(/tenant|externalId|secret|connection|collection/i);
@@ -168,10 +191,7 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     expect(await readdir(dir)).toEqual(['generation']);
 
     // Um bucket novo muda a geração (o host refaz a configuração); a conexão de agora, não.
-    await prisma.cloudAccount.update({
-      where: { id: account.id },
-      data: { wafBucket: `aws-waf-logs-${bucket()}` },
-    });
+    await setBuckets(tenant, account.id, { wafBucket: `aws-waf-logs-${bucket()}` });
     expect(await task.runOnce()).toMatchObject({ generation: 'written' });
     const second = await readFile(join(dir, 'generation'), 'utf8');
     expect(second).not.toBe(first);
@@ -181,7 +201,9 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     // Desativada, a conta sai da lista: a geração da lista vazia.
     await prisma.cloudAccount.update({ where: { id: account.id }, data: { status: 'inactive' } });
     expect(await task.runOnce()).toMatchObject({ accounts: 0, generation: 'written' });
-    expect(await readFile(join(dir, 'generation'), 'utf8')).toBe(`${wazuhSourcesGeneration('[]')}\n`);
+    expect(await readFile(join(dir, 'generation'), 'utf8')).toBe(
+      `${wazuhSourcesGeneration('{"version":2,"accounts":[]}')}\n`,
+    );
   });
 
   it('erro ao aplicar a lista de agora: o aviso vai para o campo da coleta de cada conta, na trilha de cada cliente (A/B), sem tocar na conexão', async () => {
@@ -282,10 +304,7 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     expect(await auditOf(accountA.id)).toHaveLength(1);
 
     // A lista muda enquanto isso (um bucket novo): o erro sem geração segue valendo para a lista nova.
-    await prisma.cloudAccount.update({
-      where: { id: accountA.id },
-      data: { wafBucket: `aws-waf-logs-${bucket()}` },
-    });
+    await setBuckets(tenantA, accountA.id, { wafBucket: `aws-waf-logs-${bucket()}` });
     expect(await task.runOnce()).toMatchObject({
       generation: 'written',
       state: 'wazuh_apply_failed',
@@ -482,10 +501,33 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
       JSON.stringify({ generation, status: 'talvez', at: '2026-11-04T12:00:00Z' }),
       JSON.stringify({ generation: null, status: 'ok', at: '2026-11-04T12:00:00Z' }),
       JSON.stringify({ generation, status: 'error', at: '2026-11-04T12:00:00Z', pad: 'x'.repeat(5000) }),
+      // O número de sequência fora do formato: negativo, com fração, texto, ou além do que um inteiro guarda.
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: -1 }),
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: 1.5 }),
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: '7' }),
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: null }),
+      `{"generation":"${generation}","status":"ok","at":"2026-11-04T12:00:00Z","seq":9007199254740993}`,
     ]) {
       await writeFile(join(dir, 'applied'), content);
       expect(await task.runOnce()).toMatchObject({ state: 'pending', invalidSignals: 1, marked: 0 });
     }
+    // Com o número no formato, ou sem ele (o script do host de uma versão anterior), o sinal vale para os avisos da
+    // coleta; e o erro sem geração leva o número do mesmo jeito.
+    for (const content of [
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: 0 }),
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z', seq: 1795000000 }),
+      JSON.stringify({ generation, status: 'ok', at: '2026-11-04T12:00:00Z' }),
+    ]) {
+      await writeFile(join(dir, 'applied'), content);
+      expect(await task.runOnce()).toMatchObject({ state: 'ok', invalidSignals: 0, marked: 0 });
+    }
+    await writeFile(
+      join(dir, 'applied'),
+      JSON.stringify({ generation: null, status: 'error', at: '2026-11-04T12:00:00Z', seq: 1795000000 }),
+    );
+    expect(await task.runOnce()).toMatchObject({ state: 'wazuh_apply_failed', invalidSignals: 0, marked: 1 });
+    await applied(dir, generation, 'ok');
+    expect(await task.runOnce()).toMatchObject({ state: 'ok', cleared: 1 });
     expect(await rowOf(account.id)).toEqual({
       connection: 'connected',
       connectionError: null,

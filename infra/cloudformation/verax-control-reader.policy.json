@@ -5,7 +5,9 @@
       {
         "Sid": "SoONoDaVerax",
         "Effect": "Allow",
-        "Principal": { "Federated": "accounts.google.com" },
+        "Principal": {
+          "Federated": "accounts.google.com"
+        },
         "Action": "sts:AssumeRoleWithWebIdentity",
         "Condition": {
           "StringEquals": {
@@ -24,40 +26,9 @@
     "Version": "2012-10-17",
     "Statement": [
       {
-        "Sid": "ListarBucketsDeLog",
-        "Effect": "Allow",
-        "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
-        "Resource": [
-          "arn:aws:s3:::trilha-111111111111",
-          "arn:aws:s3:::guardduty-111111111111",
-          "arn:aws:s3:::aws-waf-logs-111111111111"
-        ]
-      },
-      {
-        "Sid": "LerObjetosDeLog",
-        "Effect": "Allow",
-        "Action": "s3:GetObject",
-        "Resource": [
-          "arn:aws:s3:::trilha-111111111111/*",
-          "arn:aws:s3:::guardduty-111111111111/*",
-          "arn:aws:s3:::aws-waf-logs-111111111111/*"
-        ]
-      },
-      {
-        "Sid": "DecifrarSoPeloS3",
-        "Effect": "Allow",
-        "Action": "kms:Decrypt",
-        "Resource": ["arn:aws:kms:sa-east-1:111111111111:key/00000000-0000-0000-0000-000000000000"],
-        "Condition": {
-          "StringLike": {
-            "kms:ViaService": "s3.*.amazonaws.com"
-          }
-        }
-      },
-      {
         "Sid": "AutoInspecao",
         "Effect": "Allow",
-        "Action": "iam:SimulatePrincipalPolicy",
+        "Action": ["iam:GetRole", "iam:SimulatePrincipalPolicy"],
         "Resource": "arn:aws:iam::111111111111:role/verax/verax-control-reader"
       },
       {
@@ -95,6 +66,119 @@
           "s3:GetBucketPublicAccessBlock",
           "s3:GetAccountPublicAccessBlock"
         ]
+      },
+      {
+        "Sid": "DescobrirFontes",
+        "Effect": "Allow",
+        "Resource": "*",
+        "Action": [
+          "access-analyzer:ListAnalyzers",
+          "cloudtrail:GetEventSelectors",
+          "config:DescribeConfigurationRecorders",
+          "config:DescribeConfigurationRecorderStatus",
+          "config:DescribeDeliveryChannels",
+          "ec2:DescribeFlowLogs",
+          "ec2:DescribeVpcs",
+          "elasticloadbalancing:DescribeLoadBalancers",
+          "elasticloadbalancing:DescribeLoadBalancerAttributes",
+          "inspector2:BatchGetAccountStatus",
+          "logs:DescribeLogGroups",
+          "logs:ListTagsForResource",
+          "rds:DescribeDBInstances",
+          "rds:DescribeDBClusters",
+          "s3:GetBucketLocation",
+          "s3:GetEncryptionConfiguration",
+          "securityhub:DescribeHub",
+          "wafv2:GetLoggingConfiguration",
+          "wafv2:ListLoggingConfigurations",
+          "wafv2:ListWebACLs"
+        ]
+      },
+      {
+        "Sid": "LerLogsDaAwsDestaConta",
+        "Effect": "Allow",
+        "Action": "s3:GetObject",
+        "Resource": ["arn:aws:s3:::*/AWSLogs/111111111111/*", "arn:aws:s3:::*/AWSLogs/o-*/111111111111/*"]
+      },
+      {
+        "Sid": "ListarLogsDaAwsDestaConta",
+        "Effect": "Allow",
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::*",
+        "Condition": {
+          "StringLike": {
+            "s3:prefix": ["AWSLogs/111111111111/*", "AWSLogs/o-*/111111111111/*"]
+          }
+        }
+      },
+      {
+        "Sid": "VerPrimeiroNivelDosBuckets",
+        "Effect": "Allow",
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::*",
+        "Condition": {
+          "StringEquals": {
+            "s3:delimiter": "/",
+            "s3:prefix": ["", "AWSLogs", "AWSLogs/"]
+          }
+        }
+      },
+      {
+        "Sid": "DecifrarLogsDaAwsSoPeloS3",
+        "Effect": "Allow",
+        "Action": "kms:Decrypt",
+        "Resource": "*",
+        "Condition": {
+          "StringLike": {
+            "kms:ViaService": "s3.*.amazonaws.com"
+          }
+        }
+      },
+      {
+        "Sid": "LerAchadosDeSeguranca",
+        "Effect": "Allow",
+        "Resource": "*",
+        "Action": [
+          "access-analyzer:GetFinding",
+          "access-analyzer:ListFindings",
+          "guardduty:GetFindings",
+          "guardduty:ListFindings",
+          "inspector2:ListCoverage",
+          "inspector2:ListFindings",
+          "securityhub:GetEnabledStandards",
+          "securityhub:GetFindings"
+        ]
+      },
+      {
+        "Sid": "LerGruposDeLogEtiquetados",
+        "Effect": "Allow",
+        "Action": ["logs:DescribeLogStreams", "logs:FilterLogEvents", "logs:GetLogEvents"],
+        "Resource": ["arn:aws:logs:*:111111111111:log-group:*", "arn:aws:logs:*:111111111111:log-group:*:*"],
+        "Condition": {
+          "StringEquals": {
+            "aws:ResourceTag/verax-control": "leitura"
+          }
+        }
+      },
+      {
+        "Sid": "ListarBucketsDeLog",
+        "Effect": "Allow",
+        "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+        "Resource": [
+          "arn:aws:s3:::trilha-111111111111",
+          "arn:aws:s3:::guardduty-111111111111",
+          "arn:aws:s3:::aws-waf-logs-111111111111"
+        ]
+      },
+      {
+        "Sid": "LerObjetosDeLog",
+        "Effect": "Allow",
+        "Action": "s3:GetObject",
+        "Resource": [
+          "arn:aws:s3:::trilha-111111111111/*",
+          "arn:aws:s3:::guardduty-111111111111/*",
+          "arn:aws:s3:::aws-waf-logs-111111111111/*"
+        ]
       }
     ]
   },
@@ -109,6 +193,9 @@
         "Condition": {
           "NotIpAddress": {
             "aws:SourceIp": ["203.0.113.10/32"]
+          },
+          "Bool": {
+            "aws:ViaAWSService": "false"
           }
         }
       },
@@ -164,6 +251,61 @@
           "wafv2:Put*",
           "wafv2:Update*"
         ]
+      },
+      {
+        "Sid": "NuncaAlterarOutrasFontes",
+        "Effect": "Deny",
+        "Resource": "*",
+        "Action": [
+          "access-analyzer:Apply*",
+          "access-analyzer:Cancel*",
+          "access-analyzer:Create*",
+          "access-analyzer:Start*",
+          "access-analyzer:Tag*",
+          "access-analyzer:Untag*",
+          "config:Delete*",
+          "config:Put*",
+          "config:Start*",
+          "config:Stop*",
+          "ec2:CreateFlowLogs",
+          "ec2:DeleteFlowLogs",
+          "elasticloadbalancing:Modify*",
+          "inspector2:Associate*",
+          "inspector2:BatchUpdate*",
+          "inspector2:Cancel*",
+          "inspector2:Create*",
+          "inspector2:Disassociate*",
+          "inspector2:Enable*",
+          "inspector2:Reset*",
+          "inspector2:Send*",
+          "inspector2:Start*",
+          "inspector2:Stop*",
+          "inspector2:Tag*",
+          "inspector2:Untag*",
+          "securityhub:Accept*",
+          "securityhub:BatchDelete*",
+          "securityhub:BatchDisable*",
+          "securityhub:BatchEnable*",
+          "securityhub:Create*",
+          "securityhub:Decline*",
+          "securityhub:Disassociate*",
+          "securityhub:Enable*",
+          "securityhub:Invite*",
+          "securityhub:Start*",
+          "securityhub:Tag*",
+          "securityhub:Untag*",
+          "wafv2:Associate*",
+          "wafv2:Create*",
+          "wafv2:Disassociate*",
+          "wafv2:Tag*",
+          "wafv2:Untag*"
+        ]
+      },
+      {
+        "Sid": "NuncaTrocarAsPropriasEtiquetas",
+        "Effect": "Deny",
+        "Resource": "*",
+        "Action": ["iam:Tag*", "iam:Untag*"]
       },
       {
         "Sid": "NuncaAmpliarOProprioAcesso",

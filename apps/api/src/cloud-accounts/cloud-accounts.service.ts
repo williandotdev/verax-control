@@ -1,6 +1,7 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import {
   AWS_READER_AUDIENCE,
+  type AwsConnect,
   type CloudAccount,
   type CloudAccountCreate,
   type CloudAccountListQuery,
@@ -30,6 +31,12 @@ import {
   RESET_CONNECTION,
   toAccount,
 } from './cloud-account-data.js';
+import {
+  lockAwsAccountRow,
+  parseChosenCapabilities,
+  serializeChosenCapabilities,
+} from '../aws/onboarding/chosen-capabilities.js';
+import { syncLegacyAwsSources } from '../aws/onboarding/legacy-sources.js';
 import { assertLogOriginsFree, type LogOrigins } from './log-origins.js';
 
 // A credencial e as tarefas do worker importam daqui desde antes da extração para `cloud-account-data.ts`.
@@ -149,6 +156,8 @@ export class CloudAccountsService {
       }
       throw error;
     }
+    // Os buckets do cadastro aparecem como fontes da conta (onboarding self-service), já autorizadas.
+    if (input.provider === 'aws') await syncLegacyAwsSources(db, row.id);
     const account = toAccount(row, this.node);
     this.audit.describe({
       action: 'cloud_account.create',
@@ -214,6 +223,8 @@ export class CloudAccountsService {
       },
       select: accountSelect,
     });
+    // Um bucket que entrou, mudou ou saiu: as fontes da conta acompanham o cadastro.
+    if (input.buckets !== undefined) await syncLegacyAwsSources(this.prisma.scoped(), id);
     const after = toAccount(row, this.node);
     this.audit.describe({
       action: 'cloud_account.update',
@@ -263,29 +274,67 @@ export class CloudAccountsService {
    * confere é a tarefa `aws-check` do worker (`aws/aws-check.ts`), o único processo do nó que alcança o metadata da
    * GCP: a API não emite o token do Google nem entra no papel. Um pedido ainda pendente não é renovado: a verificação
    * em curso continua valendo, e clicar de novo não adia a resposta nem gera outra entrada no papel do cliente.
+   *
+   * Com as autorizações que o cliente marcou no painel (`capabilities`, depois de atualizar a pilha ou a política do
+   * usuário de leitura), a escolha é gravada junto, mesmo com um pedido pendente, com o antes e o depois na trilha. Sem
+   * elas, a escolha gravada fica como está.
+   *
+   * Como no "Conectar" (`AwsOnboardingService.connect`), a linha da conta fica presa enquanto o pedido lê e grava
+   * (`lockAwsAccountRow`), e a escolha do pedido é gravada como veio: dois pedidos quase juntos terminam com a escolha
+   * do último a ser gravado, e o antes da trilha é o que o pedido anterior deixou.
    */
-  async requestAwsCheck(id: string): Promise<CloudAccount> {
+  async requestAwsCheck(id: string, input: AwsConnect = {}): Promise<CloudAccount> {
     this.audit.describe({
       action: 'cloud_account.aws_verify',
       resourceType: 'cloud_account',
       resourceId: id,
     });
+    const verifiable = (row: AccountRow): void => {
+      if (row.provider !== 'aws') {
+        throw new ApiError(HttpStatus.BAD_REQUEST, 'Só uma conta AWS é verificada assim.');
+      }
+      if (row.status !== 'active') {
+        throw new ApiError(HttpStatus.BAD_REQUEST, 'Reative o monitoramento antes de verificar a conta.');
+      }
+    };
+    const account = await this.find(id);
+    verifiable(account);
+    // Daqui até o fim da transação, só este pedido lê e grava o pedido da verificação e a escolha desta conta.
+    await lockAwsAccountRow(this.prisma.db(), account);
     const before = await this.find(id);
-    if (before.provider !== 'aws') {
-      throw new ApiError(HttpStatus.BAD_REQUEST, 'Só uma conta AWS é verificada assim.');
-    }
-    if (before.status !== 'active') {
-      throw new ApiError(HttpStatus.BAD_REQUEST, 'Reative o monitoramento antes de verificar a conta.');
-    }
+    verifiable(before);
+    const db = this.prisma.scoped();
+    const chosen =
+      input.capabilities === undefined ? undefined : serializeChosenCapabilities(input.capabilities);
+    // A escolha de antes só é lida quando o pedido traz uma: é o "antes" dela na trilha.
+    const stored =
+      chosen === undefined
+        ? undefined
+        : ((await db.cloudAccount.findUnique({ where: { id }, select: { awsChosenCapabilities: true } }))
+            ?.awsChosenCapabilities ?? null);
+    const pending = before.checkRequestedAt !== null;
     const row =
-      before.checkRequestedAt !== null
+      pending && chosen === undefined
         ? before
-        : await this.prisma.scoped().cloudAccount.update({
+        : await db.cloudAccount.update({
             where: { id },
-            data: { connection: 'waiting', connectionError: null, checkRequestedAt: new Date() },
+            data: {
+              ...(!pending && { connection: 'waiting', connectionError: null, checkRequestedAt: new Date() }),
+              // Gravada como veio, sem comparar com a de antes: a mesma de novo deixa o valor como está.
+              ...(chosen !== undefined && { awsChosenCapabilities: chosen }),
+            },
             select: accountSelect,
           });
-    this.audit.describe({ before: checkState(before), after: checkState(row) });
+    this.audit.describe({
+      before: {
+        ...checkState(before),
+        ...(stored !== undefined && { chosenCapabilities: parseChosenCapabilities(stored) }),
+      },
+      after: {
+        ...checkState(row),
+        ...(chosen !== undefined && { chosenCapabilities: parseChosenCapabilities(chosen) }),
+      },
+    });
     return toAccount(row, this.node);
   }
 

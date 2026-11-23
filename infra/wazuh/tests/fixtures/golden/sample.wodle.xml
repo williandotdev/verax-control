@@ -1,0 +1,115 @@
+<ossec_config>
+  <!-- Gerado por scripts/render-manager-config.py a partir das contas conectadas. -->
+  <wodle name="aws-s3">
+    <disabled>no</disabled>
+    <interval>5m</interval>
+    <run_on_start>yes</run_on_start>
+    <skip_on_error>yes</skip_on_error>
+    <bucket type="cloudtrail">
+      <name>verax-control-cloudtrail-111122223333-sa-east-1</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <aws_account_id>111122223333</aws_account_id>
+      <only_logs_after>2026-NOV-01</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+    </bucket>
+    <bucket type="waf">
+      <name>aws-waf-logs-verax-control-111122223333-sa-east-1</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <only_logs_after>2026-NOV-01</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+      <discard_regex field="action">ALLOW</discard_regex>
+    </bucket>
+    <bucket type="cloudtrail">
+      <name>trilha-da-organizacao</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <aws_organization_id>o-exemplo1234</aws_organization_id>
+      <aws_account_id>111122223333</aws_account_id>
+      <regions>sa-east-1,us-east-1</regions>
+      <only_logs_after>2026-NOV-20</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+    </bucket>
+    <bucket type="vpcflow">
+      <name>fluxo-111122223333</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <aws_account_id>111122223333</aws_account_id>
+      <regions>sa-east-1</regions>
+      <only_logs_after>2026-NOV-21</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+      <discard_regex field="action">ACCEPT</discard_regex>
+    </bucket>
+    <bucket type="vpcflow">
+      <name>verax-control-cloudtrail-111122223333-sa-east-1</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <path>rede/fluxo/</path>
+      <aws_account_id>111122223333</aws_account_id>
+      <regions>us-east-1</regions>
+      <only_logs_after>2026-NOV-21</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+    </bucket>
+    <bucket type="guardduty">
+      <name>achados-111122223333</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <aws_account_id>111122223333</aws_account_id>
+      <regions>sa-east-1</regions>
+      <only_logs_after>2026-NOV-22</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+    </bucket>
+    <bucket type="waf">
+      <name>aws-waf-logs-painel-111122223333</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <path>AWSLogs/111122223333/WAFLogs/cloudfront/site_Publico-2/</path>
+      <only_logs_after>2026-NOV-23</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+      <discard_regex field="action">ALLOW</discard_regex>
+    </bucket>
+    <bucket type="waf">
+      <name>aws-waf-logs-painel-111122223333</name>
+      <aws_profile>verax-111122223333</aws_profile>
+      <path>AWSLogs/111122223333/WAFLogs/sa-east-1/painel/</path>
+      <only_logs_after>2026-NOV-22</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+      <discard_regex field="action">ALLOW</discard_regex>
+    </bucket>
+    <bucket type="cloudtrail">
+      <name>trilha-da-organizacao</name>
+      <aws_profile>verax-444455556666</aws_profile>
+      <aws_organization_id>o-exemplo1234</aws_organization_id>
+      <aws_account_id>444455556666</aws_account_id>
+      <regions>us-east-1</regions>
+      <only_logs_after>2026-NOV-20</only_logs_after>
+      <remove_from_bucket>no</remove_from_bucket>
+    </bucket>
+    <service type="cloudwatchlogs">
+      <aws_profile>verax-111122223333</aws_profile>
+      <aws_log_groups>/aws/lambda/cobranca,/aws/rds/instance/banco/postgresql</aws_log_groups>
+      <regions>sa-east-1</regions>
+      <only_logs_after>2026-NOV-20</only_logs_after>
+      <remove_log_streams>no</remove_log_streams>
+      <discard_regex field="integration">^aws$</discard_regex>
+    </service>
+    <service type="cloudwatchlogs">
+      <aws_profile>verax-111122223333</aws_profile>
+      <aws_log_groups>API-Gateway-Execution-Logs_a1b2c3/producao</aws_log_groups>
+      <regions>sa-east-1</regions>
+      <only_logs_after>2026-NOV-23</only_logs_after>
+      <remove_log_streams>no</remove_log_streams>
+      <discard_regex field="integration">^aws$</discard_regex>
+    </service>
+    <service type="cloudwatchlogs">
+      <aws_profile>verax-111122223333</aws_profile>
+      <aws_log_groups>/aws/route53/exemplo.com.br</aws_log_groups>
+      <regions>us-east-1</regions>
+      <only_logs_after>2026-NOV-20</only_logs_after>
+      <remove_log_streams>no</remove_log_streams>
+      <discard_regex field="integration">^aws$</discard_regex>
+    </service>
+    <service type="cloudwatchlogs">
+      <aws_profile>verax-444455556666</aws_profile>
+      <aws_log_groups>/aws/eks/producao/cluster</aws_log_groups>
+      <regions>us-east-1</regions>
+      <only_logs_after>2026-NOV-22</only_logs_after>
+      <remove_log_streams>no</remove_log_streams>
+      <discard_regex field="integration">^aws$</discard_regex>
+    </service>
+  </wodle>
+</ossec_config>

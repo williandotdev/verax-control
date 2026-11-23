@@ -1,7 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
 
-/** Servidor da demonstração (`dev:mock`) nos testes. */
-const MOCK_PORT = 5175;
+/**
+ * As portas dos dois servidores do Vite nos testes: o normal (o catálogo) e o da demonstração (`dev:mock`).
+ * `WEB_E2E_PORT` e `WEB_E2E_MOCK_PORT` trocam (outra cópia do repositório rodando ao mesmo tempo: sem isso, o teste
+ * reusaria o servidor da outra cópia, com o código dela).
+ */
+const PORT = Number(process.env['WEB_E2E_PORT'] ?? 5174);
+const MOCK_PORT = Number(process.env['WEB_E2E_MOCK_PORT'] ?? 5175);
+const URL = `http://localhost:${PORT}`;
 const MOCK_URL = `http://localhost:${MOCK_PORT}`;
 
 /**
@@ -17,7 +23,7 @@ export default defineConfig({
   retries: process.env['CI'] ? 1 : 0,
   reporter: process.env['CI'] ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
-    baseURL: 'http://localhost:5174',
+    baseURL: URL,
     trace: 'retain-on-failure',
   },
   projects: [
@@ -40,8 +46,8 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'pnpm exec vite --port 5174 --strictPort',
-      url: 'http://localhost:5174',
+      command: `pnpm exec vite --port ${PORT} --strictPort`,
+      url: URL,
       reuseExistingServer: !process.env['CI'],
       timeout: 60_000,
     },

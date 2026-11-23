@@ -131,18 +131,29 @@ export function ConfirmButton({
   onConfirm,
   busy = false,
   warning,
+  ariaLabel,
+  size,
 }: {
   label: string;
   confirmLabel: string;
   onConfirm: () => void;
   busy?: boolean;
   warning?: ReactNode;
+  /** O nome do botão para o leitor de tela, quando o rótulo se repete na tela (um por linha de uma tabela). */
+  ariaLabel?: string;
+  size?: 'sm' | 'md';
 }) {
   const [asking, setAsking] = useState(false);
   const warningId = useId();
   if (!asking) {
     return (
-      <Button type="button" variant="secondary" onClick={() => setAsking(true)}>
+      <Button
+        type="button"
+        variant="secondary"
+        size={size}
+        aria-label={ariaLabel}
+        onClick={() => setAsking(true)}
+      >
         {label}
       </Button>
     );

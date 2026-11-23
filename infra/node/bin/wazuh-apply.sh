@@ -21,8 +21,14 @@
 # ganha a sessão dela sem esperar o timer.
 #
 # No fim, o sinal sem segredo para o worker: /run/verax/wazuh-signal/applied, com a geração (o SHA-256 da lista, o mesmo
-# que o worker calcula; null se a lista nem chegou), ok ou error e a hora. Com error, o worker marca as contas AWS com
-# `wazuh_apply_failed`.
+# que o worker calcula; null se a lista nem chegou), ok ou error, a hora e o número de sequência (seq). Com error, o
+# worker marca as contas AWS com `wazuh_apply_failed`.
+#
+# O número de sequência conta as trocas da configuração que o manager roda: cada reinício dele com outra configuração
+# (o da volta à anterior também) e a configuração deixada para a próxima partida dele. O sinal só guarda a última
+# tentativa, então duas trocas entre duas leituras do worker pareceriam uma só; pelo salto do número, o worker sabe que
+# perdeu uma, e a prova do dono dos alertas do CloudWatch Logs recomeça (apps/api/src/alerts/cloudwatch-ownership.ts).
+# O contador fica no disco do nó (/var/lib/verax/wazuh-apply/seq), e não em /run: o reboot não o zera. Ele só cresce.
 set -euo pipefail
 umask 077
 
@@ -37,6 +43,8 @@ run=/run/verax
 signal=$run/wazuh-signal
 # Estado do host (só root): o hash da configuração que o manager roda, o da última que o derrubou e a trava.
 state=$run/wazuh-apply
+# O contador das trocas da configuração do manager (só root), no disco: sobrevive ao reboot, ao contrário do /run.
+seq_dir=/var/lib/verax/wazuh-apply
 # O usuário do worker (o `node` da imagem da API), o mesmo WORKER_UID do start.sh: ele lê o sinal pelo grupo.
 WORKER_UID=1000
 HEALTH_TIMEOUT=180
@@ -45,10 +53,31 @@ if [[ ! -d $run/wazuh-aws ]]; then
   echo "Sem $run/wazuh-aws (o Wazuh não está no ar): nada a aplicar."
   exit 0
 fi
-install -d -m 0700 "$state"
+install -d -m 0700 "$state" "$seq_dir"
 install -d -m 1770 -o 0 -g "$WORKER_UID" "$signal"
 exec 9>"$state/lock"
 flock 9
+
+# O número de sequência (com a trava já tomada: uma execução por vez o lê e o aumenta). Gravado por troca atômica.
+write_seq() {
+  local file
+  file=$(mktemp "$seq_dir/.seq.XXXXXX")
+  printf '%s\n' "$seq" >"$file"
+  mv -fT "$file" "$seq_dir/seq"
+}
+seq=$(cat "$seq_dir/seq" 2>/dev/null || true)
+if [[ ! $seq =~ ^(0|[1-9][0-9]{0,14})$ ]]; then
+  # Sem contador (a primeira execução, ou o arquivo perdido ou estragado), ele recomeça da hora do host, em segundos:
+  # acima de qualquer valor já contado (as trocas são muito menos que uma por segundo), para o worker ver um salto, e
+  # nunca um número que ele já viu.
+  seq=$(date -u +%s)
+  write_seq
+fi
+# Conta uma troca da configuração do manager, ANTES de trocá-la: se o script parar no meio, o número já andou.
+count_change() {
+  seq=$((seq + 1))
+  write_seq
+}
 
 env_files=(--env-file /etc/verax/images.env)
 if [[ -f $run/memory.env ]]; then env_files+=(--env-file "$run/memory.env"); fi
@@ -79,7 +108,8 @@ signal_applied() { # <geração, ou vazio> <ok|error>
   local file generation=null
   if [[ -n $1 ]]; then generation="\"$1\""; fi
   file=$(mktemp "$signal/.applied.XXXXXX")
-  printf '{"generation":%s,"status":"%s","at":"%s"}\n' "$generation" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$file"
+  printf '{"generation":%s,"status":"%s","at":"%s","seq":%s}\n' "$generation" "$2" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$seq" >"$file"
   chmod 0440 "$file"
   chown "0:$WORKER_UID" "$file"
   mv -fT "$file" "$signal/applied"
@@ -144,7 +174,9 @@ if [[ $hash == "$failed" ]]; then
   exit 1
 fi
 if ! manager_running; then
-  # Parado (o wazuh-up o sobe em seguida, ou alguém o parou): ele lê esta configuração quando subir.
+  # Parado (o wazuh-up o sobe em seguida, ou alguém o parou): ele lê esta configuração quando subir. Se não é a que
+  # ele rodava (depois de um reboot, nem se sabe qual era), é uma troca.
+  if [[ $hash != "$running" ]]; then count_change; fi
   printf '%s\n' "$hash" >"$state/running"
   signal_applied "$generation" ok
   echo 'Configuração do manager pronta para a próxima partida dele.'
@@ -156,6 +188,10 @@ if [[ $hash == "$running" ]]; then
 fi
 
 echo 'Configuração do manager nova: reiniciando só o manager.'
+# A troca é contada e o hash da que ele rodava é esquecido antes do reinício: se o script parar daqui até o sinal, a
+# execução seguinte não sabe o que o manager roda, reinicia de novo e conta outra troca (o worker vê o salto).
+count_change
+rm -f "$state/running"
 compose restart wazuh.manager
 if manager_healthy; then
   printf '%s\n' "$hash" >"$state/running"
@@ -168,6 +204,8 @@ fi
 echo "ERRO: o manager não ficou saudável em $HEALTH_TIMEOUT s com a configuração nova: voltando a anterior." >&2
 printf '%s\n' "$hash" >"$state/failed"
 previous=$(rollback)
+# A volta à configuração anterior é outra troca.
+count_change
 compose restart wazuh.manager
 if [[ $previous =~ ^[0-9a-f]{64}$ ]] && manager_healthy; then
   printf '%s\n' "$previous" >"$state/running"

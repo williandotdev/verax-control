@@ -1,0 +1,70 @@
+<!--
+  Verax Control: correlações dos flow logs da VPC (onboarding self-service da AWS, PR-C1), faixa 100400 a 100499.
+
+  O Wazuh 4.14.9 só classifica cada registro dos flow logs (0350-amazon_rules.xml: 80401 no tráfego aceito, nível 3,
+  e 80402 no rejeitado, nível 4), abaixo do corte dos alertas do nó (log_alert_level 5), e não traz correlação
+  nenhuma: sem as duas regras abaixo, o tráfego rejeitado é lido e medido, e nada vira alerta nem achado. As duas
+  regras do Wazuh ficam como estão; estas só contam os registros que casaram com a 80402.
+
+  LIMITES (os números que o responsável ajusta; o scripts/test-rules.sh confere cada um):
+  - 100400, nível 8 (média), varredura: 40 registros rejeitados em 120 s, da mesma conta e do mesmo endereço de
+    origem, para qualquer destino e porta;
+  - 100401, nível 10 (alta), insistência em porta de administração remota: 15 registros rejeitados em 120 s, da
+    mesma conta, do mesmo endereço de origem, para o mesmo endereço de destino e a mesma porta, 22 (SSH) ou 3389
+    (RDP). Uma passada pela porta 22 de várias máquinas não é insistência: conta para a varredura;
+  - as duas com ignore de 60 s: depois de um alerta, a regra não alerta de novo por 60 s.
+
+  Como ler os limites:
+  - cada registro é um fluxo (origem, destino, portas e protocolo) numa interface e numa janela de captura, e não um
+    pacote: os pacotes repetidos do mesmo fluxo vêm somados numa linha só. 15 registros para a porta 22 são 15
+    conexões diferentes (cada uma com a própria porta de origem);
+  - os 120 s contam a chegada ao analysisd, e não o horário do tráfego. O módulo aws-s3 lê os objetos novos do bucket
+    a cada 5 min e entrega os registros de cada objeto de uma vez: na prática, o limite vale para o que uma leitura
+    traz (uns 5 a 10 min de tráfego);
+  - só o tráfego rejeitado conta: o aceito casa com a 80401 (e, na configuração do nó, nem chega ao analysisd: o
+    módulo o descarta);
+  - cada regra só soma registros da mesma conta (aws.aws_account_id, a conta da pasta AWSLogs/<conta> que o módulo
+    leu), como as correlações de verax_aws_rules.xml: um Wazuh pode atender mais de uma conta;
+  - o registro que já entrou num alerta de nível igual ou maior não é contado de novo (regra do Wazuh): os registros
+    de uma insistência (nível 10) não somam para a varredura (nível 8).
+
+  O ignore do Wazuh é da regra, e não do endereço: nos 60 s depois de um alerta, uma segunda origem que passe do
+  limite também fica sem alerta dessa regra. Como uma leitura do bucket chega em poucos segundos, o efeito é no máximo
+  um alerta de cada regra por leitura (a cada 5 min); a origem que continua volta a contar na leitura seguinte. É o
+  preço de uma rajada virar um alerta só. Sem o ignore, a mesma rajada daria um alerta a cada 40 (ou 15) registros,
+  e o achado continuaria um só (a chave dele é a regra, a conta e o endereço de origem).
+
+  O título em português de cada regra está no dicionário da API (apps/api/src/alerts/aws-rule-titles.ts), e a
+  descrição começa por ele. A API reconhece as duas pelo ID (apps/api/src/alerts/wazuh-alert.ts).
+-->
+<group name="verax_aws_flow,">
+
+  <!-- Entre irmãs, o Wazuh tenta primeiro a de nível mais alto: o registro para a porta 22 ou 3389 passa por esta. -->
+  <rule id="100401" level="10" frequency="15" timeframe="120" ignore="60">
+    <if_matched_sid>80402</if_matched_sid>
+    <field name="aws.dstport" type="pcre2">^(?:22|3389)$</field>
+    <same_field>aws.aws_account_id</same_field>
+    <same_field>aws.srcaddr</same_field>
+    <same_field>aws.dstaddr</same_field>
+    <same_field>aws.dstport</same_field>
+    <options>no_full_log</options>
+    <description>Verax Control: Insistência em porta de administração remota vinda do mesmo endereço ($(aws.srcaddr) para $(aws.dstaddr), porta $(aws.dstport)).</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>aws_vpcflow,</group>
+  </rule>
+
+  <rule id="100400" level="8" frequency="40" timeframe="120" ignore="60">
+    <if_matched_sid>80402</if_matched_sid>
+    <same_field>aws.aws_account_id</same_field>
+    <same_field>aws.srcaddr</same_field>
+    <options>no_full_log</options>
+    <description>Verax Control: Possível varredura de rede vinda do mesmo endereço ($(aws.srcaddr)).</description>
+    <mitre>
+      <id>T1046</id>
+    </mitre>
+    <group>aws_vpcflow,</group>
+  </rule>
+
+</group>
