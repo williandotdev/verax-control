@@ -433,8 +433,25 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
       spec: { provider: 'aws', accountId, regions, buckets: { cloudtrail } },
       credential: null,
     });
+    // O bucket do console aparece como fonte da conta (onboarding self-service), como o do painel.
+    const legacySources = () =>
+      prisma.awsSource.findMany({
+        where: { cloudAccountId: id },
+        select: { id: true, tenantId: true, kind: true, origin: true, name: true, state: true },
+      });
     cp.desired = [spec(1, ['us-east-1'], first)];
     await run();
+    const [mirrored] = await legacySources();
+    expect(await legacySources()).toEqual([
+      {
+        id: mirrored?.id,
+        tenantId: tenantA,
+        kind: 'cloudtrail',
+        origin: 'legacy',
+        name: first,
+        state: 'authorized',
+      },
+    ]);
     await prisma.cloudAccount.update({ where: { id }, data: { connection: 'connected' } });
 
     clock = new Date(START.getTime() + 10 * MINUTE);
@@ -452,6 +469,7 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
     cp.desired = [spec(2, ['us-east-1'], second)];
     await run();
     expect(await accountOf(id)).toMatchObject({ controlPlaneRevision: 2, cloudtrailBucket: first });
+    expect((await legacySources()).map((row) => row.name)).toEqual([first]);
 
     clock = new Date(START.getTime() + 30 * MINUTE);
     cp.desired = [spec(3, ['us-east-1'], second)];
@@ -461,6 +479,17 @@ describe('tarefa control-plane-sync do worker: fontes de log do console (banco r
       cloudtrailBucket: second,
       connection: 'waiting',
     });
+    // A mesma fonte, com o bucket da revisão nova.
+    expect(await legacySources()).toEqual([
+      {
+        id: mirrored?.id,
+        tenantId: tenantA,
+        kind: 'cloudtrail',
+        origin: 'legacy',
+        name: second,
+        state: 'authorized',
+      },
+    ]);
     const actions = await prisma.auditLog.findMany({
       where: { tenantId: tenantA, resourceId: id },
       select: { action: true },

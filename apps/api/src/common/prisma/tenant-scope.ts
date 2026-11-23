@@ -39,6 +39,11 @@ export const TENANT_SCOPED_MODELS = [
   // Nó dedicado: o resultado de cada item do console que a sincronização com o plano de controle trouxe. Só o worker
   // grava (`SYSTEM_WRITTEN_MODELS`).
   'controlPlaneSyncItem',
+  // Onboarding self-service da AWS: as execuções da descoberta e as fontes de log de cada conta. O painel pede a
+  // descoberta e autoriza as fontes (pelo escopo da sessão); o worker grava o que descobriu (pelo escopo do cliente da
+  // conta).
+  'awsDiscoveryRun',
+  'awsSource',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 
