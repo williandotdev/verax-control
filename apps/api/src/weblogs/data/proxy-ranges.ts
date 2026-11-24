@@ -1,15 +1,12 @@
 /**
  * Faixas de saída das CDNs, VENDORIZADAS: o motor nunca busca faixa na rede nem faz consulta de DNS.
  *
- * ***** MARCADOR: LISTA VAZIA. *****
- * As faixas oficiais ainda não foram copiadas para cá (a PR-1 não faz chamada externa, e faixa de memória não serve).
- * Enquanto uma das CDNs estiver sem faixa, o motor não sabe distinguir um visitante de uma borda de CDN: todo endereço
- * público fica na classe `unverified`, as regras por IP ficam desligadas, nenhum achado aponta IP, e o resultado traz a
- * nota `proxy_ranges_unavailable` (`client-class.ts`). As regras que não dependem do IP (990403 e 990407) seguem.
+ * GERADO por `scripts/update-proxy-ranges.mjs` a partir das listas oficiais; não editar à mão. Atualizar a cada versão do
+ * nó: lista com mais de 180 dias vira a nota `proxy_ranges_stale`. Da AWS entra só `CLOUDFRONT_ORIGIN_FACING`, o que o
+ * CloudFront usa para chamar a origem (o resto da AWS é cliente como outro qualquer).
  *
- * Para preencher (a cada release, D10): copiar as faixas da fonte de cada CDN sem editar, pôr `generatedAt` no instante
- * da cópia e rodar `client-class.test.ts`, que confere a sintaxe de cada faixa e que nenhuma é larga demais. Lista com
- * mais de 180 dias vira a nota `proxy_ranges_stale`.
+ * Sem as faixas de uma das CDNs, o motor não distingue um visitante de uma borda: todo endereço público fica
+ * `unverified` e as regras por IP ficam desligadas (`client-class.ts`).
  */
 
 export type ProxyProvider = 'cloudflare' | 'cloudfront';
@@ -18,7 +15,7 @@ export interface ProviderRanges {
   provider: ProxyProvider;
   /** De onde as faixas são copiadas. */
   source: string;
-  /** Quando foram copiadas (ISO 8601); null enquanto a lista é o marcador vazio. */
+  /** Quando foram copiadas (ISO 8601); null sem lista. */
   generatedAt: string | null;
   ranges: readonly string[];
 }
@@ -27,13 +24,126 @@ export const PROXY_RANGES: readonly ProviderRanges[] = [
   {
     provider: 'cloudflare',
     source: 'https://www.cloudflare.com/ips-v4 e https://www.cloudflare.com/ips-v6',
-    generatedAt: null,
-    ranges: [],
+    generatedAt: '2026-11-24T16:33:33.644Z',
+    ranges: [
+      '173.245.48.0/20',
+      '103.21.244.0/22',
+      '103.22.200.0/22',
+      '103.31.4.0/22',
+      '141.101.64.0/18',
+      '108.162.192.0/18',
+      '190.93.240.0/20',
+      '188.114.96.0/20',
+      '197.234.240.0/22',
+      '198.41.128.0/17',
+      '162.158.0.0/15',
+      '104.16.0.0/13',
+      '104.24.0.0/14',
+      '172.64.0.0/13',
+      '131.0.72.0/22',
+      '2400:cb00::/32',
+      '2606:4700::/32',
+      '2803:f800::/32',
+      '2405:b500::/32',
+      '2405:8100::/32',
+      '2a06:98c0::/29',
+      '2c0f:f248::/32',
+    ],
   },
   {
     provider: 'cloudfront',
     source: 'https://ip-ranges.amazonaws.com/ip-ranges.json (service CLOUDFRONT_ORIGIN_FACING)',
-    generatedAt: null,
-    ranges: [],
+    generatedAt: '2026-11-24T16:33:33.644Z',
+    ranges: [
+      '130.176.88.0/21',
+      '54.239.134.0/23',
+      '52.82.134.0/23',
+      '130.176.86.0/23',
+      '130.176.140.0/22',
+      '130.176.0.0/18',
+      '54.239.204.0/22',
+      '130.176.160.0/19',
+      '70.132.0.0/18',
+      '15.158.0.0/16',
+      '130.176.136.0/23',
+      '54.239.170.0/23',
+      '130.176.96.0/19',
+      '51.74.21.0/24',
+      '54.182.184.0/22',
+      '204.246.166.0/24',
+      '130.176.64.0/21',
+      '54.182.172.0/22',
+      '205.251.218.0/24',
+      '130.176.144.0/20',
+      '54.182.176.0/21',
+      '130.176.78.0/23',
+      '54.182.248.0/22',
+      '64.252.128.0/18',
+      '51.74.22.0/24',
+      '54.182.154.0/23',
+      '64.252.64.0/18',
+      '54.182.144.0/21',
+      '54.182.224.0/21',
+      '130.176.128.0/21',
+      '52.46.0.0/18',
+      '3.172.64.0/18',
+      '52.82.128.0/23',
+      '18.68.0.0/16',
+      '54.182.156.0/22',
+      '54.182.160.0/21',
+      '54.182.240.0/21',
+      '51.74.20.0/24',
+      '130.176.192.0/19',
+      '130.176.76.0/24',
+      '54.239.208.0/21',
+      '54.182.188.0/23',
+      '24.110.128.0/17',
+      '3.172.0.0/18',
+      '130.176.80.0/22',
+      '54.182.128.0/20',
+      '130.176.72.0/22',
+      '51.72.40.128/28',
+      '51.72.40.144/28',
+      '51.72.96.0/23',
+      '13.124.199.0/24',
+      '3.29.57.0/26',
+      '2600:9000:1000::/36',
+      '2600:9000:5200::/40',
+      '2600:9000:6000::/36',
+      '2001:3fc6:4::/48',
+      '2001:3fc6:5::/48',
+      '2406:da11:438:2300::/56',
+      '2406:da1e:705:1600::/56',
+      '2406:da1c:8d8c:4600::/56',
+      '2406:da14:17bd:2f00::/56',
+      '2406:da12:4b:c200::/56',
+      '2406:da16:c01:c200::/56',
+      '2406:da1a:6df:6c00::/56',
+      '2406:da1b:e7c:ad00::/56',
+      '2406:da18:9fa:1b00::/56',
+      '2406:da1c:787:2b00::/56',
+      '2406:da19:e19:4a00::/56',
+      '2406:da1f:396:9100::/56',
+      '2406:da10:847f:a100::/56',
+      '2406:da12:8b2e:9c00::/56',
+      '2406:da14:80bb:ea00::/56',
+      '2600:1f11:e79:a800::/56',
+      '2600:1f1a:4568:b500::/56',
+      '2a05:d014:1362:b000::/56',
+      '2a05:d019:80b:e300::/56',
+      '2a05:d016:9ed:de00::/56',
+      '2a05:d01a:8a9:be00::/56',
+      '2a05:d011:531:1800::/56',
+      '2a05:d018:1a3a:2d00::/56',
+      '2a05:d01c:343:c300::/56',
+      '2a05:d012:581:b400::/56',
+      '2a05:d025:e59:fb00::/56',
+      '2600:1f17:4356:f100::/56',
+      '2600:1f1e:a7:2300::/56',
+      '2600:1f18:7530:7200::/56',
+      '2600:1f16:1923:3000::/56',
+      '2600:1f1c:da:600::/56',
+      '2600:1f13:417:4d00::/56',
+    ],
   },
 ];

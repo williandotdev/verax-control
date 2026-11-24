@@ -107,10 +107,18 @@ describe('classe do cliente', () => {
     }
   });
 
-  it('a lista vendorizada é o marcador vazio: nenhum endereço público é direto', () => {
-    const classifier = new ClientClassifier({ now: T0 });
-    expect(classifier.status).toBe('unavailable');
-    expect(classifier.classify(ip('198.51.100.7'))).toBe('unverified');
+  it('a lista vendorizada é o padrão: o primeiro endereço de cada faixa é da CDN dela, e o resto é direto', () => {
+    const now = Math.min(...PROXY_RANGES.map((entry) => Date.parse(entry.generatedAt!)));
+    const classifier = new ClientClassifier({ now });
+    expect(classifier.status).toBe('ok');
+    for (const entry of PROXY_RANGES) {
+      for (const range of entry.ranges) {
+        expect(classifier.classify(ip(range.split('/')[0]!)), range).toBe(entry.provider);
+      }
+    }
+    for (const direct of ['198.51.100.7', '203.0.113.9', '2001:db8::1']) {
+      expect(classifier.classify(ip(direct))).toBe('direct');
+    }
     expect(classifier.classify(ip('10.0.0.1'))).toBe('private');
   });
 
@@ -138,13 +146,15 @@ describe('classe do cliente', () => {
     }
   });
 
-  it('as faixas vendorizadas, quando vierem, são válidas e têm fonte', () => {
+  it('as faixas vendorizadas são válidas, sem repetição, nos dois IPs e com fonte', () => {
     expect(PROXY_RANGES.map((entry) => entry.provider).sort()).toEqual(['cloudflare', 'cloudfront']);
     expect(() => new ClientClassifier({ now: T0, ranges: PROXY_RANGES })).not.toThrow();
     for (const entry of PROXY_RANGES) {
       expect(entry.source).toContain('https://');
-      // A data e as faixas andam juntas.
-      expect(entry.generatedAt === null).toBe(entry.ranges.length === 0);
+      expect(Number.isNaN(Date.parse(entry.generatedAt!))).toBe(false);
+      expect(new Set(entry.ranges).size).toBe(entry.ranges.length);
+      expect(entry.ranges.some((range) => range.includes(':'))).toBe(true);
+      expect(entry.ranges.some((range) => !range.includes(':'))).toBe(true);
     }
   });
 });
