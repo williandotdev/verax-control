@@ -66,7 +66,12 @@ test.describe('tela Detecções (modo mock)', () => {
           expect(await violations(page)).toEqual([]);
           await strip.getByRole('button', { name: /^Mostrar/ }).click();
         }
-        await expect(strip.getByRole('status', { name: /coleta parada \(GCP\)\.$/ })).toBeVisible();
+        // Os motivos e, depois deles, quantos alertas altos ou críticos esperam validação.
+        await expect(
+          strip.getByRole('status', {
+            name: /coleta parada \(GCP\)\. \d+ alertas altos ou críticos para validar\.$/,
+          }),
+        ).toBeVisible();
         await expect(strip.getByRole('region', { name: 'Decisões pendentes' })).toBeVisible();
         await expect(strip.getByRole('region', { name: 'Radar das últimas 24 horas' })).toBeVisible();
         expect(await violations(page)).toEqual([]);

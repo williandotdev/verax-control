@@ -66,7 +66,12 @@ export function formatList(items: readonly string[]): string {
   return conjunction.format(items);
 }
 
-/** "1 incidente", "2 incidentes". */
+const integer = new Intl.NumberFormat('pt-BR');
+
+/** "1.234". */
+export const formatCount = (value: number): string => integer.format(value);
+
+/** "1 incidente", "2 incidentes", "24.321 incidentes". */
 export function plural(count: number, singular: string, pluralForm: string): string {
-  return `${count} ${count === 1 ? singular : pluralForm}`;
+  return `${formatCount(count)} ${count === 1 ? singular : pluralForm}`;
 }

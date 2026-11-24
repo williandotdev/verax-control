@@ -137,6 +137,8 @@ export function parseInspectorFinding(raw: unknown, now: Date): ParseOutcome {
         actorType: null,
         accessKeyId: null,
         sourceIp: null,
+        // Uma vulnerabilidade (CVE), uma porta alcançável ou um trecho de código frágil é uma fraqueza, e não uma ação de
+        // um atacante, que é o que o ATT&CK classifica. O Inspector não dá tática, e nenhuma é inventada aqui.
         mitreTactics: [],
         mitreTechniques: [],
         revision: { lastSeenAt: updatedAt },

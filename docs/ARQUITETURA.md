@@ -1558,6 +1558,12 @@ revogada sai na execução seguinte. Uma fonte com falha nunca para as outras.
   táticas do MITRE dos tipos do Security Hub), cada um conferido e cortado no tamanho da coluna. O registro inteiro
   nunca é gravado, e um registro acima de 512 KB é recusado sem ser lido. Nada do achado vai para o log: o relatório da
   tarefa só tem contagens e códigos.
+- **MITRE ATT&CK** (`alerts/aws-mitre.ts`): só o que a origem documenta. No GuardDuty, pelo tipo do achado (a finalidade
+  da ameaça, e a família quando ela diz mais), igual pela API e pelo bucket; no Security Hub, pelos tipos `TTPs/`; na
+  rajada de bloqueios do WAF (80443), varredura ativa (T1595), como a do Cloudflare; nas outras regras do Wazuh, o da
+  regra. O Inspector, o controle reprovado e o Access Analyzer ficam **sem tática**, de propósito: são fraquezas, e o
+  ATT&CK classifica ações de um atacante. A aba MITRE explica a matriz vazia e diz quantos alertas não têm tática. O
+  achado já gravado fica com a classificação de quando chegou.
 - **Volume:** os bytes do JSON de cada achado novo ou com versão nova entram no medidor da AWS (`IngestUsage` e
   `IngestUsageDay`, fonte `aws`), depois de a página ficar gravada, e somam nos avisos de 80% e 100% do plano. O achado
   de outro cliente, o pulado e a releitura não contam. Nenhum achado é descartado por plano.
@@ -2183,10 +2189,15 @@ da Verax.
     uma fonte configurada sem dado novo há mais que o prazo de parada dela. Silêncio não é segurança: sem isso, o verde
     de um cliente cuja coleta parou mentiria. Fonte **não configurada** (o cliente sem Cloudflare, sem agentes) ou
     ainda **sem nenhum dado** (conta recém-cadastrada) nunca deixa a Torre amarela;
+  - **amarelo** também com **alerta alto ou crítico para validar** (em "novo"): desde 17/11/2026, um incidente só existe
+    depois que uma pessoa promove um alerta, e "nenhum incidente aberto" com a fila cheia não é calma. A contagem é a da
+    decisão `untriaged_finding`, e a lista de motivos não ganha um valor novo: ela é fechada, e um painel de antes
+    recusaria o resumo inteiro. O amarelo pode, então, vir sem motivo, e o painel tira a frase das decisões ("24.321
+    alertas altos ou críticos para validar"), inclusive de um nó de antes, que ainda responde verde;
   - **verde** nos demais casos. No verde, a frase traz a prova: "Tudo calmo. (...) Coleta ativa em 4 de 4 fontes,
-    último dado há 2 minutos" só quando todas as fontes configuradas coletam; com uma atrasada ou aguardando, a mesma
-    prova, sem o "Tudo calmo". O cartão de decisões vazio faz o mesmo ("Tudo calmo: nada para decidir agora", ou o
-    estado vazio que aponta a fonte parada).
+    último dado há 2 minutos" só quando todas as fontes configuradas coletam e nada espera uma decisão do cliente (a fila
+    sem dono, da Verax, não conta); com uma atrasada ou aguardando, a mesma prova, sem o "Tudo calmo". O cartão de
+    decisões vazio faz o mesmo ("Tudo calmo: nada para decidir agora", ou o estado vazio que aponta a fonte parada).
   - Os limites ficam na configuração (`DEFAULT_TOWER_THRESHOLDS`): postura 70; conta silenciosa 24 h; e, por fonte,
     os prazos de atrasada e de parada.
 - **Saúde da coleta** (no lugar da antiga "Cobertura"): uma linha por fonte, com o estado (coletando, atrasada, parada,

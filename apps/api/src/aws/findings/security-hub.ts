@@ -126,7 +126,11 @@ function ownProduct(productArn: string, productName: string | undefined): 'guard
   return null;
 }
 
-/** As táticas do MITRE ATT&CK dos tipos do achado (`TTPs/<tática>/…`, a taxonomia do ASFF). */
+/**
+ * As táticas do MITRE ATT&CK dos tipos do achado (`TTPs/<tática>/…`, a taxonomia do ASFF). Só o que o produto declarou: o
+ * controle reprovado vem com `Software and Configuration Checks/…`, que é postura, e fica sem tática. A taxonomia não
+ * traz técnica.
+ */
 function tacticsOf(types: unknown): string[] {
   if (!Array.isArray(types)) return [];
   const tactics = new Set<string>();

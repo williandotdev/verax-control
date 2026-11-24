@@ -15,7 +15,9 @@ export type TrafficLight = (typeof TRAFFIC_LIGHTS)[number];
 
 /**
  * Por que o semáforo não está verde: incidente crítico aberto, incidente alto aberto, postura abaixo do limite ou
- * coleta parada numa fonte configurada (OP-02, decisão de 05/11/2026).
+ * coleta parada numa fonte configurada (OP-02, decisão de 05/11/2026). A lista é fechada, e um painel de antes recusa
+ * o valor que não conhece: alertas altos ou críticos para validar também tiram o verde, mas a tela os lê de
+ * `pendingDecisions`, sem um motivo novo.
  */
 export const TRAFFIC_LIGHT_REASONS = [
   'critical_incident',
@@ -194,6 +196,7 @@ export type TowerRadar = z.infer<typeof towerRadarSchema>;
 
 export const towerSummarySchema = z.strictObject({
   light: z.enum(TRAFFIC_LIGHTS),
+  /** Pode vir vazio no amarelo: só há alertas altos ou críticos para validar (`pendingDecisions`). */
   reasons: z.array(z.enum(TRAFFIC_LIGHT_REASONS)).max(TRAFFIC_LIGHT_REASONS.length),
   /** Só as decisões que existem (contagem maior que zero), em ordem de prioridade. */
   pendingDecisions: z

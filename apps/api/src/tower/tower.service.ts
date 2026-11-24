@@ -193,7 +193,7 @@ export class TowerService {
       : null;
 
     const { light, reasons } = trafficLight(
-      { openIncidents, postureScore, stalledSources: stalledSources(sources) },
+      { openIncidents, postureScore, stalledSources: stalledSources(sources), untriagedFindings },
       thresholds,
     );
     return {

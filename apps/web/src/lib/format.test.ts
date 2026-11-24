@@ -49,5 +49,7 @@ describe('formatação', () => {
     expect(plural(1, 'conta', 'contas')).toBe('1 conta');
     expect(plural(0, 'conta', 'contas')).toBe('0 contas');
     expect(plural(2, 'conta', 'contas')).toBe('2 contas');
+    expect(plural(1_234, 'conta', 'contas')).toBe('1.234 contas');
+    expect(plural(24_321, 'conta', 'contas')).toBe('24.321 contas');
   });
 });

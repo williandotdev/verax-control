@@ -190,6 +190,17 @@ describe('resumo da Torre', () => {
     expect(towerSummarySchema.safeParse(fresh).success).toBe(true);
   });
 
+  it('aceita o amarelo sem motivo: só há alertas para validar, e a contagem vai nas decisões', () => {
+    const waiting = {
+      ...summary,
+      light: 'yellow',
+      reasons: [],
+      openIncidents: { critical: 0, high: 0, medium: 0, low: 0 },
+      pendingDecisions: [{ kind: 'untriaged_finding', count: 24_321 }],
+    };
+    expect(towerSummarySchema.safeParse(waiting).success).toBe(true);
+  });
+
   it.each([
     ['cor desconhecida', { light: 'blue' }],
     ['motivo desconhecido', { reasons: ['other'] }],

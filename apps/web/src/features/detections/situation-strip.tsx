@@ -31,7 +31,7 @@ import {
   proofSentence,
   stalledPhrase,
 } from './tower-collection';
-import { towerReason } from './tower-reason';
+import { towerReason, validationPhrase } from './tower-reason';
 import { selectionSearch, withChanges } from './url-state';
 
 /**
@@ -108,8 +108,8 @@ export function SituationStrip({
 function CompactSituation({ summary }: { summary: TowerSummary }) {
   const decisions = summary.pendingDecisions.reduce((sum, decision) => sum + decision.count, 0);
   const counts = [
-    `${summary.openIncidents.critical} ${summary.openIncidents.critical === 1 ? 'incidente crítico aberto' : 'incidentes críticos abertos'}`,
-    `${summary.openIncidents.high} ${summary.openIncidents.high === 1 ? 'alto' : 'altos'}`,
+    plural(summary.openIncidents.critical, 'incidente crítico aberto', 'incidentes críticos abertos'),
+    plural(summary.openIncidents.high, 'alto', 'altos'),
     ...(summary.radar ? [plural(summary.radar.total, 'detecção em 24 h', 'detecções em 24 h')] : []),
     plural(decisions, 'decisão pendente', 'decisões pendentes'),
   ];
@@ -191,7 +191,7 @@ const DECISIONS: Readonly<
   },
   untriaged_finding: {
     severity: 'high',
-    title: (count) => `${plural(count, 'alerta alto ou crítico', 'alertas altos ou críticos')} para validar`,
+    title: validationPhrase,
     action: 'Ver os alertas',
     to: '/?status=new',
   },
