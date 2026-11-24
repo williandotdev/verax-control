@@ -2025,6 +2025,26 @@ Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `adm
   (2902) são nível 7 no Wazuh 4.14 e continuam virando achado médio: o primeiro SCA de cada instância ainda gera um
   achado por checagem com falha, juntos no incidente da instância.
 
+## Evento bruto no detalhe do achado (`apps/api/src/alerts/raw-alert.ts` e `raw-url-mask.ts`)
+
+O detalhe relê o alerta no indexer (30 dias) e o devolve saneado. Nada disto muda o que o indexer guarda.
+
+- **Sai inteiro:** `full_log`, `previous_output`, as chaves de protótipo e o que passa da profundidade.
+- **Cabeçalhos:** o valor dos de credencial (`authorization`, `cookie`, `x-api-key`...) e dos com nome de segredo ou de
+  dado pessoal (`x-auth-token`, `x-forwarded-email`), no objeto do WAF lido do bucket e na lista `{ name, value }` do
+  WAF lido do CloudWatch Logs.
+- **URL e query:** em `httpRequest.uri` e `args`, `Referer`, `Location`, nos logs de acesso e em qualquer campo que cite
+  uma URL com query, só o **valor** que é, ou parece, segredo ou dado pessoal vira `[removido]`: parâmetro com nome de
+  segredo ou de dado pessoal (em qualquer codificação), e-mail, CPF, CNPJ, cartão, JWT, UUID, valor longo e aleatório e
+  `usuario:senha@`. Os nomes, a estrutura e o ataque (SQL injection, XSS, travessia) ficam legíveis; num parâmetro de
+  segredo, o marcador diz que ataque parece (`[removido: parece SQL injection]`). O que não decodifica sai mascarado
+  (`[removido: codificação inválida]`).
+- **Como:** varredura de caracteres em tempo linear, até três camadas de codificação, 16 mil caracteres por texto, sem
+  expressão regular sobre o texto do atacante.
+- **Limites:** é redução de exposição, e não prova de que nada pessoal sobra. Nome de pessoa, endereço ou segredo curto
+  num parâmetro de nome neutro não tem como ser visto; um id aleatório que não é segredo e um número de 11 ou 14 dígitos
+  saem mascarados. A lista completa está no começo de `raw-url-mask.ts`.
+
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
 _(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado. PR-17': a
@@ -2061,7 +2081,15 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   achados e os incidentes continuam. O plano `interno` (nó da Verax) não tem limite, e nada é calculado; a Plataforma
   mede o volume por dia contra a franquia (CE-09), e o cliente da célula ainda sem plano fica de fora.
 - **Entrega (tarefa `notifications` do worker, a cada 60 s, com a concessão `notifications` no `SyncState`):**
-  - lê os avisos `pending` vencidos, os mais antigos primeiro (até 20 por execução);
+  - lê os avisos `pending` vencidos por faixa (`NOTICE_LANES`), a severidade primeiro: incidente crítico, alerta crítico,
+    incidente alto, os demais incidentes e os avisos de operação (poucos por natureza) e, por fim, os alertas altos; em
+    cada faixa, os mais antigos. Cada faixa com aviso vencido tem uma parte guardada da execução (um décimo, no mínimo
+    1): a rajada de uma nunca deixa as de baixo esperando para sempre;
+  - até 20 por execução **pedem e-mail**. O aviso que só entra em resumo (todos que recebem já passaram do limite da hora,
+    ou ele tem 24 h ou mais na fila, e o contato de escalonamento, se é dele, fica de fora pelas mesmas regras) não conta
+    nos 20: até mil por execução, em lotes de até 500, cada lote numa transação que só toma os avisos ainda intactos e só
+    grava em resumo aberto. 12.836 avisos pendentes saem da fila em 14 execuções (eram 643, quase 11 horas, com o crítico
+    que chegou por último na 642ª);
   - os resumos das horas que fecharam saem antes dos avisos novos (abaixo);
   - resolve os destinatários na hora do envio, pelo escopo do cliente do aviso: pessoas `active`, com MFA, sem troca de
     senha pendente, do papel que o tipo pede, com o cliente ativo e, nos três avisos de incidente, com a preferência
@@ -2099,7 +2127,9 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
     conferidas de novo no envio: quem perdeu o acesso não recebe (`no_recipients`), e quem desligou os avisos de
     incidente não recebe os que estavam reunidos (`no_items`);
   - a interrupção no meio de um aviso grava a tentativa como antes, e quem já foi para o resumo fica guardado: não é
-    reunido de novo.
+    reunido de novo;
+  - o resumo de milhares é barato: a linha é regravada uma vez por lote, o e-mail é montado lendo os avisos em lotes de
+    mil e diz o total de verdade ("12.835 avisos no total").
 - **Contato de escalonamento (D8; `apps/api/src/escalation/`):** o contato do cadastro do cliente (nome, e-mail e
   telefone) não é usuário: não tem login, MFA nem Minha conta. Por isso ele só recebe e-mail depois de confirmar que a
   caixa é dele, recebe só os críticos e sai por um link em qualquer e-mail.
@@ -2183,6 +2213,12 @@ As regras ficam em `tower-rules.ts`, e o contrato em `packages/shared/src/tower.
 o teste negativo A/B; só a fila sem dono e o medidor parado do nó, que não são de cliente nenhum, vão só para a equipe
 da Verax.
 
+- **Custo** (todo painel aberto pede a Torre a cada 60 s): o MITRE de 30 dias é contado pelo banco por combinação de
+  táticas e técnicas (`ReportsService.mitre`, SQL com parâmetros e o cliente da sessão) e passa pelo mesmo cálculo do
+  relatório; a Torre repete o resultado por até 30 s por cliente e processo (`TenantCache`, até 500 clientes, um cálculo
+  só para pedidos juntos), e o relatório nunca. A contagem dos alertas altos e críticos em "novo" usa o índice
+  `(tenantId, status, severity)`. As demais leituras usam os índices da janela de 24 h. Com 750 mil achados: a Torre vai
+  de 6,5 a 7,9 s para 0,3 s (0,1 s com o MITRE guardado), e dez painéis juntos, de 63 s para 0,7 s.
 - **Semáforo** (pendência 9, com a coleta parada aprovada em 05/11/2026):
   - **vermelho** com incidente crítico aberto;
   - **amarelo** com incidente alto aberto, nota de postura abaixo de 70 ou **coleta parada** (`collection_stalled`):

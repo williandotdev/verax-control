@@ -6635,3 +6635,41 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
   do comum passou do alvo (36 s).
 - **Riscos:** nenhum dado real de ALB foi visto; o escape de aspas no log não é documentado (a linha ambígua é analisada
   sem host e sem bloqueio).
+
+## Avisos por prioridade, custo da Torre e privacidade do evento bruto (24/11/2026)
+
+- **Avisos por e-mail:** a fila deixa de ser por ordem de chegada. A severidade manda (incidente crítico, alerta crítico,
+  incidente alto, os demais incidentes e os avisos de operação, alertas altos), por idade dentro de cada faixa, e cada
+  faixa com aviso vencido tem uma parte guardada da execução. O aviso que só entra em resumo não conta nos 20 por
+  execução: até mil por execução, em lotes de até 500 numa transação. Destinatários, limite por hora, preferências,
+  contato de escalonamento, tentativas e deduplicação não mudam. O resumo é montado em lotes e diz o total em pt-BR
+  ("12.835 avisos no total").
+  - Medido com 412.500 avisos (12.836 pendentes, o crítico por último): de 643 execuções para 14, o crítico da 642ª para
+    a 1ª, de 773 s para 2,9 s de trabalho, e de 6.061 MB para 24 MB de WAL (a linha do resumo era regravada inteira a
+    cada aviso).
+  - Migration `20261128120000_notification_escalation_index` (só acrescenta um índice de 2,9 MB): a contagem dos e-mails
+    ao contato na hora lia a tabela inteira a cada aviso crítico (119 ms e 11.219 páginas; agora 0,2 ms e 3).
+- **Custo da Torre:** o MITRE de 30 dias, que lia todos os achados em lotes de 5.000 a cada minuto em todo painel aberto,
+  é contado pelo banco por combinação de táticas e técnicas e passa pelo mesmo cálculo do relatório (que também o usa); a
+  Torre repete o resultado por até 30 s por cliente. A contagem dos altos e críticos em "novo" ganhou um índice
+  (migration `20261128120000_finding_untriaged_index`, só acrescenta, 5,2 MB).
+  - Medido com 750 mil achados em 30 dias: MITRE de 6,4 a 7,4 s para 0,14 s (o mesmo resultado); a contagem, de 313 ms para
+    35 ms (26.786 páginas lidas para 328); a Torre, de 6,5 a 7,9 s para 0,3 s (0,1 s com o MITRE guardado); dez painéis
+    juntos, de 63 s para 0,7 s. As outras contagens (24 h e incidentes) já usavam índice e ficam de fora.
+- **Privacidade do evento bruto:** `httpRequest.uri` e `args` do WAF chegavam ao painel com a query inteira. Agora o valor
+  que é, ou parece, segredo ou dado pessoal sai mascarado na URL, na query, no `Referer`, no `Location` e em qualquer
+  campo que cite uma URL com query; os nomes, a estrutura e o ataque ficam legíveis, e o que não decodifica sai mascarado.
+  Os limites estão em `raw-url-mask.ts`. Corrigido junto: a lista `[{ name, value }]` de cabeçalhos (o WAF lido do
+  CloudWatch Logs) não tinha a credencial trocada; só o objeto `{ nome: valor }` tinha.
+- **Arquivos:** `apps/api/src/notifications/notification-dispatcher.ts`, `mail/templates.ts`, `reports/reports.service.ts`,
+  `tower/tower.service.ts`, `common/cache/tenant-cache.ts` (novo), `common/prisma/prisma.service.ts` (`scopeTenantId`),
+  `alerts/raw-alert.ts` e `alerts/raw-url-mask.ts` (novo); `packages/shared/src/reports.ts` (função nova, contrato igual);
+  duas migrations; testes; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 185 arquivos e 2926 testes: na rodada inteira, 180 arquivos; em cinco
+  (`tower-posture-assets`, `detections`, `tenant-isolation`, `aws-onboarding` e `sso-admin-master`) o worker do vitest
+  caiu no Windows (3221226505), e passaram rodados de novo, uma vez. Shared, 29 arquivos e 516 testes. Mutações em série: a
+  ordem da fila, os lotes, o agregado, a memória e a máscara caem sem o código (uma sem efeito: o tamanho da leitura da
+  fila, que só limita o custo).
+- **Riscos:** numa rajada, a fila esvazia na mesma hora, e o que passa dos 5 avulsos vai para um resumo só (antes, ela
+  escorria por horas, com 5 avulsos em cada uma); as regras são as mesmas. O resumo MITRE da Torre pode ter até 30 s.
