@@ -2325,6 +2325,30 @@ da Verax.
   tabela"); a linha de saúde da fonte (`SourceHealthRow`) usa ícone de forma própria e rótulo, com o tom de "ok" em
   coletando, o de médio em atrasada e o de alto em parada. Todos estão no `/catalogo`.
 
+### Mapa de origens (componente do painel)
+
+_(decisão do responsável pelo produto, 24/11/2026: um mapa-múndi com um ponto por país de onde vêm as requisições, em faixa
+larga e recolhível no topo da tela Detecções. O componente está pronto no `/catalogo`; ele só entra na tela quando o coletor
+dos logs do load balancer existir, porque os pontos são o volume real.)_
+
+- **Desenho:** `WORLD_LAND_PATH`, um caminho SVG de 17 KB, sem fronteiras (nada de político é desenhado), na projeção de
+  Robinson centrada em 11° L e recortada de 83,7° N a 57° S, num quadro de 2000 por 820 (2,44 por 1). O corte cai em 169° O, no
+  estreito de Bering: a Rússia, Fiji e a Nova Zelândia ficam inteiras. A Antártida fica fora.
+- **Pontos:** 246 dos 250 códigos que a API pode produzir (ISO 3166-1 mais `XK`). `AQ`, `BV`, `GI` e `UM` não têm ponto e
+  aparecem só na lista e na tabela. O ponto é o de rótulo do Natural Earth, conferido contra o contorno do país ao gerar; o
+  rótulo de arquipélago que cai no mar vai para a maior ilha, e os territórios que o arquivo desenha dentro de outro país
+  (Guiana Francesa, Reunião, Svalbard e outros) saem do pedaço deles.
+- **Fonte e licença:** Natural Earth 5.1.2, domínio público, sem exigência de atribuição. Os dois arquivos e o SHA-256 de cada
+  um estão no cabeçalho de `apps/web/src/components/security/world-map-data.ts`.
+- **Regerar:** `node scripts/update-world-map.mjs ne_110m_land.geojson ne_50m_admin_0_countries.geojson` (o comando inteiro
+  está no cabeçalho do script). Não acessa a rede, recusa arquivo fora do formato, não copia texto do arquivo para o código e
+  dá sempre a mesma saída. Código novo na API, ou dado que mude a lista dos sem ponto, para o gerador: quem revisa decide.
+- **Dados:** `WorldTraffic` (`world-map-model.ts`). Cada requisição está em um grupo só (um país, origem desconhecida, endereço
+  interno ou CDN e proxy), e o percentual é sobre a soma de todos: o que não tem lugar no mapa fica numa linha à parte.
+- **Animação:** a onda é só CSS (`transform` e `opacity`), em no máximo 60 pontos, com 12 fases num período de 2,4 s e botão de
+  pausa lembrado por pessoa. Com menos movimento pedido, começa parada, com um anel fixo. Sem log novo, nada pulsa.
+- **Pacote:** a página usa `LazyWorldMap`; o desenho fica num arquivo à parte, fora do pacote principal.
+
 ## Plano do nó: limites e uso
 
 Cada nó tem um plano (fase 2, PR-03 e PR-18). Quem vale é o ambiente: `PLAN` e os ajustes `PLAN_*` do `node.conf`,
