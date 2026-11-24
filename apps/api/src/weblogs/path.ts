@@ -182,6 +182,32 @@ const PERSON_WORDS: ReadonlySet<string> = new Set([
   'telefone',
 ]);
 
+/**
+ * As mesmas palavras coladas noutra (`resetPassword`, `verifyEmail`, `getUser`): o segmento sem separador não se divide em
+ * palavras, e um token curto depois dele passaria legível. Mascarar a mais (`presets`) é o lado barato do erro.
+ */
+const SECRET_STEMS = [
+  'reset',
+  'passw',
+  'senha',
+  'recover',
+  'recuper',
+  'redefin',
+  'token',
+  'verif',
+  'confirm',
+  'activat',
+  'invit',
+  'convite',
+  'magic',
+  'secret',
+  'unsubscri',
+  'descadastr',
+  'apikey',
+  'forgot',
+] as const;
+const PERSON_STEMS = ['user', 'usuario', 'customer', 'cliente', 'cpf', 'cnpj', 'email'] as const;
+
 /** Palavras de rota que continuam legíveis depois das de cima. */
 const ROUTE_WORDS: ReadonlySet<string> = new Set([
   ...SECRET_WORDS,
@@ -245,8 +271,8 @@ function words(segment: string): string[] {
   return out;
 }
 
-const hasWord = (segment: string, set: ReadonlySet<string>): boolean =>
-  words(segment).some((word) => set.has(word));
+const hasWord = (segment: string, set: ReadonlySet<string>, stems: readonly string[]): boolean =>
+  words(segment).some((word) => set.has(word)) || stems.some((stem) => segment.includes(stem));
 
 /** `v1`, `v10`: versão de API, legível em qualquer contexto. */
 const isVersion = (segment: string): boolean =>
@@ -369,8 +395,8 @@ export function maskPath(path: NormalPath): string {
     if (path.hidden[i] === true) masked = '{token}';
     else if ((secret || person) && !readable && !masked.startsWith('{')) masked = '{token}';
     // Pessoa vale só para o segmento seguinte; segredo, até o fim (o Django põe dois: `/reset/<uid>/<token>/`).
-    person = hasWord(lower, PERSON_WORDS);
-    secret ||= hasWord(lower, SECRET_WORDS);
+    person = hasWord(lower, PERSON_WORDS, PERSON_STEMS);
+    secret ||= hasWord(lower, SECRET_WORDS, SECRET_STEMS);
     out.push(masked);
   }
   if (path.cased.length > MAX_MASKED_SEGMENTS) out.push('{etc}');
