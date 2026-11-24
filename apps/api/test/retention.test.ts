@@ -8,7 +8,9 @@ import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { Prisma } from '../src/generated/prisma/client.js';
 import type { TenantPlans } from '../src/plan/tenant-plan.js';
 import { RetentionJob, type RetentionJobOptions } from '../src/retention/retention-job.js';
-import { DAY_MS, retentionCutoffs } from '../src/retention/retention-policy.js';
+import { DAY_MS, retentionCutoffs, webLogCutoffs } from '../src/retention/retention-policy.js';
+import { sealEvidence, webEvidenceSchema } from '../src/weblogs/evidence.js';
+import { WebTrafficStore } from '../src/weblogs/store/web-traffic-store.js';
 import { createTenant } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
 
@@ -571,6 +573,385 @@ describe('expurgo diário do histórico (PR-19)', () => {
       expect(await findingsLeft([ancient])).toEqual([ancient]);
       expect(await auditExists(ancientAudit)).toBe(true);
       expect(await prisma.inventorySnapshot.count({ where: { id: oldSnapshot } })).toBe(0);
+    });
+  });
+
+  describe('ataques web pelos logs do ALB', () => {
+    const at = '2026-11-01T12:00:00.000Z';
+    const proof = sealEvidence({
+      version: 1,
+      ruleId: '990405',
+      windowFrom: at,
+      windowTo: at,
+      firstSeenAt: at,
+      lastSeenAt: at,
+      client: '198.51.100.7',
+      clientClass: 'direct',
+      host: 'loja.exemplo.com.br',
+      route: '/login',
+      routeKind: 'login',
+      routeSemantics: 'observed',
+      counters: {
+        requests: 0,
+        blocked: 0,
+        errors: 0,
+        toolRequests: 0,
+        probes: 0,
+        distinctPaths: 1,
+        attempts: 20,
+        failures: 20,
+        successes: 0,
+        clients: 1,
+        answered: 0,
+      },
+      blockedPercent: 0,
+      statuses: [{ status: '401', count: 20 }],
+      probeFamilies: ['env'],
+      routes: [{ path: '/login', count: 20 }],
+      clients: [{ client: '198.51.100.7', requests: 20, count: 20 }],
+      userAgents: { families: ['curl'], sample: 'curl/8.1' },
+      samples: [{ at, method: 'POST', path: '/login', status: 401, bytes: 512 }],
+      pointers: [{ objectKey: 'AWSLogs/111111111111/objeto.log.gz', minute: at }],
+      truncated: false,
+      notes: ['volume_only'],
+    });
+    /** O mesmo, sem as amostras: os agregados ficam iguais. */
+    const aggregates = {
+      ...proof,
+      samples: [],
+      pointers: [],
+      userAgents: { families: ['curl'], sample: null },
+    };
+
+    async function insertEvidence(
+      tenantId: string,
+      lastSeenAt: Date,
+      findingAt = lastSeenAt,
+    ): Promise<string> {
+      const findingId = await insertFinding(tenantId, findingAt);
+      await prisma.findingEvidence.create({
+        data: { findingId, tenantId, version: 1, data: proof, firstSeenAt: lastSeenAt, lastSeenAt },
+      });
+      return findingId;
+    }
+    const evidenceOf = (findingId: string) =>
+      prisma.findingEvidence.findFirstOrThrow({ where: { findingId } });
+
+    async function insertSource(
+      tenantId: string,
+      state: { authorizedAt?: Date; revokedAt?: Date } = { authorizedAt: new Date() },
+    ): Promise<{ tenantId: string; cloudAccountId: string; sourceId: string }> {
+      const account = await prisma.cloudAccount.create({
+        data: {
+          tenantId,
+          provider: 'aws',
+          accountId: String(100_000_000_000 + Math.floor(Math.random() * 8e11)),
+          regions: ['sa-east-1'],
+        },
+      });
+      const source = await prisma.awsSource.create({
+        data: {
+          tenantId,
+          cloudAccountId: account.id,
+          kind: 'elb_logs',
+          region: 'sa-east-1',
+          resourceId: 'loja',
+          name: 'loja',
+          method: 's3',
+          availability: 'available',
+          state: state.revokedAt ? 'revoked' : state.authorizedAt ? 'collecting' : 'available',
+          ...state,
+        },
+      });
+      return { tenantId, cloudAccountId: account.id, sourceId: source.id };
+    }
+    const counters = { requests: 10n, blocked: 1n, clientErrors: 2n, serverErrors: 3n, flagged: 4n };
+    const traffic = { country: 'BR', clientClass: 'direct', ...counters };
+
+    it('as amostras e os ponteiros saem 30 dias depois da última atividade; os agregados e o achado ficam como estão', async () => {
+      const { tenantId } = await customer('evidência');
+      const now = today();
+      const { evidenceSamples: cutoff } = webLogCutoffs(now);
+      expect(cutoff).toEqual(daysBefore(now, 30));
+      const justBefore = new Date(cutoff.getTime() - 1);
+      const gone = [
+        await insertEvidence(tenantId, justBefore),
+        await insertEvidence(tenantId, daysBefore(now, 45)),
+        await insertEvidence(tenantId, daysBefore(now, 60)),
+      ];
+      const kept = await insertEvidence(tenantId, cutoff);
+      // O achado antigo com atividade nova: as amostras são novas.
+      const active = await insertEvidence(tenantId, daysBefore(now, 2), daysBefore(now, 80));
+      const findings = await prisma.finding.findMany({ where: { tenantId }, orderBy: { id: 'asc' } });
+
+      const report = await job([tenantId]).maybeRun(now);
+      expect(report).toMatchObject({ status: 'done', deleted: { evidenceSamples: 3, findings: 0 } });
+      for (const id of gone) {
+        const row = await evidenceOf(id);
+        expect(row).toMatchObject({ data: aggregates, samplesPurgedAt: now });
+        // Continua no formato estrito: a tela a lê como antes.
+        expect(webEvidenceSchema.safeParse(row.data).success).toBe(true);
+      }
+      for (const id of [kept, active]) {
+        expect(await evidenceOf(id)).toMatchObject({ data: proof, samplesPurgedAt: null });
+      }
+      // O achado não é tocado: o histórico dele conta da última mudança.
+      expect(await prisma.finding.findMany({ where: { tenantId }, orderBy: { id: 'asc' } })).toEqual(
+        findings,
+      );
+
+      // De novo, nada a fazer: a data da primeira vez fica.
+      const before = await evidenceOf(gone[0] as string);
+      const again = await job([tenantId]).maybeRun(now);
+      expect(again).toMatchObject({ status: 'done', deleted: { evidenceSamples: 0 } });
+      expect(await evidenceOf(gone[0] as string)).toEqual(before);
+    });
+
+    it('a atividade que chega entre a busca e a trava salva as amostras', async () => {
+      const { tenantId } = await customer('evidência em uso');
+      const now = today();
+      const busy = await insertEvidence(tenantId, daysBefore(now, 40));
+      const quiet = await insertEvidence(tenantId, daysBefore(now, 41));
+      const raced = await insertEvidence(tenantId, daysBefore(now, 42));
+      const collector = new pg.Client({ connectionString: inject('testDatabaseUrl') });
+      await collector.connect();
+      try {
+        const { pid } = only((await collector.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows);
+        await collector.query('BEGIN');
+        await collector.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`verax:findings:${tenantId}`]);
+        const running = job([tenantId]).maybeRun(now);
+        const deadline = Date.now() + 15_000;
+        for (;;) {
+          const { blocked } = only(
+            await prisma.$queryRaw<{ blocked: number }[]>`
+              SELECT count(*)::int AS blocked FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pid))`,
+          );
+          if (blocked > 0) break;
+          if (Date.now() > deadline) throw new Error('o expurgo não chegou a esperar o coletor');
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        await collector.query('UPDATE "FindingEvidence" SET "lastSeenAt" = $1 WHERE "findingId" = $2', [
+          daysBefore(now, 1),
+          busy,
+        ]);
+        // E uma que outra execução expurgou nesse meio: a data é a da primeira.
+        await collector.query('UPDATE "FindingEvidence" SET "samplesPurgedAt" = $1 WHERE "findingId" = $2', [
+          daysBefore(now, 3),
+          raced,
+        ]);
+        await collector.query('COMMIT');
+        expect(await running).toMatchObject({ status: 'done', deleted: { evidenceSamples: 1 } });
+      } finally {
+        await collector.end();
+      }
+      expect(await evidenceOf(busy)).toMatchObject({ data: proof, samplesPurgedAt: null });
+      expect(await evidenceOf(quiet)).toMatchObject({ data: aggregates });
+      expect(await evidenceOf(raced)).toMatchObject({ samplesPurgedAt: daysBefore(now, 3) });
+    });
+
+    it('a evidência sai com o achado, pelo histórico do plano', async () => {
+      const { tenantId } = await customer('evidência antiga');
+      const now = today();
+      const old = await insertEvidence(tenantId, daysBefore(now, 200));
+      const recent = await insertEvidence(tenantId, daysBefore(now, 20));
+      expect(await job([tenantId]).maybeRun(now)).toMatchObject({
+        status: 'done',
+        deleted: { findings: 1, evidenceSamples: 0 },
+      });
+      expect(await findingsLeft([old, recent])).toEqual([recent]);
+      expect(
+        (await prisma.findingEvidence.findMany({ where: { tenantId } })).map((row) => row.findingId),
+      ).toEqual([recent]);
+    });
+
+    it('os objetos já tratados saem depois de 10 dias (o próprio corte fica), em lotes', async () => {
+      const { tenantId } = await customer('objetos');
+      const now = today();
+      const { objects: cutoff } = webLogCutoffs(now);
+      expect(cutoff).toEqual(daysBefore(now, 10));
+      const source = await insertSource(tenantId);
+      const other = await insertSource(tenantId);
+      const object = (readAt: Date, from = source) => ({
+        ...from,
+        objectHash: randomBytes(32).toString('hex'),
+        status: 'read',
+        slotStart: new Date(at),
+        readAt,
+      });
+      const kept = [object(cutoff), object(daysBefore(now, 1), other)];
+      await prisma.webLogObject.createMany({
+        data: [
+          ...kept,
+          object(new Date(cutoff.getTime() - 1)),
+          object(daysBefore(now, 11), other),
+          ...Array.from({ length: 5 }, () => object(daysBefore(now, 90))),
+        ],
+      });
+      expect(await job([tenantId]).maybeRun(now)).toMatchObject({
+        status: 'done',
+        deleted: { webLogObjects: 7 },
+      });
+      expect(
+        (await prisma.webLogObject.findMany({ where: { tenantId }, orderBy: { readAt: 'asc' } })).map(
+          (row) => row.objectHash,
+        ),
+      ).toEqual(kept.map((row) => row.objectHash));
+    });
+
+    it('o tráfego de 48 h passa para as horas sem perder nada; as horas de 35 dias saem, inclusive a que acabou de passar', async () => {
+      const { tenantId } = await customer('tráfego');
+      const now = today();
+      const cutoffs = webLogCutoffs(now);
+      expect(cutoffs.trafficSlots).toEqual(daysBefore(now, 2));
+      expect(cutoffs.trafficHours).toEqual(daysBefore(now, 35));
+      const source = await insertSource(tenantId);
+      const other = await insertSource(tenantId);
+      const slot = (from: typeof source, slotStart: Date) => ({
+        tenantId,
+        sourceId: from.sourceId,
+        slotStart,
+        ...traffic,
+      });
+      const hour = (from: typeof source, hourStart: Date) => ({
+        tenantId,
+        sourceId: from.sourceId,
+        hourStart,
+        ...traffic,
+      });
+      const before = (from: Date, ms: number) => new Date(from.getTime() - ms);
+      await prisma.webTrafficSlot.createMany({
+        data: [source, other].flatMap((from) => [
+          slot(from, cutoffs.trafficSlots),
+          slot(from, before(cutoffs.trafficSlots, 5 * 60_000)),
+          slot(from, before(cutoffs.trafficSlots, HOUR)),
+          slot(from, before(cutoffs.trafficSlots, 2 * HOUR)),
+          // Um nó parado por muito tempo: passa e sai na mesma vez.
+          slot(from, daysBefore(now, 50)),
+        ]),
+      });
+      await prisma.webTrafficHour.createMany({
+        data: [source, other].flatMap((from) => [
+          hour(from, cutoffs.trafficHours),
+          hour(from, before(cutoffs.trafficHours, HOUR)),
+          hour(from, daysBefore(now, 100)),
+        ]),
+      });
+      const store = new WebTrafficStore(prisma);
+      const seen = () => store.byCountry(tenantId, daysBefore(now, 30), now);
+      const visible = await seen();
+
+      expect(await job([tenantId]).maybeRun(now)).toMatchObject({
+        status: 'done',
+        deleted: { webTrafficSlots: 8, webTrafficHours: 6 },
+      });
+      expect(await seen()).toEqual(visible);
+      expect(
+        (await prisma.webTrafficSlot.findMany({ where: { tenantId } })).map((row) => row.slotStart),
+      ).toEqual([cutoffs.trafficSlots, cutoffs.trafficSlots]);
+      const hours = await prisma.webTrafficHour.findMany({
+        where: { tenantId, sourceId: source.sourceId },
+        orderBy: { hourStart: 'asc' },
+      });
+      expect(hours.map((row) => [row.hourStart, row.requests])).toEqual([
+        [cutoffs.trafficHours, 10n],
+        [before(cutoffs.trafficSlots, 2 * HOUR), 10n],
+        [before(cutoffs.trafficSlots, HOUR), 20n],
+      ]);
+    });
+
+    it('o resumo do dia sai quando a fonte não é mais coletada ou depois de 3 dias parado; o em uso fica', async () => {
+      const { tenantId } = await customer('estado do motor');
+      const now = today();
+      const { engineState: cutoff } = webLogCutoffs(now);
+      expect(cutoff).toEqual(daysBefore(now, 3));
+      const state = async (source: Awaited<ReturnType<typeof insertSource>>, updatedAt: Date) => {
+        await prisma.webEngineState.create({
+          data: {
+            tenantId,
+            sourceId: source.sourceId,
+            loadBalancer: 'app/loja/0123456789abcdef',
+            version: 1,
+            state: { version: 1 },
+            updatedAt,
+          },
+        });
+        return source.sourceId;
+      };
+      const kept = [
+        await state(await insertSource(tenantId), now),
+        await state(await insertSource(tenantId), cutoff),
+      ];
+      await state(await insertSource(tenantId), new Date(cutoff.getTime() - 1));
+      await state(await insertSource(tenantId, {}), now);
+      await state(await insertSource(tenantId, { authorizedAt: now, revokedAt: now }), now);
+      expect(await job([tenantId]).maybeRun(now)).toMatchObject({
+        status: 'done',
+        deleted: { webEngineStates: 3 },
+      });
+      expect(
+        (await prisma.webEngineState.findMany({ where: { tenantId } })).map((row) => row.sourceId).sort(),
+      ).toEqual(kept.sort());
+    });
+
+    it('o expurgo de A não toca em B, e a trilha de cada um conta só o próprio', async () => {
+      const a = await customer('A (web)');
+      const b = await customer('B (web)');
+      const now = today();
+      const seed = async (tenantId: string) => {
+        const source = await insertSource(tenantId, {});
+        const evidence = await insertEvidence(tenantId, daysBefore(now, 40));
+        await prisma.webLogObject.create({
+          data: {
+            ...source,
+            objectHash: randomBytes(32).toString('hex'),
+            status: 'read',
+            slotStart: new Date(at),
+            readAt: daysBefore(now, 20),
+          },
+        });
+        const { sourceId } = source;
+        await prisma.webTrafficSlot.create({
+          data: { tenantId, sourceId, slotStart: daysBefore(now, 3), ...traffic },
+        });
+        await prisma.webTrafficHour.create({
+          data: { tenantId, sourceId, hourStart: daysBefore(now, 40), ...traffic },
+        });
+        await prisma.webEngineState.create({
+          data: { tenantId, sourceId, loadBalancer: 'app/loja/0123456789abcdef', version: 1, state: {} },
+        });
+        return evidence;
+      };
+      await seed(a.tenantId);
+      const evidenceB = await seed(b.tenantId);
+      // As de B são mais antigas: não podem ocupar o lote de A.
+      for (const days of [60, 61, 62]) await insertEvidence(b.tenantId, daysBefore(now, days));
+      const deleted = {
+        evidenceSamples: 1,
+        webLogObjects: 1,
+        webTrafficSlots: 1,
+        webTrafficHours: 1,
+        webEngineStates: 1,
+      };
+
+      expect(await job([a.tenantId]).maybeRun(now)).toMatchObject({ status: 'done', deleted });
+      expect((await purgeTrail(a.tenantId))[0]?.after).toMatchObject({ deleted });
+      expect(await purgeTrail(b.tenantId)).toEqual([]);
+      expect(await evidenceOf(evidenceB)).toMatchObject({ data: proof, samplesPurgedAt: null });
+      const where = { tenantId: b.tenantId };
+      expect([
+        await prisma.webLogObject.count({ where }),
+        await prisma.webTrafficSlot.count({ where }),
+        await prisma.webTrafficHour.count({ where }),
+        await prisma.webEngineState.count({ where }),
+      ]).toEqual([1, 1, 1, 1]);
+
+      // O cliente sem plano (a célula) também é limpo: estes prazos não dependem do plano.
+      const plans: TenantPlans = { planOf: () => Promise.resolve(null) };
+      expect(await job([b.tenantId], { plans }).maybeRun(now)).toMatchObject({
+        status: 'done',
+        withoutPlan: 1,
+        deleted: { ...deleted, evidenceSamples: 4, findings: 0 },
+      });
     });
   });
 

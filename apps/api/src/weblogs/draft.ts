@@ -15,8 +15,9 @@ import { type EntryAt, loadHit, WEB_RULES, type WebHit, type WebRuleId } from '.
 import { UA_FAMILIES, type UaFamily } from './user-agent.js';
 
 /**
- * De detecção a achado. O formato é o do `FindingDraft`, com a fonte `alb` (que entra em `FINDING_SOURCES` na PR-3) e dois
- * campos que a gravação só passa a conhecer na PR-2: a evidência e a correlação. Nada aqui é ligado ao `FindingStore`.
+ * De detecção a achado. O formato é o do `FindingDraft`, com a fonte `alb` (que entra em `FINDING_SOURCES` na PR-3), a
+ * evidência (que o `FindingStore` grava com o achado) e a correlação (aceita, gravada só com os casos). Nada liga isto ao
+ * `FindingStore` ainda.
  *
  * **Chave:** `aws/<conta>/alb:<sha40(regra|balanceador|cliente|host|rota|nível)>`; a versão é a hora cheia (UTC) da última
  * atividade, como nas correlações dos flow logs da VPC: um achado em aberto por atacante, e no máximo uma reincidência por

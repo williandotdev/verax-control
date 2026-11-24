@@ -6,6 +6,8 @@ import type { AlertOwner } from './alert-owner.js';
 import { awsAlertMitre } from './aws-mitre.js';
 import { awsAlertTitle } from './aws-rule-titles.js';
 import type { CloudWatchAlertOwner, WazuhCloudWatchAlert } from './cloudwatch-alert.js';
+import type { WebCorrelation } from '../weblogs/draft.js';
+import type { WebEvidence } from '../weblogs/evidence.js';
 import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
 
 /**
@@ -73,6 +75,13 @@ export interface FindingDraft {
    * e o título (`FindingStore.revise`).
    */
   revision?: { lastSeenAt: string };
+  /**
+   * Só nos ataques web pelos logs do ALB (`weblogs/`): a evidência selada, que fica no lugar do evento bruto e é gravada na
+   * transação do achado (`finding-evidence.ts`). Sem ela, a gravação é a de sempre, consulta por consulta.
+   */
+  evidence?: WebEvidence;
+  /** Só neles: as chaves por onde os casos vão juntar achados. Aceito e ainda não gravado: é da PR dos casos (PR-10). */
+  correlation?: WebCorrelation;
 }
 
 /**

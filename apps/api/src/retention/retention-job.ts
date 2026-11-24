@@ -7,12 +7,15 @@ import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { fixedTenantPlans, type TenantPlans } from '../plan/tenant-plan.js';
+import { WebTrafficStore } from '../weblogs/store/web-traffic-store.js';
 import {
   decideHistoryDays,
   type HistoryDecision,
   type RetentionCutoffs,
   retentionCutoffs,
   retentionWindowStart,
+  type WebLogCutoffs,
+  webLogCutoffs,
 } from './retention-policy.js';
 
 /** Nome da tarefa no agendador, da linha no `SyncState` (agenda e concessão) e no `RetentionState` (prazo). */
@@ -43,6 +46,15 @@ export interface TenantPurgeCounts {
   notifications: number;
   /** Horas de avisos de cada pessoa (a contagem e o resumo do PR-17'). */
   noticeDigests: number;
+  /** Evidências que perderam as amostras e os ponteiros (os agregados ficam com o achado). */
+  evidenceSamples: number;
+  /** Objetos do log do ALB já tratados. */
+  webLogObjects: number;
+  /** Intervalos de 5 minutos do tráfego por país que passaram para as horas (nada se perde). */
+  webTrafficSlots: number;
+  webTrafficHours: number;
+  /** Resumos do dia de balanceadores que não são mais coletados, ou parados. */
+  webEngineStates: number;
   auditLogs: number;
 }
 
@@ -84,6 +96,11 @@ export interface RetentionReport {
     inventorySnapshots: number;
     notifications: number;
     noticeDigests: number;
+    evidenceSamples: number;
+    webLogObjects: number;
+    webTrafficSlots: number;
+    webTrafficHours: number;
+    webEngineStates: number;
     unownedAlerts: number;
     operational: number;
     auditLogs: number;
@@ -175,6 +192,11 @@ const emptyTenantCounts = (): TenantPurgeCounts => ({
   inventorySnapshots: 0,
   notifications: 0,
   noticeDigests: 0,
+  evidenceSamples: 0,
+  webLogObjects: 0,
+  webTrafficSlots: 0,
+  webTrafficHours: 0,
+  webEngineStates: 0,
   auditLogs: 0,
 });
 
@@ -360,6 +382,8 @@ function byFindingCount<T extends { findingCount: number }>(rows: readonly T[], 
  * 2. achados soltos (fora de incidente);
  * 3. postura (a varredura mais recente de cada conta fica sempre), inventário (30 dias; o retrato mais recente de cada
  *    conta fica sempre) e avisos por e-mail resolvidos (90 dias; só quando o model do PR-16 existe);
+ *    e os ataques web pelos logs do ALB: as amostras das evidências (30 dias), os objetos já tratados (10), o tráfego por
+ *    país (48 h em intervalos de 5 minutos, que passam para as horas; 35 dias por hora) e o resumo do dia parado;
  * 4. fila sem dono (90 dias);
  * 5. tabelas de operação (sessões, links, tentativas de login, códigos TOTP usados e limite por IP, vencidos há mais
  *    de um dia);
@@ -386,6 +410,7 @@ export class RetentionJob {
   private readonly maxRunMs: number;
   private readonly clock: () => number;
   private readonly plans: TenantPlans;
+  private readonly traffic: WebTrafficStore;
   private readonly tenantIds: readonly string[] | null;
 
   constructor(
@@ -414,6 +439,7 @@ export class RetentionJob {
       });
     }
     this.audit = options.audit ?? new AuditService();
+    this.traffic = new WebTrafficStore(prisma);
     this.name = options.name ?? RETENTION_TASK;
     this.batch = batch;
     this.pauseMs = options.pauseMs ?? RETENTION_PAUSE_MS;
@@ -469,6 +495,7 @@ export class RetentionJob {
   private async purge(now: Date, signal?: AbortSignal): Promise<RetentionReport> {
     // As regras que não dependem do plano (inventário, avisos, fila sem dono e operação) e o piso da auditoria.
     const common = retentionCutoffs(now, PLAN_HISTORY_FLOOR_DAYS);
+    const webLogs = webLogCutoffs(now);
     const run = new RunBudget(this.clock, this.maxRunMs, this.lease, this.pauseMs, signal);
     const tenants = await this.tenants();
     const perTenant = new Map<string, TenantRun>();
@@ -486,6 +513,7 @@ export class RetentionJob {
         }
         await this.purgeInventory(tenantId, common.inventory, counts, run);
         await this.purgeNotifications(tenantId, common.notifications, counts, run);
+        await this.purgeWebLogs(tenantId, webLogs, now, counts, run);
       }
       await this.purgeUnowned(common.unowned, system, run);
       await this.purgeOperational(common.operational, system, run);
@@ -522,6 +550,11 @@ export class RetentionJob {
         inventorySnapshots: totals.inventorySnapshots,
         notifications: totals.notifications,
         noticeDigests: totals.noticeDigests,
+        evidenceSamples: totals.evidenceSamples,
+        webLogObjects: totals.webLogObjects,
+        webTrafficSlots: totals.webTrafficSlots,
+        webTrafficHours: totals.webTrafficHours,
+        webEngineStates: totals.webEngineStates,
         unownedAlerts: system.unownedAlerts,
         operational:
           system.sessions +
@@ -880,6 +913,125 @@ export class RetentionJob {
       async (ids) => (await digests.deleteMany({ where: { ...digestWhere, id: { in: ids } } })).count,
       (deleted) => {
         counts.noticeDigests += deleted;
+      },
+    );
+  }
+
+  /**
+   * 3d. Ataques web pelos logs do ALB. As tabelas são só do sistema (o escopo do cliente as lê): a escrita é pelo cliente
+   * base, sempre com o `tenantId`.
+   *
+   * A evidência perde as amostras e os ponteiros por atividade, e não por idade do achado: o achado antigo com atividade
+   * nova tem amostras novas. Sob o lock dos achados do cliente, o mesmo de quem grava a evidência, e com a condição de novo
+   * na escrita: a que ganhou atividade entre a busca e o lock fica. O achado não é tocado (a retenção dele conta da última
+   * mudança).
+   */
+  private async purgeWebLogs(
+    tenantId: string,
+    cutoffs: WebLogCutoffs,
+    now: Date,
+    counts: TenantPurgeCounts,
+    run: RunBudget,
+  ): Promise<void> {
+    const db = this.prisma;
+    await this.inBatches(
+      run,
+      async () =>
+        (
+          await db.findingEvidence.findMany({
+            where: { tenantId, samplesPurgedAt: null, lastSeenAt: { lt: cutoffs.evidenceSamples } },
+            select: { findingId: true },
+            orderBy: { lastSeenAt: 'asc' },
+            take: this.batch,
+          })
+        ).map((row) => row.findingId),
+      (ids) =>
+        db.$transaction(
+          async (tx) => {
+            await lockTenantFindings(tx, tenantId);
+            return tx.$executeRaw`
+              UPDATE "FindingEvidence" SET
+                "data" = jsonb_set(
+                  "data" || '{"samples": [], "pointers": []}'::jsonb, '{userAgents,sample}', 'null'::jsonb, false
+                ),
+                "samplesPurgedAt" = ${now}::timestamptz,
+                "updatedAt" = now()
+              WHERE "findingId" = ANY(${ids}::uuid[]) AND "tenantId" = ${tenantId}::uuid
+                AND "samplesPurgedAt" IS NULL AND "lastSeenAt" < ${cutoffs.evidenceSamples}::timestamptz`;
+          },
+          { timeout: TRANSACTION_TIMEOUT_MS },
+        ),
+      (purged) => {
+        counts.evidenceSamples += purged;
+      },
+    );
+
+    const objects: Prisma.WebLogObjectWhereInput = { tenantId, readAt: { lt: cutoffs.objects } };
+    await this.inBatches(
+      run,
+      () =>
+        db.webLogObject.findMany({
+          where: objects,
+          select: { cloudAccountId: true, objectHash: true },
+          orderBy: { readAt: 'asc' },
+          take: this.batch,
+        }),
+      async (keys) =>
+        (
+          await db.webLogObject.deleteMany({
+            where: {
+              ...objects,
+              cloudAccountId: { in: [...new Set(keys.map((key) => key.cloudAccountId))] },
+              objectHash: { in: keys.map((key) => key.objectHash) },
+            },
+          })
+        ).count,
+      (deleted) => {
+        counts.webLogObjects += deleted;
+      },
+    );
+
+    // Uma hora de um balanceador por lote. A hora nova passa antes do corte das horas: nada fica para trás.
+    await this.inBatches(
+      run,
+      async () => {
+        const next = await this.traffic.nextToRollup(tenantId, cutoffs.trafficSlots);
+        return next === null ? [] : [next];
+      },
+      async ([target]) => (target === undefined ? 0 : this.traffic.rollupHour(target)),
+      (moved) => {
+        counts.webTrafficSlots += moved;
+      },
+    );
+    await this.inBatches(
+      run,
+      async () => {
+        const next = await this.traffic.nextToPurge(tenantId, cutoffs.trafficHours);
+        return next === null ? [] : [next];
+      },
+      async ([target]) => (target === undefined ? 0 : this.traffic.purgeHour(target)),
+      (deleted) => {
+        counts.webTrafficHours += deleted;
+      },
+    );
+
+    const states: Prisma.WebEngineStateWhereInput = {
+      tenantId,
+      OR: [
+        { updatedAt: { lt: cutoffs.engineState } },
+        { source: { OR: [{ authorizedAt: null }, { revokedAt: { not: null } }] } },
+      ],
+    };
+    await this.inBatches(
+      run,
+      async () =>
+        (
+          await db.webEngineState.findMany({ where: states, select: { sourceId: true }, take: this.batch })
+        ).map((row) => row.sourceId),
+      async (ids) =>
+        (await db.webEngineState.deleteMany({ where: { ...states, sourceId: { in: ids } } })).count,
+      (deleted) => {
+        counts.webEngineStates += deleted;
       },
     );
   }
