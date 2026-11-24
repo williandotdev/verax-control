@@ -1562,8 +1562,9 @@ revogada sai na execução seguinte. Uma fonte com falha nunca para as outras.
   da ameaça, e a família quando ela diz mais), igual pela API e pelo bucket; no Security Hub, pelos tipos `TTPs/`; na
   rajada de bloqueios do WAF (80443), varredura ativa (T1595), como a do Cloudflare; nas outras regras do Wazuh, o da
   regra. O Inspector, o controle reprovado e o Access Analyzer ficam **sem tática**, de propósito: são fraquezas, e o
-  ATT&CK classifica ações de um atacante. A aba MITRE explica a matriz vazia e diz quantos alertas não têm tática. O
-  achado já gravado fica com a classificação de quando chegou.
+  ATT&CK classifica ações de um atacante. A aba MITRE mostra as 14 táticas num gráfico de radar (`SpiderChart`): a
+  participação de cada uma na soma das marcações do período, em escala de raiz quadrada; sem nenhuma, explica a matriz
+  vazia e diz quantos alertas não têm tática. O achado já gravado fica com a classificação de quando chegou.
 - **Volume:** os bytes do JSON de cada achado novo ou com versão nova entram no medidor da AWS (`IngestUsage` e
   `IngestUsageDay`, fonte `aws`), depois de a página ficar gravada, e somam nos avisos de 80% e 100% do plano. O achado
   de outro cliente, o pulado e a releitura não contam. Nenhum achado é descartado por plano.

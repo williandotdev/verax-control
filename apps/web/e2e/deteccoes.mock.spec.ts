@@ -152,6 +152,7 @@ test.describe('tela Detecções (modo mock)', () => {
           'aria-selected',
           'true',
         );
+        await expect(page.getByRole('group', { name: /^Gráfico de radar das táticas/ })).toBeVisible();
         await expect(page.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' })).toBeVisible();
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);

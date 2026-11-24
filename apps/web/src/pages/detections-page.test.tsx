@@ -611,13 +611,40 @@ describe('Detecções: análise e exportação', () => {
     expect(screen.queryByRole('table', { name: /^Alertas do cliente/ })).toBeNull();
     const tab = await screen.findByRole('tab', { name: 'MITRE ATT&CK' });
     expect(tab).toHaveAttribute('aria-selected', 'true');
-    await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' });
+    const table = await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' });
+    expect(
+      within(table)
+        .getAllByRole('columnheader')
+        .map((header) => header.textContent),
+    ).toEqual(['Tática', 'Alertas', 'Participação', 'Incidentes', 'Técnicas mais vistas']);
     const tactic = screen.getByRole('link', { name: /^Evasão de defesas \(TA0005\)/ });
     await userEvent.click(tactic);
     await waitFor(() => expect(search(router).get('tatica')).toBe('Defense Evasion'));
     expect(search(router).get('analise')).toBeNull();
     expect(search(router).get('periodo')).toBe('7d');
     await list();
+  });
+
+  it('MITRE: a lista ao lado do gráfico também filtra, e o CSV segue com os números crus, sem o percentual', async () => {
+    const blobs: Blob[] = [];
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      blobs.push(blob);
+      return 'blob:teste';
+    });
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    const router = renderAt('/?analise=mitre&periodo=30d');
+    const seen = await screen.findByRole('list', { name: 'Táticas com alertas' });
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Exportar Táticas e técnicas do MITRE ATT&CK em CSV' }),
+    );
+    const [header, ...lines] = (await (blobs[0] as Blob).text()).trim().split('\r\n');
+    expect(header).toContain('"Tática";"Alertas";"Incidentes";"Técnicas mais vistas"');
+    expect(lines).toHaveLength(14);
+    expect(lines.join('')).not.toContain('%');
+
+    await userEvent.click(within(seen).getByRole('link', { name: /^Acesso inicial TA0001/ }));
+    await waitFor(() => expect(search(router).get('tatica')).toBe('Initial Access'));
   });
 
   it('MITRE sem período na URL: a tática leva a janela padrão da análise (30 dias), não todo o histórico', async () => {
@@ -660,6 +687,9 @@ describe('Detecções: análise e exportação', () => {
       expect(
         screen.getByText(/Vulnerabilidades, controles reprovados e acessos abertos são fraquezas/),
       ).toBeInTheDocument();
+      // A explicação no lugar do gráfico: uma teia sem série pareceria quebrada.
+      expect(screen.queryByRole('group', { name: /^Gráfico de radar/ })).toBeNull();
+      expect(screen.queryByRole('heading', { name: 'Alertas por tática' })).toBeNull();
       expect(screen.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' })).toBeInTheDocument();
     });
 

@@ -19,11 +19,12 @@ import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/finding
 import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
 import { cn } from '@/lib/cn';
 import { formatCount, formatTimestamp } from '@/lib/format';
-import { formatDuration, TACTIC_LABELS } from './labels';
-import { MitreGrid } from './mitre-grid';
+import { formatDuration } from './labels';
+import { MitreRadar } from './mitre-radar';
 import { ReportContext } from './report-context';
 import { ReportSection, ReportTable } from './report-table';
 import { type ReportRange, useReport } from './reports-api';
+import { formatPart, tacticShares } from './tactic-share';
 
 /**
  * As análises que vieram do menu Relatórios para a tela Detecções, na janela do filtro de período da tela: o resumo
@@ -114,7 +115,10 @@ function MitreEmptyNote({ range }: { range: ReportRange }) {
   );
 }
 
-/** As 14 táticas na grade e na tabela; cada tática da grade filtra a lista por ela (`tacticHref`). */
+/**
+ * As 14 táticas no gráfico de radar e na tabela; cada tática com alerta, no gráfico, filtra a lista por ela
+ * (`tacticHref`). Sem alerta com tática, a explicação toma o lugar do gráfico: uma teia sem série pareceria quebrada.
+ */
 export function MitreReportView({
   range,
   tacticHref,
@@ -132,44 +136,50 @@ export function MitreReportView({
           ) : (
             <p className="text-xs text-muted-foreground">{NO_TACTIC_EXPLANATION}</p>
           )}
-          <MitreGrid tactics={data.tactics} tacticHref={tacticHref} />
+          <MitreRadar tactics={data.tactics} tacticHref={tacticHref} />
           <ReportTable
             caption="Táticas e técnicas do MITRE ATT&CK"
             file={'mitre-attck'}
-            rows={data.tactics}
-            rowKey={(row) => row.id}
+            rows={tacticShares(data.tactics)}
+            rowKey={({ tactic }) => tactic.id}
             columns={[
               {
                 header: 'Tática',
-                cell: (row) => `${row.id} · ${TACTIC_LABELS[row.name] ?? row.name}`,
-                csv: (row) => `${row.id} ${row.name}`,
+                cell: ({ tactic, label }) => `${tactic.id} · ${label}`,
+                csv: ({ tactic }) => `${tactic.id} ${tactic.name}`,
               },
               {
                 header: 'Alertas',
-                cell: (row) => formatCount(row.findings),
-                csv: (row) => row.findings,
+                cell: ({ tactic }) => formatCount(tactic.findings),
+                csv: ({ tactic }) => tactic.findings,
+                align: 'right',
+              },
+              {
+                // Só na tela: no CSV vão os números crus e inteiros, de onde o percentual sai.
+                header: 'Participação',
+                cell: ({ share }) => formatPart(share),
                 align: 'right',
               },
               {
                 header: 'Incidentes',
-                cell: (row) => formatCount(row.incidents),
-                csv: (row) => row.incidents,
+                cell: ({ tactic }) => formatCount(tactic.incidents),
+                csv: ({ tactic }) => tactic.incidents,
                 align: 'right',
               },
               {
                 header: 'Técnicas mais vistas',
-                cell: (row) =>
-                  row.techniques.length === 0 ? (
+                cell: ({ tactic }) =>
+                  tactic.techniques.length === 0 ? (
                     <span className="text-muted-foreground">—</span>
                   ) : (
                     <span className="font-mono text-xs">
-                      {row.techniques
+                      {tactic.techniques
                         .map((technique) => `${technique.id} (${formatCount(technique.findings)})`)
                         .join(', ')}
                     </span>
                   ),
-                csv: (row) =>
-                  row.techniques.map((technique) => `${technique.id} (${technique.findings})`).join('; '),
+                csv: ({ tactic }) =>
+                  tactic.techniques.map((technique) => `${technique.id} (${technique.findings})`).join('; '),
               },
             ]}
           />
