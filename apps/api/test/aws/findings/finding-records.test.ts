@@ -406,6 +406,28 @@ describe('Inspector: do achado ao rascunho', () => {
     expect(finding.accounts).toEqual([ACCOUNT]);
   });
 
+  it('o primeiro pacote vulnerável vira o subgrupo do caso, sem caractere de controle; sem pacote, nenhum', () => {
+    const draftOf = (vulnerablePackages: unknown, overrides: Record<string, unknown> = {}) => {
+      const raw = {
+        ...inspectorFinding({ account: ACCOUNT }),
+        packageVulnerabilityDetails: { vulnerabilityId: 'CVE-2026-0001', source: 'NVD', vulnerablePackages },
+        ...overrides,
+      };
+      return parsed(parseInspectorFinding(raw, NOW)).drafts(OWNER)[0];
+    };
+    expect(draftOf([{ name: 'openssl', version: '3.0.1' }, { name: 'openssl-libs' }])?.group).toBe('openssl');
+    expect(draftOf([{ name: ' open\u0000ssl\n' }])?.group).toBe('open ssl');
+    expect(draftOf([{ name: 'x'.repeat(5_000) }])?.group).toBe('x'.repeat(512));
+    // Sem nome aproveitável, o rascunho nem leva o campo: os outros achados continuam iguais.
+    for (const packages of [[], [{}], [{ name: '' }], [{ name: 7 }], 'openssl', null, undefined]) {
+      expect(draftOf(packages)).not.toHaveProperty('group');
+    }
+    for (const type of ['NETWORK_REACHABILITY', 'CODE_VULNERABILITY']) {
+      const raw = inspectorFinding({ account: ACCOUNT, type });
+      expect(parsed(parseInspectorFinding(raw, NOW)).drafts(OWNER)[0]).not.toHaveProperty('group');
+    }
+  });
+
   it('a porta alcançável e a vulnerabilidade no código têm a própria regra', () => {
     const network = parsed(
       parseInspectorFinding(

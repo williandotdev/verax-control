@@ -40,6 +40,8 @@ const OWNERSHIP = '20261124150000_cloudwatch_alert_ownership';
 const CHOSEN = '20261124160000_aws_chosen_capabilities';
 /** E a do número de sequência do sinal `applied` na prova do dono: uma coluna, com o CHECK dela. */
 const APPLIED_SEQ = '20261124170000_cloudwatch_ownership_applied_seq';
+/** A seguinte, de outro trabalho: a base dos casos (`alert-cases-migration.test.ts`). */
+const ALERT_CASES = '20261127120000_alert_cases';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -89,6 +91,7 @@ describe(`migration ${MIGRATION}`, () => {
       OWNERSHIP,
       CHOSEN,
       APPLIED_SEQ,
+      ALERT_CASES,
     ]);
     for (const name of [MIGRATION, RETRY_LIMIT, OWNERSHIP, CHOSEN, APPLIED_SEQ]) {
       const sql = sqlOf(name);

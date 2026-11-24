@@ -1,3 +1,4 @@
+import { boundedCaseGroup } from '../cases/case-key.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type {
@@ -80,6 +81,7 @@ export function findingRow(draft: FindingDraft, exception: ActiveException | nul
     mitreTactics: draft.mitreTactics,
     mitreTechniques: draft.mitreTechniques,
     exceptionId: exception?.id ?? null,
+    caseGroup: draft.group === undefined ? null : boundedCaseGroup(draft.group),
   };
 }
 

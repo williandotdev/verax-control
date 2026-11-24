@@ -6600,3 +6600,43 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
 - **Riscos e sugestões:** os alertas já gravados não mudam (a reclassificação seria uma tarefa à parte, pelo `eventName`
   do GuardDuty e pela regra 80443). Os tipos do GuardDuty que não dizem a tática (`Policy`, `Behavior`, `PenTest`,
   `AttackSequence` e parte de `Trojan` e `UnauthorizedAccess`) ficam sem ela.
+
+## Casos, parte 1: a base no banco e a chave de agrupamento (PR-1 do desenho de 24/11/2026) ⚠️ migration nova
+
+- **O que muda:** só a base, sem comportamento novo: nenhuma tarefa, rota, tela ou e-mail usa os casos ainda, e nenhum
+  alerta ganha caso nesta versão.
+  - **Banco** (`20261127120000_alert_cases`, aditiva e numa transação só): `AlertCase`, `TriageOperation` e
+    `TriageOperationItem`; no alerta, `caseId`, `caseGroup` e `triageOpId`; no aviso, `caseId` (nascem vazias). As chaves
+    estrangeiras levam o cliente e não se propagam (`ON UPDATE RESTRICT`). As contagens do caso são de gatilhos do
+    alerta (um por comando no UPDATE e no DELETE; no INSERT, só quando o alerta já nasce num caso): exatas com escritas
+    ao mesmo tempo, com a imagem anterior do nó, com o expurgo e com as cascatas.
+  - **Chave** (`apps/api/src/cases/case-key.ts`): pura, versionada, só das colunas gravadas. Decisão D1: vulnerabilidade
+    é pacote + recurso, literais (ECR sem o digest, Lambda sem a versão; sem pacote, o CVE). O que quem ataca escolhe
+    (nome da sessão, usuário federado, usuário digitado no login, endereço exato) não é parte da chave; o desconhecido
+    vai para a fila de detecção.
+  - **Inspector:** o alerta novo grava o pacote (`FindingDraft.group` → `Finding.caseGroup`).
+  - **Escopo:** os três models em `TENANT_SCOPED_MODELS`; `alertCase` também em `SYSTEM_WRITTEN_MODELS` (só leitura).
+- **O desenho conferido no código:** o Prisma 7.10 não compara índice parcial (o `migrate diff` sai vazio); o
+  `migrate deploy` não roda o arquivo numa transação (por isso o BEGIN e o COMMIT, e o `NOT VALID` não serviria de
+  nada); a chave composta padrão do Prisma (`ON UPDATE CASCADE`) levaria os alertas junto na troca do cliente do caso; a
+  fila parcial só serve a SQL com o enum escrito, e não à forma que o Prisma gera; as faixas do Wazuh foram lidas da
+  imagem 4.14.9 (23501 a 23508 e 19000 a 19015; 19111 a 19153 são logins do VMware).
+- **Arquivos:** `apps/api/prisma/schema.prisma` e a migration; `apps/api/src/cases/case-key.ts` (novo),
+  `alerts/finding-{draft,store}.ts`, `aws/findings/inspector.ts`, `common/prisma/tenant-scope.ts`; os testes
+  `src/cases/case-key.test.ts`, `test/alert-cases.test.ts` e `test/alert-cases-migration.test.ts` (novos),
+  `test/db-bootstrap.test.ts` e `test/aws/findings/finding-records.test.ts` (casos novos) e
+  `test/aws-onboarding-migration.test.ts` (a lista das migrations seguintes ganhou esta).
+- **Dependências novas:** nenhuma.
+- **Testes:** `pnpm lint`, `format:check` e `typecheck` (todos os pacotes), limpos. API com Postgres descartável, 184
+  arquivos e 2897 testes (na execução final, um arquivo caiu no erro conhecido do worker do vitest no Windows,
+  3221226505, e passou rodado de novo). Novos: 158 da chave (tabela e propriedades), 19 do banco (contagens, também
+  com 480 transações ao mesmo tempo em 8 conexões, e chaves por cliente) e 15 da migration (banco novo, banco existente
+  e a imagem anterior simulada). À parte, o código e o Prisma Client da `main` (2b94373) num banco com esta migration:
+  13 arquivos e 299 testes, inclusive gravar, triar, promover, anexar, remover e expurgar alertas já em casos. 62
+  mutações, uma por vez: todas mortas (uma só depois de um teste a mais). Não rodou: as suítes dos outros pacotes (nada
+  mudou neles) e o teste de carga (fica para a parte 2).
+- **Teste manual:** nenhum na tela (nada muda); no nó, conferir que a versão sobe com a migration e que a coleta segue.
+- **Riscos:** cada UPDATE de alerta roda o gatilho, com ou sem caso (cerca de 0,25 ms numa máquina ocupada); a
+  gravação dos coletores (INSERT) não paga nada. Quem fizer dois comandos sobre alertas na mesma transação precisa
+  travar antes todas as linhas (`FOR UPDATE`), como o expurgo: sem isso, uma triagem ao mesmo tempo cai em deadlock
+  (reproduzido; nenhum código de hoje faz isso).

@@ -73,6 +73,12 @@ export interface FindingDraft {
    * e o título (`FindingStore.revise`).
    */
   revision?: { lastSeenAt: string };
+  /**
+   * Subgrupo do alerta dentro do caso (`Finding.caseGroup`): por enquanto, só o pacote vulnerável do Inspector, que é
+   * também parte da chave do caso (`cases/case-key.ts`). Texto da origem, sem caractere de controle; a gravação o corta
+   * sem juntar dois valores.
+   */
+  group?: string;
 }
 
 /**
