@@ -2025,6 +2025,26 @@ Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `adm
   (2902) são nível 7 no Wazuh 4.14 e continuam virando achado médio: o primeiro SCA de cada instância ainda gera um
   achado por checagem com falha, juntos no incidente da instância.
 
+## Evento bruto no detalhe do achado (`apps/api/src/alerts/raw-alert.ts` e `raw-url-mask.ts`)
+
+O detalhe relê o alerta no indexer (30 dias) e o devolve saneado. Nada disto muda o que o indexer guarda.
+
+- **Sai inteiro:** `full_log`, `previous_output`, as chaves de protótipo e o que passa da profundidade.
+- **Cabeçalhos:** o valor dos de credencial (`authorization`, `cookie`, `x-api-key`...) e dos com nome de segredo ou de
+  dado pessoal (`x-auth-token`, `x-forwarded-email`), no objeto do WAF lido do bucket e na lista `{ name, value }` do
+  WAF lido do CloudWatch Logs.
+- **URL e query:** em `httpRequest.uri` e `args`, `Referer`, `Location`, nos logs de acesso e em qualquer campo que cite
+  uma URL com query, só o **valor** que é, ou parece, segredo ou dado pessoal vira `[removido]`: parâmetro com nome de
+  segredo ou de dado pessoal (em qualquer codificação), e-mail, CPF, CNPJ, cartão, JWT, UUID, valor longo e aleatório e
+  `usuario:senha@`. Os nomes, a estrutura e o ataque (SQL injection, XSS, travessia) ficam legíveis; num parâmetro de
+  segredo, o marcador diz que ataque parece (`[removido: parece SQL injection]`). O que não decodifica sai mascarado
+  (`[removido: codificação inválida]`).
+- **Como:** varredura de caracteres em tempo linear, até três camadas de codificação, 16 mil caracteres por texto, sem
+  expressão regular sobre o texto do atacante.
+- **Limites:** é redução de exposição, e não prova de que nada pessoal sobra. Nome de pessoa, endereço ou segredo curto
+  num parâmetro de nome neutro não tem como ser visto; um id aleatório que não é segredo e um número de 11 ou 14 dígitos
+  saem mascarados. A lista completa está no começo de `raw-url-mask.ts`.
+
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
 _(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado. PR-17': a

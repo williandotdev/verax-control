@@ -6621,3 +6621,20 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
   - Medido com 750 mil achados em 30 dias: MITRE de 6,4 a 7,4 s para 0,14 s (o mesmo resultado); a contagem, de 313 ms para
     35 ms (26.786 páginas lidas para 328); a Torre, de 6,5 a 7,9 s para 0,3 s (0,1 s com o MITRE guardado); dez painéis
     juntos, de 63 s para 0,7 s. As outras contagens (24 h e incidentes) já usavam índice e ficam de fora.
+- **Privacidade do evento bruto:** `httpRequest.uri` e `args` do WAF chegavam ao painel com a query inteira. Agora o valor
+  que é, ou parece, segredo ou dado pessoal sai mascarado na URL, na query, no `Referer`, no `Location` e em qualquer
+  campo que cite uma URL com query; os nomes, a estrutura e o ataque ficam legíveis, e o que não decodifica sai mascarado.
+  Os limites estão em `raw-url-mask.ts`. Corrigido junto: a lista `[{ name, value }]` de cabeçalhos (o WAF lido do
+  CloudWatch Logs) não tinha a credencial trocada; só o objeto `{ nome: valor }` tinha.
+- **Arquivos:** `apps/api/src/notifications/notification-dispatcher.ts`, `mail/templates.ts`, `reports/reports.service.ts`,
+  `tower/tower.service.ts`, `common/cache/tenant-cache.ts` (novo), `common/prisma/prisma.service.ts` (`scopeTenantId`),
+  `alerts/raw-alert.ts` e `alerts/raw-url-mask.ts` (novo); `packages/shared/src/reports.ts` (função nova, contrato igual);
+  duas migrations; testes; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 185 arquivos e 2926 testes: na rodada inteira, 180 arquivos; em cinco
+  (`tower-posture-assets`, `detections`, `tenant-isolation`, `aws-onboarding` e `sso-admin-master`) o worker do vitest
+  caiu no Windows (3221226505), e passaram rodados de novo, uma vez. Shared, 29 arquivos e 516 testes. Mutações em série: a
+  ordem da fila, os lotes, o agregado, a memória e a máscara caem sem o código (uma sem efeito: o tamanho da leitura da
+  fila, que só limita o custo).
+- **Riscos:** numa rajada, a fila esvazia na mesma hora, e o que passa dos 5 avulsos vai para um resumo só (antes, ela
+  escorria por horas, com 5 avulsos em cada uma); as regras são as mesmas. O resumo MITRE da Torre pode ter até 30 s.
