@@ -843,7 +843,7 @@ describe('limites por nó', () => {
     expect(divideLimits(DEFAULT_LIMITS, 0).maxClients).toBe(DEFAULT_LIMITS.maxClients);
   });
 
-  it('a lista vendorizada (vazia) é o padrão do motor', () => {
+  it('a lista vendorizada é o padrão do motor', () => {
     const engine = new WebLogEngine({
       source: {
         tenantId: 't',
@@ -854,7 +854,7 @@ describe('limites por nó', () => {
       hashKey: new Uint8Array(16),
       now: T0,
     });
-    expect(engine.evaluate({ now: T0 }).notes).toContain('proxy_ranges_unavailable');
+    expect(engine.evaluate({ now: T0 }).notes).not.toContain('proxy_ranges_unavailable');
     expect(TEST_RANGES.every((entry) => entry.source === 'teste')).toBe(true);
   });
 });

@@ -57,8 +57,8 @@ import { TrustedSources, type WebTrustedSource } from './trusted-sources.js';
  * 1. **Lento ou espalhado:** 19 falhas ou 9 sondas a cada 15 min, ou um /64 (IPv6) por tentativa, não passam de nenhum
  *    limite. A regra por /24 e /48 em 24 h é a 990408 (fase 2). A 990407 só vê o que passa de 500 falhas em 15 min por
  *    host e rota: com certificado curinga, até 50 subdomínios por slot somam à parte, e a linha sem SNI (ou ambígua) também.
- * 2. **Atrás de CDN ou proxy**, ou com a lista de faixas vazia (`data/proxy-ranges.ts`, o caso de hoje): as regras por IP
- *    ficam desligadas. Só a 990403 e a 990407 seguem, sem IP.
+ * 2. **Atrás de CDN ou proxy**, ou sem a lista de faixas (`data/proxy-ranges.ts`): as regras por IP ficam desligadas. Só a
+ *    990403 e a 990407 seguem, sem IP.
  * 3. **Login que responde sempre 200**, por GraphQL, por GET (Basic) ou com nome fora da lista: só volume, ou nada, até o
  *    cliente declarar a rota. Sem configuração e sem o perfil de 7 dias (fase 2), uma rota só "distingue" falha de sucesso
  *    depois de 5 recusas da aplicação (que não 429) em 60 min.

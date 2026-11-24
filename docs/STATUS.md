@@ -6628,3 +6628,15 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
   61 s, 28 MB e 49 a 65 ms no maior passo da avaliação.
 - **Riscos:** nenhum dado real de ALB foi visto; o escape de aspas no log não é documentado (a linha ambígua é analisada
   sem host e sem bloqueio).
+
+## Ataques web pelos logs do ALB: faixas das CDNs preenchidas (motor ainda não ligado)
+
+- **O que muda:** `weblogs/data/proxy-ranges.ts` deixa de ser o marcador vazio da PR-1. São 22 faixas do Cloudflare e 89 do
+  CloudFront (só `CLOUDFRONT_ORIGIN_FACING`), copiadas das listas oficiais em 24/11/2026. Com elas, o endereço público que
+  não é de CDN passa a ser `direct`, e as regras por IP do motor valem.
+- **Atualização:** `scripts/update-proxy-ranges.mjs` gera o arquivo (na saída padrão) a partir das listas baixadas, sem acessar a rede. Rodar a
+  cada versão do nó; com mais de 180 dias, o motor avisa (`proxy_ranges_stale`).
+- **Dependências:** nenhuma.
+- **Testes:** o primeiro endereço de cada faixa cai na CDN dela; sem repetição; IPv4 e IPv6 nas duas; o padrão do motor.
+- **Riscos:** outras CDNs e proxies (Akamai, Fastly, balanceadores em frente) não estão na lista: o cliente precisa declarar
+  a faixa como fonte confiável do tipo proxy.
