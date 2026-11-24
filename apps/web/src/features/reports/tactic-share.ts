@@ -32,17 +32,27 @@ export function rankedTactics(shares: readonly TacticShare[]): TacticShare[] {
 }
 
 /**
- * O percentual escrito, sem casas: "34%". O que existe nunca vira "0%" (abaixo de 1%, "<1%"), e o que não é tudo nunca
- * vira "100%" (">99%"). Por causa do arredondamento, a soma dos percentuais escritos pode não dar 100.
+ * O percentual sem casas e o que vem antes dele. O que existe nunca vira "0%" (abaixo de 1%, é menos de 1%), e o que não é
+ * tudo nunca vira "100%" (é mais de 99%). Por causa do arredondamento, a soma dos percentuais escritos pode não dar 100.
  */
-export function formatPart(share: number): string {
-  if (share <= 0) return '0%';
-  if (share < 0.01) return '<1%';
-  const whole = Math.round(share * 100);
-  return whole >= 100 && share < 1 ? '>99%' : `${whole}%`;
+function partOf(share: number): { bound: 'under' | 'over' | null; percent: number } {
+  if (share <= 0) return { bound: null, percent: 0 };
+  if (share < 0.01) return { bound: 'under', percent: 1 };
+  const percent = Math.round(share * 100);
+  return percent >= 100 && share < 1 ? { bound: 'over', percent: 99 } : { bound: null, percent };
 }
 
-/** O mesmo percentual para o leitor de tela, sem os sinais de menor e maior. */
+const WRITTEN_BOUND = { under: '<', over: '>' } as const;
+const SPOKEN_BOUND = { under: 'menos de ', over: 'mais de ' } as const;
+
+/** O percentual escrito: "34%", "<1%", ">99%". */
+export function formatPart(share: number): string {
+  const { bound, percent } = partOf(share);
+  return `${bound === null ? '' : WRITTEN_BOUND[bound]}${percent}%`;
+}
+
+/** O mesmo percentual para o leitor de tela: "menos de 1%", "mais de 99%". */
 export function spokenPart(share: number): string {
-  return formatPart(share).replace('<', 'menos de ').replace('>', 'mais de ');
+  const { bound, percent } = partOf(share);
+  return `${bound === null ? '' : SPOKEN_BOUND[bound]}${percent}%`;
 }
