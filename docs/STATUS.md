@@ -6600,3 +6600,17 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
 - **Riscos e sugestões:** os alertas já gravados não mudam (a reclassificação seria uma tarefa à parte, pelo `eventName`
   do GuardDuty e pela regra 80443). Os tipos do GuardDuty que não dizem a tática (`Policy`, `Behavior`, `PenTest`,
   `AttackSequence` e parte de `Trojan` e `UnauthorizedAccess`) ficam sem ela.
+
+## Avisos por prioridade, custo da Torre e privacidade do evento bruto (24/11/2026)
+
+- **Avisos por e-mail:** a fila deixa de ser por ordem de chegada. A severidade manda (incidente crítico, alerta crítico,
+  incidente alto, os demais incidentes e os avisos de operação, alertas altos), por idade dentro de cada faixa, e cada
+  faixa com aviso vencido tem uma parte guardada da execução. O aviso que só entra em resumo não conta nos 20 por
+  execução: até mil por execução, em lotes de até 500 numa transação. Destinatários, limite por hora, preferências,
+  contato de escalonamento, tentativas e deduplicação não mudam. O resumo é montado em lotes e diz o total em pt-BR
+  ("12.835 avisos no total").
+  - Medido com 412.500 avisos (12.836 pendentes, o crítico por último): de 643 execuções para 14, o crítico da 642ª para
+    a 1ª, de 773 s para 2,9 s de trabalho, e de 6.061 MB para 24 MB de WAL (a linha do resumo era regravada inteira a
+    cada aviso).
+  - Migration `20261128120000_notification_escalation_index` (só acrescenta um índice de 2,9 MB): a contagem dos e-mails
+    ao contato na hora lia a tabela inteira a cada aviso crítico (119 ms e 11.219 páginas; agora 0,2 ms e 3).

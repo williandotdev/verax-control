@@ -2061,7 +2061,15 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   achados e os incidentes continuam. O plano `interno` (nó da Verax) não tem limite, e nada é calculado; a Plataforma
   mede o volume por dia contra a franquia (CE-09), e o cliente da célula ainda sem plano fica de fora.
 - **Entrega (tarefa `notifications` do worker, a cada 60 s, com a concessão `notifications` no `SyncState`):**
-  - lê os avisos `pending` vencidos, os mais antigos primeiro (até 20 por execução);
+  - lê os avisos `pending` vencidos por faixa (`NOTICE_LANES`), a severidade primeiro: incidente crítico, alerta crítico,
+    incidente alto, os demais incidentes e os avisos de operação (poucos por natureza) e, por fim, os alertas altos; em
+    cada faixa, os mais antigos. Cada faixa com aviso vencido tem uma parte guardada da execução (um décimo, no mínimo
+    1): a rajada de uma nunca deixa as de baixo esperando para sempre;
+  - até 20 por execução **pedem e-mail**. O aviso que só entra em resumo (todos que recebem já passaram do limite da hora,
+    ou ele tem 24 h ou mais na fila, e o contato de escalonamento, se é dele, fica de fora pelas mesmas regras) não conta
+    nos 20: até mil por execução, em lotes de até 500, cada lote numa transação que só toma os avisos ainda intactos e só
+    grava em resumo aberto. 12.836 avisos pendentes saem da fila em 14 execuções (eram 643, quase 11 horas, com o crítico
+    que chegou por último na 642ª);
   - os resumos das horas que fecharam saem antes dos avisos novos (abaixo);
   - resolve os destinatários na hora do envio, pelo escopo do cliente do aviso: pessoas `active`, com MFA, sem troca de
     senha pendente, do papel que o tipo pede, com o cliente ativo e, nos três avisos de incidente, com a preferência
@@ -2099,7 +2107,9 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
     conferidas de novo no envio: quem perdeu o acesso não recebe (`no_recipients`), e quem desligou os avisos de
     incidente não recebe os que estavam reunidos (`no_items`);
   - a interrupção no meio de um aviso grava a tentativa como antes, e quem já foi para o resumo fica guardado: não é
-    reunido de novo.
+    reunido de novo;
+  - o resumo de milhares é barato: a linha é regravada uma vez por lote, o e-mail é montado lendo os avisos em lotes de
+    mil e diz o total de verdade ("12.835 avisos no total").
 - **Contato de escalonamento (D8; `apps/api/src/escalation/`):** o contato do cadastro do cliente (nome, e-mail e
   telefone) não é usuário: não tem login, MFA nem Minha conta. Por isso ele só recebe e-mail depois de confirmar que a
   caixa é dele, recebe só os críticos e sai por um link em qualquer e-mail.

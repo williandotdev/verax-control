@@ -14,11 +14,19 @@ import {
   restartEscalationConfirmation,
 } from '../src/escalation/escalation-contact-store.js';
 import { escalationTokenHash, mintEscalationTokens } from '../src/escalation/escalation-tokens.js';
-import type { UserRole, UserStatus } from '../src/generated/prisma/client.js';
+import {
+  NotificationKind,
+  type Prisma,
+  type UserRole,
+  type UserStatus,
+} from '../src/generated/prisma/client.js';
 import { enqueueNotices, incidentNotices } from '../src/notifications/finding-notices.js';
 import type { MailMessage, MailTransport } from '../src/mail/mail.types.js';
 import {
   hourStartOf,
+  NOTICE_LANES,
+  NOTIFICATION_DIGEST_READ_CHUNK,
+  NOTIFICATION_FOLD_BATCH,
   NOTIFICATION_RETRY_DELAYS_MS,
   NOTIFICATIONS_TASK,
   NotificationDispatcher,
@@ -1373,6 +1381,392 @@ describe('avisos por e-mail (outbox)', () => {
       expect(digests.every((digest) => digest.status === 'sent')).toBe(true);
     });
 
+    describe('a ordem da fila e o resumo em lotes', () => {
+      /** Bem antes de qualquer aviso dos outros arquivos: os destes testes são os mais antigos da faixa deles. */
+      const LONG_AGO = new Date('2020-01-01T00:00:00.000Z');
+
+      /** Avisos gravados direto na fila, um por linha, apontando para o mesmo alerta. */
+      async function enqueue(
+        tenantId: string,
+        rows: readonly Partial<Prisma.NotificationCreateManyInput>[],
+      ): Promise<string[]> {
+        const finding = await prisma.finding.create({
+          data: {
+            tenantId,
+            accountId: '111111111111',
+            source: 'wazuh',
+            sourceEventId: `teste-avisos/${randomUUID()}`,
+            logSource: 'cloudtrail',
+            occurredAt: new Date(),
+            severity: 'critical',
+            ruleId: '80202',
+            ruleLevel: 12,
+            title: 'Achado de teste',
+          },
+          select: { id: true },
+        });
+        const created = await prisma.forTenant(tenantId).notification.createManyAndReturn({
+          data: rows.map((row, index) => ({
+            tenantId,
+            kind: 'high_finding' as const,
+            severity: 'high' as const,
+            findingId: finding.id,
+            dedupeKey: `finding:${randomUUID()}`,
+            nextAttemptAt: new Date(LONG_AGO.getTime() + index),
+            ...row,
+          })),
+          select: { id: true },
+        });
+        return created.map(({ id }) => id);
+      }
+      const high = {};
+      const critical = { kind: 'critical_finding', severity: 'critical' } as const;
+      /** A pessoa já recebeu os 5 avulsos da hora: tudo o que vier vai para o resumo, sem e-mail nenhum. */
+      const atLimit = (tenantId: string, userId: string, hourStart: Date) =>
+        prisma
+          .forTenant(tenantId)
+          .notificationDigest.create({ data: { tenantId, userId, hourStart, individualSent: 5 } });
+      /** O banco do despachante com um gancho antes de cada transação (a de um lote reunido é uma delas). */
+      const beforeEachTransaction = (hook: () => Promise<void> | void): PrismaService =>
+        new Proxy(prisma, {
+          get(target, property) {
+            const value: unknown = Reflect.get(target, property);
+            if (property !== '$transaction') return value;
+            return async (...args: unknown[]) => {
+              await hook();
+              return (value as (...rest: unknown[]) => Promise<unknown>).apply(target, args);
+            };
+          },
+        });
+      const runOn = (database: PrismaService, transport: MailTransport, at: Date) =>
+        new NotificationDispatcher(
+          database,
+          { transport, webOrigin: TEST_WEB_ORIGIN },
+          { now: () => at, batch: 1 },
+        ).runOnce();
+
+      it('cada aviso está em exatamente uma faixa, de qualquer tipo e severidade', async () => {
+        const tenantId = await createTenant(app, 'Cliente demo A (faixas)');
+        const { incidentId } = await confirmIncident(tenantId, 'low');
+        const severities = ['critical', 'high', 'medium', 'low', null] as const;
+        const fixed: Partial<Record<NotificationKind, readonly (string | null)[]>> = {
+          incident_opened: ['critical', 'high', 'medium', 'low'],
+          incident_escalated: ['critical', 'high'],
+          critical_finding: ['critical'],
+          high_finding: ['high'],
+          escalation_confirmation: [null],
+        };
+        const lanesOf: Record<string, number[]> = {};
+        for (const kind of Object.values(NotificationKind)) {
+          for (const severity of severities) {
+            if (fixed[kind] !== undefined && !fixed[kind].includes(severity)) continue;
+            const [id] = await enqueue(tenantId, [
+              {
+                kind,
+                severity,
+                status: 'skipped',
+                ...(kind.startsWith('incident_') && { incidentId }),
+                ...(kind === 'plan_usage' && { usageMonth: new Date('2026-11-01'), usagePercent: 80 }),
+                ...(kind === 'escalation_confirmation' && { escalationGeneration: 1, findingId: null }),
+              },
+            ]);
+            const lanes: number[] = [];
+            for (const [index, lane] of NOTICE_LANES.entries()) {
+              const matched = await prisma.notification.count({ where: { id: id as string, AND: [lane] } });
+              if (matched === 1) lanes.push(index);
+            }
+            lanesOf[`${kind}/${severity}`] = lanes;
+          }
+        }
+        expect(Object.values(lanesOf).every((lanes) => lanes.length === 1)).toBe(true);
+        expect(lanesOf).toMatchObject({
+          'incident_opened/critical': [0],
+          'incident_escalated/critical': [0],
+          'critical_finding/critical': [1],
+          'incident_opened/high': [2],
+          'incident_escalated/high': [2],
+          'incident_opened/medium': [3],
+          'incident_opened/low': [3],
+          'aws_ingestion_stalled/null': [3],
+          'plan_usage/null': [3],
+          'escalation_confirmation/null': [3],
+          'high_finding/high': [4],
+        });
+      });
+
+      it('o crítico e o incidente confirmado saem antes dos altos mais antigos; dentro da faixa, o mais antigo', async () => {
+        const tenantId = await createTenant(app, 'Cliente demo A (prioridade)');
+        const admin = await member(tenantId, 'admin_cliente');
+        // Doze altos primeiro; depois, na ordem inversa da prioridade, o resto.
+        const highs = await enqueue(tenantId, Array(12).fill(high));
+        await confirmIncident(tenantId, 'medium');
+        const [firstCritical, secondCritical] = await enqueue(tenantId, [critical, critical]);
+        await confirmIncident(tenantId, 'high');
+        await confirmIncident(tenantId, 'critical');
+        const mailbox = new MemoryMailTransport();
+        const at = nextHour();
+        await dispatcher(mailbox, at).runOnce();
+        expect(mailbox.to(admin.email).map((message) => message.subject)).toEqual([
+          'Incidente de severidade crítica confirmado no Verax Control',
+          'Alerta de severidade crítica no Verax Control',
+          'Alerta de severidade crítica no Verax Control',
+          'Incidente de severidade alta confirmado no Verax Control',
+          'Incidente de severidade média confirmado no Verax Control',
+        ]);
+        const delivered = await prisma
+          .forTenant(tenantId)
+          .notification.findMany({ where: { kind: 'critical_finding' }, orderBy: { sentAt: 'asc' } });
+        expect(delivered.map(({ id }) => id).sort()).toEqual([firstCritical, secondCritical].sort());
+        // Nenhum alto se perde: os doze estão no resumo da hora, na ordem em que chegaram.
+        expect((await digestsOf(tenantId))[0]).toMatchObject({ individualSent: 5, noticeIds: highs });
+      });
+
+      it('a rajada de críticos não deixa os altos esperando para sempre', async () => {
+        const tenantId = await createTenant(app, 'Cliente demo A (rajada de críticos)');
+        const person = await member(tenantId, 'admin_cliente');
+        const other = await createTenant(app, 'Cliente demo B (um alto na fila)');
+        const waiting = await member(other, 'admin_cliente');
+        // Todos pedem e-mail, e todos falham: ninguém chega ao limite da hora.
+        await enqueue(tenantId, Array(30).fill(critical));
+        await enqueue(other, [high]);
+        const mailbox = new MemoryMailTransport();
+        let failures = 0;
+        const transport: MailTransport = {
+          send: (message) => {
+            if (message.to !== person.email) return mailbox.send(message);
+            failures += 1;
+            return Promise.reject(new Error('550'));
+          },
+        };
+        await dispatcher(transport, soon(), { batch: 10 }).runOnce();
+        expect(failures).toBeGreaterThan(0);
+        expect(failures).toBeLessThan(10);
+        expect(mailbox.to(waiting.email)).toHaveLength(1);
+        // O que sobrou desta rajada não fica para os testes seguintes.
+        await prisma.forTenant(tenantId).notification.updateMany({
+          where: { status: 'pending' },
+          data: { status: 'skipped' },
+        });
+      });
+
+      it('quem só entra em resumo não ocupa a vez de quem pede e-mail, e vai num lote só', async () => {
+        const tenantId = await createTenant(app, 'Cliente demo A (lote)');
+        const admin = await member(tenantId, 'admin_cliente');
+        const analyst = await member(tenantId, 'analista_cliente');
+        const optedOut = await member(tenantId, 'analista_cliente');
+        await optOut(tenantId, optedOut.id);
+        const at = nextHour();
+        const hourStart = hourStartOf(at);
+        await atLimit(tenantId, admin.id, hourStart);
+        await atLimit(tenantId, analyst.id, hourStart);
+        // A contagem de outra hora da mesma pessoa não muda.
+        const previous = await atLimit(tenantId, admin.id, new Date(hourStart.getTime() - HOUR));
+        const highs = await enqueue(tenantId, Array(25).fill(high));
+        const criticalIds = await enqueue(tenantId, Array(5).fill(critical));
+        const mailbox = new MemoryMailTransport();
+        // O tamanho do resumo a cada transação do despachante: quantas vezes a linha foi regravada.
+        const sizes = new Set<number>();
+        const size = async () => {
+          const digest = await prisma.forTenant(tenantId).notificationDigest.findFirst({
+            where: { userId: admin.id, hourStart },
+            select: { noticeIds: true },
+          });
+          sizes.add(digest?.noticeIds.length ?? 0);
+        };
+        const report = await runOn(beforeEachTransaction(size), mailbox, at);
+        await size();
+        expect(report.folded).toBeGreaterThanOrEqual(60);
+        expect([...sizes].sort((a, b) => a - b)).toEqual([0, 30]);
+        const after = await noticesOf(tenantId);
+        expect(after).toHaveLength(30);
+        for (const notice of after) {
+          expect(notice).toMatchObject({
+            status: 'sent',
+            attempts: 1,
+            lastError: null,
+            deliveredUserIds: [],
+          });
+          expect([...notice.digestedUserIds].sort()).toEqual([admin.id, analyst.id].sort());
+          expect(notice.sentAt).not.toBeNull();
+        }
+        const [untouched, ...digests] = await digestsOf(tenantId);
+        expect(untouched).toEqual(previous);
+        expect(digests.map((digest) => digest.userId).sort()).toEqual([admin.id, analyst.id].sort());
+        for (const digest of digests) {
+          expect(digest).toMatchObject({
+            status: 'pending',
+            individualSent: 5,
+            catchUp: false,
+            noticeIds: [...criticalIds, ...highs],
+            nextAttemptAt: new Date(hourStart.getTime() + HOUR),
+          });
+        }
+        expect(mailbox.messages.filter((message) => message.to === optedOut.email)).toEqual([]);
+      });
+
+      it('o resumo de milhares: em execuções limitadas, sem perder nenhum, e o e-mail diz o total de verdade', async () => {
+        const tenantId = await createTenant(app, 'Cliente demo A (milhares)');
+        const admin = await member(tenantId, 'admin_cliente');
+        const at = nextHour();
+        const hourStart = hourStartOf(at);
+        await atLimit(tenantId, admin.id, hourStart);
+        const total = 2 * NOTIFICATION_FOLD_BATCH + 345;
+        // O crítico entra por último e, mesmo assim, é o primeiro da lista do resumo.
+        await enqueue(tenantId, Array(total - 1).fill(high));
+        const [last] = await enqueue(tenantId, [critical]);
+        const mailbox = new MemoryMailTransport();
+        const pending = () => prisma.forTenant(tenantId).notification.count({ where: { status: 'pending' } });
+        const folded: number[] = [];
+        for (let run = 0; run < 6 && (await pending()) > 0; run += 1) {
+          const before = await pending();
+          await runOn(prisma, mailbox, at);
+          folded.push(before - (await pending()));
+        }
+        expect(await pending()).toBe(0);
+        expect(Math.max(...folded)).toBeLessThanOrEqual(NOTIFICATION_FOLD_BATCH);
+        expect(folded.length).toBeLessThanOrEqual(5);
+        const [digest] = await digestsOf(tenantId);
+        expect(new Set(digest?.noticeIds).size).toBe(total);
+        expect(digest?.noticeIds).toHaveLength(total);
+        expect(digest?.noticeIds[0]).toBe(last);
+
+        await dispatcher(mailbox, new Date(hourStart.getTime() + HOUR)).runOnce();
+        const [message] = mailbox.to(admin.email);
+        expect(message?.text).toContain('2.345 avisos no total');
+        expect(message?.text).toContain('E mais 2.335 avisos neste resumo.');
+        expect(message?.html.match(/<li>/g)).toHaveLength(10);
+        expect(message?.text.split('\n').find((line) => line.startsWith('- '))).toContain(
+          'Alerta de severidade crítica',
+        );
+        expect((await digestsOf(tenantId))[0]).toMatchObject({ status: 'sent', attempts: 1 });
+      });
+
+      it('a lista do resumo é a mesma lendo em lotes: os críticos primeiro, mesmo no último lote', async () => {
+        const tenantId = await createTenant(app, 'Cliente demo A (lista em lotes)');
+        const admin = await member(tenantId, 'admin_cliente');
+        const highs = await enqueue(
+          tenantId,
+          Array(NOTIFICATION_DIGEST_READ_CHUNK + 5).fill({ status: 'sent' }),
+        );
+        const criticalIds = await enqueue(tenantId, Array(3).fill({ ...critical, status: 'sent' }));
+        const hourStart = new Date(hourStartOf(new Date()).getTime() - 2 * HOUR);
+        await prisma.forTenant(tenantId).notificationDigest.create({
+          data: {
+            tenantId,
+            userId: admin.id,
+            hourStart,
+            individualSent: 5,
+            // Um aviso repetido (uma entrega refeita) conta uma vez.
+            noticeIds: [...highs, ...criticalIds, highs[0] as string],
+            status: 'pending',
+            nextAttemptAt: new Date(hourStart.getTime() + HOUR),
+          },
+        });
+        const mailbox = new MemoryMailTransport();
+        await dispatcher(mailbox, soon()).runOnce();
+        const [message] = mailbox.to(admin.email);
+        expect(message?.text).toContain('1.008 avisos no total');
+        const titles = (message?.text ?? '').split('\n').filter((line) => line.startsWith('- '));
+        expect(titles).toHaveLength(10);
+        expect(titles.slice(0, 3).every((line) => line.includes('severidade crítica'))).toBe(true);
+        expect(titles.slice(3).every((line) => line.includes('severidade alta'))).toBe(true);
+      });
+
+      it('o aviso mexido por outro worker depois da leitura não entra no resumo; os outros entram', async () => {
+        const tenantId = await createTenant(app, 'Cliente demo A (aviso já tomado)');
+        const admin = await member(tenantId, 'admin_cliente');
+        const at = nextHour();
+        await atLimit(tenantId, admin.id, hourStartOf(at));
+        const ids = await enqueue(tenantId, Array(4).fill(high));
+        const [taken] = ids as [string];
+        const database = beforeEachTransaction(async () => {
+          await prisma.forTenant(tenantId).notification.update({
+            where: { id: taken },
+            data: { status: 'sent', attempts: 1, deliveredUserIds: [admin.id] },
+          });
+        });
+        await runOn(database, new MemoryMailTransport(), at);
+        expect((await digestsOf(tenantId))[0]?.noticeIds).toEqual(ids.slice(1));
+        expect(await noticeById(tenantId, taken)).toMatchObject({
+          deliveredUserIds: [admin.id],
+          digestedUserIds: [],
+        });
+      });
+
+      it('o resumo que fechou antes da gravação não recebe mais nada: os avisos seguem na fila', async () => {
+        const tenantId = await createTenant(app, 'Cliente demo A (resumo fechado)');
+        const admin = await member(tenantId, 'admin_cliente');
+        const at = nextHour();
+        await atLimit(tenantId, admin.id, hourStartOf(at));
+        const [old] = await enqueue(tenantId, [{ ...high, status: 'sent' }]);
+        const ids = await enqueue(tenantId, Array(3).fill(high));
+        const closing = beforeEachTransaction(async () => {
+          await prisma.forTenant(tenantId).notificationDigest.updateMany({
+            data: { status: 'sent', noticeIds: [old as string], nextAttemptAt: at },
+          });
+        });
+        await runOn(closing, new MemoryMailTransport(), at);
+        expect((await digestsOf(tenantId))[0]?.noticeIds).toEqual([old]);
+        for (const id of ids) {
+          expect(await noticeById(tenantId, id)).toMatchObject({
+            status: 'pending',
+            attempts: 0,
+            digestedUserIds: [],
+          });
+        }
+        // Na hora seguinte, saem como sempre: avulsos, até o limite.
+        const mailbox = new MemoryMailTransport();
+        await dispatcher(mailbox, new Date(at.getTime() + HOUR)).runOnce();
+        expect(mailbox.to(admin.email)).toHaveLength(3);
+      });
+
+      it('concessão perdida depois de um lote: o que ainda não foi gravado fica para quem a tomou', async () => {
+        const first = await createTenant(app, 'Cliente demo A (lote antes da perda)');
+        const second = await createTenant(app, 'Cliente demo B (lote depois da perda)');
+        const at = nextHour();
+        for (const tenantId of [first, second]) {
+          const admin = await member(tenantId, 'admin_cliente');
+          await atLimit(tenantId, admin.id, hourStartOf(at));
+          await enqueue(tenantId, Array(2).fill(critical));
+        }
+        const stealing = beforeEachTransaction(async () => {
+          await prisma.syncState.update({
+            where: { name: NOTIFICATIONS_TASK },
+            data: { leaseOwner: 'outra-replica', leaseUntil: new Date(Date.now() + 60_000) },
+          });
+        });
+        try {
+          await runOn(stealing, new MemoryMailTransport(), at);
+        } finally {
+          await new SyncLease(prisma, NOTIFICATIONS_TASK, 'outra-replica', 60_000).release();
+        }
+        const states = [...(await noticesOf(first)), ...(await noticesOf(second))].map(
+          ({ status }) => status,
+        );
+        expect(states.filter((status) => status === 'sent')).toHaveLength(2);
+        expect(states.filter((status) => status === 'pending')).toHaveLength(2);
+      });
+
+      it('A/B: reunidos na mesma execução, cada resumo só leva os avisos do próprio cliente', async () => {
+        const at = nextHour();
+        const sides: { tenantId: string; ids: string[]; userId: string }[] = [];
+        for (const name of ['Cliente demo A (lote misto)', 'Cliente demo B (lote misto)']) {
+          const tenantId = await createTenant(app, name);
+          const admin = await member(tenantId, 'admin_cliente');
+          await atLimit(tenantId, admin.id, hourStartOf(at));
+          sides.push({ tenantId, ids: await enqueue(tenantId, Array(6).fill(high)), userId: admin.id });
+        }
+        await runOn(prisma, new MemoryMailTransport(), at);
+        for (const { tenantId, ids, userId } of sides) {
+          const digests = await digestsOf(tenantId);
+          expect(digests.map((digest) => [digest.userId, digest.noticeIds])).toEqual([[userId, ids]]);
+          expect((await noticesOf(tenantId)).every((row) => row.digestedUserIds.join() === userId)).toBe(
+            true,
+          );
+        }
+      });
+    });
+
     describe('isolamento por cliente (A/B)', () => {
       it('o escopo de B não lê nem altera a hora de avisos de A; o banco recusa pessoa de outro cliente', async () => {
         const tenantA = await createTenant(app, 'Cliente demo A (resumo, escopo)');
@@ -1731,6 +2125,55 @@ describe('avisos por e-mail (outbox)', () => {
         lastError: 'escalation_stale',
         escalationDelivery: 'stale',
       });
+    });
+
+    it('em lote, o contato segue as mesmas regras: de fora pelo limite ou pela idade, e nunca nos altos', async () => {
+      const { tenantId, email } = await contactTenant('Cliente demo A (contato em lote)', 'confirmed');
+      const admin = await member(tenantId, 'admin_cliente');
+      const at = nextHour();
+      await prisma.forTenant(tenantId).notificationDigest.create({
+        data: { tenantId, userId: admin.id, hourStart: hourStartOf(at), individualSent: 5 },
+      });
+      for (let index = 0; index < 7; index += 1) await persist(draft(tenantId, { severity: 'critical' }));
+      await persist(draft(tenantId, { severity: 'high' }));
+      const mailbox = new MemoryMailTransport();
+      const report = await dispatcher(mailbox, at).runOnce();
+      // A pessoa só recebe o resumo; o contato, os 5 da hora.
+      expect(mailbox.to(admin.email)).toEqual([]);
+      expect(mailbox.to(email)).toHaveLength(5);
+      expect(report.escalation.limited).toBeGreaterThanOrEqual(2);
+      const rows = await noticesOf(tenantId);
+      expect(rows.map((row) => row.escalationDelivery)).toEqual([
+        ...Array<string>(5).fill('sent'),
+        'limited',
+        'limited',
+        null,
+      ]);
+      expect(rows.every((row) => row.status === 'sent' && row.digestedUserIds.join() === admin.id)).toBe(
+        true,
+      );
+      expect(rows[5]?.escalationDeliveredAt).toEqual(at);
+
+      const old = await contactTenant('Cliente demo A (velhos em lote)', 'confirmed');
+      const oldAdmin = await member(old.tenantId, 'admin_cliente');
+      for (let index = 0; index < 3; index += 1) await persist(draft(old.tenantId, { severity: 'critical' }));
+      await prisma
+        .forTenant(old.tenantId)
+        .notification.updateMany({ data: { createdAt: new Date(at.getTime() - 25 * HOUR) } });
+      const stale = await dispatcher(mailbox, at).runOnce();
+      expect(stale.escalation.stale).toBeGreaterThanOrEqual(3);
+      expect(mailbox.to(old.email)).toEqual([]);
+      expect((await noticesOf(old.tenantId)).map((row) => row.escalationDelivery)).toEqual(
+        Array(3).fill('stale'),
+      );
+      const [digest] = await prisma.forTenant(old.tenantId).notificationDigest.findMany();
+      expect(digest).toMatchObject({
+        userId: oldAdmin.id,
+        catchUp: true,
+        individualSent: 0,
+        status: 'pending',
+      });
+      expect(digest?.noticeIds).toHaveLength(3);
     });
 
     it('contato que também é pessoa do cliente que recebe o aviso: um e-mail só', async () => {

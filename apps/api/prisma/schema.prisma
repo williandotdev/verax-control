@@ -1314,6 +1314,8 @@ model Notification {
   @@index([status, nextAttemptAt])
   @@index([incidentId])
   @@index([findingId])
+  /// E-mails ao contato de escalonamento na hora (o limite dele), sem ler a tabela inteira a cada aviso crítico.
+  @@index([tenantId, escalationDeliveredAt])
 }
 
 /// Preferência de aviso por e-mail de uma pessoa do cliente (fase 2, PR-17'). Só a própria pessoa a muda

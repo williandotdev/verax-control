@@ -227,7 +227,9 @@ function hourOf(at: Date): string {
   return `${Number.parseInt(HOUR_FORMAT.format(at), 10)}h`;
 }
 
-const countOf = (total: number) => `${total} ${total === 1 ? 'aviso' : 'avisos'}`;
+/** Contagem como se escreve aqui: 12.835. */
+const COUNT_FORMAT = new Intl.NumberFormat('pt-BR');
+const countOf = (total: number) => `${COUNT_FORMAT.format(total)} ${total === 1 ? 'aviso' : 'avisos'}`;
 
 /** Assunto e abertura fixos do resumo; o texto só leva a hora, a contagem e o limite. */
 function digestIntro(digest: DigestMail): { subject: string; intro: string } {

@@ -40,6 +40,8 @@ const OWNERSHIP = '20261124150000_cloudwatch_alert_ownership';
 const CHOSEN = '20261124160000_aws_chosen_capabilities';
 /** E a do número de sequência do sinal `applied` na prova do dono: uma coluna, com o CHECK dela. */
 const APPLIED_SEQ = '20261124170000_cloudwatch_ownership_applied_seq';
+/** E, de outro trabalho, só um índice: a contagem dos e-mails ao contato de escalonamento na hora. */
+const NOTICE_INDEX = '20261128120000_notification_escalation_index';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -89,8 +91,9 @@ describe(`migration ${MIGRATION}`, () => {
       OWNERSHIP,
       CHOSEN,
       APPLIED_SEQ,
+      NOTICE_INDEX,
     ]);
-    for (const name of [MIGRATION, RETRY_LIMIT, OWNERSHIP, CHOSEN, APPLIED_SEQ]) {
+    for (const name of [MIGRATION, RETRY_LIMIT, OWNERSHIP, CHOSEN, APPLIED_SEQ, NOTICE_INDEX]) {
       const sql = sqlOf(name);
       expect(sql, name).not.toMatch(/\bDROP\b|DELETE FROM|^\s*UPDATE\b|\bTRUNCATE\b|ALTER COLUMN/im);
       // Os buckets cadastrados continuam nas colunas da conta.
