@@ -6620,7 +6620,7 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
   ficam estão no cabeçalho de `weblogs/engine.ts`.
 - **Arquivos:** `apps/api/src/weblogs/**`, `apps/api/test/support/alb-lines.ts`, `scripts/bench-weblogs.mjs`.
 - **Dependências:** nenhuma.
-- **Testes:** 534 novos em 7 arquivos (cada regra em limite −1/0/+1, leitor, máscara, entradas hostis); 174 mutações em
+- **Testes:** 538 novos em 7 arquivos (cada regra em limite −1/0/+1, leitor, máscara, entradas hostis); 174 mutações em
   série: 157 mortas de primeira e 13 depois de testes novos; das 4 que sobraram, duas saíram com o código redundante e
   duas são equivalentes.
 - **Benchmark (só por pedido, `node --expose-gc scripts/bench-weblogs.mjs`), 1 milhão de linhas:** tráfego comum, 18 a 24 s
