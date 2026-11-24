@@ -1293,7 +1293,8 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
     expect(await screen.findByText('Correção do job em andamento.')).toBeInTheDocument();
   });
 
-  it('a exceção criada ao marcar um alerta como legítimo aparece aqui', async () => {
+  // Duas telas em sequência: no runner da CI, sob carga, a lista ainda carregava ao fim da espera padrão (3 s).
+  it('a exceção criada ao marcar um alerta como legítimo aparece aqui', { timeout: 30_000 }, async () => {
     const router = renderAt('/?severidade=critical');
     await userEvent.click(
       await screen.findByRole('button', {
@@ -1310,7 +1311,9 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
     await within(panel).findByText(/Exceção criada/);
     await userEvent.keyboard('{Escape}');
     await router.navigate('/cadastros/excecoes');
-    expect(await screen.findByText('Manutenção agendada.')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Manutenção agendada.', undefined, { timeout: 12_000 }),
+    ).toBeInTheDocument();
   });
 });
 
