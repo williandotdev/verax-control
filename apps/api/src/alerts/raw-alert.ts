@@ -23,12 +23,30 @@ const CREDENTIAL_HEADERS = new Set([
   'x-api-key',
   'x-amz-security-token',
 ]);
+/** O que vem antes de `-code` num código que não é segredo (`x-country-code`, `status-code`). */
+const HARMLESS_CODES = new Set([
+  'country',
+  'currency',
+  'error',
+  'lang',
+  'language',
+  'locale',
+  'region',
+  'response',
+  'status',
+]);
+
 /**
- * Cabeçalhos em que o nome engana: o código que não é segredo (`x-country-code`, `status-code`) e as dicas do navegador
- * (`sec-ch-ua-mobile`).
+ * Cabeçalhos em que o nome engana: o código que não é segredo, só os da lista (`x-auth-code` e `authorization-code` são), e
+ * as dicas do navegador (`sec-ch-ua-mobile`).
  */
-const isHarmlessHeader = (name: string) =>
-  name.endsWith('-code') || name.endsWith('_code') || name.startsWith('sec-ch-');
+function isHarmlessHeader(name: string): boolean {
+  if (name.startsWith('sec-ch-')) return true;
+  const parts = name.split(/[-_]/);
+  if (parts.length < 2 || parts.at(-1) !== 'code' || !HARMLESS_CODES.has(parts.at(-2) ?? '')) return false;
+  return sensitiveName(parts.slice(0, -2).join('-')) === null;
+}
+
 /** Os mesmos, quando o log os traz como campo solto (o CloudFront, um log de acesso): o texto sai inteiro. */
 const CREDENTIAL_FIELDS = new Set([
   'authorization',

@@ -87,6 +87,23 @@ describe('URL e query do evento bruto (WAF): segredo e dado pessoal fora, o ataq
     });
   });
 
+  it.each([
+    ['x-auth-code', true],
+    ['authorization-code', true],
+    ['X-Otp-Code', true],
+    ['x_access_code', true],
+    ['x-auth-country-code', true],
+    ['code', true],
+    ['x-code', true],
+    ['x-country-code', false],
+    ['X-Status-Code', false],
+    ['status_code', false],
+    ['x-amzn-error-code', false],
+  ])('o cabeçalho que acaba em código: %s', (name, masked) => {
+    const request = httpRequestOf(sanitizeRawAlert(wafWith({ headers: { [name]: 'abc' } })));
+    expect(request['headers']).toEqual({ [name]: masked ? REDACTED : 'abc' });
+  });
+
   it('a lista de cabeçalhos do WAF lido do CloudWatch Logs segue as mesmas regras', () => {
     const request = httpRequestOf(
       sanitizeRawAlert(
