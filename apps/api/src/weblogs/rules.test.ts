@@ -434,6 +434,13 @@ describe('990405 força bruta', () => {
     expect(of(run(failures(20)), '990405')[0]?.mitreTechniques).toEqual(['T1110']);
   });
 
+  it('na rota declarada, a resposta que não é falha nem sucesso também não dilui', () => {
+    const lines = [401, 500].flatMap((status, i) =>
+      times(i === 0 ? 20 : 500, () => ({ client: ATTACKER, method: 'POST', path: '/minha/porta', status })),
+    );
+    expect(levels(run(lines, { engine: { routes: [LOGIN_ROUTE] } }), '990405')).toEqual([7]);
+  });
+
   it('`ignore` só tira a rota das de login', () => {
     const routes: WebRoute[] = [{ ...LOGIN_ROUTE, path: '/login', kind: 'ignore' }];
     expect(levels(run(failures(100), { engine: { routes } }), '990405')).toEqual([]);
@@ -489,6 +496,29 @@ describe('990406 falhas e depois sucesso', () => {
     harness.feed(fails(10, failing), slotEnd, T0);
     harness.feed([success(when)], T0, T0);
     expect(levels(harness.evaluate().drafts, '990406')).toEqual(expected);
+  });
+
+  it('com as falhas em slots anteriores, vale o primeiro sucesso, chegue ele em que ordem for', () => {
+    const harness = new Harness();
+    harness.feed(fails(10, at(4, 30) - 14 * 60_000), T0 - 2 * SLOT, T0);
+    harness.feed([success(at(4))], T0, T0);
+    expect(levels(harness.evaluate().drafts, '990406')).toEqual([]);
+    const early = new Harness();
+    early.feed(fails(10, at(0, 30) - 10 * 60_000), T0 - 2 * SLOT, T0);
+    early.feed([success(at(4)), success(at(0, 30))], T0, T0);
+    expect(levels(early.evaluate().drafts, '990406')).toEqual([10]);
+  });
+
+  it('com as falhas depois do primeiro sucesso, vale o último', () => {
+    const lines = [success(at(0)), ...fails(10, at(1)), success(at(2))];
+    expect(levels(run(lines), '990406')).toEqual([10]);
+  });
+
+  it('entre as janelas avaliadas, vale a de maior nível, não a de maior contagem', () => {
+    const first = [...fails(50, at(0) - SLOT), success(at(1) - SLOT)];
+    const second = [...fails(10, at(0)), ...times(5, () => success(at(1)))];
+    const [draft] = of(runSlots([first, second]).drafts, '990406');
+    expect(draft?.ruleLevel).toBe(12);
   });
 
   it('soma 60 minutos: uma falha por slot, devagar, e não 11 slots antes', () => {

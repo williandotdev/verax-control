@@ -344,6 +344,20 @@ describe('cardinalidade', () => {
     expect(enumeration[0]?.eventName).toContain('até 800 caminhos');
   });
 
+  it('rota inventada que responde 404 não gasta o teto de rotas', () => {
+    const lines = times(500, (i) =>
+      login(ipv4(i), 404, { path: `/r${'abcdefghij'[i % 10]}${'klmnopqrst'[((i / 10) % 10) | 0]}/login` }),
+    );
+    expect(feed(lines).evaluate().notes).toEqual([]);
+  });
+
+  it('sem orçamento para o conjunto crescer, a enumeração vale pelas recusas', () => {
+    const limits = { ...DEFAULT_LIMITS, maxHashCells: 64 };
+    const scan = times(120, (i) => ({ client: ATTACKER, path: `/p${i}`, status: 404 }));
+    const [digest] = of(feed(scan, { limits }).evaluate().drafts, '990400');
+    expect(digest?.evidence.counters.errors).toBe(120);
+  });
+
   it('encher os conjuntos de caminhos não esconde quem enumera', () => {
     const limits = { ...DEFAULT_LIMITS, maxPathSets: 20 };
     const decoys = times(400, (i) => ({ client: ipv4(i % 40), path: `/d${i}`, status: 404 }));

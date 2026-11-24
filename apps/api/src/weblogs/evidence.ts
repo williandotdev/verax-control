@@ -148,16 +148,14 @@ function isRouteLabel(text: string): boolean {
   return isMaskedPath(text.split('*').join('x'));
 }
 
-const sizeOf = (evidence: WebEvidence): number => Buffer.byteLength(JSON.stringify(evidence), 'utf8');
-
 /**
- * Evidência pronta para gravar: no formato e no tamanho. O item que não passa no schema sai (a amostra, a rota, o
- * ponteiro), e, se ainda não couber, saem os ponteiros, as amostras e as listas, nessa ordem. Se nem assim o resto passa,
- * é erro de programação: lança, em vez de gravar o que não devia.
+ * Evidência pronta para gravar. O item de lista que não passa no schema sai (a amostra, a rota, o ponteiro). Se o resto não
+ * passa, é erro de programação: lança, em vez de gravar o que não devia. O tamanho (`MAX_EVIDENCE_BYTES`) vem dos tetos do
+ * próprio schema, e um teste o confere com a maior evidência possível.
  */
 export function sealEvidence(draft: WebEvidence): WebEvidence {
   const shape = webEvidenceSchema.shape;
-  let evidence: WebEvidence = {
+  return webEvidenceSchema.parse({
     ...draft,
     routes: draft.routes.filter((item) => shape.routes.element.safeParse(item).success),
     clients: draft.clients.filter((item) => shape.clients.element.safeParse(item).success),
@@ -169,17 +167,5 @@ export function sealEvidence(draft: WebEvidence): WebEvidence {
         ? draft.userAgents.sample
         : null,
     },
-  };
-  evidence = webEvidenceSchema.parse(evidence);
-  const steps: ((value: WebEvidence) => WebEvidence)[] = [
-    (value) => ({ ...value, pointers: value.pointers.slice(0, 2), truncated: true }),
-    (value) => ({ ...value, samples: value.samples.slice(0, 3) }),
-    (value) => ({ ...value, pointers: [], routes: value.routes.slice(0, 5) }),
-    (value) => ({ ...value, samples: [], routes: [], clients: value.clients.slice(0, 10) }),
-  ];
-  for (const step of steps) {
-    if (sizeOf(evidence) <= MAX_EVIDENCE_BYTES) break;
-    evidence = step(evidence);
-  }
-  return evidence;
+  });
 }

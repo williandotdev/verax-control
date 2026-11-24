@@ -93,6 +93,8 @@ describe('caminho mascarado', () => {
     ['/a%3Fb/senha/c', '/{token}/{token}/{token}'],
     ['/x/a%23b/c', '/x/{token}/{token}'],
     ['/a%3Fb/../c', '/{token}'],
+    ['/a/../b%3Fq', '/{token}'],
+    ['/x/abcdefghijklmnopqrst', '/x/{token}'],
     ['/%E2%80%AE%6d', '/{token}'],
     ['/a%0d%0aSet-Cookie', '/{token}'],
     ['/%3Cscript%3E', '/{token}'],

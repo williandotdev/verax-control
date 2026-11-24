@@ -6600,3 +6600,31 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
 - **Riscos e sugestões:** os alertas já gravados não mudam (a reclassificação seria uma tarefa à parte, pelo `eventName`
   do GuardDuty e pela regra 80443). Os tipos do GuardDuty que não dizem a tática (`Policy`, `Behavior`, `PenTest`,
   `AttackSequence` e parte de `Trojan` e `UnauthorizedAccess`) ficam sem ela.
+
+## Ataques web pelos logs do ALB, PR-1: o motor puro (não ligado)
+
+- **O que é:** `apps/api/src/weblogs`, sem banco, sem AWS e sem relógio próprio: lê a linha do log de acesso do ALB, conta
+  em janelas de 15 e 60 minutos com teto de memória e devolve os achados prontos. Nada chama o motor ainda; o
+  `FindingStore`, os contratos e o painel não mudaram.
+- **Regras:** 990400 (resumo do dia) a 990407. Uma varredura só vira achado próprio se for direcionada; a resposta de um
+  caminho secreto (990403), o login com falhas e depois sucesso (990406) e a força bruta distribuída (990407) nunca são
+  calados por fonte confiável.
+- **Privacidade:** nenhuma linha é guardada e nenhum byte de query sai (teste de propriedade); caminho e User-Agent
+  mascarados; a evidência é estrita, até 16 KB, com ponteiro para o objeto no bucket do cliente.
+- **Faixas das CDNs: marcador vazio** (`weblogs/data/proxy-ranges.ts`), porque esta PR não faz chamada externa. Com ele,
+  todo endereço público é `unverified`: as regras por IP ficam desligadas, com a nota `proxy_ranges_unavailable`; só a
+  990403 e a 990407 valem, sem IP. Preencher antes de ligar a fonte.
+- **Decisões tomadas aqui, a conferir:** o nível entra na chave do achado (senão a escalada ficaria no achado médio já
+  aberto); a 990403 também vale atrás de proxy, sem IP; rota não declarada só "distingue" falha de sucesso depois de 5
+  recusas da aplicação; 30 mil registros de cliente em vez de 40 mil (medido: cerca de 600 bytes cada). Os limites que
+  ficam estão no cabeçalho de `weblogs/engine.ts`.
+- **Arquivos:** `apps/api/src/weblogs/**`, `apps/api/test/support/alb-lines.ts`, `scripts/bench-weblogs.mjs`.
+- **Dependências:** nenhuma.
+- **Testes:** 534 novos em 7 arquivos (cada regra em limite −1/0/+1, leitor, máscara, entradas hostis); 174 mutações em
+  série: 157 mortas de primeira e 13 depois de testes novos; das 4 que sobraram, duas saíram com o código redundante e
+  duas são equivalentes.
+- **Benchmark (só por pedido, `node --expose-gc scripts/bench-weblogs.mjs`), 1 milhão de linhas:** tráfego comum, 17,9 s de
+  CPU, 31 MB de heap, 15 ms no maior bloqueio (alvos: 25 s, 40 MB, 50 ms; outras execuções na mesma máquina deram até
+  24 s). Enchente (tudo único e recusado): 44 s, 24 MB e 49 ms, com a avaliação em passos.
+- **Riscos:** nenhum dado real de ALB foi visto; o escape de aspas no log não é documentado (a linha ambígua é analisada
+  sem host e sem bloqueio).

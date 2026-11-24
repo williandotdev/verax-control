@@ -13,7 +13,15 @@ import {
 } from '../../test/support/alb-lines.js';
 import { DAY_MS, digestStateSchema } from './digest.js';
 import { type WebFindingDraft, webFindingKey } from './draft.js';
-import { MAX_EVIDENCE_BYTES, sealEvidence, type WebEvidence, webEvidenceSchema } from './evidence.js';
+import {
+  EVIDENCE_NOTES,
+  MAX_EVIDENCE_BYTES,
+  sealEvidence,
+  type WebEvidence,
+  webEvidenceSchema,
+} from './evidence.js';
+import { PROBE_FAMILIES } from './probes.js';
+import { UA_FAMILIES } from './user-agent.js';
 import { DEFAULT_LIMITS, divideLimits } from './limits.js';
 import { MAX_FINDINGS_PER_RULE, MAX_UNFOLDED_FINDINGS, WebLogEngine } from './engine.js';
 import { WEB_RULES, type WebRuleId } from './rules.js';
@@ -377,6 +385,19 @@ describe('resumo do dia e a barra do direcionado', () => {
     expect(one(reread.evaluate(now).drafts, '990400').evidence.counters.probes).toBe(170);
   });
 
+  it('a história guardada vale por 24 h, mesmo na primeira avaliação depois do reinício', () => {
+    const own = (agoMs: number): number => {
+      const harness = new Harness();
+      const slot = Math.floor((T0 - agoMs) / SLOT);
+      const track = { slots: [slot, slot + 1], seriousMs: null, targetedMs: null };
+      harness.engine.restore({ version: 1, settledThrough: null, days: [], tracks: [[ATTACKER, track]] });
+      harness.feed(probes(12));
+      return of(harness.evaluate().drafts, '990402').length;
+    };
+    expect(own(60 * MINUTE)).toBe(1);
+    expect(own(25 * 60 * MINUTE)).toBe(0);
+  });
+
   it('um estado guardado que não serve é recusado', () => {
     const { engine } = new Harness();
     const good = { version: 1, settledThrough: null, days: [], tracks: [] };
@@ -473,7 +494,11 @@ describe('teto por regra', () => {
 
   it('nível 10 passa na frente do barulho de nível 7', () => {
     const harness = new Harness();
-    harness.feed([...noisy(60), ...failures(120, '192.0.2.77')]);
+    // Os barulhentos têm mais tentativas (só volume, nível 7) que as 100 falhas do nível 10.
+    const volume = times(40, (i) =>
+      times(300, () => ({ client: `198.51.100.${i + 1}`, method: 'POST', path: '/session', status: 200 })),
+    ).flat();
+    harness.feed([...volume, ...failures(100, '192.0.2.77')]);
     expect(of(harness.evaluate().drafts, '990405')[0]).toMatchObject({
       sourceIp: '192.0.2.77',
       ruleLevel: 10,
@@ -764,15 +789,35 @@ describe('evidência', () => {
     expect(() => sealEvidence({ ...valid, ruleId: 'x' })).toThrow();
   });
 
-  it('nunca passa de 16 KB', () => {
-    const big = sealEvidence({
+  it('a maior evidência possível cabe em 16 KB', () => {
+    const top = Number.MAX_SAFE_INTEGER;
+    const longest = {
       ...valid,
-      routes: times(10, (i) => ({ path: `/${'a'.repeat(250)}${i}`, count: i })),
-      samples: times(10, () => ({ ...sample, path: `/${'b'.repeat(250)}` })),
+      host: 'h'.repeat(253),
+      route: `/${'r'.repeat(255)}`,
+      counters: Object.fromEntries(
+        Object.keys(valid.counters).map((key) => [key, top]),
+      ) as WebEvidence['counters'],
+      statuses: times(12, () => ({ status: '4xxxx', count: top })),
+      probeFamilies: [...PROBE_FAMILIES],
+      routes: times(10, () => ({ path: `/${'a'.repeat(255)}`, count: top })),
+      samples: times(10, () => ({ ...sample, path: `/${'b'.repeat(255)}`, bytes: top })),
       pointers: times(5, () => ({ objectKey: 'k'.repeat(512), minute: sample.at })),
-      clients: times(20, () => ({ client: '2001:db8:1111:2222::/64', requests: 1e15, count: 1e15 })),
-    });
-    expect(Buffer.byteLength(JSON.stringify(big))).toBeLessThanOrEqual(MAX_EVIDENCE_BYTES);
+      clients: times(20, () => ({ client: 'f'.repeat(49), requests: top, count: top })),
+      userAgents: { families: [...UA_FAMILIES], sample: 'u'.repeat(120) },
+      notes: [...EVIDENCE_NOTES],
+    };
+    expect(webEvidenceSchema.safeParse(longest).success).toBe(true);
+    expect(sealEvidence(longest)).toEqual(longest);
+    expect(Buffer.byteLength(JSON.stringify(longest))).toBeLessThanOrEqual(MAX_EVIDENCE_BYTES);
+    for (const over of [
+      { routes: [...longest.routes, ...longest.routes] },
+      { samples: [...longest.samples, ...longest.samples] },
+      { pointers: [...longest.pointers, ...longest.pointers] },
+      { clients: [...longest.clients, ...longest.clients] },
+    ]) {
+      expect(webEvidenceSchema.safeParse({ ...longest, ...over }).success).toBe(false);
+    }
   });
 
   it('os ponteiros levam ao objeto do cliente, e a linha não fica', () => {

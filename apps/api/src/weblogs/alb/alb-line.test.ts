@@ -146,6 +146,20 @@ describe('linha do log de acesso do ALB', () => {
       }
     });
 
+    it('barra invertida em qualquer lugar deixa a fronteira dos campos incerta', () => {
+      expect(parsed(albLine({ userAgent: 'app C:\\dados' }))).toMatchObject({
+        ambiguous: true,
+        domainName: null,
+      });
+    });
+
+    it('um campo com as aspas trocadas é ambíguo', () => {
+      const bare = albLine({ actions: 'waf' }).replace('"loja.exemplo.com.br"', 'loja.exemplo.com.br');
+      expect(parsed(bare)).toMatchObject({ ambiguous: true, blocked: false });
+      const quotedCipher = albLine({ actions: 'waf' }).replace('TLSv1.3', '"TLSv1.3"');
+      expect(parsed(quotedCipher)).toMatchObject({ ambiguous: true, blocked: false });
+    });
+
     it('a cauda incompleta é ambígua, não malformada', () => {
       const cut = albLine().split(' ').slice(0, 16).join(' ');
       expect(parseAlbLine(cut)).toMatchObject({ ambiguous: true });

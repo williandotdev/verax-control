@@ -110,9 +110,6 @@ export const THRESHOLDS = {
 /** Itens entre um passo e outro da avaliação (`evaluateSteps`). */
 export const STEP_ITEMS = 2_000;
 
-/** W60 em passos de 10 s. */
-const LONG_STEPS = (60 * 60_000) / SERIES_STEP_MS;
-
 export interface WindowView {
   /** Os slots da janela de 15 e da de 60 minutos, em ordem. */
   short: readonly Slot[];
@@ -691,7 +688,7 @@ function timelineOf(pair: LoginPair): { steps: number[]; counts: number[]; succe
 }
 
 /**
- * Falhas dos 60 min anteriores ao sucesso, se a última foi até 10 min antes; 0 se não. As falhas do mesmo passo de 10 s do
+ * Falhas anteriores ao sucesso (na janela, que tem 60 min), se a última foi até 10 min antes; 0 se não. As falhas do mesmo passo de 10 s do
  * sucesso contam como anteriores: ninguém erra dez vezes em 10 s e acerta à mão.
  */
 function failuresBefore(timeline: ReturnType<typeof timelineOf>): number {
@@ -700,7 +697,7 @@ function failuresBefore(timeline: ReturnType<typeof timelineOf>): number {
     let count = 0;
     let last = -Infinity;
     timeline.steps.forEach((step, i) => {
-      if (step > success || step <= success - LONG_STEPS) return;
+      if (step > success) return;
       count += timeline.counts[i] ?? 0;
       last = step;
     });

@@ -38,6 +38,7 @@ describe('chave de objeto do ALB', () => {
     ['outra região', objectKey(T0, { region: 'us-east-1' })],
     ['outro balanceador', objectKey(T0, { lb: 'app/outra/fedcba9876543210' })],
     ['nome com o mesmo começo', objectKey(T0, { lb: 'app/loja2/0123456789abcdef' })],
+    ['mesmo nome, recriado (outro id)', objectKey(T0, { lb: 'app/loja/fedcba9876543210' })],
   ])('planta de %s não é a fonte', (_, planted) => {
     const key = parseAlbKey(planted);
     if (key === null) throw new Error('a chave é válida, só não é desta fonte');
