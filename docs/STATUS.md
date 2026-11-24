@@ -6674,6 +6674,35 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
 - **Riscos:** numa rajada, a fila esvazia na mesma hora, e o que passa dos 5 avulsos vai para um resumo só (antes, ela
   escorria por horas, com 5 avulsos em cada uma); as regras são as mesmas. O resumo MITRE da Torre pode ter até 30 s.
 
+## MITRE ATT&CK: gráfico de radar no lugar dos quadros (pedido do responsável de 24/11/2026)
+
+- **O que muda:** na aba MITRE ATT&CK da tela Detecções, a grade de quadros dá lugar a um gráfico de radar com as 14
+  táticas, na ordem da cadeia de ataque, e, ao lado (ou embaixo), a lista das táticas com alertas, da maior para a menor.
+  Cada tática com alerta continua levando à lista filtrada, pelo nome, pelo ponto e pela lista; a dica e o texto falado
+  trazem percentual, alertas, incidentes e técnicas. A tabela embaixo ganha a coluna "Participação" (o CSV não muda).
+- **Percentual:** os alertas da tática sobre a soma dos alertas das 14 (um alerta com duas táticas conta nas duas). Sem
+  mudança no contrato da API. O que existe nunca aparece como "0%" ("<1%"), e o que não é tudo, nunca como "100%".
+- **Escala:** raiz quadrada, com anéis em 5%, 25%, 50% e 100%, e o texto ao lado diz isso. As participações somam 100%:
+  na escala linear, oito táticas viravam um pontinho no centro, e 95% numa só escondia as outras. O que não é zero tem
+  uma distância mínima do centro, sempre dentro do anel de 5%; a tática zerada não ganha ponto.
+- **Cor:** uma série só, na tinta neutra do tema (15,75:1 no claro e 15,28:1 no escuro contra o cartão). O âmbar pedido
+  não entrou: ao lado dos selos, é a cor do "alto" (no escuro, ΔE 4,1 entre #f59e0b e #fb9b4f; no claro, 2,15:1 contra o
+  branco, abaixo dos 3:1). Dos tons entre o laranja e o amarelo com 3:1, no claro só um marrom escuro se separa das
+  severidades, e no escuro nenhum.
+- **Sem alerta com tática:** fica só a explicação de antes; uma teia sem série pareceria quebrada.
+- **Arquivos:** `apps/web/src/components/charts/spider-{geometry.ts,chart.tsx}` e `features/reports/{mitre-radar.tsx,
+tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views.tsx}`, comentários em
+  `components/charts/chart-utils.ts` e `index.css`; sai `features/reports/mitre-grid.tsx`;
+  `pages/detections-page.test.tsx`, `e2e/mitre-radar.mock.spec.ts` (novo), `e2e/{deteccoes,history}.mock.spec.ts`;
+  `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma.
+- **Testes:** `pnpm lint`, `format:check` e `typecheck` (todos os pacotes), limpos. Web, 60 arquivos e 811 testes (60 novos);
+  o build com a varredura do bundle. Navegador, 116 de 116: `mitre-radar` (10, novo: axe, contraste medido, nomes sem
+  corte nem colisão e sem rolagem, nos dois temas, de 320 a 1920 px, com mouse, teclado e toque), `deteccoes`,
+  `history`, `radar`, `layout` e `pages`; antes, `tour`. 23 mutações à mão na escala, no percentual e na interação, todas
+  derrubadas e desfeitas.
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`, Detecções, aba MITRE ATT&CK, nos dois temas e no celular.
+
 ## Ataques web pelos logs do ALB: faixas das CDNs preenchidas (motor ainda não ligado)
 
 - **O que muda:** `weblogs/data/proxy-ranges.ts` deixa de ser o marcador vazio da PR-1. São 22 faixas do Cloudflare e 89 do
