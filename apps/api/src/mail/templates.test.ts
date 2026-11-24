@@ -176,6 +176,11 @@ describe("resumo por hora e de retomada (PR-17')", () => {
   });
 
   it('passa da lista: "e mais N", com o link do painel', () => {
+    // O total de verdade, escrito como aqui: 12.835.
+    const large = digestMail('pessoa@cliente.example', 'Ana', digest({ total: 12_835 }));
+    expect(large.text).toContain('12.835 avisos no total');
+    expect(large.html).toContain('12.835 avisos no total');
+    expect(large.text).toContain('E mais 12.833 avisos neste resumo.');
     const message = digestMail('pessoa@cliente.example', 'Ana', digest({ total: 13 }));
     expect(message.text).toContain('13 avisos no total');
     expect(message.text).toContain(`E mais 11 avisos neste resumo. Veja todos no painel: ${origin}/`);

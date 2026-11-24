@@ -120,7 +120,7 @@ export function useKeepInside<T extends HTMLElement>(
 
 /**
  * Rampa ordinal na tinta do tema, para categorias que têm ordem e não são severidade (o status do achado, do novo ao
- * resolvido). É a mesma escolha do mapa do MITRE: azul passaria por "baixo" ao lado dos selos de severidade.
+ * resolvido). É a mesma escolha do gráfico do MITRE: azul passaria por "baixo" ao lado dos selos de severidade.
  * Mais tinta, mais atenção pendente. Validada com o script da skill de visualização (`--ordinal`) sobre a superfície
  * dos cartões, nos dois temas: um tom só, claridade monotônica, passo de claridade >= 0,06 e a ponta mais clara
  * >= 2:1 contra a superfície (claro: #13233c, #5a6577, #89919e, #acb2bb sobre #ffffff, a ponta a 2,13:1; escuro:

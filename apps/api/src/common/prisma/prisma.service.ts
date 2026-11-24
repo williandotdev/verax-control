@@ -42,14 +42,23 @@ export class PrismaService extends PrismaClient implements OnModuleDestroy {
    * `tenantId` nunca vem do corpo, da query ou da URL.
    */
   scoped(): Prisma.TransactionClient {
-    const store = requestContext.getStore();
-    const scopeTenantId = store?.auth?.scopeTenantId;
+    const scopeTenantId = this.scopeTenantId();
+    // Numa escrita, o registro de auditoria entra na trilha do cliente cujos dados foram tocados.
+    const audit = requestContext.getStore()?.audit;
+    if (audit && audit.tenantId === undefined) audit.tenantId = scopeTenantId;
+    return scopeToTenant(this.db(), scopeTenantId);
+  }
+
+  /**
+   * O cliente da sessão, para as poucas leituras que o escopo não faz (um agregado em SQL com parâmetros, que filtra por
+   * este id, e a memória por cliente). Vem sempre da sessão, nunca do request; sem cliente escolhido, a mesma recusa.
+   */
+  scopeTenantId(): string {
+    const scopeTenantId = requestContext.getStore()?.auth?.scopeTenantId;
     if (!scopeTenantId) {
       throw new ApiError(HttpStatus.CONFLICT, 'Selecione um cliente para continuar', 'TENANT_REQUIRED');
     }
-    // Numa escrita, o registro de auditoria entra na trilha do cliente cujos dados foram tocados.
-    if (store.audit && store.audit.tenantId === undefined) store.audit.tenantId = scopeTenantId;
-    return scopeToTenant(this.db(), scopeTenantId);
+    return scopeTenantId;
   }
 
   /** Escopo explícito de um cliente, para jobs sem sessão (sync, Prowler). Nunca com valor vindo do usuário. */

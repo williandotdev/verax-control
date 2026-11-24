@@ -6640,3 +6640,149 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
   gravação dos coletores (INSERT) não paga nada. Quem fizer dois comandos sobre alertas na mesma transação precisa
   travar antes todas as linhas (`FOR UPDATE`), como o expurgo: sem isso, uma triagem ao mesmo tempo cai em deadlock
   (reproduzido; nenhum código de hoje faz isso).
+
+## Ataques web pelos logs do ALB, PR-1: o motor puro (não ligado)
+
+- **O que é:** `apps/api/src/weblogs`, sem banco, sem AWS e sem relógio próprio: lê a linha do log de acesso do ALB, conta
+  em janelas de 15 e 60 minutos com teto de memória e devolve os achados prontos. Nada chama o motor ainda; o
+  `FindingStore`, os contratos e o painel não mudaram.
+- **Regras:** 990400 (resumo do dia) a 990407. Uma varredura só vira achado próprio se for direcionada; a resposta de um
+  caminho secreto (990403), o login com falhas e depois sucesso (990406) e a força bruta distribuída (990407) nunca são
+  calados por fonte confiável.
+- **Privacidade:** nenhuma linha é guardada e nenhum byte de query sai (teste de propriedade); caminho e User-Agent
+  mascarados; a evidência é estrita, até 16 KB, com ponteiro para o objeto no bucket do cliente.
+- **Faixas das CDNs: marcador vazio** (`weblogs/data/proxy-ranges.ts`), porque esta PR não faz chamada externa. Com ele,
+  todo endereço público é `unverified`: as regras por IP ficam desligadas, com a nota `proxy_ranges_unavailable`; só a
+  990403 e a 990407 valem, sem IP. Preencher antes de ligar a fonte.
+- **Decisões tomadas aqui, a conferir:** o nível entra na chave do achado (senão a escalada ficaria no achado médio já
+  aberto); a 990403 também vale atrás de proxy, sem IP; rota não declarada só "distingue" falha de sucesso depois de 5
+  recusas da aplicação; 30 mil registros de cliente em vez de 40 mil (medido: cerca de 600 bytes cada). Os limites que
+  ficam estão no cabeçalho de `weblogs/engine.ts`.
+- **Arquivos:** `apps/api/src/weblogs/**`, `apps/api/test/support/alb-lines.ts`, `scripts/bench-weblogs.mjs`.
+- **Dependências:** nenhuma.
+- **Correções da revisão (PR #190):** a 990407 conta quem saiu da memória uma vez só e com a soma da janela (registro por
+  hash com chave, `weblogs/evicted.ts`), nos dois sentidos: poucos clientes barulhentos não viram muitos discretos, e a
+  saída forçada por enchente não some com a distribuída; a troca de proxy na configuração acerta na hora a classe de tudo
+  o que está na memória (registros, pares de login, respostas, resumo do dia, barra e maior nível). O que foi contado
+  quando o endereço era proxy nunca vira acusação a um IP.
+- **Testes:** 586 novos em 7 arquivos (cada regra em limite −1/0/+1, leitor, máscara, entradas hostis); 174 mutações em
+  série: 157 mortas de primeira e 13 depois de testes novos; das 4 que sobraram, duas saíram com o código redundante e
+  duas são equivalentes. Nas correções da revisão, mais 44, todas mortas (13 depois de testes novos; 3 por travar o teste).
+- **Benchmark (só por pedido, `node --expose-gc scripts/bench-weblogs.mjs`), 1 milhão de linhas:** tráfego comum, 18 a 24 s
+  de CPU, 33 MB de heap e até 28 ms no maior bloqueio (alvos: 25 s, 40 MB, 50 ms). Enchente (tudo único e recusado): 44 a
+  61 s, 28 MB e 49 a 65 ms no maior passo da avaliação. As correções da revisão não mudam isso além do ruído (400 mil
+  linhas, antes e depois alternados: 9,6 e 10,1 s no comum, 23,8 e 24,5 s na enchente); com a máquina ocupada, uma execução
+  do comum passou do alvo (36 s).
+- **Riscos:** nenhum dado real de ALB foi visto; o escape de aspas no log não é documentado (a linha ambígua é analisada
+  sem host e sem bloqueio).
+
+## Avisos por prioridade, custo da Torre e privacidade do evento bruto (24/11/2026)
+
+- **Avisos por e-mail:** a fila deixa de ser por ordem de chegada. A severidade manda (incidente crítico, alerta crítico,
+  incidente alto, os demais incidentes e os avisos de operação, alertas altos), por idade dentro de cada faixa, e cada
+  faixa com aviso vencido tem uma parte guardada da execução. O aviso que só entra em resumo não conta nos 20 por
+  execução: até mil por execução, em lotes de até 500 numa transação. Destinatários, limite por hora, preferências,
+  contato de escalonamento, tentativas e deduplicação não mudam. O resumo é montado em lotes e diz o total em pt-BR
+  ("12.835 avisos no total").
+  - Medido com 412.500 avisos (12.836 pendentes, o crítico por último): de 643 execuções para 14, o crítico da 642ª para
+    a 1ª, de 773 s para 2,9 s de trabalho, e de 6.061 MB para 24 MB de WAL (a linha do resumo era regravada inteira a
+    cada aviso).
+  - Migration `20261128120000_notification_escalation_index` (só acrescenta um índice de 2,9 MB): a contagem dos e-mails
+    ao contato na hora lia a tabela inteira a cada aviso crítico (119 ms e 11.219 páginas; agora 0,2 ms e 3).
+- **Custo da Torre:** o MITRE de 30 dias, que lia todos os achados em lotes de 5.000 a cada minuto em todo painel aberto,
+  é contado pelo banco por combinação de táticas e técnicas e passa pelo mesmo cálculo do relatório (que também o usa); a
+  Torre repete o resultado por até 30 s por cliente. A contagem dos altos e críticos em "novo" ganhou um índice
+  (migration `20261128120000_finding_untriaged_index`, só acrescenta, 5,2 MB).
+  - Medido com 750 mil achados em 30 dias: MITRE de 6,4 a 7,4 s para 0,14 s (o mesmo resultado); a contagem, de 313 ms para
+    35 ms (26.786 páginas lidas para 328); a Torre, de 6,5 a 7,9 s para 0,3 s (0,1 s com o MITRE guardado); dez painéis
+    juntos, de 63 s para 0,7 s. As outras contagens (24 h e incidentes) já usavam índice e ficam de fora.
+- **Privacidade do evento bruto:** `httpRequest.uri` e `args` do WAF chegavam ao painel com a query inteira. Agora o valor
+  que é, ou parece, segredo ou dado pessoal sai mascarado na URL, na query, no `Referer`, no `Location` e em qualquer
+  campo que cite uma URL com query; os nomes, a estrutura e o ataque ficam legíveis, e o que não decodifica sai mascarado.
+  Os limites estão em `raw-url-mask.ts`. Corrigido junto: a lista `[{ name, value }]` de cabeçalhos (o WAF lido do
+  CloudWatch Logs) não tinha a credencial trocada; só o objeto `{ nome: valor }` tinha.
+- **Arquivos:** `apps/api/src/notifications/notification-dispatcher.ts`, `mail/templates.ts`, `reports/reports.service.ts`,
+  `tower/tower.service.ts`, `common/cache/tenant-cache.ts` (novo), `common/prisma/prisma.service.ts` (`scopeTenantId`),
+  `alerts/raw-alert.ts` e `alerts/raw-url-mask.ts` (novo); `packages/shared/src/reports.ts` (função nova, contrato igual);
+  duas migrations; testes; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 185 arquivos e 2926 testes: na rodada inteira, 180 arquivos; em cinco
+  (`tower-posture-assets`, `detections`, `tenant-isolation`, `aws-onboarding` e `sso-admin-master`) o worker do vitest
+  caiu no Windows (3221226505), e passaram rodados de novo, uma vez. Shared, 29 arquivos e 516 testes. Mutações em série: a
+  ordem da fila, os lotes, o agregado, a memória e a máscara caem sem o código (uma sem efeito: o tamanho da leitura da
+  fila, que só limita o custo).
+- **Riscos:** numa rajada, a fila esvazia na mesma hora, e o que passa dos 5 avulsos vai para um resumo só (antes, ela
+  escorria por horas, com 5 avulsos em cada uma); as regras são as mesmas. O resumo MITRE da Torre pode ter até 30 s.
+
+## MITRE ATT&CK: gráfico de radar no lugar dos quadros (pedido do responsável de 24/11/2026)
+
+- **O que muda:** na aba MITRE ATT&CK da tela Detecções, a grade de quadros dá lugar a um gráfico de radar com as 14
+  táticas, na ordem da cadeia de ataque, e, ao lado (ou embaixo), a lista das táticas com alertas, da maior para a menor.
+  Cada tática com alerta continua levando à lista filtrada, pelo nome, pelo ponto e pela lista; a dica e o texto falado
+  trazem percentual, alertas, incidentes e técnicas. A tabela embaixo ganha a coluna "Participação" (o CSV não muda).
+- **Percentual:** os alertas da tática sobre a soma dos alertas das 14 (um alerta com duas táticas conta nas duas). Sem
+  mudança no contrato da API. O que existe nunca aparece como "0%" ("<1%"), e o que não é tudo, nunca como "100%".
+- **Escala:** raiz quadrada, com anéis em 5%, 25%, 50% e 100%, e o texto ao lado diz isso. As participações somam 100%:
+  na escala linear, oito táticas viravam um pontinho no centro, e 95% numa só escondia as outras. O que não é zero tem
+  uma distância mínima do centro, sempre dentro do anel de 5%; a tática zerada não ganha ponto.
+- **Cor:** uma série só, na tinta neutra do tema (15,75:1 no claro e 15,28:1 no escuro contra o cartão). O âmbar pedido
+  não entrou: ao lado dos selos, é a cor do "alto" (no escuro, ΔE 4,1 entre #f59e0b e #fb9b4f; no claro, 2,15:1 contra o
+  branco, abaixo dos 3:1). Dos tons entre o laranja e o amarelo com 3:1, no claro só um marrom escuro se separa das
+  severidades, e no escuro nenhum.
+- **Sem alerta com tática:** fica só a explicação de antes; uma teia sem série pareceria quebrada.
+- **Arquivos:** `apps/web/src/components/charts/spider-{geometry.ts,chart.tsx}` e `features/reports/{mitre-radar.tsx,
+tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views.tsx}`, comentários em
+  `components/charts/chart-utils.ts` e `index.css`; sai `features/reports/mitre-grid.tsx`;
+  `pages/detections-page.test.tsx`, `e2e/mitre-radar.mock.spec.ts` (novo), `e2e/{deteccoes,history}.mock.spec.ts`;
+  `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma.
+- **Testes:** `pnpm lint`, `format:check` e `typecheck` (todos os pacotes), limpos. Web, 60 arquivos e 811 testes (60 novos);
+  o build com a varredura do bundle. Navegador, 116 de 116: `mitre-radar` (10, novo: axe, contraste medido, nomes sem
+  corte nem colisão e sem rolagem, nos dois temas, de 320 a 1920 px, com mouse, teclado e toque), `deteccoes`,
+  `history`, `radar`, `layout` e `pages`; antes, `tour`. 23 mutações à mão na escala, no percentual e na interação, todas
+  derrubadas e desfeitas.
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`, Detecções, aba MITRE ATT&CK, nos dois temas e no celular.
+
+## Ataques web pelos logs do ALB: faixas das CDNs preenchidas (motor ainda não ligado)
+
+- **O que muda:** `weblogs/data/proxy-ranges.ts` deixa de ser o marcador vazio da PR-1. São 22 faixas do Cloudflare e 89 do
+  CloudFront (só `CLOUDFRONT_ORIGIN_FACING`), copiadas das listas oficiais em 24/11/2026. Com elas, o endereço público que
+  não é de CDN passa a ser `direct`, e as regras por IP do motor valem.
+- **Atualização:** `scripts/update-proxy-ranges.mjs` gera o arquivo (na saída padrão) a partir das listas baixadas, sem acessar a rede. Rodar a
+  cada versão do nó; com mais de 180 dias, o motor avisa (`proxy_ranges_stale`).
+- **Dependências:** nenhuma.
+- **Testes:** o primeiro endereço de cada faixa cai na CDN dela; sem repetição; IPv4 e IPv6 nas duas; o padrão do motor.
+- **Riscos:** outras CDNs e proxies (Akamai, Fastly, balanceadores em frente) não estão na lista: o cliente precisa declarar
+  a faixa como fonte confiável do tipo proxy.
+
+## País de um endereço IP, embutido e offline (24/11/2026)
+
+- **O que faz:** `apps/api/src/geo` diz o país de um endereço com a base pública `user-country` (sapics/ip-location-db,
+  PDDL), embutida no repositório. Nenhuma consulta sai para a rede. Vai alimentar o mapa de origem das requisições (logs de
+  acesso do ALB); nada usa o módulo ainda.
+- **Representação:** um arquivo binário (`ip-country.bin.gz`, 571.784 bytes; 2,4 MB aberto) e os metadados em TypeScript
+  (`ip-country-meta.ts`), com o SHA-256 conferido na carga. O `nest build` copia o binário para `dist` (`assets` no
+  `nest-cli.json`) e o `.gitattributes` marca `*.gz` como binário. Preferido ao texto em base64: 25% menor, fora do lint e
+  do typecheck, e carregado só por quem chama.
+- **Tabela:** 311.419 fronteiras IPv4 e 354.427 IPv6 por /64, 250 códigos. Os /64 divididos entre países (732) ficam com a
+  maioria dos endereços. `XK` fica; `AC` e `TA` viram `SH`; `AN` fica sem país (um /44 de IPv6).
+- **Conferência com a fonte:** 4.502.320 endereços contra uma leitura independente dos CSV em Python (as duas pontas de
+  cada faixa e os vizinhos, 1 milhão de IPv4 e 1,1 milhão de IPv6 aleatórios, e todos os /64 divididos), por texto e pelo
+  caminho numérico: nenhuma diferença. O leitor de endereços dá o mesmo que o do motor de ataques web em 3 milhões de
+  textos aleatórios.
+- **Medido (Windows, Node 24.15):** carga de 26 a 32 ms (até 105 ms com a máquina ocupada por outras tarefas), 4,5 MB de
+  arrays e 0,06 MB de heap; IPv4 numérico, 8,2 a 9,1 milhões de consultas por segundo; IPv6 numérico, 17 a 20; por texto,
+  2,9 a 4,8 (com a máquina ocupada, 5,6, 6 e 1,7, as piores). Em 33,5 milhões de consultas numéricas o heap não cresce (0,2
+  MB, o mesmo de 2 milhões). Na imagem (Docker Desktop, processo novo a cada vez), carga de 56 a 194 ms, acima do alvo de
+  150 ms em algumas; com a máquina muito ocupada, 505 ms.
+- **Arquivos:** `apps/api/src/geo/{country-codes,ip-address,ip-country,ip-country-format}.ts`, `data/` (tabela, metadados,
+  README com fonte e licença) e cinco arquivos de teste; `scripts/update-ip-country.mjs` (gerador offline) e
+  `scripts/bench-ip-country.mjs` (só por pedido); `apps/api/nest-cli.json`, `.gitattributes`; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem migration e sem mudança em `infra/`, `.github/` nem no módulo `auth`.
+- **Testes:** 277 em cinco arquivos (`src/geo`), sem banco: estrutura do arquivo real, 400 tabelas aleatórias contra a
+  varredura da fonte, âncoras públicas, entradas hostis, arquivo corrompido e o gerador de ponta a ponta (as 21 recusas
+  não escrevem nada). 31 mutações, todas mortas. `pnpm lint`, `format:check` e `typecheck` limpos. A imagem da API foi
+  construída e consultada com raiz só leitura, sem rede e sem root. Gitleaks, Trivy (segredos) e as regras próprias do
+  Semgrep não acusam nada nos arquivos novos. A suíte com banco não foi rodada: nenhum código existente mudou.
+- **Riscos e sugestões:** os 97,5% de concordância com o GeoLite2 são do próprio projeto, não medidos aqui. Cada atualização
+  soma cerca de 0,6 MB ao histórico do git. A tela precisa dizer que o país é o do endereço (VPN, proxy e nuvem).

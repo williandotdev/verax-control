@@ -76,6 +76,7 @@ test.describe('histórico de 12 meses (modo mock)', () => {
         await page.goto('/?analise=mitre&periodo=12m');
         await ready(page, 'Detecções');
         await expect(page.getByRole('combobox', { name: 'Período' })).toHaveValue('12m');
+        await expect(page.getByRole('group', { name: /^Gráfico de radar das táticas/ })).toBeVisible();
         // As 14 táticas, mais o cabeçalho.
         await expect(
           page.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' }).getByRole('row'),
