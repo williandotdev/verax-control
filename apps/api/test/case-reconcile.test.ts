@@ -222,4 +222,50 @@ describe('case-reconcile', () => {
     const totals = await prisma.alertCase.findMany({ where: { id: { in: cases } }, select: { total: true } });
     expect(totals.map(({ total }) => total).sort((x, y) => x - y)).toEqual([1, 33, 33]);
   });
+
+  it('a volta em que um caso falhou se repete no dia seguinte, mesmo a que continuou noutra execução', async () => {
+    const tenantId = await customer('falha');
+    await seeded(tenantId);
+    await insertFinding(prisma, tenantId, { accountId: '222222222222' });
+    await assignAll(prisma, [tenantId]);
+    const total = (await casesOf(prisma, tenantId)).length;
+    expect(total).toBeGreaterThan(1);
+    const name = taskName();
+    const start = Date.UTC(2026, 10, 2);
+    const failingOnce = () => {
+      let calls = 0;
+      return new Proxy(prisma, {
+        get(target, property) {
+          const value: unknown = Reflect.get(target, property);
+          if (property !== '$transaction') return value;
+          return (...args: unknown[]) => {
+            calls += 1;
+            if (calls === 1) return Promise.reject(new Error('falhou'));
+            return (value as (...rest: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      });
+    };
+    const runAt = (database: PrismaService, ms: number, options: CaseReconcileOptions = {}) =>
+      new CaseReconcileJob(database, {
+        tenantIds: [tenantId],
+        name,
+        now: () => new Date(start + ms),
+        ...options,
+      }).runOnce();
+    // O primeiro caso falha numa execução que acaba pelo tempo; a que continua a volta não falha em nenhum.
+    const cut = { page: 1, maxRunMs: 0, elapsed: () => 0 };
+    expect(await runAt(failingOnce(), 0, cut)).toMatchObject({ status: 'partial', checked: 0, failed: 1 });
+    expect(await runAt(prisma, 1_000)).toMatchObject({ status: 'done', checked: total - 1, failed: 0 });
+    const state = () => prisma.syncState.findUniqueOrThrow({ where: { name } });
+    expect(await state()).toMatchObject({ cursorId: null, lastSuccessAt: null, lastError: 'cases_failed' });
+    // Não de hora em hora: no dia seguinte, e inteira.
+    expect(await runAt(prisma, 1_000 + DAY_MS - 1)).toMatchObject({ status: 'not_due' });
+    expect(await runAt(prisma, 1_000 + DAY_MS)).toMatchObject({ status: 'done', checked: total, failed: 0 });
+    expect(await state()).toMatchObject({ lastError: null, lastSuccessAt: new Date(start + 1_000 + DAY_MS) });
+    // E a seguinte volta a ser a da semana.
+    expect(await runAt(prisma, 1_000 + 8 * DAY_MS - 1)).toMatchObject({ status: 'not_due' });
+    expect(await runAt(failingOnce(), 1_000 + 8 * DAY_MS)).toMatchObject({ status: 'done', failed: 1 });
+    expect(await runAt(prisma, 1_000 + 9 * DAY_MS)).toMatchObject({ status: 'done', checked: total });
+  });
 });

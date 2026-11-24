@@ -12,6 +12,10 @@ export const CASE_RECONCILE_TASK = 'case-reconcile';
 export const CASE_RECONCILE_CHECK_MS = 60 * 60_000;
 /** Uma volta por semana. */
 export const CASE_RECONCILE_EVERY_MS = 7 * 24 * 60 * 60_000;
+/** A volta em que algum caso falhou se repete inteira depois disto, e não na semana seguinte. */
+export const CASE_RECONCILE_RETRY_MS = 24 * 60 * 60_000;
+/** O `lastError` da volta em que algum caso falhou. */
+const INCOMPLETE = 'cases_failed';
 export const CASE_RECONCILE_MAX_RUN_MS = 4 * 60_000;
 export const CASE_RECONCILE_BUDGET_MS = CASE_RECONCILE_MAX_RUN_MS + 60_000;
 const PAGE = 100;
@@ -63,8 +67,8 @@ export interface CaseReconcileOptions {
  * própria diferença depois, sobre o valor novo. Por isso é exata com a triagem e a atribuição rodando. Só trava casos,
  * um por vez, e nenhum alerta: não entra em ciclo com ninguém.
  *
- * Um caso com erro não para os outros. A volta que não cabe no tempo continua de onde parou (`cursorId`, o cliente e o
- * caso).
+ * Um caso com erro não para os outros, e a volta em que algum falhou se repete no dia seguinte (`lastError`). A que não
+ * cabe no tempo continua de onde parou (`cursorId`, o cliente e o caso).
  */
 export class CaseReconcileJob {
   private readonly lease: SyncLease;
@@ -100,9 +104,12 @@ export class CaseReconcileJob {
       if (!(await this.due(startedAt))) return { ...report, status: 'not_due' };
       const state = await this.prisma.syncState.findUniqueOrThrow({
         where: { name: this.name },
-        select: { cursorId: true },
+        select: { cursorId: true, lastError: true },
       });
       const [resumeTenant, resumeCase] = (state.cursorId ?? '').split('/');
+      // A falha de uma execução anterior da mesma volta também conta.
+      const failedBefore = state.cursorId !== null && state.lastError !== null;
+      const lastError = () => (failedBefore || report.failed > 0 ? INCOMPLETE : null);
       for (const tenantId of await this.tenants(resumeTenant)) {
         let after = tenantId === resumeTenant ? resumeCase : undefined;
         for (;;) {
@@ -120,7 +127,7 @@ export class CaseReconcileJob {
           if (after === undefined) break;
           await this.prisma.syncState.update({
             where: { name: this.name },
-            data: { lastRunAt: startedAt, cursorId: `${tenantId}/${after}` },
+            data: { lastRunAt: startedAt, cursorId: `${tenantId}/${after}`, lastError: lastError() },
           });
           if (this.elapsed() >= deadline) return { ...report, status: 'partial' };
           if (!(await this.lease.renew())) return { ...report, status: 'lease_lost' };
@@ -128,7 +135,12 @@ export class CaseReconcileJob {
       }
       await this.prisma.syncState.update({
         where: { name: this.name },
-        data: { lastRunAt: startedAt, cursorId: null, lastSuccessAt: this.now() },
+        data: {
+          lastRunAt: startedAt,
+          cursorId: null,
+          lastError: lastError(),
+          ...(lastError() === null && { lastSuccessAt: this.now() }),
+        },
       });
       return report;
     } finally {
@@ -158,14 +170,13 @@ export class CaseReconcileJob {
   private async due(now: Date): Promise<boolean> {
     const state = await this.prisma.syncState.findUnique({
       where: { name: this.name },
-      select: { lastSuccessAt: true, cursorId: true },
+      select: { lastRunAt: true, lastSuccessAt: true, lastError: true, cursorId: true },
     });
-    const last = state?.lastSuccessAt ?? null;
-    return (
-      (state?.cursorId ?? null) !== null ||
-      last === null ||
-      now.getTime() - last.getTime() >= CASE_RECONCILE_EVERY_MS
-    );
+    if (state === null || state.cursorId !== null) return true;
+    const failed = state.lastError !== null;
+    const last = failed ? state.lastRunAt : state.lastSuccessAt;
+    const wait = failed ? CASE_RECONCILE_RETRY_MS : CASE_RECONCILE_EVERY_MS;
+    return last === null || now.getTime() - last.getTime() >= wait;
   }
 
   private async check(tenantId: string, caseId: string, report: CaseReconcileReport): Promise<void> {
