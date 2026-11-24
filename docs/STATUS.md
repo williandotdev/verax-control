@@ -6623,8 +6623,8 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
 - **Testes:** 534 novos em 7 arquivos (cada regra em limite −1/0/+1, leitor, máscara, entradas hostis); 174 mutações em
   série: 157 mortas de primeira e 13 depois de testes novos; das 4 que sobraram, duas saíram com o código redundante e
   duas são equivalentes.
-- **Benchmark (só por pedido, `node --expose-gc scripts/bench-weblogs.mjs`), 1 milhão de linhas:** tráfego comum, 17,9 s de
-  CPU, 31 MB de heap, 15 ms no maior bloqueio (alvos: 25 s, 40 MB, 50 ms; outras execuções na mesma máquina deram até
-  24 s). Enchente (tudo único e recusado): 44 s, 24 MB e 49 ms, com a avaliação em passos.
+- **Benchmark (só por pedido, `node --expose-gc scripts/bench-weblogs.mjs`), 1 milhão de linhas:** tráfego comum, 18 a 24 s
+  de CPU, 33 MB de heap e até 28 ms no maior bloqueio (alvos: 25 s, 40 MB, 50 ms). Enchente (tudo único e recusado): 44 a
+  61 s, 28 MB e 49 a 65 ms no maior passo da avaliação.
 - **Riscos:** nenhum dado real de ALB foi visto; o escape de aspas no log não é documentado (a linha ambígua é analisada
   sem host e sem bloqueio).

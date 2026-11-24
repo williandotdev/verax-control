@@ -4,7 +4,7 @@
 //
 // Alvos do desenho (1 milhão de linhas, tráfego comum): até 25 s de CPU, até 40 MB de heap a mais e até 50 ms de bloqueio
 // do laço de eventos (`blocoMaxMs`, um pedaço de 64 KB; `passoMaxMs`, um passo da avaliação). A `enchente` é o pior caso
-// que um atacante consegue: tudo único, tudo recusado. Dados fictícios (RFC 5737, RFC 2544 e RFC 3849). As linhas passam pelo separador em pedaços de 64 KB, como na
+// que um atacante consegue: tudo único, tudo recusado. Dados fictícios (RFC 3849). As linhas passam pelo separador em pedaços de 64 KB, como na
 // leitura de um objeto do S3; gerar as linhas não entra na conta.
 //
 // Roda o TypeScript direto (o Node remove os tipos); precisa do `packages/shared` compilado (`pnpm typecheck` o compila).
@@ -39,21 +39,22 @@ const CHUNK = 64 * 1024;
 const gc = globalThis.gc;
 if (gc === undefined) throw new Error('rode com --expose-gc');
 
-const ipv4 = (i) => `198.${18 + ((i >> 16) & 1)}.${(i >> 8) & 255}.${i & 255}`;
-const ipv6 = (i) => `2001:db8:${(i >> 8) & 0xffff}:${i & 255}::${(i % 1000).toString(16)}`;
+/** Um cliente por número: um /64 do bloco de documentação. */
+const visitor = (i) =>
+  `2001:db8:${(i >> 16).toString(16)}:${(i & 0xffff).toString(16)}::${(i % 1000).toString(16)}`;
 
 /** Tráfego comum: 12 mil visitantes, caminhos repetidos, 5% de erro, logins e meia dúzia de atacantes. */
 function common(random, time) {
   const dice = random();
-  const client = ipv4(Math.floor(random() ** 2 * 12_000));
+  const client = visitor(Math.floor(random() ** 2 * 12_000));
   const userAgent = `Mozilla/5.0 (variante ${Math.floor(random() * 400)}) Chrome/140.0 Safari/537.36`;
   if (dice < 0.02)
     return { time, client, userAgent, method: 'POST', path: '/login', status: random() < 0.3 ? 401 : 302 };
   if (dice < 0.04)
-    return { time, client: ipv4(90_000), path: `/p${Math.floor(random() * 2e6)}`, status: 404 };
-  if (dice < 0.05) return { time, client: ipv4(90_001), method: 'POST', path: '/login', status: 401 };
+    return { time, client: visitor(90_000), path: `/p${Math.floor(random() * 2e6)}`, status: 404 };
+  if (dice < 0.05) return { time, client: visitor(90_001), method: 'POST', path: '/login', status: 401 };
   if (dice < 0.06)
-    return { time, client: ipv4(90_002), path: `/x${Math.floor(random() * 500)}/.env`, status: 404 };
+    return { time, client: visitor(90_002), path: `/x${Math.floor(random() * 500)}/.env`, status: 404 };
   if (dice < 0.1)
     return { time, client, userAgent, path: `/sumiu/${Math.floor(random() * 50)}`, status: 404 };
   if (dice < 0.5) return { time, client, userAgent, path: `/estatico/${Math.floor(random() * 300)}.js` };
@@ -69,7 +70,7 @@ function common(random, time) {
 function hostile(random, time, i) {
   const base = {
     time,
-    client: i % 3 === 0 ? ipv6(i) : ipv4(i % 131_072),
+    client: visitor(i),
     userAgent: `agente-${i}-${'x'.repeat(200)}`,
     domain: `h${i % 5_000}.exemplo.com.br`,
   };

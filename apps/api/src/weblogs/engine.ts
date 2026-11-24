@@ -133,6 +133,8 @@ export type OpenResult =
 /** Objetos atrasados guardados até a próxima avaliação. */
 const MAX_LATE_SLOTS = 12;
 const MAX_PEAKS = 2_000;
+/** Achados montados entre um passo e outro. */
+const STEP_DRAFTS = 10;
 export const MAX_FINDINGS_PER_RULE = 10;
 export const MAX_UNFOLDED_FINDINGS = 100;
 
@@ -297,7 +299,12 @@ export class WebLogEngine {
     const own = hits.filter((hit) => !NOISE_RULES.has(hit.rule) || this.digest.isTargeted(hit, live));
     const chosen = this.fold(this.strongest(own));
     yield;
-    const drafts = chosen.map((hit) => toWebFindingDraft(this.source, hit, this.peak(hit)));
+    const drafts: WebFindingDraft[] = [];
+    for (const hit of chosen) {
+      drafts.push(toWebFindingDraft(this.source, hit, this.peak(hit)));
+      // Cada evidência passa pelo schema: centenas de uma vez seguram o laço de eventos.
+      if (drafts.length % STEP_DRAFTS === 0) yield;
+    }
     yield;
     drafts.push(...this.digest.drafts(this.source, live, now));
     yield;

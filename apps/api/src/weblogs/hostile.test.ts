@@ -31,7 +31,8 @@ const login = (client: string, status: number, extra: LineSpec = {}): LineSpec =
   ...extra,
 });
 
-const ipv4 = (i: number): string => `198.${18 + (i >> 16)}.${(i >> 8) & 255}.${i & 255}`;
+/** Um cliente diferente por número: um /64 do bloco de documentação (RFC 3849). */
+const visitor = (i: number): string => `2001:db8:${(i >> 16).toString(16)}:${(i & 0xffff).toString(16)}::1`;
 
 const failures = (count: number, client = ATTACKER): LineSpec[] => times(count, () => login(client, 401));
 const probes = (count: number, client = ATTACKER): LineSpec[] =>
@@ -160,7 +161,7 @@ describe('cardinalidade', () => {
   it('100 mil IPs de uma requisição não escondem quem tem 25', () => {
     const harness = new Harness();
     const flood = (from: number, count: number): LineSpec[] =>
-      times(count, (i) => ({ client: ipv4(from + i), path: `/p${i}`, status: 404 }));
+      times(count, (i) => ({ client: visitor(from + i), path: `/p${i}`, status: 404 }));
     harness.feed(flood(0, 50_000));
     harness.feed([...failures(25), ...probes(400, '192.0.2.9')]);
     harness.feed(flood(50_000, 50_000));
@@ -178,7 +179,7 @@ describe('cardinalidade', () => {
     const harness = new Harness({ limits });
     for (let i = 0; i < 25; i += 1) {
       harness.feed([login(ATTACKER, 401)]);
-      harness.feed(times(1_000, (j) => ({ client: ipv4(i * 1_000 + j), path: '/', status: 404 })));
+      harness.feed(times(1_000, (j) => ({ client: visitor(i * 1_000 + j), path: '/', status: 404 })));
     }
     expect(of(harness.evaluate().drafts, '990405')[0]).toMatchObject({
       sourceIp: ATTACKER,
@@ -204,9 +205,9 @@ describe('cardinalidade', () => {
 
   it('20 mil IPs com uma falha de login cada: a distribuída, o teimoso e o que entrou aparecem', () => {
     const harness = feed([
-      ...times(10_000, (i) => login(ipv4(i), 401)),
+      ...times(10_000, (i) => login(visitor(i), 401)),
       ...failures(30),
-      ...times(10_000, (i) => login(ipv4(20_000 + i), 401)),
+      ...times(10_000, (i) => login(visitor(20_000 + i), 401)),
       login(ATTACKER, 302),
     ]);
     expect(harness.engine.usage.loginCells).toBeLessThanOrEqual(DEFAULT_LIMITS.maxLoginCells);
@@ -218,7 +219,7 @@ describe('cardinalidade', () => {
 
   it('inventar rotas de login não tira a verdadeira da contagem', () => {
     const invented = times(3_000, (i) =>
-      login(ipv4(i), 401, {
+      login(visitor(i), 401, {
         path: `/r${'abcdefghij'[i % 10]}${'klmnopqrst'[((i / 10) % 10) | 0]}${'uvwxyzabcd'[((i / 100) % 10) | 0]}/login`,
       }),
     );
@@ -233,7 +234,7 @@ describe('cardinalidade', () => {
 
   it('nem 20 rotas inventadas com 20 tentativas cada, de IPs diferentes', () => {
     const invented = times(400, (i) =>
-      login(ipv4(i), 401, { path: `/${'abcdefghijklmnopqrst'[i % 20]}x/login` }),
+      login(visitor(i), 401, { path: `/${'abcdefghijklmnopqrst'[i % 20]}x/login` }),
     );
     const [draft] = of(feed([...invented, ...failures(20)]).evaluate().drafts, '990405');
     // A verdadeira cai na rota comum: a contagem é a mesma, só o nome da rota se perde.
@@ -244,7 +245,7 @@ describe('cardinalidade', () => {
   });
 
   it('subdomínios de certificado curinga: o teto de hosts não cala a força bruta nem a rota declarada', () => {
-    const flood = times(5_000, (i) => ({ client: ipv4(i), domain: `h${i}.exemplo.com.br` }));
+    const flood = times(5_000, (i) => ({ client: visitor(i), domain: `h${i}.exemplo.com.br` }));
     const { drafts, notes } = feed([...flood, ...failures(20)]).evaluate();
     expect(notes).toContain('truncated');
     expect(of(drafts, '990405')).toHaveLength(1);
@@ -265,8 +266,10 @@ describe('cardinalidade', () => {
   });
 
   it('a distribuída por subdomínios além do teto soma à parte', () => {
-    const flood = times(60, (i) => ({ client: ipv4(i), domain: `pre${i}.exemplo.com.br` }));
-    const spread = times(600, (i) => login(ipv4(100 + (i % 100)), 401, { domain: `h${i}.exemplo.com.br` }));
+    const flood = times(60, (i) => ({ client: visitor(i), domain: `pre${i}.exemplo.com.br` }));
+    const spread = times(600, (i) =>
+      login(visitor(100 + (i % 100)), 401, { domain: `h${i}.exemplo.com.br` }),
+    );
     const [draft] = of(feed([...flood, ...spread]).evaluate().drafts, '990407');
     expect(draft?.evidence).toMatchObject({ host: null, counters: { failures: 600, clients: 100 } });
   });
@@ -286,7 +289,7 @@ describe('cardinalidade', () => {
       'phpinfo.php',
     ];
     const spa = times(400, (i) => ({
-      client: ipv4(i),
+      client: visitor(i),
       path: `/a${i}/${variants[i % variants.length] ?? ''}`,
       status: 200,
       sent: 5_000,
@@ -300,16 +303,16 @@ describe('cardinalidade', () => {
   it('encher os tamanhos da página inicial não faz parecer que só o atacante a pediu', () => {
     const own = times(16, (i) => ({ client: ATTACKER, path: '/', status: 200, sent: 900 + i * 100 }));
     const leak = { client: ATTACKER, path: '/.env', status: 200, sent: 900 };
-    const visitor = { client: '192.0.2.50', path: '/', status: 200, sent: 80_000 };
+    const other = { client: '192.0.2.50', path: '/', status: 200, sent: 80_000 };
     expect(of(feed([...own, leak]).evaluate().drafts, '990403')).toEqual([]);
-    expect(of(feed([...own, visitor, leak]).evaluate().drafts, '990403')).toHaveLength(1);
+    expect(of(feed([...own, other, leak]).evaluate().drafts, '990403')).toHaveLength(1);
   });
 
   it('encher os pares de login num slot não cega os seguintes', () => {
     const limits = { ...DEFAULT_LIMITS, maxLoginCells: 2_000 };
     const harness = new Harness({ limits });
     harness.feed(
-      times(8_000, (i) => login(ipv4(i % 2_000), 401)),
+      times(8_000, (i) => login(visitor(i % 2_000), 401)),
       T0 - SLOT,
       T0,
     );
@@ -324,14 +327,14 @@ describe('cardinalidade', () => {
 
   it('nem encher uma rota com 2 mil clientes teimosos cega a mesma rota', () => {
     const limits = { ...DEFAULT_LIMITS, maxRouteClients: 200 };
-    const lines = times(1_000, (i) => login(ipv4(i % 200), 401));
+    const lines = times(1_000, (i) => login(visitor(i % 200), 401));
     const { drafts } = feed([...lines, ...failures(30)], { limits }).evaluate();
     expect(of(drafts, '990405').map((draft) => draft.sourceIp)).toEqual([ATTACKER]);
   });
 
   it('caminhos únicos: os conjuntos têm teto, e o corte é dito', () => {
     const limits = { ...DEFAULT_LIMITS, maxHashCells: 8_192, maxPathSets: 20 };
-    const lines = times(40_000, (i) => ({ client: ipv4(i % 50), path: `/p${i}`, status: 404 }));
+    const lines = times(40_000, (i) => ({ client: visitor(i % 50), path: `/p${i}`, status: 404 }));
     const harness = feed(lines, { limits });
     expect(harness.engine.usage.pathSets).toBeLessThanOrEqual(20);
     // Um conjunto pode dobrar uma vez ao passar do teto.
@@ -346,7 +349,7 @@ describe('cardinalidade', () => {
 
   it('rota inventada que responde 404 não gasta o teto de rotas', () => {
     const lines = times(500, (i) =>
-      login(ipv4(i), 404, { path: `/r${'abcdefghij'[i % 10]}${'klmnopqrst'[((i / 10) % 10) | 0]}/login` }),
+      login(visitor(i), 404, { path: `/r${'abcdefghij'[i % 10]}${'klmnopqrst'[((i / 10) % 10) | 0]}/login` }),
     );
     expect(feed(lines).evaluate().notes).toEqual([]);
   });
@@ -360,7 +363,7 @@ describe('cardinalidade', () => {
 
   it('encher os conjuntos de caminhos não esconde quem enumera', () => {
     const limits = { ...DEFAULT_LIMITS, maxPathSets: 20 };
-    const decoys = times(400, (i) => ({ client: ipv4(i % 40), path: `/d${i}`, status: 404 }));
+    const decoys = times(400, (i) => ({ client: visitor(i % 40), path: `/d${i}`, status: 404 }));
     const scan = times(600, (i) => ({ client: ATTACKER, path: `/p${i}`, status: 404 }));
     const { drafts } = feed([...decoys, ...scan], { limits }).evaluate();
     expect(of(drafts, '990404').map((draft) => draft.sourceIp)).toEqual([ATTACKER]);
@@ -387,7 +390,7 @@ describe('cardinalidade', () => {
 
   it('amostras têm teto, e o achado sai sem elas', () => {
     const limits = { ...DEFAULT_LIMITS, maxDetails: 5 };
-    const harness = feed(times(50, (i) => failures(20, ipv4(i))).flat(), { limits });
+    const harness = feed(times(50, (i) => failures(20, visitor(i))).flat(), { limits });
     expect(harness.engine.usage.details).toBe(5);
     expect(of(harness.evaluate().drafts, '990405')).toHaveLength(11);
   });
@@ -476,7 +479,7 @@ describe('custo (o número de verdade sai de scripts/bench-weblogs.mjs)', () => 
     const lines = Array.from({ length: 40_000 }, (_, i) =>
       albLine({
         time: T0 - Math.floor(random() * SLOT),
-        client: ipv4(Math.floor(random() * 6_000)),
+        client: visitor(Math.floor(random() * 6_000)),
         path: i % 3 === 0 ? `/produto/${i}?ref=${i}` : `/estatico/${i % 200}.js`,
         status: i % 11 === 0 ? 404 : 200,
         userAgent: `Mozilla/5.0 (variante ${i % 300}) Chrome/140.0`,
