@@ -1438,11 +1438,43 @@ describe('avisos por e-mail (outbox)', () => {
             };
           },
         });
-      const runOn = (database: PrismaService, transport: MailTransport, at: Date) =>
+      /**
+       * O banco do despachante só com a fila dos clientes dados: os arquivos de teste rodam ao mesmo tempo no mesmo banco,
+       * e um aviso de outro arquivo gastaria a vez (o lote daqui é de 1 ou 10) ou partiria um lote no meio.
+       */
+      const onlyOf = (database: PrismaService, tenantIds: readonly string[]): PrismaService => {
+        const narrowed = <T extends object>(model: T): T =>
+          new Proxy(model, {
+            get(target, property) {
+              const value: unknown = Reflect.get(target, property);
+              if (property !== 'findMany') return value;
+              return (args: { where?: object }) =>
+                (value as (args: object) => Promise<unknown>).call(target, {
+                  ...args,
+                  where: { AND: [args.where ?? {}, { tenantId: { in: [...tenantIds] } }] },
+                });
+            },
+          });
+        return new Proxy(database, {
+          get(target, property) {
+            const value: unknown = Reflect.get(target, property);
+            return property === 'notification' || property === 'notificationDigest'
+              ? narrowed(value as object)
+              : value;
+          },
+        });
+      };
+      const runOn = (
+        database: PrismaService,
+        transport: MailTransport,
+        at: Date,
+        tenantIds: readonly string[],
+        batch = 1,
+      ) =>
         new NotificationDispatcher(
-          database,
+          onlyOf(database, tenantIds),
           { transport, webOrigin: TEST_WEB_ORIGIN },
-          { now: () => at, batch: 1 },
+          { now: () => at, batch },
         ).runOnce();
 
       it('cada aviso está em exatamente uma faixa, de qualquer tipo e severidade', async () => {
@@ -1538,7 +1570,7 @@ describe('avisos por e-mail (outbox)', () => {
             return Promise.reject(new Error('550'));
           },
         };
-        await dispatcher(transport, soon(), { batch: 10 }).runOnce();
+        await runOn(prisma, transport, soon(), [tenantId, other], 10);
         expect(failures).toBeGreaterThan(0);
         expect(failures).toBeLessThan(10);
         expect(mailbox.to(waiting.email)).toHaveLength(1);
@@ -1573,9 +1605,9 @@ describe('avisos por e-mail (outbox)', () => {
           });
           sizes.add(digest?.noticeIds.length ?? 0);
         };
-        const report = await runOn(beforeEachTransaction(size), mailbox, at);
+        const report = await runOn(beforeEachTransaction(size), mailbox, at, [tenantId]);
         await size();
-        expect(report.folded).toBeGreaterThanOrEqual(60);
+        expect(report.folded).toBe(60);
         expect([...sizes].sort((a, b) => a - b)).toEqual([0, 30]);
         const after = await noticesOf(tenantId);
         expect(after).toHaveLength(30);
@@ -1619,7 +1651,7 @@ describe('avisos por e-mail (outbox)', () => {
         const folded: number[] = [];
         for (let run = 0; run < 6 && (await pending()) > 0; run += 1) {
           const before = await pending();
-          await runOn(prisma, mailbox, at);
+          await runOn(prisma, mailbox, at, [tenantId]);
           folded.push(before - (await pending()));
         }
         expect(await pending()).toBe(0);
@@ -1685,7 +1717,7 @@ describe('avisos por e-mail (outbox)', () => {
             data: { status: 'sent', attempts: 1, deliveredUserIds: [admin.id] },
           });
         });
-        await runOn(database, new MemoryMailTransport(), at);
+        await runOn(database, new MemoryMailTransport(), at, [tenantId]);
         expect((await digestsOf(tenantId))[0]?.noticeIds).toEqual(ids.slice(1));
         expect(await noticeById(tenantId, taken)).toMatchObject({
           deliveredUserIds: [admin.id],
@@ -1705,7 +1737,7 @@ describe('avisos por e-mail (outbox)', () => {
             data: { status: 'sent', noticeIds: [old as string], nextAttemptAt: at },
           });
         });
-        await runOn(closing, new MemoryMailTransport(), at);
+        await runOn(closing, new MemoryMailTransport(), at, [tenantId]);
         expect((await digestsOf(tenantId))[0]?.noticeIds).toEqual([old]);
         for (const id of ids) {
           expect(await noticeById(tenantId, id)).toMatchObject({
@@ -1736,7 +1768,7 @@ describe('avisos por e-mail (outbox)', () => {
           });
         });
         try {
-          await runOn(stealing, new MemoryMailTransport(), at);
+          await runOn(stealing, new MemoryMailTransport(), at, [first, second]);
         } finally {
           await new SyncLease(prisma, NOTIFICATIONS_TASK, 'outra-replica', 60_000).release();
         }
@@ -1756,7 +1788,12 @@ describe('avisos por e-mail (outbox)', () => {
           await atLimit(tenantId, admin.id, hourStartOf(at));
           sides.push({ tenantId, ids: await enqueue(tenantId, Array(6).fill(high)), userId: admin.id });
         }
-        await runOn(prisma, new MemoryMailTransport(), at);
+        await runOn(
+          prisma,
+          new MemoryMailTransport(),
+          at,
+          sides.map((side) => side.tenantId),
+        );
         for (const { tenantId, ids, userId } of sides) {
           const digests = await digestsOf(tenantId);
           expect(digests.map((digest) => [digest.userId, digest.noticeIds])).toEqual([[userId, ids]]);
