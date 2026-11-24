@@ -398,7 +398,7 @@ export type CloudflareConnection = z.infer<typeof cloudflareConnectionSchema>;
  * - `not_entitled`: o plano da zona não dá o dado;
  * - `forbidden`: sem permissão de leitura na zona;
  * - `over_limit`: além do máximo de zonas lidas por conta;
- * - `not_monitored`: fora da lista cadastrada;
+ * - `not_monitored`: fora da lista cadastrada, ou a conta está desativada;
  * - `missing`: não aparece mais na conta (a linha fica, como histórico).
  */
 export const CLOUDFLARE_ZONE_STATES = [
@@ -437,6 +437,14 @@ export const cloudflareZonesSchema = z.strictObject({
   monitored: z.enum(['all', 'listed']),
   /** O máximo de zonas lidas por conta: acima dele, "todas" não é verdade, e a tela diz quais ficaram de fora. */
   limit: z.number().int().min(1),
+  /** A auditoria é da conta inteira, não das zonas: a última leitura e o código do último erro dela. */
+  audit: z.strictObject({
+    lastReadAt: z.iso.datetime().nullable(),
+    lastErrorCode: z
+      .string()
+      .regex(/^[A-Za-z0-9_.:-]{1,64}$/)
+      .nullable(),
+  }),
   zones: z.array(cloudflareZoneSchema),
 });
 export type CloudflareZones = z.infer<typeof cloudflareZonesSchema>;

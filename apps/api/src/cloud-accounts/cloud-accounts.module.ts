@@ -11,6 +11,8 @@ import { AwsOnboardingService } from './aws-onboarding.service.js';
 import { CloudAccountsController } from './cloud-accounts.controller.js';
 import { CloudAccountsService } from './cloud-accounts.service.js';
 import { CloudCredentialsController } from './cloud-credentials.controller.js';
+import { CloudflareAccountController } from './cloudflare-account.controller.js';
+import { CloudflareAccountService } from './cloudflare-account.service.js';
 import { CloudflareOauthController } from './cloudflare-oauth.controller.js';
 
 @Module({
@@ -20,6 +22,7 @@ import { CloudflareOauthController } from './cloudflare-oauth.controller.js';
     CloudCredentialsController,
     AwsOnboardingController,
     CloudflareOauthController,
+    CloudflareAccountController,
   ],
   providers: [
     CloudAccountsService,
@@ -27,6 +30,7 @@ import { CloudflareOauthController } from './cloudflare-oauth.controller.js';
     CredentialIntakeService,
     CloudflareOauthSettings,
     CloudflareConnectService,
+    CloudflareAccountService,
     // Sempre o host oficial do Cloudflare; os testes trocam o provider por um que aponta para um servidor falso local.
     { provide: CloudflareTokenCheck, useFactory: () => new CloudflareTokenCheck() },
     // As chaves de leitura da VM própria do cliente: o STS da AWS e o token do Google com o Pub/Sub, nos endereços

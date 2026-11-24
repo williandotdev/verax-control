@@ -123,6 +123,11 @@ const zoneSchema = z.object({
   id: z.string().max(64).nullish(),
   name: z.string().min(1).max(253),
   account: z.object({ id: z.string().max(64).nullish() }).nullish(),
+  // Só informação da tela: um plano fora do formato nunca recusa a zona.
+  plan: z
+    .object({ name: z.string().max(256) })
+    .nullish()
+    .catch(null),
 });
 
 const zonesPageSchema = z.object({
@@ -231,6 +236,8 @@ export interface AccountZones {
   names: Set<string>;
   /** As mesmas zonas pelo ID (32 hexadecimais, o `zoneTag` do GraphQL), com o nome em minúsculas. */
   ids: Map<string, string>;
+  /** O plano de cada zona (pelo ID), como o Cloudflare o chama, quando a resposta o traz. */
+  plans: Map<string, string>;
   /** Todas as páginas lidas (sem bater no teto). */
   complete: boolean;
 }
@@ -329,6 +336,7 @@ export class CloudflareClient {
   async zones(token: CloudflareBearer, accountId: string, signal?: AbortSignal): Promise<AccountZones> {
     const names = new Set<string>();
     const ids = new Map<string, string>();
+    const plans = new Map<string, string>();
     for (let page = 1; page <= MAX_ZONE_PAGES; page += 1) {
       const query = new URLSearchParams({
         'account.id': accountId,
@@ -346,14 +354,18 @@ export class CloudflareClient {
           const name = zone.data.name.toLowerCase();
           names.add(name);
           // O ID entra no corpo da consulta GraphQL: só o formato do Cloudflare (32 hexadecimais minúsculos).
-          if (isHex32(zone.data.id)) ids.set(zone.data.id, name);
+          if (isHex32(zone.data.id)) {
+            ids.set(zone.data.id, name);
+            const plan = zone.data.plan?.name;
+            if (plan) plans.set(zone.data.id, plan);
+          }
         }
       }
       const totalPages = body.data.result_info?.total_pages ?? undefined;
       const last = totalPages === undefined ? result.length < ZONES_PER_PAGE : page >= totalPages;
-      if (last) return { names, ids, complete: true };
+      if (last) return { names, ids, plans, complete: true };
     }
-    return { names, ids, complete: false };
+    return { names, ids, plans, complete: false };
   }
 
   /** As contas que a credencial alcança (`GET /accounts`), até o teto. */

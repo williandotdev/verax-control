@@ -303,6 +303,7 @@ async function main(): Promise<void> {
           throw new Error('SYNC_SOURCES: a fonte cloudflare exige o cofre de credenciais');
         const cloudflare = new CloudflareAuditSync(prisma, keyring, {
           auditIntervalMs: loaded.CLOUDFLARE_AUDIT_INTERVAL_SECONDS * 1000,
+          logger,
         });
         return [
           {
