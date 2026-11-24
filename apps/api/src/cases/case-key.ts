@@ -133,7 +133,7 @@ function present(value: string | null): string | null {
 }
 
 /** Os primeiros `max` caracteres (pontos de código, como conta o banco), sem partir nenhum. */
-function firstCharacters(value: string, max: number): string {
+export function firstCharacters(value: string, max: number): string {
   if (value.length <= max) return value;
   // Um caractere ocupa até duas unidades: basta olhar o começo.
   return Array.from(value.slice(0, max * 2))
@@ -346,7 +346,11 @@ function securityHubTitle(title: string): { product: string | null; rest: string
 
 const dimension = (name: string, value: string | null): Dimension[] =>
   value === null ? [] : [[name, value]];
-const ruleOf = (finding: CaseKeyInput): Dimension => ['rule', finding.ruleId.toWellFormed()];
+/** O nome da parte que leva a rede de origem (`networkOf`). */
+export const NETWORK_PART = 'network';
+/** O nome da parte que leva a regra. */
+export const RULE_PART = 'rule';
+const ruleOf = (finding: CaseKeyInput): Dimension => [RULE_PART, finding.ruleId.toWellFormed()];
 /** A primeira alternativa que existe. */
 const firstOf = (...options: readonly Dimension[][]): Dimension[] =>
   options.find((option) => option.length > 0) ?? [];
@@ -500,7 +504,7 @@ function host(finding: CaseKeyInput): Grouping {
     return {
       queue: 'detection',
       family: 'host-login',
-      fine: [...fine, ...dimension('network', networkOf(finding.sourceIp))],
+      fine: [...fine, ...dimension(NETWORK_PART, networkOf(finding.sourceIp))],
     };
   }
   return { queue: 'detection', family: 'host', fine };
@@ -532,7 +536,7 @@ function byActor(finding: CaseKeyInput, family: CaseFamily): Grouping {
 
 function groupingOf(finding: CaseKeyInput): Grouping {
   const rule = ruleOf(finding);
-  const network = dimension('network', networkOf(finding.sourceIp));
+  const network = dimension(NETWORK_PART, networkOf(finding.sourceIp));
   switch (finding.logSource) {
     case 'cloudtrail':
       if (CONSOLE_LOGIN_RULES.has(finding.ruleId)) {
@@ -586,28 +590,84 @@ function groupingOf(finding: CaseKeyInput): Grouping {
   }
 }
 
-/** A chave de um alerta, pelas colunas gravadas dele. Nunca lança. */
-export function caseKeyOf(finding: CaseKeyInput): CaseKey {
+/** As partes da chave de um alerta, inteiras. */
+function dimensionsOf(finding: CaseKeyInput) {
   const { queue, family, fine, coarse, group } = groupingOf(finding);
   // Só a média e a baixa vão para a chave grossa: uma severidade que não se conhece vale como grave.
   const noisy = finding.severity === 'medium' || finding.severity === 'low';
   const tier: CaseTier = queue === 'vulnerability' ? 'any' : noisy ? 'ml' : 'hc';
   const dimensions = tier === 'ml' ? (coarse ?? [ruleOf(finding)]) : fine;
+  return { queue, family, tier, dimensions, group: group ?? null };
+}
+
+function hashOf(
+  queue: CaseQueue,
+  family: string,
+  tier: CaseTier | CaseFold,
+  accountId: string,
+  dimensions: readonly Dimension[],
+): string {
   const encoded = JSON.stringify([
     `v${CASE_KEY_VERSION}`,
     queue,
     family,
     tier,
-    finding.accountId.toWellFormed(),
+    accountId.toWellFormed(),
     ...dimensions,
   ]);
+  return createHash('sha256').update(encoded).digest('hex');
+}
+
+const shown = (dimensions: readonly Dimension[]): CaseKeyPart[] =>
+  dimensions.map(([name, value]) => ({ name, value: firstCharacters(value, PART_MAX) }));
+
+/** A chave de um alerta, pelas colunas gravadas dele. Nunca lança. */
+export function caseKeyOf(finding: CaseKeyInput): CaseKey {
+  const { queue, family, tier, dimensions, group } = dimensionsOf(finding);
   return {
     version: CASE_KEY_VERSION,
     queue,
     family,
     tier,
-    groupKey: createHash('sha256').update(encoded).digest('hex'),
-    parts: dimensions.map(([name, value]) => ({ name, value: firstCharacters(value, PART_MAX) })),
-    group: group ?? null,
+    groupKey: hashOf(queue, family, tier, finding.accountId, dimensions),
+    parts: shown(dimensions),
+    group,
+  };
+}
+
+/**
+ * Os casos que reúnem alertas de várias chaves, só na hora de abrir um caso e só além dos limites (`case-limits.ts`):
+ * - `distributed`: a mesma família, conta e alvo, com redes de origem demais: um caso só, sem a rede;
+ * - `overflow`: o mesmo, dos críticos que passaram do teto próprio deles (nunca dividem caso com os altos);
+ * - `rollup`: os de severidade média e baixa além do teto da fila, um caso por fonte.
+ */
+export type CaseFold = 'distributed' | 'overflow' | 'rollup';
+
+/** A família do caso que reúne as médias e baixas de uma fonte. */
+export const ROLLUP_FAMILY = 'rollup';
+
+export interface FoldedCaseKey extends Omit<CaseKey, 'family' | 'tier' | 'group'> {
+  family: CaseFamily | typeof ROLLUP_FAMILY;
+  fold: CaseFold;
+}
+
+/**
+ * A chave do caso que reúne o alerta. O nome da reunião fica no lugar da faixa, então ela nunca é igual à chave de um
+ * caso comum. O `rollup` é por fonte, sem a conta (é o desenho: só ruído entra nele, e as contas ficam na amostra).
+ */
+export function foldedCaseKey(finding: CaseKeyInput, fold: CaseFold): FoldedCaseKey {
+  const { queue, family, dimensions } = dimensionsOf(finding);
+  const rollup = fold === 'rollup';
+  const kept: readonly Dimension[] = rollup
+    ? [['source', finding.logSource.toWellFormed()]]
+    : dimensions.filter(([name]) => name !== NETWORK_PART);
+  const name = rollup ? ROLLUP_FAMILY : family;
+  return {
+    version: CASE_KEY_VERSION,
+    queue,
+    family: name,
+    fold,
+    groupKey: hashOf(queue, name, fold, rollup ? '' : finding.accountId, kept),
+    parts: [...shown(kept), { name: 'fold', value: fold }],
   };
 }

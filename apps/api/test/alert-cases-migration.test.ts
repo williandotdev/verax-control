@@ -193,6 +193,8 @@ describe(`migration ${MIGRATION}`, () => {
         try {
           await client.query('SET LOCAL enable_seqscan = off');
           await client.query('SET LOCAL enable_bitmapscan = off');
+          // E sem ordenar: com as estatísticas que as outras suítes deixam, o plano de uma tabela pequena varia.
+          await client.query('SET LOCAL enable_sort = off');
           const { rows } = await client.query<{ 'QUERY PLAN': unknown }>(
             `EXPLAIN (FORMAT JSON) ${sql}`,
             values,

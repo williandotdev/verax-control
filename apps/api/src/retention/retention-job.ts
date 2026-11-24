@@ -37,6 +37,8 @@ export interface TenantPurgeCounts {
   incidents: number;
   findings: number;
   comments: number;
+  /** Casos que ficaram sem alerta nenhum. Só aparece quando saiu algum (o nó sem casos fica como antes). */
+  cases?: number;
   postureScans: number;
   postureFailures: number;
   inventorySnapshots: number;
@@ -79,6 +81,7 @@ export interface RetentionReport {
     incidents: number;
     findings: number;
     comments: number;
+    cases?: number;
     postureScans: number;
     postureFailures: number;
     inventorySnapshots: number;
@@ -166,7 +169,7 @@ class RunBudget {
   }
 }
 
-const emptyTenantCounts = (): TenantPurgeCounts => ({
+const emptyTenantCounts = (): Omit<TenantPurgeCounts, 'cases'> => ({
   incidents: 0,
   findings: 0,
   comments: 0,
@@ -239,6 +242,14 @@ function looseFindingExpired(cutoff: Date): Prisma.FindingWhereInput {
     comments: { none: { createdAt: { gte: cutoff } } },
     recurrences: { none: {} },
   };
+}
+
+/**
+ * Caso que sai: sem alerta nenhum guardado (os dele já saíram), sem alerta novo desde o corte (pelo relógio do servidor)
+ * e fora de incidente.
+ */
+function caseExpired(tenantId: string, cutoff: Date): Prisma.AlertCaseWhereInput {
+  return { tenantId, lastAlertAt: { lt: cutoff }, incidentId: null, findings: { none: {} } };
 }
 
 /** Aviso resolvido (enviado, com falha ou pulado) sem mudança desde o corte. O pendente nunca sai. */
@@ -357,7 +368,7 @@ function byFindingCount<T extends { findingCount: number }>(rows: readonly T[], 
  *
  * Ordem, cada cliente pelo próprio escopo:
  * 1. incidentes sem atividade antes do corte, com os achados e os comentários deles;
- * 2. achados soltos (fora de incidente);
+ * 2. achados soltos (fora de incidente) e, depois deles, os casos que ficaram sem alerta;
  * 3. postura (a varredura mais recente de cada conta fica sempre), inventário (30 dias; o retrato mais recente de cada
  *    conta fica sempre) e avisos por e-mail resolvidos (90 dias; só quando o model do PR-16 existe);
  * 4. fila sem dono (90 dias);
@@ -482,6 +493,7 @@ export class RetentionJob {
         if (history !== null) {
           await this.purgeIncidents(tenantId, history, counts, run);
           await this.purgeLooseFindings(tenantId, history, counts, run);
+          await this.purgeCases(tenantId, history, counts, run);
           await this.purgePosture(tenantId, history, counts, run);
         }
         await this.purgeInventory(tenantId, common.inventory, counts, run);
@@ -503,9 +515,10 @@ export class RetentionJob {
 
     const runs = [...perTenant.values()];
     const totals = runs.reduce((sum, { counts }) => {
-      for (const key of Object.keys(sum) as (keyof TenantPurgeCounts)[]) sum[key] += counts[key];
+      for (const key of Object.keys(sum) as (keyof typeof sum)[]) sum[key] += counts[key];
       return sum;
     }, emptyTenantCounts());
+    const cases = runs.reduce((sum, { counts }) => sum + (counts.cases ?? 0), 0);
     const days = new Set(runs.flatMap(({ plan }) => (plan === null ? [] : [plan.decision.days])));
     const withoutPlan = runs.filter(({ plan }) => plan === null).length;
     return {
@@ -517,6 +530,7 @@ export class RetentionJob {
         incidents: totals.incidents,
         findings: totals.findings,
         comments: totals.comments,
+        ...(cases > 0 && { cases }),
         postureScans: totals.postureScans,
         postureFailures: totals.postureFailures,
         inventorySnapshots: totals.inventorySnapshots,
@@ -740,6 +754,48 @@ export class RetentionJob {
       },
       (deleted) => {
         counts.findings += deleted;
+      },
+    );
+  }
+
+  /**
+   * 2b. Casos sem alerta nenhum, sem alerta novo desde o corte e fora de incidente. Sai o selado e também o que ficou
+   * aberto: o selo só vem com o alerta seguinte da chave, então ninguém mais o selaria, e as amostras dele (usuário, IP)
+   * ficariam para sempre. Onde nunca houve caso, nada é gravado. Vale também com `CASES_MODE=off`: as amostras seguem o
+   * prazo do histórico, ligadas ou não as tarefas.
+   *
+   * Sob o lock do cliente, nenhuma atribuição põe alerta num destes casos no meio. Só o sistema grava casos: pelo cliente
+   * base, com o `tenantId` em cada condição.
+   */
+  private async purgeCases(
+    tenantId: string,
+    cutoff: Date,
+    counts: TenantPurgeCounts,
+    run: RunBudget,
+  ): Promise<void> {
+    const expired = caseExpired(tenantId, cutoff);
+    await this.inBatches(
+      run,
+      async () =>
+        (
+          await this.prisma.alertCase.findMany({
+            where: expired,
+            select: { id: true },
+            orderBy: { id: 'asc' },
+            take: this.batch,
+          })
+        ).map((row) => row.id),
+      (ids) =>
+        this.prisma.$transaction(
+          async (tx) => {
+            await lockTenantFindings(tx, tenantId);
+            // De novo, com o lock: o caso que voltou a ter alerta fica.
+            return (await tx.alertCase.deleteMany({ where: { ...expired, id: { in: ids } } })).count;
+          },
+          { timeout: TRANSACTION_TIMEOUT_MS },
+        ),
+      (deleted) => {
+        if (deleted > 0) counts.cases = (counts.cases ?? 0) + deleted;
       },
     );
   }

@@ -2078,6 +2078,71 @@ nenhum endereço sai do nó.
 - **Atualização:** a cada versão do nó, com `scripts/update-ip-country.mjs` (offline, lê os CSV já baixados; os mesmos CSV
   dão os mesmos bytes). `generatedAt`, `ageDays` e `isStale` (mais de 180 dias) são para o aviso honesto na tela.
 
+## Casos: agrupamento dos alertas (`apps/api/src/cases/`)
+
+_(partes 1 e 2: o banco, a chave e a atribuição. A leitura, a tela, a triagem em massa e os avisos por caso vêm depois;
+até lá, nada no painel nem no e-mail muda)_
+
+Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é só o
+worker; a pessoa trata alertas, e as contagens do caso são de gatilhos da tabela de alertas.
+
+- **Interruptor:** `CASES_MODE` no ambiente do worker, conferido na partida (valor fora da lista não sobe).
+
+  | Valor    | O que faz                                                                                                 |
+  | -------- | --------------------------------------------------------------------------------------------------------- |
+  | `off`    | Padrão. Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo diário só confere se há caso a apagar) |
+  | `shadow` | Os alertas ganham caso, e nada usa os casos (a medição no nó piloto)                                      |
+  | `on`     | O mesmo que `shadow`, por enquanto                                                                        |
+
+  O `start.sh` do nó ainda não escreve a variável no `worker.env`: ligar num nó pede essa linha em `infra/`.
+
+- **Tarefas do worker** (só com `shadow` ou `on`):
+  - `case-assign` (a cada 10 s, concessão no `SyncState`): lotes de 200 alertas por cliente, na ordem de chegada, no
+    máximo 2 s de trabalho por cliente em cada passagem. A fila é o próprio predicado (`caseId` vazio, fora de
+    incidente, novo ou em análise), com o índice parcial `Finding_case_outbox_idx`: o alerta novo, o histórico e o que
+    chegou com a versão anterior do nó passam pelo mesmo caminho. O esperado por exceção nasce legítimo e não entra.
+  - `case-watch` (a cada minuto): a idade do alerta alto ou crítico mais antigo ainda sem caso, no log; passou de
+    10 min, é aviso no log. O aviso por e-mail desse atraso vem com os avisos por caso.
+  - `case-reconcile` (uma vez por semana): refaz as contagens de cada caso e corrige a que não bate. É a única escrita
+    de contagem fora dos gatilhos, e qualquer correção vai para o log.
+
+- **Um lote é uma transação**, com a ordem de travas do projeto: o lock dos alertas do cliente (o dos coletores), as
+  linhas dos alertas (`FOR UPDATE SKIP LOCKED`, todas de uma vez) e só então os casos. O alerta preso por uma triagem em
+  curso fica para a passagem seguinte; o lote espera no máximo 1 s por um caso preso, e o coletor espera no máximo um
+  lote. O UPDATE não mexe no `updatedAt` do alerta, que a retenção lê como atividade.
+
+- **Ciclo do caso, pelo horário de chegada no servidor** (`Finding.createdAt`), nunca pelo do log. Como a chegada fica
+  gravada, o agrupamento é o mesmo com o alerta atribuído na hora, no histórico ou depois de uma volta de versão.
+
+  | Situação do caso aberto da chave                         | O alerta que chega                                        |
+  | -------------------------------------------------------- | --------------------------------------------------------- |
+  | Detecção, até 24 h de silêncio e 7 dias de idade         | Entra nele                                                |
+  | Detecção, além disso (mesmo em análise ou promovido)     | Sela (`window`, continua pendente e listado) e abre outro |
+  | Vulnerabilidade ou postura, com pendência                | Entra nele, sem prazo                                     |
+  | Sem pendência, com um incidente dele ainda não resolvido | Entra nele, como novo (o incidente não é alimentado)      |
+  | Sem pendência, tratado (ou com o incidente resolvido)    | Sela (`treated`) e abre outro                             |
+  | Sem alerta nenhum (saíram na retenção)                   | Sela (`idle`) e abre outro                                |
+
+  O caso novo leva o anterior da chave (`previousCaseId`) e quantas vezes ela já voltou (`recurrence`).
+
+- **Limites, só na hora de abrir** (nas 24 h anteriores à chegada): passados 8 casos da mesma família, conta e alvo com
+  rede da internet, o seguinte vai para um caso distribuído (não vale para origem privada, item da lista de proteção
+  nem crítico; este, a partir do 101º, vai para um caso próprio). Com 40 casos na fila de detecção ou de postura, a
+  chave média ou baixa nova vai para um caso por fonte; a alta, a crítica e a de item protegido, nunca. A fila de
+  vulnerabilidade não tem teto (decisão D1).
+
+- **Título:** sempre de um dicionário em português (`case-titles.ts`), nunca do evento. O que vem do evento fica nas
+  partes da chave e nas amostras (limitadas em quantidade e tamanho), que são dado a mostrar.
+
+- **Severidade já avisada** (`noticedSeverity`): enquanto o aviso por e-mail é alerta por alerta (hoje, em qualquer
+  modo), o caso nasce com a severidade já avisada, para os avisos por caso não repetirem o passado. Quando eles valerem,
+  passado é o alerta que chegou antes da primeira passagem da tarefa com eles ligados, guardada uma vez só em
+  `SyncState('case-assign').cursorTimestamp`. Um caso aberto depois do marco nunca é calado por um alerta antigo.
+
+- **Falhas:** o erro de um cliente não para os outros nem a coleta. O lote que falha por culpa de um alerta é partido ao
+  meio até isolar qual; ele fica de fora de 1 min a 1 h (dobra a cada falha), com o id e o SQLSTATE no log. Falha de
+  banco ou espera longa só adiam o cliente; a passagem seguinte continua depois do trecho que falhou e volta ao começo.
+
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
 _(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado. PR-17': a
@@ -2442,6 +2507,7 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
   | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
   | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira                                  |
   | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                                                            |
+  | Casos                                                                    | Sem nenhum achado guardado, sem achado novo desde o corte (pelo relógio do servidor) e fora de incidente; o que ficou aberto também, porque só o alerta seguinte o selaria. Vale com qualquer `CASES_MODE`                                                                                  |
   | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                                                            |
   | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                                                   |
   | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                                                     |

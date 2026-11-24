@@ -9,6 +9,7 @@ import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aw
 import type { AwsReaderCredentials } from './aws/web-identity.js';
 import { WAZUH_CONFIG_INTERVAL_MS, WazuhConfig } from './aws/wazuh-config.js';
 import type { WazuhStallProbe } from './aws/wazuh-source-health.js';
+import { caseTasks } from './cases/case-tasks.js';
 import { CELL_COMMANDS_INTERVAL_MS, CELL_COMMANDS_TASK, CellCommands } from './cell/cell-commands.js';
 import { CellReportOutbox } from './cell/cell-report-outbox.js';
 import {
@@ -215,6 +216,10 @@ async function awsConnectionSetup(
  * A tarefa `retention` (PR-19) é o expurgo diário do histórico no banco do nó, pelo prazo do plano de cada cliente
  * (CE-02: no nó dedicado, o `PLAN` e o `PLAN_HISTORY_DAYS`; na célula, o `TenantPlan`): confere a cada 15 min e roda
  * uma vez por dia, depois das 04:00 UTC, por no máximo 10 min.
+ *
+ * Com `CASES_MODE` em `shadow` ou `on` (o padrão é `off`), entram as tarefas dos casos: `case-assign` (a cada 10 s dá um
+ * caso a cada alerta pendente que ainda não tem), `case-watch` (a cada minuto mede o atraso da atribuição, no log) e
+ * `case-reconcile` (uma vez por semana confere as contagens dos casos).
  *
  * Na célula (`NODE_MODE=cell`, com `CELL_ID`, `CELL_COMMANDS_SUBSCRIPTION` e `CELL_REPORTS_TOPIC`), o canal com o plano
  * de controle (CE-05): `cell-commands` (a cada 10 s) lê os comandos e aplica cada um numa transação, com o relatório na
@@ -456,6 +461,8 @@ async function main(): Promise<void> {
       budgetMs: RETENTION_BUDGET_MS,
       run: (signal) => retention.maybeRun(new Date(), signal),
     });
+    // Casos (agrupamento dos alertas): com CASES_MODE=off, o padrão, nenhuma tarefa.
+    tasks.push(...caseTasks(config.CASES_MODE, prisma, logger));
     const keyring = config.credentialsKeyring;
     if (keyring !== null) {
       const rekey = new CredentialRekey(prisma, keyring);
@@ -567,6 +574,7 @@ async function main(): Promise<void> {
       vaultKeyVersion: config.credentialsKeyring?.current ?? null,
       // Só a origem do plano de controle (null com a sincronização desligada), nunca a chave do nó.
       controlPlaneOrigin: config.controlPlaneSync?.origin ?? null,
+      ...(config.CASES_MODE !== 'off' && { casesMode: config.CASES_MODE }),
     },
     'worker iniciado',
   );
