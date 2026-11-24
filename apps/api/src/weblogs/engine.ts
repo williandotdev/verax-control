@@ -197,11 +197,9 @@ export class WebLogEngine {
     routes: readonly WebRoute[];
     trusted: readonly WebTrustedSource[];
   }): void {
-    const before = this.classifier.signature;
     this.trusted = new TrustedSources(config.trusted, config.now);
     this.classifier = this.classifierFor(config.now);
-    this.tally.configure(new RouteTable(config.routes), this.classifier);
-    if (this.classifier.signature === before) return;
+    if (!this.tally.configure(new RouteTable(config.routes), this.classifier)) return;
     this.digest.forget((key) => this.isDirect(key));
     for (const [key, { client }] of this.peaks) {
       if (client !== null && !this.isDirect(client)) this.peaks.delete(key);

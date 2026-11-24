@@ -12,6 +12,7 @@ import {
 import type { WebFindingDraft } from './draft.js';
 import { MAX_EVIDENCE_BYTES, webEvidenceSchema } from './evidence.js';
 import { EvictedLedger, isSampled } from './evicted.js';
+import { clientKeyOf, parseIp } from './ip.js';
 import { DEFAULT_LIMITS, type WebLimits } from './limits.js';
 import type { WebRuleId } from './rules.js';
 
@@ -38,6 +39,12 @@ const visitor = (i: number): string => `2001:db8:${(i >> 16).toString(16)}:${(i 
 const failures = (count: number, client = ATTACKER): LineSpec[] => times(count, () => login(client, 401));
 const probes = (count: number, client = ATTACKER): LineSpec[] =>
   times(count, (i) => ({ client, path: `/x${i}/.env`, status: 404 }));
+
+const clientKey = (ip: string): string => {
+  const parsed = parseIp(ip);
+  if (parsed === null) throw new Error(ip);
+  return clientKeyOf(parsed);
+};
 
 function feed(lines: readonly LineSpec[], options: ConstructorParameters<typeof Harness>[0] = {}): Harness {
   const harness = new Harness(options);
@@ -450,6 +457,36 @@ describe('990407 com clientes que saem da memória', () => {
       expect(at(5)).toEqual([[30, 600]]);
     });
 
+    it('quem só acertou e saiu não é um cliente com falhas', () => {
+      const clean = times(400, (i) => login(visitor(2_000 + i), 302));
+      const at = (clients: number) =>
+        counted(run([[...rounds(clients, 18), ...clean]], { maxRouteClients: 10 }));
+      expect(at(29)).toEqual([]);
+      expect(at(30)).toEqual([[30, 540]]);
+    });
+
+    it('um /64 que troca de endereço a cada slot é um cliente', () => {
+      const slot = (n: number) => (clients: number) =>
+        times(6, () =>
+          times(clients, (i) => login(`2001:db8:0:${(i + 1).toString(16)}::${n + 1}`, 401)),
+        ).flat();
+      const at = (clients: number) =>
+        counted(run([slot(0)(clients), slot(1)(clients), slot(2)(clients)], { maxRouteClients: 10 }));
+      expect(at(29)).toEqual([]);
+      expect(at(30)).toEqual([[30, 540]]);
+    });
+
+    it('a soma de quem falhou centenas de vezes não dá a volta', () => {
+      const ledger = new EvictedLedger();
+      ledger.add(5, 200);
+      ledger.add(5, 100);
+      ledger.add(6, 300);
+      expect([...ledger.entries()]).toEqual([
+        [5, 255],
+        [6, 255],
+      ]);
+    });
+
     it('e a parte que saiu e a que voltou, no mesmo slot', () => {
       const back = [...rounds(40, 15), ...rounds(60, 25, 1_000), ...rounds(40, 6)];
       expect(counted(run([back], { maxRouteClients: 50 }))).toEqual([]);
@@ -505,18 +542,84 @@ describe('990407 com clientes que saem da memória', () => {
       expect(counted(run([rounds(400, 12), rounds(400, 12)], limits))).toEqual([]);
     });
 
-    it('a rota que perde o lugar leva junto quem saiu dela', () => {
-      const letters = 'abcdefghijklmnopqrst';
-      const spread = times(40 * 19, (i) =>
-        login(visitor(i), 401, {
-          path: `/${letters.charAt(i % 20)}${letters.charAt(Math.floor(i / 20) % 2)}/login`,
-        }),
+    it('slots raleados em níveis diferentes: só conta quem está na amostra de todos', () => {
+      const limits = { maxRouteClients: 20, maxEvictedCells: 600 };
+      const harness = run([rounds(150, 2), rounds(150, 2, 150), rounds(40, 3, 300)], limits);
+      const tally = harness.engine['tally'];
+      const shifts = [...tally.slots.values()].flatMap((slot) =>
+        [...slot.login.values()].flatMap(({ evicted }) => (evicted === null ? [] : [evicted.shift])),
       );
-      const harness = run([spread], { maxRouteClients: 5 });
-      const [clients, failures] = counted(harness, '/{etc}')[0] ?? [0, 0];
-      expect(clients).toBe(failures);
-      expect(failures).toBeGreaterThanOrEqual(500);
-      expect(failures).toBeLessThanOrEqual(760);
+      expect(new Set(shifts).size).toBeGreaterThan(1);
+      const shift = Math.max(...shifts);
+      const tags = Array.from({ length: 340 }, (_, i) =>
+        tally.tagOf({ key: clientKey(visitor(i)), ip: '', cls: 'direct', tag: null }),
+      );
+      const sampled = tags
+        .map((tag, i) => [tag, i < 300 ? 2 : 3] as const)
+        .filter(([tag]) => isSampled(tag, shift));
+      expect(sampled.length).toBeGreaterThanOrEqual(30);
+      expect(counted(harness)).toEqual([
+        [sampled.length * 2 ** shift, sampled.reduce((sum, [, failures]) => sum + failures, 0) * 2 ** shift],
+      ]);
+    });
+  });
+
+  describe('nada se perde quando a rota muda de lugar', () => {
+    /** As falhas que o motor ainda guarda, nas células e nos registros de quem saiu. */
+    const kept = (harness: Harness): number => {
+      let total = 0;
+      for (const slot of harness.engine['tally'].slots.values()) {
+        for (const route of slot.login.values()) {
+          for (const { cell } of route.cells.values()) total += cell.failures;
+          for (const [, failures] of route.evicted?.entries() ?? []) total += failures;
+        }
+      }
+      return total;
+    };
+    const letters = 'abcdefghijklmnopqrst';
+    const routed = (i: number): string =>
+      `/${letters.charAt(i % 20)}${letters.charAt(Math.floor(i / 20) % 20)}/login`;
+
+    it.each([
+      [
+        'rotas inventadas',
+        { maxRouteClients: 5 },
+        times(40 * 19, (i) => login(visitor(i), 401, { path: routed(i) })),
+      ],
+      [
+        'pares de todas as rotas',
+        { maxLoginCells: 50 },
+        times(3_000, (i) => login(visitor(i % 900), 401, { path: routed(i) })),
+      ],
+      ['uma rota só', { maxRouteClients: 7 }, rounds(300, 5)],
+      [
+        'uma rota por vez',
+        { maxLoginRoutes: 1, maxRouteClients: 3 },
+        times(600, (i) => login(visitor(i % 80), 401, { path: routed(i % 7) })),
+      ],
+    ])('%s', (_, limits, lines) => {
+      const harness = run([lines], limits);
+      expect(harness.engine.usage.loginCells).toBeLessThan(lines.length);
+      expect(kept(harness)).toBe(lines.length);
+    });
+
+    it('a rota raleada passa para a comum no mesmo nível de amostra', () => {
+      const limits = { maxLoginRoutes: 1, maxRouteClients: 1, maxEvictedCells: 0 };
+      const first = times(19, (i) => login(visitor(i), 401, { path: '/aa/login' }));
+      const harness = run([[...first, login(visitor(100), 401, { path: '/bb/login' })]], limits);
+      const [slot] = harness.engine['tally'].slots.values();
+      const common = slot?.login.get('*|h:*');
+      const ledger = common?.evicted;
+      if (!ledger) throw new Error('a primeira rota não foi para a comum');
+      expect(ledger.shift).toBeGreaterThan(0);
+      // Quem está na amostra está inteiro: no registro ou na célula que sobrou.
+      const held = new Set([...ledger.entries()].map(([tag]) => tag));
+      const tally = harness.engine['tally'];
+      for (const { client } of common?.cells.values() ?? []) held.add(tally.tagOf(client));
+      for (let i = 0; i < 19; i += 1) {
+        const tag = tally.tagOf({ key: clientKey(visitor(i)), ip: '', cls: 'direct', tag: null });
+        if (isSampled(tag, ledger.shift)) expect(held).toContain(tag);
+      }
     });
   });
 
@@ -525,6 +628,14 @@ describe('990407 com clientes que saem da memória', () => {
     expect(harness.engine.usage.evictedCells).toBeGreaterThan(0);
     harness.evaluate(T0 + 25 * 60_000);
     expect(harness.engine.usage.evictedCells).toBe(0);
+    // O slot que já saiu das janelas de 15 min cede lugar sem voltar a guardar quem sai.
+    const limits = { ...DEFAULT_LIMITS, maxLoginCells: 2_000 };
+    const old = new Harness({ limits });
+    old.feed(rounds(2_000, 1), T0 - 4 * SLOT, T0);
+    old.evaluate(T0 + 60_000);
+    old.feed(failures(1), T0, T0 + 60_000);
+    expect(old.engine.usage.loginCells).toBe(1_001);
+    expect(old.engine.usage.evictedCells).toBe(0);
     // E volta a zero também pelo caminho do objeto atrasado.
     harness.feed(rounds(2_000, 2), T0, T0 + 26 * 60_000);
     expect(harness.engine.usage.evictedCells).toBeGreaterThan(0);

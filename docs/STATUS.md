@@ -6625,11 +6625,13 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
   saída forçada por enchente não some com a distribuída; a troca de proxy na configuração acerta na hora a classe de tudo
   o que está na memória (registros, pares de login, respostas, resumo do dia, barra e maior nível). O que foi contado
   quando o endereço era proxy nunca vira acusação a um IP.
-- **Testes:** 574 novos em 7 arquivos (cada regra em limite −1/0/+1, leitor, máscara, entradas hostis); 174 mutações em
+- **Testes:** 586 novos em 7 arquivos (cada regra em limite −1/0/+1, leitor, máscara, entradas hostis); 174 mutações em
   série: 157 mortas de primeira e 13 depois de testes novos; das 4 que sobraram, duas saíram com o código redundante e
-  duas são equivalentes.
+  duas são equivalentes. Nas correções da revisão, mais 44, todas mortas (13 depois de testes novos; 3 por travar o teste).
 - **Benchmark (só por pedido, `node --expose-gc scripts/bench-weblogs.mjs`), 1 milhão de linhas:** tráfego comum, 18 a 24 s
   de CPU, 33 MB de heap e até 28 ms no maior bloqueio (alvos: 25 s, 40 MB, 50 ms). Enchente (tudo único e recusado): 44 a
-  61 s, 28 MB e 49 a 65 ms no maior passo da avaliação.
+  61 s, 28 MB e 49 a 65 ms no maior passo da avaliação. As correções da revisão não mudam isso além do ruído (400 mil
+  linhas, antes e depois alternados: 9,6 e 10,1 s no comum, 23,8 e 24,5 s na enchente); com a máquina ocupada, uma execução
+  do comum passou do alvo (36 s).
 - **Riscos:** nenhum dado real de ALB foi visto; o escape de aspas no log não é documentado (a linha ambígua é analisada
   sem host e sem bloqueio).

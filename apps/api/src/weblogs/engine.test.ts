@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ACCOUNT,
   albLine,
@@ -11,7 +11,7 @@ import {
   TEST_RANGES,
   times,
 } from '../../test/support/alb-lines.js';
-import { DAY_MS, digestStateSchema } from './digest.js';
+import { DAY_MS, digestStateSchema, NoiseDigest } from './digest.js';
 import { type WebFindingDraft, webFindingKey } from './draft.js';
 import {
   EVIDENCE_NOTES,
@@ -920,6 +920,9 @@ describe('a classe de um endereço muda com a configuração', () => {
     expect(unkeyed.loginFailures).toBe(4 * 19);
     harness.feed(failures(1));
     expect(one(harness.evaluate().drafts, '990405').evidence.counters.failures).toBe(20);
+    // Quem já está de lado não é movido de novo a cada troca: o nome não cresce.
+    const ids = [...harness.engine['tally'].slots.values()].flatMap((slot) => [...slot.clients.keys()]);
+    expect(ids.sort()).toEqual([ATTACKER, `customer_proxy!${ATTACKER}!2`, `customer_proxy!${ATTACKER}!4`]);
     harness.evaluate(T0 + 2 * 60 * MINUTE);
     expect(Object.values(harness.engine.usage)).toEqual([0, 0, 0, 0, 0, 0]);
   });
@@ -994,8 +997,67 @@ describe('a classe de um endereço muda com a configuração', () => {
       kind: 'monitor' as const,
       cidr: '203.0.113.0/24',
     };
+    const forget = vi.spyOn(NoiseDigest.prototype, 'forget');
     declare(harness, [...asProxy, monitor]);
     expect(JSON.stringify(harness.evaluate())).toBe(before);
+    // Nem percorre a memória: a tarefa configura a cada passo.
+    expect(forget).not.toHaveBeenCalled();
+    declare(harness, []);
+    expect(forget).toHaveBeenCalledOnce();
+    forget.mockRestore();
+  });
+
+  it('sem as faixas das CDNs, declarar e retirar o proxy acerta a conta de quem não se sabe', () => {
+    const harness = new Harness({ ranges: [] });
+    harness.feed(times(10, () => ({ client: ATTACKER })));
+    expect(harness.evaluate().notes).toEqual(['proxy_ranges_unavailable']);
+    declare(harness, asProxy);
+    expect(harness.evaluate().notes).toEqual(['behind_proxy', 'proxy_ranges_unavailable']);
+    declare(harness, []);
+    expect(harness.evaluate().notes).toEqual(['proxy_ranges_unavailable']);
+  });
+
+  it('a troca que não é dele não mexe com um cliente IPv6: nem no resumo, nem no estado guardado', () => {
+    const six = '2001:db8:1:2::5';
+    const harness = new Harness();
+    harness.feed([...probes(12, six), ...probes(12)]);
+    const later = T0 + 2 * 60 * MINUTE;
+    harness.evaluate();
+    harness.evaluate(later);
+    const state: unknown = JSON.parse(JSON.stringify(harness.engine.snapshot()));
+    const listed = (target: Harness): string[] =>
+      one(target.evaluate(later).drafts, '990400').evidence.clients.map((item) => item.client);
+    declare(harness, asProxy, later);
+    expect(listed(harness)).toEqual(['2001:db8:1:2::/64']);
+    const restored = new Harness({ now: later, trusted: asProxy });
+    restored.engine.restore(state);
+    expect(listed(restored)).toEqual(['2001:db8:1:2::/64']);
+  });
+
+  it('a 990407 não aponta quem foi contado dos dois lados, venha qual for primeiro', () => {
+    // As linhas de quando era proxy estão no slot mais novo; as novas, diretas, chegam no anterior, ainda aberto.
+    const each = times(30, (i) => failures(9, `198.51.100.${i + 1}`)).flat();
+    const harness = new Harness({ trusted: asProxy });
+    harness.feed(each, T0, T0);
+    declare(harness, []);
+    harness.feed(each, T0 - SLOT, T0);
+    const { evidence } = one(harness.evaluate().drafts, '990407');
+    expect(evidence).toMatchObject({ counters: { clients: 30, failures: 540 }, clients: [] });
+    expect(evidence.notes).toContain('client_not_direct');
+  });
+
+  it('e continua a contar uma vez só com a memória cheia e a classe trocada no meio', () => {
+    const at = (clients: number) => {
+      const limits = { ...DEFAULT_LIMITS, maxRouteClients: 10 };
+      const each = times(9, () => times(clients, (i) => login(`198.51.100.${i + 1}`, 401))).flat();
+      const harness = new Harness({ trusted: asProxy, limits });
+      harness.feed(each);
+      declare(harness, []);
+      harness.feed(each);
+      return of(harness.evaluate().drafts, '990407').map((draft) => draft.evidence.counters);
+    };
+    expect(at(29)).toEqual([]);
+    expect(at(30)).toMatchObject([{ clients: 30, failures: 540 }]);
   });
 });
 

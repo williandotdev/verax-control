@@ -343,15 +343,16 @@ export class WebTally {
 
   /**
    * Troca a configuração: as rotas valem para as linhas seguintes; a classe dos clientes, já para tudo o que está na
-   * memória (`reconcile`).
+   * memória (`reconcile`). Devolve se alguma classe pode ter mudado: a tarefa configura a cada passo, quase sempre igual.
    */
-  configure(routes: RouteTable, classifier: ClientClassifier): void {
+  configure(routes: RouteTable, classifier: ClientClassifier): boolean {
     const changed = classifier.signature !== this.classifier.signature;
     this.routes = routes;
     this.classifier = classifier;
-    if (!changed) return;
+    if (!changed) return false;
     this.identities.clear();
     this.reconcile();
+    return true;
   }
 
   /**
