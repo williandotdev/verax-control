@@ -54,6 +54,7 @@ import {
   type ZoneEvents,
   type ZoneLimits,
 } from './security-events.js';
+import { ZoneObserver } from './zone-health.js';
 
 /** Fluxo do cursor de cada conta: os eventos de segurança das zonas (GraphQL). */
 export const CLOUDFLARE_SECURITY_STREAM = 'cloudflare_security';
@@ -179,6 +180,8 @@ interface Read {
   zonesPerQuery: number;
   state: SecurityStreamState;
   usage: UsageMeter;
+  /** O que a leitura vê de cada zona (só em memória; a gravação é de quem chamou). */
+  seen: ZoneObserver;
   /** O horário da execução mais o tempo já passado nela (o gasto do orçamento cai no minuto certo). */
   clock: () => Date;
 }
@@ -258,6 +261,7 @@ export class CloudflareSecurityEvents {
     key: CursorKey,
     context: SecurityRunContext,
     sharing: GrantSharing | null = null,
+    seen: ZoneObserver = new ZoneObserver(),
   ): Promise<SecurityOutcome> {
     const { now } = context;
     const started = performance.now();
@@ -285,12 +289,15 @@ export class CloudflareSecurityEvents {
           : Math.min(this.zonesPerQuery, Math.max(1, Math.floor(units / 2))),
       state,
       usage: new UsageMeter(),
+      seen,
       clock: () => new Date(now.getTime() + Math.max(0, Math.round(performance.now() - started))),
     };
     try {
       return await this.collect(read, cursor);
     } catch (error) {
       if (!(error instanceof CloudflareApiError)) throw error;
+      // 403 na lista de zonas aparece com o mesmo código da conexão.
+      seen.failed(error.code === 'credential_forbidden' ? 'zones_forbidden' : error.code);
       return this.failed(read, error);
     }
   }
@@ -408,7 +415,15 @@ export class CloudflareSecurityEvents {
       .sort((a, b) => (a.name === b.name ? (a.tag < b.tag ? -1 : 1) : a.name < b.name ? -1 : 1));
     if (zones.length > SECURITY_MAX_ZONES)
       context.report.securitySkippedZones += zones.length - SECURITY_MAX_ZONES;
-    return zones.slice(0, SECURITY_MAX_ZONES);
+    const selected = zones.slice(0, SECURITY_MAX_ZONES);
+    read.seen.listed({
+      ids: listed.ids,
+      plans: listed.plans,
+      complete: listed.complete,
+      selected: selected.map((zone) => zone.tag),
+      overLimit: zones.slice(SECURITY_MAX_ZONES).map((zone) => zone.tag),
+    });
+    return selected;
   }
 
   /** Os limites de cada zona (nó `settings`), em lotes. Zona que o token não lê fica fora do mapa. */
@@ -418,9 +433,18 @@ export class CloudflareSecurityEvents {
       zones.map((zone) => zone.tag),
       read.zonesPerQuery,
     )) {
+      read.seen.asking(batch);
       const got = await this.settingsOf(read, batch);
+      read.seen.idle();
       if (isWait(got)) return got;
       for (const [tag, value] of got) limits.set(tag, value);
+      for (const tag of batch) {
+        const value = got.get(tag);
+        read.seen.access(
+          tag,
+          value === undefined ? 'forbidden' : usableLimits(value) ? 'usable' : 'not_entitled',
+        );
+      }
     }
     return limits;
   }
@@ -479,13 +503,20 @@ export class CloudflareSecurityEvents {
       const batch = batches[index] ?? [];
       read.state.progress = { windowStart, done: index, layout };
       const query = this.eventsQuery(batch, limits, windowStart, windowEnd, now);
+      read.seen.asking(query.zoneTags);
       const results = await this.queryEvents(read, query, batch.length * eventsQueryNodes(query));
       // Sem orçamento (no primeiro envio ou numa nova tentativa): o que já foi gravado fica, e a próxima execução
       // segue deste lote.
-      if (isWait(results)) return results;
+      if (isWait(results)) {
+        read.seen.idle();
+        return results;
+      }
       if (results !== null) {
         const login = await this.loginIps(read, results, query, limits);
         await this.persist(read, batch, results, query, login);
+        read.seen.read(query.zoneTags, read.clock());
+      } else {
+        read.seen.idle();
       }
       await this.lease.renew();
       const last = index + 1 === batches.length;

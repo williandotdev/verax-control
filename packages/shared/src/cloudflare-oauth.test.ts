@@ -23,6 +23,7 @@ import {
   cloudflareOauthStartedSchema,
   cloudflareOauthStartSchema,
   cloudflareZoneSchema,
+  cloudflareZonesSchema,
   compareCloudflareScopes,
   isCloudflareAuthorizeUrl,
   isCloudflareOauthRedirectUri,
@@ -326,5 +327,18 @@ describe('Cloudflare por OAuth: tentativa, conexão e zonas', () => {
     );
     expect(cloudflareZoneSchema.safeParse({ ...zone, state: 'missing' }).success).toBe(false);
     expect(cloudflareZoneSchema.safeParse({ ...zone, missingSince: AT }).success).toBe(false);
+  });
+
+  it('as zonas da conta: com a linha da auditoria e o máximo lido', () => {
+    const zones = {
+      monitored: 'all',
+      limit: 50,
+      audit: { lastReadAt: null, lastErrorCode: null },
+      zones: [],
+    };
+    expect(cloudflareZonesSchema.safeParse(zones).success).toBe(true);
+    expect(cloudflareZonesSchema.safeParse({ ...zones, audit: undefined }).success).toBe(false);
+    const audit = { lastReadAt: AT, lastErrorCode: 'com espaço' };
+    expect(cloudflareZonesSchema.safeParse({ ...zones, audit }).success).toBe(false);
   });
 });

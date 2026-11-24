@@ -136,6 +136,8 @@ export class FakeCloudflareServer {
   readonly expiredCursors = new Set<string>();
   /** Zonas de cada conta. */
   readonly zones = new Map<string, string[]>();
+  /** O `plan` de cada zona, pelo `zoneTag`, como a API o devolveria (ou fora do formato). */
+  readonly zonePlans = new Map<string, unknown>();
   /** Eventos de segurança de cada zona, pelo `zoneTag`. */
   readonly securityZones = new Map<string, FakeSecurityZone>();
   /** Respostas roteirizadas, uma por pedido ao GraphQL, antes da resposta normal. */
@@ -538,6 +540,7 @@ export class FakeCloudflareServer {
         paused: false,
         type: 'full',
         account: { id: accountId, name: 'Conta fictícia' },
+        plan: this.zonePlans.get(fakeCloudflare.zoneTag(accountId, name)),
       })),
       result_info: {
         page,

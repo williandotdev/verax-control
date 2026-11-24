@@ -6643,3 +6643,11 @@ log-source-labels.ts`, `lib/api-types.ts` e `log-sources.test.tsx`; `apps/contro
 - **Corrigido junto:** os textos só para leitor de tela saíam da área que rola e alargavam a página.
 - **Dependências novas:** nenhuma. Sem mudança na API.
 - **Testes:** web 742 (6 novos); navegador nas telas tocadas, com acessibilidade nos dois temas.
+
+## Cloudflare por OAuth: saúde por zona (CF-7, 24/11/2026)
+
+- **Arquivos novos:** `apps/api/src/cloudflare/{zone-health,cloudflare-streams}.ts`, `apps/api/src/cloud-accounts/cloudflare-account.{controller,service}.ts`, `apps/api/test/cloudflare-zone-health.test.ts`. **Alterados:** `cloudflare-security-sync.ts` e `cloudflare-audit-sync.ts` (só anotações em memória e a gravação à parte), `cloudflare.client.ts` (o plano da zona, informativo), `worker.ts` (o logger), o contrato das zonas em `packages/shared`, o Cloudflare falso.
+- **O que faz:** o worker grava em `CloudflareZone` a situação de cada zona, para conta por OAuth e por token colado, do que o coletor já lê: nenhuma consulta a mais. A gravação roda fora da coleta, num comando só com as linhas que mudaram, limitada no banco; a falha vai só ao log, por código. Zona que some fica com a data; além das 50 lidas, `over_limit`.
+- **Rotas (leitura):** `GET /v1/cloud-accounts/:id/cloudflare-connection` e `/cloudflare-zones`, com `cloud_accounts:read`, em todo nó. "Monitorar todas" e "só as marcadas" usam o `PATCH` da conta (`zones`), sem rota nova. A auditoria, que é da conta, tem a própria linha.
+- **Dependências novas:** nenhuma. Sem migration.
+- **Limite conhecido:** a lista de zonas é lida até 1.000 por conta; além disso, as zonas a mais não aparecem e nenhuma é dada como sumida.

@@ -34,16 +34,18 @@ import {
   type CloudflareSecurityEventsOptions,
   type GrantSharing,
 } from './cloudflare-security-sync.js';
+import { CLOUDFLARE_AUDIT_STREAM } from './cloudflare-streams.js';
 import { CloudflareTokenCheck } from './cloudflare-token-check.js';
 import { CloudflareGrants, type CloudflareGrantsOptions } from './oauth/cloudflare-grants.js';
 import { type CloudflareOAuthTokens, PublicClientTokens } from './oauth/oauth-tokens.js';
+import { ZoneHealth, type ZoneHealthLogger, ZoneObserver } from './zone-health.js';
 
 export const CLOUDFLARE_SYNC = 'cloudflare';
 /**
  * Fluxos do cursor de cada conta: a auditoria, a conferência de hora em hora (token e zonas) e os eventos de segurança
  * das zonas (`CLOUDFLARE_SECURITY_STREAM`, PR-13).
  */
-export const CLOUDFLARE_AUDIT_STREAM = 'cloudflare_audit';
+export { CLOUDFLARE_AUDIT_STREAM };
 export const CLOUDFLARE_CHECK_STREAM = 'cloudflare_check';
 export { CLOUDFLARE_SECURITY_STREAM };
 
@@ -108,6 +110,8 @@ export interface CloudflareAuditSyncOptions {
   /** Quem renova o acesso por OAuth (só para os testes; fora deles, o app sem segredo). */
   oauthTokens?: CloudflareOAuthTokens;
   grants?: CloudflareGrantsOptions;
+  /** Onde vai o código da saúde das zonas que não pôde ser gravada (o pino do worker). */
+  logger?: ZoneHealthLogger;
   auditIntervalMs?: number;
   checkIntervalMs?: number;
   pageSize?: number;
@@ -311,6 +315,7 @@ export class CloudflareAuditSync {
   private readonly security: CloudflareSecurityEvents | null;
   private readonly grants: CloudflareGrants;
   private readonly credentials: CloudflareCredentials;
+  private readonly zoneHealth: ZoneHealth;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -343,6 +348,7 @@ export class CloudflareAuditSync {
       options.grants,
     );
     this.credentials = new CloudflareCredentials(prisma, keyring, this.grants);
+    this.zoneHealth = new ZoneHealth(prisma, options.logger ?? null);
     this.security =
       options.securityEvents === false
         ? null
@@ -388,6 +394,7 @@ export class CloudflareAuditSync {
     if (!(await this.lease.acquire(now))) return { ...report, status: 'locked' };
     let firstError: string | null = null;
     const started = performance.now();
+    this.zoneHealth.begin();
     try {
       const context: RunContext = {
         now,
@@ -401,8 +408,9 @@ export class CloudflareAuditSync {
       for (const account of accounts) {
         signal?.throwIfAborted();
         report.accounts += 1;
+        const seen = new ZoneObserver();
         try {
-          await this.collect(account, context);
+          await this.collect(account, context, seen);
         } catch (error) {
           // Parada do worker ou estouro do orçamento: a execução para aqui (a conta é lida de novo depois).
           signal?.throwIfAborted();
@@ -410,6 +418,8 @@ export class CloudflareAuditSync {
           report.failedAccounts += 1;
           firstError ??= errorKind(error);
         }
+        // À parte da coleta: não espera e não falha aqui.
+        this.zoneHealth.save(account, seen, context.clock());
       }
       await context.lastEvents.save(this.prisma, 'cloudflare');
       await this.grants.prune(new Set(accounts.flatMap((account) => account.cloudflareGrantId ?? [])));
@@ -434,6 +444,7 @@ export class CloudflareAuditSync {
       report.grantsRenewed = counters.renewed;
       report.grantsFailed = counters.failed;
       report.grantsAppRejected = counters.appRejected;
+      await this.zoneHealth.settle();
       await this.lease.release();
     }
   }
@@ -462,7 +473,7 @@ export class CloudflareAuditSync {
     });
   }
 
-  private async collect(account: AccountRow, context: RunContext): Promise<void> {
+  private async collect(account: AccountRow, context: RunContext, seen: ZoneObserver): Promise<void> {
     const { now, report } = context;
     if (account.connection === 'error' && isCloudflareBlockingError(account.connectionError)) {
       report.blocked += 1;
@@ -557,7 +568,15 @@ export class CloudflareAuditSync {
         : null;
     if (securityDue && this.security !== null && keys.security !== null) {
       const sharing = await this.sharing(account);
-      const outcome = await this.security.read(account, token, security, keys.security, context, sharing);
+      const outcome = await this.security.read(
+        account,
+        token,
+        security,
+        keys.security,
+        context,
+        sharing,
+        seen,
+      );
       switch (outcome.kind) {
         case 'blocked':
           report.blocked += 1;
