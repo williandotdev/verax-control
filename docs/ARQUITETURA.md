@@ -2045,6 +2045,38 @@ O detalhe relê o alerta no indexer (30 dias) e o devolve saneado. Nada disto mu
   num parâmetro de nome neutro não tem como ser visto; um id aleatório que não é segredo e um número de 11 ou 14 dígitos
   saem mascarados. A lista completa está no começo de `raw-url-mask.ts`.
 
+## País de um endereço IP (`apps/api/src/geo/`)
+
+_(decisão de 24/11/2026: embutir a base pública; no código, ainda sem uso. Vai alimentar o mapa de origem das requisições,
+com os endereços dos logs de acesso do ALB.)_
+
+Uma tabela embutida diz o país de um endereço, sem rede: a consulta é uma busca binária síncrona em arrays na memória, e
+nenhum endereço sai do nó.
+
+- **Fonte:** a base `user-country` do projeto sapics/ip-location-db, em domínio público (PDDL). O registro fica ao lado do
+  dado, em `apps/api/src/geo/data/README.md`.
+- **O que entra na imagem:** `ip-country.bin.gz` (0,57 MB) e `ip-country-meta.ts` (data, SHA-256 dos CSV e do arquivo). O
+  `nest build` copia o primeiro para `dist` (`assets` do `nest-cli.json`); na imagem ele é só leitura, como o resto. No
+  git, `*.gz` é binário.
+- **Carga:** `loadIpCountry()`, só por quem usa e uma vez por processo. Confere o SHA-256 e a estrutura inteira e lança se
+  algo não bate; quem chama decide seguir sem o país. Cerca de 30 ms com a CPU livre (até
+  0,5 s com ela disputada: descompressão e conferência são síncronas) e 4,5 MB, fora do heap do V8.
+- **Consulta:** `countryOf(texto)` nunca lança. O caminho quente é numérico (`countryOfV4`, `countryOfV6`,
+  `countryOfWords`): não aloca, não cria texto e devolve um índice; `code(indice)` dá o código. O IPv4 mapeado e o NAT64
+  (64:ff9b::/96) valem pelo IPv4 embutido.
+- **Sem país (null):** texto que não é endereço (octeto com zero à esquerda incluído), faixa que a base não conhece e
+  endereço reservado (privado, CGNAT, loopback, link-local, multicast, documentação, 6to4, Teredo e tudo que está fora de
+  2000::/3). Os reservados são gravados na tabela como "sem país", qualquer que seja a fonte.
+- **IPv6 por /64:** a tabela guarda o prefixo /64, a mesma chave do motor de ataques web. Um /64 dividido entre países (732
+  na versão de 24/11/2026) fica com o que tem mais endereços dentro dele; no empate, com o primeiro.
+- **Códigos:** ISO 3166-1 alpha-2, mais `XK` (Kosovo). `AC` e `TA` viram `SH`, de que fazem parte; `AN` (retirado em 2010)
+  fica sem país. Um código desconhecido para o gerador (`country-codes.ts`).
+- **Precisão:** é o país do **endereço**, e não da pessoa: VPN, proxy, operadora móvel e nuvem aparecem no país de onde o
+  endereço é anunciado. Segundo o próprio projeto, a base concorda com o GeoLite2 em 97,5% dos endereços. Serve para um
+  mapa; não serve para acusar nem para bloquear.
+- **Atualização:** a cada versão do nó, com `scripts/update-ip-country.mjs` (offline, lê os CSV já baixados; os mesmos CSV
+  dão os mesmos bytes). `generatedAt`, `ageDays` e `isStale` (mais de 180 dias) são para o aviso honesto na tela.
+
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
 _(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado. PR-17': a
