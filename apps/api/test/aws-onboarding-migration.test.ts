@@ -45,6 +45,8 @@ const ALERT_CASES = '20261127120000_alert_cases';
 /** E, de outro trabalho, só índices: os alertas a validar da Torre e os e-mails ao contato de escalonamento na hora. */
 const UNTRIAGED_INDEX = '20261128120000_finding_untriaged_index';
 const NOTICE_INDEX = '20261128120000_notification_escalation_index';
+/** E a do autovacuum da tabela de alertas, que a atribuição dos casos atualiza (`case-assign.test.ts`). */
+const FINDING_AUTOVACUUM = '20261129120000_finding_autovacuum';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -97,6 +99,7 @@ describe(`migration ${MIGRATION}`, () => {
       ALERT_CASES,
       UNTRIAGED_INDEX,
       NOTICE_INDEX,
+      FINDING_AUTOVACUUM,
     ]);
     const additive = [MIGRATION, RETRY_LIMIT, OWNERSHIP, CHOSEN, APPLIED_SEQ, UNTRIAGED_INDEX, NOTICE_INDEX];
     for (const name of additive) {

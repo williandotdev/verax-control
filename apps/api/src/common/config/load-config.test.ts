@@ -724,6 +724,18 @@ describe('configuração do worker do sync (T5.3)', () => {
     );
   });
 
+  it('CASES_MODE: off é o padrão; só off, shadow e on valem', () => {
+    expect(loadWorkerConfig(workerEnv).CASES_MODE).toBe('off');
+    for (const mode of ['off', 'shadow', 'on']) {
+      expect(loadWorkerConfig({ ...workerEnv, CASES_MODE: mode }).CASES_MODE).toBe(mode);
+    }
+    for (const value of ['', 'On', 'true', 'ligado', ' on']) {
+      expect(() => loadWorkerConfig({ ...workerEnv, CASES_MODE: value })).toThrow(
+        'CASES_MODE: use off, shadow ou on',
+      );
+    }
+  });
+
   it('VM própria: NODE_PLATFORM=vm, sem a conta de serviço do Google, e a fonte gcp só com o cofre', () => {
     expect(loadWorkerConfig(workerEnv).NODE_PLATFORM).toBe('gcp');
     expect(loadWorkerConfig({ ...workerEnv, NODE_PLATFORM: 'vm' }).NODE_PLATFORM).toBe('vm');

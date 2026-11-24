@@ -6786,3 +6786,62 @@ tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views
   Semgrep não acusam nada nos arquivos novos. A suíte com banco não foi rodada: nenhum código existente mudou.
 - **Riscos e sugestões:** os 97,5% de concordância com o GeoLite2 são do próprio projeto, não medidos aqui. Cada atualização
   soma cerca de 0,6 MB ao histórico do git. A tela precisa dizer que o país é o do endereço (VPN, proxy e nuvem).
+
+## Casos, parte 2: a atribuição dos alertas aos casos (PR-2 do desenho de 24/11/2026) ⚠️ migration nova
+
+- **O que muda:** nada enquanto `CASES_MODE` for `off`, o padrão (o expurgo diário só confere se há caso a apagar). Com
+  `shadow` ou `on`, iguais nesta parte, o worker dá um caso a cada alerta pendente. Nenhuma rota, tela, aviso ou e-mail
+  usa os casos ainda. A regra inteira está em `docs/ARQUITETURA.md`, "Casos: agrupamento dos alertas".
+  - **`case-assign`** (10 s): lotes de 200 alertas por cliente, na ordem de chegada, no máximo 2 s de trabalho por
+    cliente em cada passagem, uma transação por lote. Alerta novo, histórico e volta de versão passam pelo mesmo caminho.
+  - **`case-watch`** (1 min, só log) e **`case-reconcile`** (semanal, a única escrita de contagem fora dos gatilhos).
+  - **Expurgo:** a etapa dos casos, depois dos alertas soltos.
+- **Decisões desta parte** (no código, para revisão):
+  - A janela é pela chegada gravada (`Finding.createdAt`, nunca depois de agora): o agrupamento é o mesmo com o alerta
+    atribuído na hora ou meses depois, e o histórico vira um caso por janela da chave. A janela da detecção vale também
+    para o caso em análise ou promovido.
+  - O alerta preso por uma triagem é pulado (`FOR UPDATE SKIP LOCKED`): o lote nunca espera por um alerta com o lock do
+    cliente na mão, e espera no máximo 1 s por um caso.
+  - O caso que fica no lugar de outro nasce selado dentro da transação e abre no fim: o selo do antigo vem depois dos
+    alertas, com uma chave aberta só.
+  - Sem pendência: `treated` se o caso tem alerta tratado (ou incidente resolvido), `idle` se não tem mais alerta nenhum.
+    `recurrence` soma a cada volta da chave, inclusive pela janela.
+  - A gravação que falha por um alerta parte o lote ao meio até isolá-lo (de 1 min a 1 h fora); a fila é lida em roda, e
+    um trecho que falha não prende os seguintes.
+  - Limites: sem teto na fila de vulnerabilidade (D1); item da lista de proteção (com o IP de origem) fora dos dois; o teto
+    de 100 críticos é por grupo de fan-out, e o excedente vai para um caso só de críticos; o reunido por fonte não leva a
+    conta na chave.
+  - `noticedSeverity`: passado é o alerta que chegou enquanto o aviso é alerta por alerta (hoje, sempre). Com os avisos por
+    caso (`caseNotices`, que nenhum modo liga ainda), o que chegou antes da primeira passagem deles, num marco em
+    `SyncState.cursorTimestamp`, sem coluna nova.
+  - No expurgo sai também o caso **aberto** sem alerta e mais antigo que o prazo (o desenho dizia só o selado): o selo só
+    vem com o alerta seguinte da chave, e as amostras (usuário, IP) ficariam para sempre. Vale com qualquer `CASES_MODE`.
+- **Arquivos:** `apps/api/src/cases/` (`case-{assign-job,store,plan,lifecycle,limits,titles,errors,reconcile-job,watch,
+tasks}.ts` e `cases-mode.ts`, novos; `case-key.ts` ganhou só a chave dos casos reunidos, e nenhuma chave de alerta mudou);
+  `retention/retention-job.ts`, `common/config/env.schema.ts`, `worker.ts`; a migration
+  `20261129120000_finding_autovacuum`, só um parâmetro da tabela; testes `src/cases/case-{lifecycle,limits,titles,plan}.
+test.ts`, `test/case-{assign,assign-api,assign-concurrency,assign-benchmark,reconcile,retention}.test.ts` e
+  `test/support/cases.ts`; casos novos em `case-key.test.ts` e `load-config.test.ts`; a lista de
+  `aws-onboarding-migration.test.ts`; e, no `alert-cases-migration.test.ts`, a conferência dos índices sem ordenar (o
+  plano de uma tabela pequena dependia das estatísticas que as outras suítes deixam).
+- **Dependências novas:** nenhuma. Sem mudança em `infra/`, `.github/`, no módulo `auth` ou em `.claude/`.
+- **Testes:** `pnpm lint`, `format:check` e `typecheck` (todos os pacotes), limpos. API com Postgres descartável, 195
+  arquivos e 3107 testes (um deles, a medição de carga, só com `CASES_BENCH=1`). Três rodadas inteiras: a primeira, limpa;
+  na segunda e na terceira caíram um e três arquivos com o erro conhecido do worker do vitest no Windows (3221226505), de
+  outros assuntos, e os quatro passaram rodados de novo. A máquina dividia a CPU com outros trabalhos. Não rodou: as
+  suítes dos outros pacotes (nada mudou neles) e o worker de verdade num nó.
+- **Mutações:** 112, uma por vez, numa cópia da árvore, com prazo e restauração conferida: todas mortas. Na primeira
+  rodada sobreviveram sete: cinco viraram testes e duas mostraram código redundante, que saiu.
+- **Carga** (Postgres 18 em Docker com 512 MB e 2 CPUs, numa máquina Windows ocupada): 250 mil alertas pendentes, 2.313
+  casos, 1.261 lotes. Duas medições: 117 e 149 s de trabalho (57 e 71 passagens, 11 a 14 min com os 10 s entre elas);
+  lote, p50 68 e 92 ms, p95 206 e 213 ms, máximo 488 e 1.143 ms; com o lock do cliente na mão, p50 63 e 85 ms, p95 179 e
+  184 ms, máximo 479 e 939 ms. Um coletor gravando sem parar ao mesmo tempo: p50 de 7 para 70 ms (e de 17 para 93 ms), só
+  enquanto a fila é longa. A conferência de todos os casos: 21 e 30 s, nenhum desvio. É mais que os 40 a 80 ms do desenho
+  no p95.
+- **Teste manual:** no nó piloto, `CASES_MODE=shadow` por 48 h: `case-assign` no log (a fila acaba, `failedTenants` e
+  `quarantined` em 0, `maxLockMs`), `case-watch` sem atraso e `case-reconcile` sem desvio.
+- **Para ligar:** a linha `CASES_MODE=off` no `.env.example` e a variável no `worker.env` que o `start.sh` do nó escreve.
+  Nenhum dos dois foi tocado aqui.
+- **Riscos e dúvidas:** durante o histórico, o coletor espera um lote (máximo medido, 1,1 s); com milhares de casos altos
+  abertos em 24 h, o lote que abre um caso com limite lê todos eles; os avisos por caso precisam ligar o `caseNotices` na
+  mesma versão em que pararem os avisos por alerta.

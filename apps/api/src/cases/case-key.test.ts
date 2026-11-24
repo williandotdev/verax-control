@@ -6,8 +6,10 @@ import {
   CASE_FAMILIES,
   CASE_GROUP_MAX,
   CASE_KEY_VERSION,
+  type CaseFold,
   type CaseKeyInput,
   caseKeyOf,
+  foldedCaseKey,
   networkOf,
 } from './case-key.js';
 
@@ -1029,6 +1031,79 @@ describe('valores hostis', () => {
       const input = randomFinding(next);
       expect(caseKeyOf({ ...input })).toEqual(caseKeyOf(input));
     }
+  });
+});
+
+describe('a chave do caso que reúne várias chaves', () => {
+  const scan = { logSource: 'vpc_flow', ruleId: '100400', sourceIp: '203.0.113.7' };
+  const folded = (overrides: Partial<CaseKeyInput>, fold: CaseFold) =>
+    foldedCaseKey(finding(overrides), fold);
+
+  it('o formato: o nome da reunião no lugar da faixa, sem a rede; o reunido por fonte, sem a conta', () => {
+    expect(folded(scan, 'distributed')).toEqual({
+      version: 1,
+      queue: 'detection',
+      family: 'vpc-flow',
+      fold: 'distributed',
+      groupKey: hashOf('detection', 'vpc-flow', 'distributed', ACCOUNT, ['rule', '100400']),
+      parts: [
+        { name: 'rule', value: '100400' },
+        { name: 'fold', value: 'distributed' },
+      ],
+    });
+    expect(folded(scan, 'overflow').groupKey).toBe(
+      hashOf('detection', 'vpc-flow', 'overflow', ACCOUNT, ['rule', '100400']),
+    );
+    expect(folded({ ...scan, severity: 'low' }, 'rollup')).toEqual({
+      version: 1,
+      queue: 'detection',
+      family: 'rollup',
+      fold: 'rollup',
+      groupKey: hashOf('detection', 'rollup', 'rollup', '', ['source', 'vpc_flow']),
+      parts: [
+        { name: 'source', value: 'vpc_flow' },
+        { name: 'fold', value: 'rollup' },
+      ],
+    });
+    // Mudar um destes valores parte os casos reunidos abertos.
+    expect(folded(scan, 'distributed').groupKey).toBe(
+      '61af21ae3dd5e4be58480967161ecc2ea57ec2359a6f25aa86cd56f99bd11402',
+    );
+  });
+
+  it('a rede não separa; a regra, a conta, o alvo e a fila separam', () => {
+    const hash = (overrides: Partial<CaseKeyInput>) =>
+      folded({ ...scan, ...overrides }, 'distributed').groupKey;
+    expect(hash({ sourceIp: '198.51.100.9' })).toBe(hash({}));
+    expect(hash({ sourceIp: '2001:db8::1' })).toBe(hash({}));
+    expect(hash({ ruleId: '100401' })).not.toBe(hash({}));
+    expect(hash({ accountId: OTHER_ACCOUNT })).not.toBe(hash({}));
+    const waf = { logSource: 'waf', ruleId: '80443', resource: 'acl-a' };
+    expect(hash(waf)).not.toBe(hash({ ...waf, resource: 'acl-b' }));
+    const rollup = (overrides: Partial<CaseKeyInput>) =>
+      folded({ severity: 'low', ...overrides }, 'rollup').groupKey;
+    expect(rollup({ ruleId: '1', accountId: OTHER_ACCOUNT, actorUser: 'x' })).toBe(rollup({}));
+    expect(rollup({ logSource: 'gcp_audit' })).not.toBe(rollup({}));
+    expect(rollup({ logSource: 'security_hub', ruleId: '990501', eventName: 'S3.8' })).not.toBe(
+      rollup({ logSource: 'security_hub', ruleId: '990502' }),
+    );
+  });
+
+  it('nunca é a chave de um alerta, nem a de outra reunião', () => {
+    const next = random(11);
+    const own = new Set<string>();
+    const others = new Map<string, string>();
+    for (let round = 0; round < 2_000; round += 1) {
+      const input = randomFinding(next);
+      own.add(caseKeyOf(input).groupKey);
+      for (const fold of ['distributed', 'overflow', 'rollup'] as const) {
+        const { groupKey } = foldedCaseKey(input, fold);
+        expect(groupKey).toMatch(HASH);
+        expect(others.get(groupKey) ?? fold).toBe(fold);
+        others.set(groupKey, fold);
+      }
+    }
+    for (const groupKey of others.keys()) expect(own.has(groupKey)).toBe(false);
   });
 });
 

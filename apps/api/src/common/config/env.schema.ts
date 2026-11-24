@@ -26,6 +26,7 @@ import {
   wazuhAgentsFeedOf,
   workerAgentsEnvShape,
 } from '../../agents/agents-config.js';
+import { CASES_MODES } from '../../cases/cases-mode.js';
 import {
   CredentialKeyError,
   MAX_KEY_VERSION,
@@ -823,6 +824,9 @@ const workerEnvObjectSchema = z
     // `control-plane-sync` conta o que o nó aplicou e traz as fontes de log que a Verax cadastrou no console. Na VM
     // própria, a chave do nó vem por arquivo (`common/config/control-plane-sync.ts`).
     ...controlPlaneSyncEnvShape,
+    // Casos (agrupamento dos alertas): `off` (padrão), nenhuma tarefa deles roda; `shadow`, os alertas ganham caso e nada
+    // usa os casos; `on`, o mesmo por enquanto (`cases/cases-mode.ts`).
+    CASES_MODE: z.enum(CASES_MODES, { error: 'use off, shadow ou on' }).default('off'),
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
