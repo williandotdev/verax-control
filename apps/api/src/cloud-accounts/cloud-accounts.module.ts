@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { AwsAccessKeyCheck } from '../aws/aws-key-check.js';
 import { CloudflareTokenCheck } from '../cloudflare/cloudflare-token-check.js';
+import { CloudflareConnectService } from '../cloudflare/oauth/cloudflare-connect.service.js';
+import { CloudflareOauthSettings } from '../cloudflare/oauth/oauth-settings.js';
 import { CredentialIntakeService } from '../credentials/credential-intake.service.js';
 import { GcpServiceAccountKeyCheck } from '../gcp/gcp-key-check.js';
 import { PlanModule } from '../plan/plan.module.js';
@@ -9,14 +11,22 @@ import { AwsOnboardingService } from './aws-onboarding.service.js';
 import { CloudAccountsController } from './cloud-accounts.controller.js';
 import { CloudAccountsService } from './cloud-accounts.service.js';
 import { CloudCredentialsController } from './cloud-credentials.controller.js';
+import { CloudflareOauthController } from './cloudflare-oauth.controller.js';
 
 @Module({
   imports: [PlanModule],
-  controllers: [CloudAccountsController, CloudCredentialsController, AwsOnboardingController],
+  controllers: [
+    CloudAccountsController,
+    CloudCredentialsController,
+    AwsOnboardingController,
+    CloudflareOauthController,
+  ],
   providers: [
     CloudAccountsService,
     AwsOnboardingService,
     CredentialIntakeService,
+    CloudflareOauthSettings,
+    CloudflareConnectService,
     // Sempre o host oficial do Cloudflare; os testes trocam o provider por um que aponta para um servidor falso local.
     { provide: CloudflareTokenCheck, useFactory: () => new CloudflareTokenCheck() },
     // As chaves de leitura da VM própria do cliente: o STS da AWS e o token do Google com o Pub/Sub, nos endereços

@@ -82,6 +82,10 @@ export interface FakeToken {
   zoneRead?: boolean;
   /** Sem `Analytics Read`: o GraphQL responde 403. */
   analyticsRead?: boolean;
+  /** As contas que `GET /accounts` lista; sem a lista, as de `auditAccounts`. */
+  accounts?: { id: string; name?: string }[];
+  /** O `GET /accounts` responde este status. */
+  accountsStatus?: number;
   /** Zonas que o GraphQL deixa o token ler (as outras somem da resposta); sem a lista, as da conta do token. */
   analyticsZones?: string[];
 }
@@ -256,6 +260,26 @@ export class FakeCloudflareServer {
         }
         return deliver(200, page);
       }
+      if (url.pathname === '/accounts') {
+        if (!token) return send(401, INVALID_TOKEN);
+        if (token.accountsStatus !== undefined) {
+          return send(
+            token.accountsStatus,
+            JSON.stringify({ success: false, errors: [{ code: 10000, message: `Recusado ${value}` }] }),
+          );
+        }
+        const accounts = token.accounts ?? (token.auditAccounts ?? []).map((id) => ({ id }));
+        return send(
+          200,
+          JSON.stringify({
+            success: true,
+            errors: [],
+            messages: [],
+            result: accounts.map((account) => ({ type: 'standard', ...account })),
+            result_info: { page: 1, per_page: 50, count: accounts.length, total_pages: 1 },
+          }),
+        );
+      }
       if (url.pathname === '/zones') {
         if (!token) return send(401, INVALID_TOKEN);
         if (token.zoneRead === false) {
@@ -267,6 +291,7 @@ export class FakeCloudflareServer {
             }),
           );
         }
+        if (!url.searchParams.has('account.id')) return send(200, this.allZones(token));
         return send(200, this.zonesPage(url.searchParams));
       }
       if (url.pathname === '/graphql' && request.method === 'POST') {
@@ -521,6 +546,24 @@ export class FakeCloudflareServer {
         total_count: names.length,
         total_pages: Math.max(1, Math.ceil(names.length / perPage)),
       },
+    });
+  }
+
+  /** As zonas de todas as contas do acesso (sem o filtro de conta), numa página. */
+  private allZones(token: FakeToken): string {
+    const result = (token.auditAccounts ?? []).flatMap((id) =>
+      (this.zones.get(id) ?? []).map((name) => ({
+        id: fakeCloudflare.zoneTag(id, name),
+        name,
+        account: { id, name: `Conta ${id.slice(0, 4)}` },
+      })),
+    );
+    return JSON.stringify({
+      success: true,
+      errors: [],
+      messages: [],
+      result,
+      result_info: { total_pages: 1 },
     });
   }
 

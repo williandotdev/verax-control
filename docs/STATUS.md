@@ -6604,3 +6604,33 @@ log-source-labels.ts`, `lib/api-types.ts` e `log-sources.test.tsx`; `apps/contro
 - **Riscos:** só um app registrado confirma a renovação sem segredo, a troca do token a cada uso e o 401. Uma queda entre a
   resposta do Cloudflare e a gravação pede a reconexão. O CF-4, ao reconectar na mesma concessão, precisa aumentar a
   `generation`, para uma renovação atrasada não gravar por cima.
+
+## Cloudflare por OAuth: conexão no nó (CF-4, 23/11/2026) ⚠️ autenticação/sessão
+
+- **O que mudou:** o "Conectar com Cloudflare" do lado do nó, ainda sem tela e desligado: sem a configuração que o plano de
+  controle manda (CF-5), as rotas respondem 404 e tudo segue como hoje.
+  - **API** (`cloud-accounts/cloudflare-oauth.controller.ts`, `cloudflare/oauth/cloudflare-connect.service.ts`): opções,
+    início, retorno, acompanhamento e escolha das contas, com a permissão do token colado. O retorno só vale para o mesmo
+    cliente, usuário e sessão, uma vez, no prazo e com o emissor exato; a recusa é sempre a mesma, e o motivo vai só à
+    trilha. Até 10 tentativas por hora por usuário e 30 por cliente. A API só cifra: nenhum token passa por ela.
+  - **Worker** (`cloudflare/oauth/connect-job.ts`, tarefa `cloudflare-oauth`): a troca do código, as provas (leitura da
+    auditoria), a descoberta das contas, a ligação (`link-accounts.ts`, tudo ou nada) e a revogação no Cloudflare, com
+    desistência depois de 24 h. Todo token emitido fica com dono: o recusado (escopo, sem renovação, tentativa vencida)
+    nasce numa concessão que só espera a revogação, também na renovação que amplia escopos.
+  - **Quem já usa token:** o token só sai do cofre depois da prova da mesma conta, na transação que a liga; cursores, zonas,
+    achados e incidentes não são tocados. Com o OAuth ligado, token novo é recusado no painel (409
+    `CLOUDFLARE_OAUTH_ONLY`) e no console (`credential_kind_not_allowed`). Conta conectada por OAuth não é trocada pelo
+    token do console (`origin_conflict`).
+  - **Desativar, excluir e a lápide do console** soltam a conta da concessão; a última conta manda revogar.
+  - **Sincronização:** o nó gerenciado de cliente, com o cofre e o coletor, anuncia `cloudflare_oauth`. Plano de controle
+    anterior (400): refaz na hora sem ela e fica 1 h sem anunciar. Seção ausente mantém a última configuração; `null`
+    desliga novas conexões; retorno de outro endereço desliga.
+- **Migration:** `20261126120000_cloudflare_oauth_connect` (só colunas novas em `ControlPlaneSync` e
+  `CloudflareConnectAttempt`).
+- **Fora:** VM do cliente, célula e `PLAN=interno`. Reconectar cria sempre outra concessão, e só as contas provadas passam
+  para ela; a antiga, sem contas, é revogada.
+- **Dependências:** nenhuma.
+- **Teste manual:** só com um app registrado no Cloudflare (homologação do CF-9).
+- **Riscos:** nada foi exercitado contra o Cloudflare. Se revogar a autorização antiga derrubar a nova do mesmo usuário, a
+  reconexão pede outra. Uma queda entre a resposta da troca e a gravação deixa o token emitido sem dono até vencer; a nova
+  tentativa do mesmo código costuma derrubá-lo (RFC 6749), o que só o app confirma.

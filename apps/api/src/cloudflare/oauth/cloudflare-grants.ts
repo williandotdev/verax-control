@@ -14,6 +14,7 @@ import { scopeToTenant } from '../../common/prisma/tenant-scope.js';
 import type { VaultKeyring } from '../../credentials/credential-keys.js';
 import { lockGrant } from '../../credentials/credential-rekey.js';
 import type { BearerRenewal, CloudflareBearer } from '../cloudflare-bearer.js';
+import { createGrant, sealGrant, type SealedGrant } from './grant-store.js';
 import { CloudflareOAuthError, type CloudflareOAuthTokens, type RefreshedTokens } from './oauth-tokens.js';
 
 /** Renova com menos disto de vida, ou com menos de um quinto do prazo, o que for menor. */
@@ -70,6 +71,7 @@ interface GrantRow {
   scopes: string[];
   generation: number;
   consentedAt: Date;
+  consentedBy: string;
   lastRefreshAt: Date | null;
   status: string;
 }
@@ -281,6 +283,7 @@ export class CloudflareGrants {
         scopes: true,
         generation: true,
         consentedAt: true,
+        consentedBy: true,
         lastRefreshAt: true,
         status: true,
       },
@@ -453,9 +456,10 @@ export class CloudflareGrants {
       refreshed.scope !== null &&
       compareCloudflareScopes(row.scopes, refreshed.scope).unexpected.length > 0
     ) {
-      // Uma renovação nunca amplia a autorização. Se ampliar, o acesso novo não é guardado nem usado.
+      // Uma renovação nunca amplia a autorização. Se ampliar, o acesso novo não é usado: fica só para ser revogado.
+      const discarded = this.sealDiscarded(ref, row, next);
       for (const value of unused) forgetLiveSecret(value);
-      await this.markReconnect(ref, row.generation, 'oauth_scope_unexpected');
+      await this.markReconnect(ref, row.generation, 'oauth_scope_unexpected', discarded);
       return { kind: 'reconnect' };
     }
     const publicKey = this.keyring.publicKey();
@@ -496,6 +500,21 @@ export class CloudflareGrants {
     }
     this.counters.renewed += 1;
     return this.current(ref);
+  }
+
+  /** Os tokens recusados, numa concessão à parte que só espera a revogação; null se não couberem no envelope. */
+  private sealDiscarded(ref: GrantRef, row: GrantRow, tokens: GrantTokens): SealedGrant | null {
+    const { clientId, scopes, consentedAt, consentedBy } = row;
+    try {
+      return sealGrant(
+        this.keyring.publicKey(),
+        { tenantId: ref.tenantId, clientId, scopes, consentedAt, consentedBy },
+        tokens,
+      );
+    } catch (error) {
+      if (!(error instanceof CredentialVaultError)) throw error;
+      return null;
+    }
   }
 
   /** Grava a renovação guardada na memória, tentando de novo. Nunca é interrompida pela parada do worker. */
@@ -541,10 +560,16 @@ export class CloudflareGrants {
     if (this.unsaved.has(grantId) && (await this.save(grantId))) this.counters.renewed += 1;
   }
 
-  /** A concessão espera o cliente conectar de novo; falso se ela mudou no meio. */
-  private markReconnect(ref: GrantRef, generation: number, code: string): Promise<boolean> {
+  /** A concessão espera o cliente conectar de novo; falso se ela mudou no meio. O descartado é gravado de todo jeito. */
+  private markReconnect(
+    ref: GrantRef,
+    generation: number,
+    code: string,
+    discarded: SealedGrant | null = null,
+  ): Promise<boolean> {
     return this.prisma.$transaction(async (tx) => {
       await lockGrant(tx, ref.grantId);
+      if (discarded !== null) await createGrant(tx, discarded, 'revoking', new Date());
       const { count } = await scopeToTenant(tx, ref.tenantId).cloudflareGrant.updateMany({
         where: { id: ref.grantId, generation, status: 'active' },
         data: { status: 'reconnect', refreshStartedAt: null, lastErrorKind: code },

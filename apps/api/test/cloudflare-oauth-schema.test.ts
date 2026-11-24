@@ -68,6 +68,19 @@ describe(`migration ${MIGRATION}`, () => {
     ]);
   });
 
+  it('a da conexão (CF-4) só acrescenta colunas, vazias nas linhas que já existem', () => {
+    const statements = sqlOf('20261126120000_cloudflare_oauth_connect')
+      .split('\n')
+      .filter((line) => line.trim().length > 0 && !line.startsWith('--'));
+    expect(statements).toEqual([
+      'ALTER TABLE "ControlPlaneSync" ADD COLUMN     "cloudflareOauth" JSONB;',
+      'ALTER TABLE "CloudflareConnectAttempt" ADD COLUMN     "accountIdRequired" BOOLEAN NOT NULL DEFAULT false,',
+      'ADD COLUMN     "chosenAccountIds" TEXT[] DEFAULT ARRAY[]::TEXT[],',
+      'ADD COLUMN     "config" JSONB,',
+      'ADD COLUMN     "discoveredAt" TIMESTAMPTZ(3);',
+    ]);
+  });
+
   describe('banco existente', () => {
     const database = `cf_oauth_mig_${hex(6)}_test`;
     let admin: pg.Client;
