@@ -5,6 +5,7 @@ import {
   type FindingSeverity,
   type FindingSource,
   hasPermission,
+  type MitreTactic,
   PULSE_EVENT_SOURCES,
   type PulseEventSource,
   RADAR_DETECTIONS_LIMIT,
@@ -18,6 +19,7 @@ import {
   type TowerSummary,
 } from '@verax/shared';
 import type { RequestAuth } from '../common/auth/request-auth.js';
+import { TenantCache } from '../common/cache/tenant-cache.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { combinedScore, PostureService } from '../posture/posture.service.js';
 import { ReportsService } from '../reports/reports.service.js';
@@ -40,6 +42,14 @@ import {
 
 /** O resumo MITRE ATT&CK da Torre olha os últimos 30 dias, com as mesmas contas do relatório MITRE desse período. */
 const MITRE_PERIOD = '30d';
+/**
+ * Por quanto tempo o resumo MITRE da Torre vale para o mesmo cliente: todo painel aberto o pede a cada 60 s, e ele é o
+ * cálculo mais caro da Torre (30 dias de achados). Com isto, são no máximo dois por minuto e por cliente, com qualquer
+ * número de painéis; um painel só o recebe novo a cada pedido. O relatório MITRE não passa por aqui.
+ */
+export const TOWER_MITRE_TTL_MS = 30_000;
+/** Clientes guardados por processo (a célula serve muitos): cada resumo tem no máximo 14 táticas de 10 técnicas. */
+export const TOWER_MITRE_TENANTS = 500;
 
 /** A fila sem dono que conta na Torre: os alertas dos últimos 7 dias. */
 const UNOWNED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -81,6 +91,11 @@ function windowCounts(
  */
 @Injectable()
 export class TowerService {
+  private readonly mitreByTenant = new TenantCache<MitreTactic[]>({
+    ttlMs: TOWER_MITRE_TTL_MS,
+    maxTenants: TOWER_MITRE_TENANTS,
+  });
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly posture: PostureService,
@@ -179,9 +194,7 @@ export class TowerService {
         : Promise.resolve(0),
     ]);
 
-    // Achados e incidentes que começaram nos últimos 30 dias, pelas mesmas contas do relatório MITRE.
-    const { tactics } = await this.reports.mitre(reportWindow(MITRE_PERIOD, now));
-    const mitre = { periodDays: REPORT_PERIOD_DAYS[MITRE_PERIOD], tactics };
+    const mitre = { periodDays: REPORT_PERIOD_DAYS[MITRE_PERIOD], tactics: await this.mitreTactics(now) };
 
     // O medidor da AWS parado por mais de um cliente no Wazuh do nó é do nó, não de um cliente: só a equipe da Verax vê
     // (como a fila sem dono), e o aviso não cita cliente nenhum.
@@ -223,6 +236,17 @@ export class TowerService {
       mitre,
       generatedAt: now.toISOString(),
     };
+  }
+
+  /**
+   * Achados e incidentes que começaram nos últimos 30 dias, pelas mesmas contas do relatório MITRE, de até
+   * `TOWER_MITRE_TTL_MS` atrás. A chave é o cliente da sessão, o mesmo de onde o cálculo lê.
+   */
+  private mitreTactics(now: Date): Promise<MitreTactic[]> {
+    return this.mitreByTenant.get(this.prisma.scopeTenantId(), async () => {
+      const { tactics } = await this.reports.mitre(reportWindow(MITRE_PERIOD, now));
+      return tactics;
+    });
   }
 
   /**

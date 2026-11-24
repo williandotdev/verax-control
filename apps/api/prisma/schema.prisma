@@ -663,6 +663,8 @@ model Finding {
   @@unique([id, tenantId])
   @@index([tenantId, occurredAt(sort: Desc)])
   @@index([tenantId, status])
+  /// Alertas altos e críticos ainda em "novo" (a Torre conta em toda tela aberta), sem ler a tabela inteira.
+  @@index([tenantId, status, severity])
   @@index([incidentId])
   @@index([recurrenceOfId])
   @@index([tenantId, chainKey])
@@ -1314,6 +1316,8 @@ model Notification {
   @@index([status, nextAttemptAt])
   @@index([incidentId])
   @@index([findingId])
+  /// E-mails ao contato de escalonamento na hora (o limite dele), sem ler a tabela inteira a cada aviso crítico.
+  @@index([tenantId, escalationDeliveredAt])
 }
 
 /// Preferência de aviso por e-mail de uma pessoa do cliente (fase 2, PR-17'). Só a própria pessoa a muda

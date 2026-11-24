@@ -282,7 +282,8 @@ const mean = (values: readonly number[]) =>
   values.length === 0 ? null : Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
 const minutesBetween = (start: string, end: string) =>
   Math.max(0, (Date.parse(end) - Date.parse(start)) / 60_000);
-const increment = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
+const increment = (counts: Map<string, number>, key: string, times = 1) =>
+  counts.set(key, (counts.get(key) ?? 0) + times);
 const SEVERITY_RANK: Readonly<Record<FindingSeverity, number>> = { critical: 3, high: 2, medium: 1, low: 0 };
 
 /** Ranking de valores por contagem (desc), com o valor como desempate, até `limit`. */
@@ -307,10 +308,17 @@ export function foldFindings<R, F>(fold: FindingsFold<R, F>, findings: Iterable<
 
 export type MitreFinding = Pick<ReportFinding, 'mitreTactics' | 'mitreTechniques'>;
 
-/** Táticas e técnicas do MITRE ATT&CK nos achados e incidentes dados, sem olhar o período. */
-export function mitreTacticsFold(
-  incidents: readonly Pick<ReportIncident, 'mitreTactics'>[],
-): FindingsFold<MitreTactic[], MitreFinding> {
+/** Os achados com a mesma combinação de táticas e técnicas, contados pelo banco. */
+export type MitreCount = MitreFinding & { count: number };
+
+/**
+ * Táticas e técnicas do MITRE ATT&CK nos achados e incidentes dados, sem olhar o período. `times` é quantos achados
+ * iguais a este (a mesma combinação de táticas e técnicas) entram de uma vez.
+ */
+export function mitreTacticsFold(incidents: readonly Pick<ReportIncident, 'mitreTactics'>[]): {
+  add(finding: MitreFinding, times?: number): void;
+  result(): MitreTactic[];
+} {
   const tallies = MITRE_TACTICS.map(({ id, name }) => ({
     id,
     name,
@@ -319,12 +327,14 @@ export function mitreTacticsFold(
   }));
   const byName = new Map<string, (typeof tallies)[number]>(tallies.map((tally) => [tally.name, tally]));
   return {
-    add(finding) {
+    add(finding, times = 1) {
       for (const name of new Set(finding.mitreTactics)) {
         const tally = byName.get(name);
         if (!tally) continue;
-        tally.findings += 1;
-        for (const technique of new Set(finding.mitreTechniques)) increment(tally.techniques, technique);
+        tally.findings += times;
+        for (const technique of new Set(finding.mitreTechniques)) {
+          increment(tally.techniques, technique, times);
+        }
       }
     },
     result: () =>
@@ -451,6 +461,20 @@ export function mitreReport(
   window: ReportWindow,
 ): MitreReport {
   return foldFindings(mitreFold(incidents, window), findings);
+}
+
+/**
+ * O mesmo relatório, com os achados já contados pelo banco por combinação de táticas e técnicas. As contagens e os
+ * incidentes são só os começados no período.
+ */
+export function mitreReportFromCounts(
+  counts: Iterable<MitreCount>,
+  incidents: readonly Pick<ReportIncident, 'mitreTactics'>[],
+  window: ReportWindow,
+): MitreReport {
+  const tactics = mitreTacticsFold(incidents);
+  for (const group of counts) tactics.add(group, group.count);
+  return { ...window, tactics: tactics.result() };
 }
 
 export function rulesFold(window: ReportWindow): FindingsFold<RulesReport> {
