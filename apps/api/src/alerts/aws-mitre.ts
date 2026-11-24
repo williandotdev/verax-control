@@ -111,8 +111,8 @@ const GUARDDUTY_FAMILIES: readonly GuardDutyFamily[] = [
     family: 'TorClient',
     mitre: mitre(['Command and Control'], ['T1090.003']),
   },
-  // A instância repassa o tráfego de outros: o recurso usado por terceiros.
-  { purpose: 'UnauthorizedAccess', family: 'TorRelay', mitre: mitre(['Impact'], ['T1496']) },
+  // A instância repassa o tráfego de outros: o recurso usado por terceiros. Sem técnica: o tipo não diz qual.
+  { purpose: 'UnauthorizedAccess', family: 'TorRelay', mitre: mitre(['Impact']) },
   // A credencial da conta usada por quem não devia (login de dois lugares, fora da AWS, IP malicioso, Tor): conta
   // válida da nuvem.
   { purpose: 'UnauthorizedAccess', resource: 'IAMUser', mitre: mitre(['Initial Access'], ['T1078.004']) },

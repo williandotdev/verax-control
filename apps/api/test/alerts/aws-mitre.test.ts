@@ -53,7 +53,7 @@ describe('MITRE ATT&CK do GuardDuty, pelo tipo do achado', () => {
     ['UnauthorizedAccess:EC2/RDPBruteForce', ['Credential Access'], ['T1110']],
     ['UnauthorizedAccess:EC2/MetadataDNSRebind', ['Credential Access'], ['T1552.005']],
     ['UnauthorizedAccess:Runtime/TorClient', ['Command and Control'], ['T1090.003']],
-    ['UnauthorizedAccess:EC2/TorRelay', ['Impact'], ['T1496']],
+    ['UnauthorizedAccess:EC2/TorRelay', ['Impact'], []],
     ['UnauthorizedAccess:IAMUser/ConsoleLoginSuccess.B', ['Initial Access'], ['T1078.004']],
     [
       'UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS',
