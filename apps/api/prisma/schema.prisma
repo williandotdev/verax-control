@@ -663,6 +663,8 @@ model Finding {
   @@unique([id, tenantId])
   @@index([tenantId, occurredAt(sort: Desc)])
   @@index([tenantId, status])
+  /// Alertas altos e críticos ainda em "novo" (a Torre conta em toda tela aberta), sem ler a tabela inteira.
+  @@index([tenantId, status, severity])
   @@index([incidentId])
   @@index([recurrenceOfId])
   @@index([tenantId, chainKey])

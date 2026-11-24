@@ -6614,3 +6614,10 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
     cada aviso).
   - Migration `20261128120000_notification_escalation_index` (só acrescenta um índice de 2,9 MB): a contagem dos e-mails
     ao contato na hora lia a tabela inteira a cada aviso crítico (119 ms e 11.219 páginas; agora 0,2 ms e 3).
+- **Custo da Torre:** o MITRE de 30 dias, que lia todos os achados em lotes de 5.000 a cada minuto em todo painel aberto,
+  é contado pelo banco por combinação de táticas e técnicas e passa pelo mesmo cálculo do relatório (que também o usa); a
+  Torre repete o resultado por até 30 s por cliente. A contagem dos altos e críticos em "novo" ganhou um índice
+  (migration `20261128120000_finding_untriaged_index`, só acrescenta, 5,2 MB).
+  - Medido com 750 mil achados em 30 dias: MITRE de 6,4 a 7,4 s para 0,14 s (o mesmo resultado); a contagem, de 313 ms para
+    35 ms (26.786 páginas lidas para 328); a Torre, de 6,5 a 7,9 s para 0,3 s (0,1 s com o MITRE guardado); dez painéis
+    juntos, de 63 s para 0,7 s. As outras contagens (24 h e incidentes) já usavam índice e ficam de fora.

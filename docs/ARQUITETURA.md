@@ -2193,6 +2193,12 @@ As regras ficam em `tower-rules.ts`, e o contrato em `packages/shared/src/tower.
 o teste negativo A/B; só a fila sem dono e o medidor parado do nó, que não são de cliente nenhum, vão só para a equipe
 da Verax.
 
+- **Custo** (todo painel aberto pede a Torre a cada 60 s): o MITRE de 30 dias é contado pelo banco por combinação de
+  táticas e técnicas (`ReportsService.mitre`, SQL com parâmetros e o cliente da sessão) e passa pelo mesmo cálculo do
+  relatório; a Torre repete o resultado por até 30 s por cliente e processo (`TenantCache`, até 500 clientes, um cálculo
+  só para pedidos juntos), e o relatório nunca. A contagem dos alertas altos e críticos em "novo" usa o índice
+  `(tenantId, status, severity)`. As demais leituras usam os índices da janela de 24 h. Com 750 mil achados: a Torre vai
+  de 6,5 a 7,9 s para 0,3 s (0,1 s com o MITRE guardado), e dez painéis juntos, de 63 s para 0,7 s.
 - **Semáforo** (pendência 9, com a coleta parada aprovada em 05/11/2026):
   - **vermelho** com incidente crítico aberto;
   - **amarelo** com incidente alto aberto, nota de postura abaixo de 70 ou **coleta parada** (`collection_stalled`):

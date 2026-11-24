@@ -5,6 +5,7 @@ import {
   exceptionsReport,
   incidentsReport,
   mitreReport,
+  mitreReportFromCounts,
   mitreTactics,
   type ReportFinding,
   type ReportIncident,
@@ -83,6 +84,32 @@ describe('MITRE ATT&CK', () => {
   });
 
   it('o relatório conta só o que começou no período', () => {
+    // As contagens por combinação dão o mesmo relatório: repetidos, táticas fora da lista, sem técnica e empates.
+    const groups = [
+      { mitreTactics: ['Defense Evasion'], mitreTechniques: ['T1562.008', 'T1078'], count: 3 },
+      {
+        mitreTactics: ['Defense Evasion', 'Defense Evasion', 'Impact'],
+        mitreTechniques: ['T1485', 'T1485'],
+        count: 2,
+      },
+      { mitreTactics: ['Tática fora da lista'], mitreTechniques: ['T1'], count: 4 },
+      { mitreTactics: ['Impact'], mitreTechniques: [], count: 1 },
+      { mitreTactics: [], mitreTechniques: ['T1078'], count: 5 },
+      ...Array.from({ length: 12 }, (_, index) => ({
+        mitreTactics: ['Discovery'],
+        mitreTechniques: [`T${1100 - index}`],
+        count: 1 + (index % 2),
+      })),
+    ];
+    const oneByOne = groups.flatMap(({ count, ...group }) =>
+      Array.from({ length: count }, () => finding({ ...group, occurredAt: hoursAgo(2) })),
+    );
+    const incidents = [incident(), incident({ mitreTactics: ['Impact', 'Impact'] })];
+    expect(mitreReportFromCounts(groups, incidents, WINDOW)).toEqual(
+      mitreReport(oneByOne, incidents, WINDOW),
+    );
+    expect(mitreReportFromCounts([], [], WINDOW)).toEqual(mitreReport([], [], WINDOW));
+
     const report = mitreReport([finding(), finding({ occurredAt: hoursAgo(24 * 10) })], [], WINDOW);
     expect(report.tactics.find((tactic) => tactic.name === 'Defense Evasion')?.findings).toBe(1);
   });
