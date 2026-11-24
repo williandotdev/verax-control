@@ -8,7 +8,9 @@
 
 Atualizar (a cada versão do nó, ou antes de 180 dias, quando a tabela passa a se dizer velha):
 
-1. Baixe `user-country-ipv4.csv` e `user-country-ipv6.csv` do projeto, com os `.sha256` deles, e confira.
+1. Baixe `user-country-ipv4.csv` e `user-country-ipv6.csv` de
+   `https://github.com/sapics/ip-location-db/releases/download/latest/<arquivo>` e os `.sha256` de
+   `https://github.com/sapics/ip-location-db/releases/download/checksum/<arquivo>.sha256`, e confira.
 2. Na raiz do repositório: `node scripts/update-ip-country.mjs <ipv4.csv> <ipv6.csv> apps/api/src/geo/data`. O script não
    acessa a rede e recusa qualquer linha fora das regras. Código novo fora da ISO 3166-1 exige decisão em
    `../country-codes.ts`.
