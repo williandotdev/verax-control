@@ -6601,6 +6601,41 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
   do GuardDuty e pela regra 80443). Os tipos do GuardDuty que não dizem a tática (`Policy`, `Behavior`, `PenTest`,
   `AttackSequence` e parte de `Trojan` e `UnauthorizedAccess`) ficam sem ela.
 
+## Ataques web pelos logs do ALB, PR-1: o motor puro (não ligado)
+
+- **O que é:** `apps/api/src/weblogs`, sem banco, sem AWS e sem relógio próprio: lê a linha do log de acesso do ALB, conta
+  em janelas de 15 e 60 minutos com teto de memória e devolve os achados prontos. Nada chama o motor ainda; o
+  `FindingStore`, os contratos e o painel não mudaram.
+- **Regras:** 990400 (resumo do dia) a 990407. Uma varredura só vira achado próprio se for direcionada; a resposta de um
+  caminho secreto (990403), o login com falhas e depois sucesso (990406) e a força bruta distribuída (990407) nunca são
+  calados por fonte confiável.
+- **Privacidade:** nenhuma linha é guardada e nenhum byte de query sai (teste de propriedade); caminho e User-Agent
+  mascarados; a evidência é estrita, até 16 KB, com ponteiro para o objeto no bucket do cliente.
+- **Faixas das CDNs: marcador vazio** (`weblogs/data/proxy-ranges.ts`), porque esta PR não faz chamada externa. Com ele,
+  todo endereço público é `unverified`: as regras por IP ficam desligadas, com a nota `proxy_ranges_unavailable`; só a
+  990403 e a 990407 valem, sem IP. Preencher antes de ligar a fonte.
+- **Decisões tomadas aqui, a conferir:** o nível entra na chave do achado (senão a escalada ficaria no achado médio já
+  aberto); a 990403 também vale atrás de proxy, sem IP; rota não declarada só "distingue" falha de sucesso depois de 5
+  recusas da aplicação; 30 mil registros de cliente em vez de 40 mil (medido: cerca de 600 bytes cada). Os limites que
+  ficam estão no cabeçalho de `weblogs/engine.ts`.
+- **Arquivos:** `apps/api/src/weblogs/**`, `apps/api/test/support/alb-lines.ts`, `scripts/bench-weblogs.mjs`.
+- **Dependências:** nenhuma.
+- **Correções da revisão (PR #190):** a 990407 conta quem saiu da memória uma vez só e com a soma da janela (registro por
+  hash com chave, `weblogs/evicted.ts`), nos dois sentidos: poucos clientes barulhentos não viram muitos discretos, e a
+  saída forçada por enchente não some com a distribuída; a troca de proxy na configuração acerta na hora a classe de tudo
+  o que está na memória (registros, pares de login, respostas, resumo do dia, barra e maior nível). O que foi contado
+  quando o endereço era proxy nunca vira acusação a um IP.
+- **Testes:** 586 novos em 7 arquivos (cada regra em limite −1/0/+1, leitor, máscara, entradas hostis); 174 mutações em
+  série: 157 mortas de primeira e 13 depois de testes novos; das 4 que sobraram, duas saíram com o código redundante e
+  duas são equivalentes. Nas correções da revisão, mais 44, todas mortas (13 depois de testes novos; 3 por travar o teste).
+- **Benchmark (só por pedido, `node --expose-gc scripts/bench-weblogs.mjs`), 1 milhão de linhas:** tráfego comum, 18 a 24 s
+  de CPU, 33 MB de heap e até 28 ms no maior bloqueio (alvos: 25 s, 40 MB, 50 ms). Enchente (tudo único e recusado): 44 a
+  61 s, 28 MB e 49 a 65 ms no maior passo da avaliação. As correções da revisão não mudam isso além do ruído (400 mil
+  linhas, antes e depois alternados: 9,6 e 10,1 s no comum, 23,8 e 24,5 s na enchente); com a máquina ocupada, uma execução
+  do comum passou do alvo (36 s).
+- **Riscos:** nenhum dado real de ALB foi visto; o escape de aspas no log não é documentado (a linha ambígua é analisada
+  sem host e sem bloqueio).
+
 ## Avisos por prioridade, custo da Torre e privacidade do evento bruto (24/11/2026)
 
 - **Avisos por e-mail:** a fila deixa de ser por ordem de chegada. A severidade manda (incidente crítico, alerta crítico,
