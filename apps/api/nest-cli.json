@@ -3,6 +3,7 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "tsConfigPath": "tsconfig.build.json",
-    "deleteOutDir": true
+    "deleteOutDir": true,
+    "assets": ["geo/data/*.bin.gz"]
   }
 }

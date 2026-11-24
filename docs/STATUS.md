@@ -6685,3 +6685,35 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
 - **Testes:** o primeiro endereço de cada faixa cai na CDN dela; sem repetição; IPv4 e IPv6 nas duas; o padrão do motor.
 - **Riscos:** outras CDNs e proxies (Akamai, Fastly, balanceadores em frente) não estão na lista: o cliente precisa declarar
   a faixa como fonte confiável do tipo proxy.
+
+## País de um endereço IP, embutido e offline (24/11/2026)
+
+- **O que faz:** `apps/api/src/geo` diz o país de um endereço com a base pública `user-country` (sapics/ip-location-db,
+  PDDL), embutida no repositório. Nenhuma consulta sai para a rede. Vai alimentar o mapa de origem das requisições (logs de
+  acesso do ALB); nada usa o módulo ainda.
+- **Representação:** um arquivo binário (`ip-country.bin.gz`, 571.784 bytes; 2,4 MB aberto) e os metadados em TypeScript
+  (`ip-country-meta.ts`), com o SHA-256 conferido na carga. O `nest build` copia o binário para `dist` (`assets` no
+  `nest-cli.json`) e o `.gitattributes` marca `*.gz` como binário. Preferido ao texto em base64: 25% menor, fora do lint e
+  do typecheck, e carregado só por quem chama.
+- **Tabela:** 311.419 fronteiras IPv4 e 354.427 IPv6 por /64, 250 códigos. Os /64 divididos entre países (732) ficam com a
+  maioria dos endereços. `XK` fica; `AC` e `TA` viram `SH`; `AN` fica sem país (um /44 de IPv6).
+- **Conferência com a fonte:** 4.502.320 endereços contra uma leitura independente dos CSV em Python (as duas pontas de
+  cada faixa e os vizinhos, 1 milhão de IPv4 e 1,1 milhão de IPv6 aleatórios, e todos os /64 divididos), por texto e pelo
+  caminho numérico: nenhuma diferença. O leitor de endereços dá o mesmo que o do motor de ataques web em 3 milhões de
+  textos aleatórios.
+- **Medido (Windows, Node 24.15):** carga de 26 a 32 ms (até 105 ms com a máquina ocupada por outras tarefas), 4,5 MB de
+  arrays e 0,06 MB de heap; IPv4 numérico, 8,2 a 9,1 milhões de consultas por segundo; IPv6 numérico, 17 a 20; por texto,
+  2,9 a 4,8 (com a máquina ocupada, 5,6, 6 e 1,7, as piores). Em 33,5 milhões de consultas numéricas o heap não cresce (0,2
+  MB, o mesmo de 2 milhões). Na imagem (Docker Desktop, processo novo a cada vez), carga de 56 a 194 ms, acima do alvo de
+  150 ms em algumas; com a máquina muito ocupada, 505 ms.
+- **Arquivos:** `apps/api/src/geo/{country-codes,ip-address,ip-country,ip-country-format}.ts`, `data/` (tabela, metadados,
+  README com fonte e licença) e cinco arquivos de teste; `scripts/update-ip-country.mjs` (gerador offline) e
+  `scripts/bench-ip-country.mjs` (só por pedido); `apps/api/nest-cli.json`, `.gitattributes`; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem migration e sem mudança em `infra/`, `.github/` nem no módulo `auth`.
+- **Testes:** 277 em cinco arquivos (`src/geo`), sem banco: estrutura do arquivo real, 400 tabelas aleatórias contra a
+  varredura da fonte, âncoras públicas, entradas hostis, arquivo corrompido e o gerador de ponta a ponta (as 21 recusas
+  não escrevem nada). 31 mutações, todas mortas. `pnpm lint`, `format:check` e `typecheck` limpos. A imagem da API foi
+  construída e consultada com raiz só leitura, sem rede e sem root. Gitleaks, Trivy (segredos) e as regras próprias do
+  Semgrep não acusam nada nos arquivos novos. A suíte com banco não foi rodada: nenhum código existente mudou.
+- **Riscos e sugestões:** os 97,5% de concordância com o GeoLite2 são do próprio projeto, não medidos aqui. Cada atualização
+  soma cerca de 0,6 MB ao histórico do git. A tela precisa dizer que o país é o do endereço (VPN, proxy e nuvem).
