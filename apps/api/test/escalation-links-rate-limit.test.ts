@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { randomBytes, randomInt } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -29,8 +29,9 @@ describe('links do contato de escalonamento: limite por IP', () => {
     await app.close();
   });
 
-  /** IP de documentação próprio de cada teste: a contagem de um não vaza para o outro. */
-  const freshIp = () => `198.51.100.${randomInt(1, 254)}`;
+  /** IP de documentação próprio de cada uso, sem repetir: a contagem de um não vaza para o outro. */
+  let lastIp = 0;
+  const freshIp = () => `198.51.100.${(lastIp += 1)}`;
   const link = (path: 'confirm' | 'unsubscribe', ip: string, token: string) =>
     request(app.getHttpServer())
       .post(`/v1/public/escalation-contact/${path}`)
