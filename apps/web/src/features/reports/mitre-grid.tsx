@@ -1,7 +1,7 @@
 import type { MitreTactic } from '@verax/shared';
 import { Link } from 'react-router';
 import { cn } from '@/lib/cn';
-import { plural } from '@/lib/format';
+import { formatCount, plural } from '@/lib/format';
 import { TACTIC_LABELS } from './labels';
 
 /**
@@ -39,7 +39,9 @@ export function MitreGrid({
           <>
             <span className="block text-xs text-muted-foreground">{tactic.id}</span>
             <span className="block text-sm font-medium leading-tight">{label}</span>
-            <span className="mt-1 block text-2xl font-semibold tabular-nums">{tactic.findings}</span>
+            <span className="mt-1 block text-2xl font-semibold tabular-nums">
+              {formatCount(tactic.findings)}
+            </span>
             <span className="block text-xs text-muted-foreground">
               {plural(tactic.incidents, 'incidente', 'incidentes')}
               {top && <> · {top.id}</>}

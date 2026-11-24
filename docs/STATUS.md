@@ -6573,3 +6573,30 @@ log-source-labels.ts`, `lib/api-types.ts` e `log-sources.test.tsx`; `apps/contro
 - **Corrigido junto:** os textos só para leitor de tela saíam da área que rola e alargavam a página.
 - **Dependências novas:** nenhuma. Sem mudança na API.
 - **Testes:** web 742 (6 novos); navegador nas telas tocadas, com acessibilidade nos dois temas.
+
+## Fila honesta e MITRE ATT&CK das fontes da AWS (pedido do responsável de 24/11/2026)
+
+- **Fila honesta:** a situação nunca mais diz "Tudo calmo" nem fica verde com alerta alto ou crítico para validar. A API
+  responde amarelo (sem motivo novo: a lista é fechada, e um painel de antes recusaria o resumo), e o painel tira a frase
+  da decisão `untriaged_finding` ("24.321 alertas altos ou críticos para validar"), inclusive com um nó de antes, que
+  ainda responde verde. "Tudo calmo" também deixa de aparecer com incidente sem responsável, como no cartão de decisões.
+  As contagens aparecem em pt-BR.
+- **MITRE:** o GuardDuty leva a tática (e a técnica, quando não há outra leitura) do tipo do achado, igual pela API e
+  pelo bucket; a rajada de bloqueios do WAF (80443), a varredura ativa (T1595). Inspector, controle reprovado e Access
+  Analyzer seguem sem tática, com o motivo no código. A aba MITRE explica a matriz vazia e diz quantos alertas não têm
+  tática (o total vem do relatório de resumo, só nesse caso).
+- **Arquivos:** `apps/api/src/alerts/aws-mitre.ts` (novo) e `finding-draft.ts`, `aws/findings/{guardduty,inspector,
+security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,service}.ts`; `packages/shared/src/tower.ts`
+  (comentários); `apps/web/src/features/detections/{tower-reason.ts,situation-strip.tsx}`,
+  `features/reports/{mitre-grid,report-views}.tsx`, `lib/format.ts`, `components/charts/chart-utils.ts`,
+  `mocks/fixtures.ts`; testes (e o e2e `deteccoes.mock.spec.ts`); `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem migration, sem mudança em `infra/`.
+- **Testes:** `pnpm lint`, `format:check` e `typecheck` (todos os pacotes), limpos. Shared, 29 arquivos e 516 testes. API com
+  Postgres descartável, 182 arquivos e 2767 testes: 181 arquivos na rodada inteira, e o `retention.test.ts` (o worker do
+  vitest no Windows caiu uma vez, 3221226505) passou rodado de novo, 29 testes. Web, 57 arquivos e 751 testes. Navegador:
+  `deteccoes`, `history`, `radar`, `tour` e `pages`, 111 no total (4 do `deteccoes` só depois de atualizar a asserção da
+  frase da Alfa, que agora termina com a contagem). Sem o código, 44 testes da API e 10 do painel falham.
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`, tela Detecções (a frase da situação e a aba MITRE ATT&CK).
+- **Riscos e sugestões:** os alertas já gravados não mudam (a reclassificação seria uma tarefa à parte, pelo `eventName`
+  do GuardDuty e pela regra 80443). Os tipos do GuardDuty que não dizem a tática (`Policy`, `Behavior`, `PenTest`,
+  `AttackSequence` e parte de `Trojan` e `UnauthorizedAccess`) ficam sem ela.

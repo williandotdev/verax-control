@@ -5,7 +5,7 @@ import {
   type MitreTactic,
   type ReportWindowPeriod,
 } from '@verax/shared';
-import type { ReactNode } from 'react';
+import { type ReactNode, useContext } from 'react';
 import { Link } from 'react-router';
 import { INK_RAMP } from '@/components/charts/chart-utils';
 import { LineChart } from '@/components/charts/line-chart';
@@ -18,7 +18,7 @@ import { PROVIDER_LABELS } from '@/features/admin/labels';
 import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
 import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
 import { cn } from '@/lib/cn';
-import { formatTimestamp } from '@/lib/format';
+import { formatCount, formatTimestamp } from '@/lib/format';
 import { formatDuration, TACTIC_LABELS } from './labels';
 import { MitreGrid } from './mitre-grid';
 import { ReportContext } from './report-context';
@@ -83,6 +83,37 @@ function Loaded<T extends { period: ReportWindowPeriod; from: string; to: string
   );
 }
 
+/** Por que um alerta pode ficar sem tática, em linguagem simples. */
+const NO_TACTIC_EXPLANATION =
+  'A matriz mostra ações de um ataque. Vulnerabilidades, controles reprovados e acessos abertos são fraquezas, não ações de um ataque: ficam sem tática, mas continuam na lista de alertas, para validar. Cada alerta fica com a classificação de quando chegou.';
+
+/**
+ * A matriz vazia, explicada: sem isto, um cliente com milhares de alertas de vulnerabilidade e de postura vê 14 zeros e
+ * acha que a tela quebrou. O relatório do MITRE não traz o total de alertas (o contrato é fechado, e um painel de antes
+ * recusaria um campo novo): ele vem do relatório de resumo da mesma janela, pedido só com a matriz vazia. Sem ele
+ * (carregando, erro, ou a matriz ainda da janela anterior), a explicação segue sem o número.
+ */
+function MitreEmptyNote({ range }: { range: ReportRange }) {
+  const { current } = useContext(ReportContext);
+  const summary = useReport('summary', range, current);
+  const total = current && summary.data && !summary.isPlaceholderData ? summary.data.findings.total : null;
+  if (total === 0) {
+    return <p className="rounded-md border p-3 text-sm">Nenhum alerta neste período.</p>;
+  }
+  return (
+    <div className="space-y-1 rounded-md border p-3 text-sm">
+      <p className="font-medium">
+        {total === null
+          ? 'Nenhum alerta deste período tem tática do MITRE ATT&CK.'
+          : total === 1
+            ? 'O único alerta deste período não tem tática do MITRE ATT&CK.'
+            : `Nenhum dos ${formatCount(total)} alertas deste período tem tática do MITRE ATT&CK.`}
+      </p>
+      <p className="text-muted-foreground">{NO_TACTIC_EXPLANATION}</p>
+    </div>
+  );
+}
+
 /** As 14 táticas na grade e na tabela; cada tática da grade filtra a lista por ela (`tacticHref`). */
 export function MitreReportView({
   range,
@@ -96,6 +127,11 @@ export function MitreReportView({
     <Loaded query={report} label="o MITRE ATT&CK">
       {(data) => (
         <>
+          {data.tactics.every((tactic) => tactic.findings === 0) ? (
+            <MitreEmptyNote range={range} />
+          ) : (
+            <p className="text-xs text-muted-foreground">{NO_TACTIC_EXPLANATION}</p>
+          )}
           <MitreGrid tactics={data.tactics} tacticHref={tacticHref} />
           <ReportTable
             caption="Táticas e técnicas do MITRE ATT&CK"
@@ -108,10 +144,15 @@ export function MitreReportView({
                 cell: (row) => `${row.id} · ${TACTIC_LABELS[row.name] ?? row.name}`,
                 csv: (row) => `${row.id} ${row.name}`,
               },
-              { header: 'Alertas', cell: (row) => row.findings, csv: (row) => row.findings, align: 'right' },
+              {
+                header: 'Alertas',
+                cell: (row) => formatCount(row.findings),
+                csv: (row) => row.findings,
+                align: 'right',
+              },
               {
                 header: 'Incidentes',
-                cell: (row) => row.incidents,
+                cell: (row) => formatCount(row.incidents),
                 csv: (row) => row.incidents,
                 align: 'right',
               },
@@ -123,7 +164,7 @@ export function MitreReportView({
                   ) : (
                     <span className="font-mono text-xs">
                       {row.techniques
-                        .map((technique) => `${technique.id} (${technique.findings})`)
+                        .map((technique) => `${technique.id} (${formatCount(technique.findings)})`)
                         .join(', ')}
                     </span>
                   ),
@@ -205,9 +246,9 @@ export function SummaryReportView({ range }: { range: ReportRange }) {
       {(data) => (
         <>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <Kpi label="Alertas no período" value={data.findings.total} />
-            <Kpi label="Incidentes abertos no período" value={data.incidents.opened} />
-            <Kpi label="Incidentes resolvidos" value={data.incidents.resolved} />
+            <Kpi label="Alertas no período" value={formatCount(data.findings.total)} />
+            <Kpi label="Incidentes abertos no período" value={formatCount(data.incidents.opened)} />
+            <Kpi label="Incidentes resolvidos" value={formatCount(data.incidents.resolved)} />
             <Kpi label="Tempo médio até a validação" value={formatDuration(data.meanTimeToTriageMinutes)} />
             <Kpi label="Tempo médio até a resolução" value={formatDuration(data.meanTimeToResolveMinutes)} />
           </div>

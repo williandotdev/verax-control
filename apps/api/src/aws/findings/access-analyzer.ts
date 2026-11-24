@@ -196,6 +196,8 @@ export function parseAccessAnalyzerFinding(
           actorType: null,
           accessKeyId: null,
           sourceIp: null,
+          // Um acesso aberto, interno ou sem uso é uma condição da configuração (postura): ninguém agiu ainda, então não
+          // há tática do ATT&CK. Quem abre o acesso aparece pelas regras do CloudTrail, com a tática delas.
           mitreTactics: [],
           mitreTechniques: [],
           revision: { lastSeenAt: updatedAt },

@@ -1,11 +1,11 @@
 import { type RefObject, useLayoutEffect, useRef, useState } from 'react';
+import { formatCount } from '@/lib/format';
 
 /**
  * Peças comuns dos gráficos do painel (SVG puro, sem biblioteca): formatos em pt-BR, escala do eixo, largura medida
  * e a rampa de tinta para categorias sem severidade.
  */
 
-const integer = new Intl.NumberFormat('pt-BR');
 const percentWhole = new Intl.NumberFormat('pt-BR', { style: 'percent', maximumFractionDigits: 0 });
 const percentFine = new Intl.NumberFormat('pt-BR', { style: 'percent', maximumFractionDigits: 1 });
 const dayMonth = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'UTC' });
@@ -17,14 +17,13 @@ const fullDate = new Intl.DateTimeFormat('pt-BR', {
 });
 const asDate = (date: string): Date => new Date(`${date}T00:00:00Z`);
 
-/** "1.234". */
-export const formatCount = (value: number): string => integer.format(value);
+export { formatCount };
 
 const compact = new Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 });
 
 /** Valor de cartão, compacto acima de 10 mil: "9.876", "12,3 mil", "1,2 mi". */
 export const formatCompact = (value: number): string =>
-  Math.abs(value) < 10_000 ? integer.format(value) : compact.format(value);
+  Math.abs(value) < 10_000 ? formatCount(value) : compact.format(value);
 
 const hourMinute = new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' });
 

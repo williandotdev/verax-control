@@ -263,7 +263,7 @@ function usageMonthOf(now: Date): string {
  * pendentes, postura baixa, contas silenciosas e a coleta da GCP parada); a Beta está tranquila, para comparar ("Tudo
  * calmo", com a prova da coleta). As contagens de achados e incidentes vêm do estado do mock, para a Torre acompanhar a
  * triagem feita nas outras telas; o semáforo segue a regra da API (vermelho com incidente crítico aberto; amarelo com
- * alto aberto, postura abaixo de 70 ou coleta parada).
+ * alto aberto, postura abaixo de 70, coleta parada ou alerta alto ou crítico para validar).
  */
 export function demoTower(
   tenantId: string,
@@ -291,6 +291,7 @@ export function demoTower(
   const score = alfa ? 69 : 92;
   const warningBelow = 70;
   const sources = demoSources(alfa, now);
+  const untriagedFindings = options.untriagedFindings ?? (alfa ? 5 : 0);
   const reasons = [
     ...(open.critical > 0 ? ['critical_incident' as const] : []),
     ...(open.high > 0 ? ['high_incident' as const] : []),
@@ -298,11 +299,15 @@ export function demoTower(
     ...(sources.some((source) => source.state === 'stalled') ? ['collection_stalled' as const] : []),
   ];
   return towerSummarySchema.parse({
-    light: reasons.includes('critical_incident') ? 'red' : reasons.length > 0 ? 'yellow' : 'green',
+    light: reasons.includes('critical_incident')
+      ? 'red'
+      : reasons.length > 0 || untriagedFindings > 0
+        ? 'yellow'
+        : 'green',
     reasons,
     pendingDecisions: [
       { kind: 'unassigned_incident', count: options.unassignedIncidents ?? (alfa ? 2 : 0) },
-      { kind: 'untriaged_finding', count: options.untriagedFindings ?? (alfa ? 5 : 0) },
+      { kind: 'untriaged_finding', count: untriagedFindings },
       { kind: 'unowned_alert', count: options.includeUnowned ? (options.unownedAlerts ?? 3) : 0 },
     ].filter((decision) => decision.count > 0),
     openIncidents: open,

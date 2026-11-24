@@ -1,6 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { mitreReport, summaryReport } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
@@ -398,6 +399,35 @@ describe('Detecções: o resumo da situação', () => {
     expect(await screen.findByRole('table', { name: /^Incidentes do cliente/ })).toBeInTheDocument();
   });
 
+  it('24.321 alertas para validar e nenhum incidente: nada de "Tudo calmo", aberto ou recolhido (nó novo ou de antes)', async () => {
+    for (const light of ['yellow', 'green'] as const) {
+      window.localStorage.clear();
+      const view = renderAt('/', {
+        me: demoMe('admin_verax', { activeTenantId: beta ?? null, scopeTenantId: beta ?? null }),
+      });
+      const summary = demoTower(beta ?? '', { includeUnowned: false, untriagedFindings: 24_321 });
+      server.use(http.get(`${API_URL}/v1/tower`, () => HttpResponse.json({ ...summary, light })));
+      const strip = await screen.findByRole('region', { name: 'Situação agora' });
+      expect(await within(strip).findByRole('status', { name: /^Situação: / })).toHaveTextContent(
+        /^24\.321 alertas altos ou críticos para validar\. Coleta ativa em 2 de 2 fontes/,
+      );
+      const decisions = within(strip).getByRole('region', { name: 'Decisões pendentes' });
+      expect(
+        within(decisions).getByText('24.321 alertas altos ou críticos para validar'),
+      ).toBeInTheDocument();
+      expect(strip).not.toHaveTextContent(/calmo/i);
+
+      await userEvent.click(within(strip).getByRole('button', { name: /Recolher/ }));
+      const compact = within(strip).getByRole('status', { name: /^Situação: / });
+      expect(compact).toHaveAccessibleName(/^Situação: 24\.321 alertas altos ou críticos para validar\./);
+      expect(compact).toHaveTextContent('24.321 decisões pendentes');
+      expect(compact.getAttribute('aria-label')).not.toMatch(/calmo/i);
+      cleanup();
+      view.dispose();
+    }
+    window.localStorage.clear();
+  });
+
   it('recolhe e lembra a escolha por pessoa; recolhido, mostra as contagens', async () => {
     renderAt('/');
     const strip = await screen.findByRole('region', { name: 'Situação agora' });
@@ -596,6 +626,83 @@ describe('Detecções: análise e exportação', () => {
     await userEvent.click(screen.getByRole('link', { name: /^Evasão de defesas \(TA0005\)/ }));
     await waitFor(() => expect(search(router).get('tatica')).toBe('Defense Evasion'));
     expect(search(router).get('periodo')).toBe('30d');
+  });
+
+  describe('MITRE ATT&CK sem tática nenhuma', () => {
+    const window7d = {
+      period: '7d',
+      from: '2026-11-17T12:00:00.000Z',
+      to: '2026-11-24T12:00:00.000Z',
+    } as const;
+    const emptyMatrix = () =>
+      http.get(`${API_URL}/v1/reports/mitre`, () => HttpResponse.json(mitreReport([], [], window7d)));
+    const summaryOf = (total: number) => {
+      const empty = summaryReport([], [], window7d);
+      return {
+        ...empty,
+        findings: {
+          ...empty.findings,
+          total,
+          bySeverity: { ...empty.findings.bySeverity, critical: total },
+          byStatus: { ...empty.findings.byStatus, new: total },
+        },
+      };
+    };
+    const summaryHandler = (total: number) =>
+      http.get(`${API_URL}/v1/reports/summary`, () => HttpResponse.json(summaryOf(total)));
+
+    it('diz quantos alertas não têm tática, e por quê, em vez de 14 zeros sem explicação', async () => {
+      renderAt('/?analise=mitre&periodo=7d');
+      server.use(emptyMatrix(), summaryHandler(24_321));
+      expect(
+        await screen.findByText('Nenhum dos 24.321 alertas deste período tem tática do MITRE ATT&CK.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Vulnerabilidades, controles reprovados e acessos abertos são fraquezas/),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' })).toBeInTheDocument();
+    });
+
+    it('um alerta só, no singular; sem alerta nenhum, diz isso', async () => {
+      renderAt('/?analise=mitre&periodo=7d');
+      server.use(emptyMatrix(), summaryHandler(1));
+      expect(
+        await screen.findByText('O único alerta deste período não tem tática do MITRE ATT&CK.'),
+      ).toBeInTheDocument();
+      cleanup();
+
+      renderAt('/?analise=mitre&periodo=7d');
+      server.use(emptyMatrix(), summaryHandler(0));
+      expect(await screen.findByText('Nenhum alerta neste período.')).toBeInTheDocument();
+    });
+
+    it('sem o total (o resumo falhou), a explicação segue, sem número inventado', async () => {
+      renderAt('/?analise=mitre&periodo=7d');
+      server.use(
+        emptyMatrix(),
+        http.get(`${API_URL}/v1/reports/summary`, () =>
+          HttpResponse.json({ statusCode: 503, message: 'Indisponível' }, { status: 503 }),
+        ),
+      );
+      expect(
+        await screen.findByText('Nenhum alerta deste período tem tática do MITRE ATT&CK.'),
+      ).toBeInTheDocument();
+    });
+
+    it('com alguma tática, a matriz vem com a explicação curta, e o resumo nem é pedido', async () => {
+      const asked = vi.fn();
+      renderAt('/?analise=mitre&periodo=7d');
+      server.use(
+        http.get(`${API_URL}/v1/reports/summary`, () => {
+          asked();
+          return HttpResponse.json(summaryOf(9));
+        }),
+      );
+      await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' });
+      expect(screen.getByText(/ficam sem tática, mas continuam na lista de alertas/)).toBeInTheDocument();
+      expect(screen.queryByText(/^Nenhum dos/)).toBeNull();
+      expect(asked).not.toHaveBeenCalled();
+    });
   });
 
   it('tela estreita: um ponto do radar aberto numa aba de análise volta para a lista, onde o detalhe aparece', async () => {

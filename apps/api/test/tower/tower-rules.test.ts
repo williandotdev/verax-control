@@ -51,6 +51,24 @@ describe('semáforo da Torre (T5.10, pendência 9)', () => {
     });
   });
 
+  it('alerta alto ou crítico para validar: nunca verde, sem motivo novo e sem passar por cima do vermelho', () => {
+    // Um motivo novo derrubaria o painel de uma versão anterior, que recusa o resumo inteiro: a lista segue vazia.
+    expect(trafficLight({ openIncidents: none, postureScore: 95, untriagedFindings: 24_321 })).toEqual({
+      light: 'yellow',
+      reasons: [],
+    });
+    expect(trafficLight({ openIncidents: none, postureScore: null, untriagedFindings: 1 }).light).toBe(
+      'yellow',
+    );
+    expect(
+      trafficLight({ openIncidents: { ...none, critical: 1 }, postureScore: 95, untriagedFindings: 1 }),
+    ).toEqual({ light: 'red', reasons: ['critical_incident'] });
+    expect(trafficLight({ openIncidents: none, postureScore: 95, untriagedFindings: 0 })).toEqual({
+      light: 'green',
+      reasons: [],
+    });
+  });
+
   it('o corte de postura vem da configuração', () => {
     const thresholds = { ...DEFAULT_TOWER_THRESHOLDS, postureWarning: 80 };
     expect(trafficLight({ openIncidents: none, postureScore: 75 }, thresholds).light).toBe('yellow');

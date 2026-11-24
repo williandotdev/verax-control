@@ -195,6 +195,7 @@ export function parseGuardDutyFinding(raw: unknown): ParseOutcome {
         probe: { ip: fields.actor.ip, port: probePort(variant) },
       }),
       groups: [],
+      // As táticas e as técnicas saem do tipo do achado, em `toFindingDraft`, iguais às do caminho do bucket.
       mitre: { ids: [], tactics: [], techniques: [] },
     },
     source: 'guardduty',

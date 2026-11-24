@@ -3,6 +3,7 @@ import { type FindingSeverity, type FindingSource, wazuhAgentRef } from '@verax/
 import type { WazuhAgentAlert } from './agent-alert.js';
 import type { AgentAlertOwner } from './agent-owner.js';
 import type { AlertOwner } from './alert-owner.js';
+import { awsAlertMitre } from './aws-mitre.js';
 import { awsAlertTitle } from './aws-rule-titles.js';
 import type { CloudWatchAlertOwner, WazuhCloudWatchAlert } from './cloudwatch-alert.js';
 import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
@@ -50,6 +51,10 @@ export interface FindingDraft {
   actorType: string | null;
   accessKeyId: string | null;
   sourceIp: string | null;
+  /**
+   * Da regra que casou (Wazuh, GCP, Cloudflare), do tipo do achado (GuardDuty, `aws-mitre.ts`) ou dos tipos do Security
+   * Hub. Vazios quando a origem não diz: vulnerabilidade e postura não são ações de um atacante.
+   */
   mitreTactics: string[];
   mitreTechniques: string[];
   /**
@@ -169,6 +174,7 @@ export function toFindingDraft(
   owner: Extract<AlertOwner, { owned: true }>,
 ): FindingDraft {
   const recurrence = recurrenceOf(alert, owner.accountId);
+  const mitre = awsAlertMitre(alert);
   return {
     tenantId: owner.tenantId,
     accountId: owner.accountId,
@@ -188,8 +194,8 @@ export function toFindingDraft(
     actorType: alert.actor.identityType ?? null,
     accessKeyId: alert.actor.accessKeyId ?? null,
     sourceIp: alert.actor.ip ?? null,
-    mitreTactics: unique(alert.rule.mitre.tactics),
-    mitreTechniques: unique(alert.rule.mitre.ids),
+    mitreTactics: unique(mitre.tactics),
+    mitreTechniques: unique(mitre.techniques),
     ...(recurrence && { recurrence }),
   };
 }

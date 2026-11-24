@@ -22,9 +22,13 @@ export type { PendingDecisionKind, TrafficLight, TrafficLightReason };
  * - **amarelo** quando há incidente alto aberto, a nota de postura está abaixo de 70 ou uma fonte configurada está com
  *   a coleta parada (`collection_stalled`: sem dado novo há mais que o prazo de parada dela, ver `collectionHealth`).
  *   Fonte não configurada (cliente sem Cloudflare, sem agentes) ou ainda sem nenhum dado nunca deixa a Torre amarela;
+ * - **amarelo** também com alerta alto ou crítico ainda em "novo". Desde 17/11/2026, um incidente só existe depois de
+ *   uma pessoa promover um alerta: com a fila cheia e ninguém validando, "nenhum incidente aberto" não diz nada;
  * - **verde** nos demais casos.
  * Sem nota de postura (nenhuma varredura ainda), a postura não pesa. Os limites ficam em configuração, e os
- * motivos vão junto, para a tela dizer por que a cor é aquela.
+ * motivos vão junto, para a tela dizer por que a cor é aquela. Os alertas para validar não viram um motivo novo: a
+ * contagem já vai em `pendingDecisions` (`untriaged_finding`), e um valor novo na lista fechada de motivos derrubaria o
+ * painel de uma versão anterior, que recusa o resumo inteiro. O amarelo pode, então, vir sem motivo nenhum.
  */
 
 /** Prazos da saúde de uma fonte: sem dado novo há mais que o primeiro, atrasada; há mais que o segundo, parada. */
@@ -94,6 +98,8 @@ export function trafficLight(
     postureScore: number | null;
     /** As fontes com a coleta parada (`stalledSources`); sem informar, nenhuma. */
     stalledSources?: readonly CollectionSource[];
+    /** Alertas altos ou críticos ainda em "novo" (a decisão `untriaged_finding`); sem informar, nenhum. */
+    untriagedFindings?: number;
   },
   thresholds: TowerThresholds = DEFAULT_TOWER_THRESHOLDS,
 ): { light: TrafficLight; reasons: TrafficLightReason[] } {
@@ -106,7 +112,7 @@ export function trafficLight(
   if ((input.stalledSources ?? []).length > 0) reasons.push('collection_stalled');
   const light: TrafficLight = reasons.includes('critical_incident')
     ? 'red'
-    : reasons.length > 0
+    : reasons.length > 0 || (input.untriagedFindings ?? 0) > 0
       ? 'yellow'
       : 'green';
   return { light, reasons };
