@@ -34,6 +34,8 @@ export interface WebLimits {
   maxLoginCells: number;
   /** Séries de 10 s por slot (a ordem entre falha e sucesso). */
   maxSeries: number;
+  /** Posições (5 bytes) dos registros de quem saiu das rotas de login, somadas (`evicted.ts`). */
+  maxEvictedCells: number;
   /** Hosts (SNI) por slot. */
   maxHosts: number;
   /** Clientes com rotas e amostras guardadas, somados todos os slots. */
@@ -54,6 +56,7 @@ export const DEFAULT_LIMITS: WebLimits = {
   maxRouteClients: 2_000,
   maxLoginCells: 16_000,
   maxSeries: 4_000,
+  maxEvictedCells: 262_144,
   maxHosts: 50,
   maxDetails: 2_000,
   maxAnswered: 500,
@@ -71,6 +74,7 @@ export function divideLimits(limits: WebLimits, sources: number): WebLimits {
     maxHashCells: share(limits.maxHashCells, 65_536),
     maxLoginCells: share(limits.maxLoginCells, 1_000),
     maxSeries: share(limits.maxSeries, 250),
+    maxEvictedCells: share(limits.maxEvictedCells, 16_384),
     maxDetails: share(limits.maxDetails, 200),
   };
 }

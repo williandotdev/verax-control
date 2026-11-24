@@ -11,7 +11,8 @@ import {
 } from '../../test/support/alb-lines.js';
 import type { WebFindingDraft } from './draft.js';
 import { MAX_EVIDENCE_BYTES, webEvidenceSchema } from './evidence.js';
-import { DEFAULT_LIMITS } from './limits.js';
+import { EvictedLedger, isSampled } from './evicted.js';
+import { DEFAULT_LIMITS, type WebLimits } from './limits.js';
 import type { WebRuleId } from './rules.js';
 
 /**
@@ -393,6 +394,163 @@ describe('cardinalidade', () => {
     const harness = feed(times(50, (i) => failures(20, visitor(i))).flat(), { limits });
     expect(harness.engine.usage.details).toBe(5);
     expect(of(harness.evaluate().drafts, '990405')).toHaveLength(11);
+  });
+});
+
+describe('990407 com clientes que saem da memória', () => {
+  /** `clients` clientes com `each` falhas, uma rodada de cada vez. */
+  const rounds = (clients: number, each: number, from = 0, extra: LineSpec = {}): LineSpec[] =>
+    times(each, () => times(clients, (i) => login(visitor(from + i), 401, extra))).flat();
+  const run = (slots: readonly (readonly LineSpec[])[], limits: Partial<WebLimits>): Harness => {
+    const harness = new Harness({ limits: { ...DEFAULT_LIMITS, ...limits } });
+    slots.forEach((lines, i) => harness.feed(lines, T0 - (slots.length - 1 - i) * SLOT, T0));
+    return harness;
+  };
+  const distributed = (harness: Harness, route = '/login') =>
+    of(harness.evaluate().drafts, '990407').filter((draft) => draft.evidence.route === route);
+  const counted = (harness: Harness, route = '/login') =>
+    distributed(harness, route).map(({ evidence }) => [
+      evidence.counters.clients,
+      evidence.counters.failures,
+    ]);
+
+  describe('poucos barulhentos não viram muitos discretos', () => {
+    it('20 clientes com 60 falhas, saindo e voltando no mesmo slot', () => {
+      expect(counted(run([rounds(20, 60)], { maxRouteClients: 10 }))).toEqual([]);
+      expect(counted(run([rounds(20, 60)], { maxLoginCells: 10 }))).toEqual([]);
+    });
+
+    it.each([
+      [29, []],
+      [30, [[30, 540]]],
+      [31, [[31, 558]]],
+    ])('%i clientes com 18 falhas em 3 slots: cada um conta uma vez', (clients, expected) => {
+      const slot = rounds(clients, 6);
+      expect(counted(run([slot, slot, slot], { maxRouteClients: 10 }))).toEqual(expected);
+    });
+
+    it.each([
+      [[7, 7, 6], [[30, 600]]],
+      [[7, 7, 7], []],
+      [[8, 8, 8], []],
+    ])('30 clientes com %j falhas por slot: o limite de 20 é da janela', (each, expected) => {
+      const slots = each.map((count) => rounds(30, count));
+      expect(counted(run(slots, { maxRouteClients: 10 }))).toEqual(expected);
+      expect(counted(run(slots, {}))).toEqual(expected);
+    });
+
+    it('a parte que ficou num slot e a que saiu noutro somam', () => {
+      // 30 clientes: 15 falhas que ficam; no slot seguinte, mais falhas que saem, empurradas por 60 barulhentos.
+      const noisy = rounds(60, 25, 1_000);
+      const at = (more: number) =>
+        counted(run([rounds(30, 15), [...rounds(30, more), ...noisy]], { maxRouteClients: 50 }));
+      expect(at(10)).toEqual([]);
+      expect(at(6)).toEqual([]);
+      // Com 5, são 20 de cada um: valem os 30.
+      expect(at(5)).toEqual([[30, 600]]);
+    });
+
+    it('e a parte que saiu e a que voltou, no mesmo slot', () => {
+      const back = [...rounds(40, 15), ...rounds(60, 25, 1_000), ...rounds(40, 6)];
+      expect(counted(run([back], { maxRouteClients: 50 }))).toEqual([]);
+    });
+  });
+
+  describe('a distribuída de verdade não some com a saída forçada', () => {
+    const attack = rounds(100, 6);
+
+    it('por barulhentos na mesma rota', () => {
+      const noisy = rounds(80, 30, 1_000);
+      for (const lines of [
+        [...attack, ...noisy],
+        [...noisy, ...attack],
+        attack.flatMap((line, i) => [line, ...noisy.slice(i * 4, i * 4 + 4)]),
+      ]) {
+        expect(counted(run([lines], { maxRouteClients: 50 }))).toEqual([[100, 600]]);
+      }
+    });
+
+    it('por uma enchente noutra rota, que gasta os pares', () => {
+      const flood = times(3_000, (i) => login(visitor(5_000 + i), 401, { path: '/entrar' }));
+      const lines = attack.flatMap((line, i) => [line, ...flood.slice(i * 5, i * 5 + 5)]);
+      expect(counted(run([lines], { maxLoginCells: 300 }))).toEqual([[100, 600]]);
+    });
+
+    it('espalhada em 3 slots, com enchente em todos', () => {
+      const slot = [...rounds(100, 2), ...rounds(80, 30, 1_000)];
+      expect(counted(run([slot, slot, slot], { maxRouteClients: 50 }))).toEqual([[100, 600]]);
+    });
+
+    it('por uma enchente noutra rota que gasta também o registro de quem saiu', () => {
+      const limits = { maxLoginCells: 300, maxEvictedCells: 2_048 };
+      const flood = times(20_000, (i) => login(visitor(5_000 + i), 401, { path: '/entrar' }));
+      const lines = attack.flatMap((line, i) => [line, ...flood.slice(i * 33, i * 33 + 33)]);
+      const harness = run([[...lines, ...flood.slice(19_800)]], limits);
+      expect(harness.engine.usage.evictedCells).toBeLessThanOrEqual(2_048);
+      const { drafts } = harness.evaluate();
+      const [real] = of(drafts, '990407').filter((draft) => draft.evidence.route === '/login');
+      // A rota de verdade é a menor: nunca é raleada, e a conta dela é exata.
+      expect(real?.evidence.counters).toMatchObject({ clients: 100, failures: 600 });
+      expect(real?.evidence.notes).not.toContain('counts_are_estimated');
+      // A da enchente é estimada da amostra, e diz isso.
+      const [flooded] = of(drafts, '990407').filter((draft) => draft.evidence.route === '/entrar');
+      expect(flooded?.evidence.notes).toContain('counts_are_estimated');
+      expect(flooded?.eventName).toContain('cerca de');
+      expect(Math.abs((flooded?.evidence.counters.failures ?? 0) / 20_000 - 1)).toBeLessThan(0.25);
+    });
+
+    it('a amostra não inventa clientes discretos: só barulhentos, nenhum achado', () => {
+      const limits = { maxRouteClients: 50, maxEvictedCells: 64 };
+      expect(counted(run([rounds(400, 25)], limits))).toEqual([]);
+      expect(counted(run([rounds(400, 12), rounds(400, 12)], limits))).toEqual([]);
+    });
+
+    it('a rota que perde o lugar leva junto quem saiu dela', () => {
+      const letters = 'abcdefghijklmnopqrst';
+      const spread = times(40 * 19, (i) =>
+        login(visitor(i), 401, {
+          path: `/${letters.charAt(i % 20)}${letters.charAt(Math.floor(i / 20) % 2)}/login`,
+        }),
+      );
+      const harness = run([spread], { maxRouteClients: 5 });
+      const [clients, failures] = counted(harness, '/{etc}')[0] ?? [0, 0];
+      expect(clients).toBe(failures);
+      expect(failures).toBeGreaterThanOrEqual(500);
+      expect(failures).toBeLessThanOrEqual(760);
+    });
+  });
+
+  it('o registro sai da memória com a janela', () => {
+    const harness = run([rounds(2_000, 2)], { maxRouteClients: 50 });
+    expect(harness.engine.usage.evictedCells).toBeGreaterThan(0);
+    harness.evaluate(T0 + 25 * 60_000);
+    expect(harness.engine.usage.evictedCells).toBe(0);
+    // E volta a zero também pelo caminho do objeto atrasado.
+    harness.feed(rounds(2_000, 2), T0, T0 + 26 * 60_000);
+    expect(harness.engine.usage.evictedCells).toBeGreaterThan(0);
+    harness.evaluate(T0 + 27 * 60_000);
+    expect(harness.engine.usage.evictedCells).toBe(0);
+  });
+
+  it('o registro raleado tem a soma exata de quem ficou, e só de quem está na amostra', () => {
+    const random = prng(8);
+    const truth = new Map<number, number>();
+    const ledger = new EvictedLedger();
+    for (let i = 0; i < 20_000; i += 1) {
+      const tag = (Math.floor(random() * 5_000 + 1) * 858_993) | 0;
+      const failures = Math.floor(random() * 3) + 1;
+      truth.set(tag, Math.min(255, (truth.get(tag) ?? 0) + failures));
+      while (isSampled(tag, ledger.shift) && !ledger.add(tag, failures)) {
+        if (ledger.cells < 1_024) ledger.grow();
+        else ledger.thin();
+      }
+    }
+    expect(ledger.shift).toBeGreaterThan(0);
+    const held = new Map(ledger.entries());
+    expect(held.size).toBe(ledger.size);
+    for (const [tag, failures] of truth) {
+      expect(held.get(tag)).toBe(isSampled(tag, ledger.shift) ? failures : undefined);
+    }
   });
 });
 

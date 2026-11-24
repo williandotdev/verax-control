@@ -43,6 +43,8 @@ export const methodOf = (method: string | null): WebMethod =>
 export const EVIDENCE_NOTES = [
   /** Contagens são piso: um teto de memória ou um corte foi atingido. */
   'counts_are_floor',
+  /** Contagens estimadas de uma amostra dos clientes (o teto do registro de quem saiu da memória). */
+  'counts_are_estimated',
   /** Objeto que chegou depois do fechamento da janela, avaliado sozinho. */
   'late_object',
   /** 95% ou mais barrado pelo WAF, e o que passou não atinge a regra sozinho. */

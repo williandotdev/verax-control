@@ -1,5 +1,6 @@
 import type { ClientClass } from './client-class.js';
 import { type EvidenceNote, MAX_EVIDENCE_SAMPLES, type WebEvidence } from './evidence.js';
+import { isSampled } from './evicted.js';
 import { LONG_SLOTS, SHORT_SLOTS, SLOT_MS } from './limits.js';
 import { countBits } from './probes.js';
 import type { WebRouteKind } from './routes.js';
@@ -123,6 +124,8 @@ export interface RuleContext {
   wafCollecting: boolean;
   /** Mediana de falhas por 15 min da rota nos 7 dias anteriores, por `host|rota` (`baselineKey`); vazio no MVP. */
   baselines: ReadonlyMap<string, number>;
+  /** O hash com chave do cliente (`WebTally.tagOf`). */
+  tagOf: (client: ClientRef) => number;
 }
 
 export const baselineKey = (host: string | null, routeId: string): string => `${host ?? ''}|${routeId}`;
@@ -743,17 +746,74 @@ function failuresThenSuccessHits(
 
 interface DistributedGroup {
   route: LoginRoute;
-  clients: Map<string, { client: ClientRef; failures: number; attempts: number }>;
-  evictedClients: number;
-  evictedFailures: number;
+  parts: { slot: Slot; route: LoginRoute }[];
+}
+
+interface Participant {
+  /** null: só no registro de quem saiu da memória. */
+  client: ClientRef | null;
+  failures: number;
+  attempts: number;
+}
+
+interface Distribution {
+  /** Com até 20 falhas na janela, cada cliente uma vez. */
+  low: Participant[];
+  /** A amostra vale `scale` vezes: 1 quando a contagem é exata. */
+  scale: number;
   firstMs: number;
   lastMs: number;
-  truncated: boolean;
+}
+
+/**
+ * Quem conta para a distribuída: cada cliente uma vez na janela, com a soma do que está na memória e do que saiu dela, e só
+ * se a soma não passa de 20. Sem ninguém no registro de quem saiu, a conta é por endereço. Com ele, é pelo hash, e só de
+ * quem está na amostra: aí a soma de cada um é completa (`evicted.ts`).
+ */
+function distributionOf(group: DistributedGroup, context: RuleContext): Distribution {
+  const ledgers = group.parts.flatMap(({ route }) => (route.evicted === null ? [] : [route.evicted]));
+  const shift = ledgers.reduce((max, ledger) => Math.max(max, ledger.shift), 0);
+  const totals = new Map<string | number, Participant>();
+  let firstMs = Infinity;
+  let lastMs = 0;
+  for (const { slot, route } of group.parts) {
+    for (const { client, cell } of route.cells.values()) {
+      if (cell.failures === 0) continue;
+      firstMs = Math.min(firstMs, slot.startMs + cell.first);
+      lastMs = Math.max(lastMs, slot.startMs + cell.last);
+      const tag = ledgers.length === 0 ? null : context.tagOf(client);
+      if (tag !== null && !isSampled(tag, shift)) continue;
+      const held = totals.get(tag ?? client.key);
+      if (held === undefined) {
+        totals.set(tag ?? client.key, { client, failures: cell.failures, attempts: cell.attempts });
+        continue;
+      }
+      held.failures += cell.failures;
+      held.attempts += cell.attempts;
+      // O mesmo endereço contado como proxy e, depois, como direto: não é apontado.
+      if (client.cls !== 'direct') held.client = client;
+    }
+    if (route.evicted === null) continue;
+    firstMs = Math.min(firstMs, slot.startMs);
+    lastMs = Math.max(lastMs, slot.endMs - 1);
+    for (const [tag, failures] of route.evicted.entries()) {
+      if (!isSampled(tag, shift)) continue;
+      const held = totals.get(tag);
+      if (held === undefined) totals.set(tag, { client: null, failures, attempts: failures });
+      else {
+        held.failures += failures;
+        held.attempts += failures;
+      }
+    }
+  }
+  const low = [...totals.values()].filter(({ failures }) => failures <= THRESHOLDS.distributedPerClient);
+  return { low, scale: 2 ** shift, firstMs, lastMs };
 }
 
 /**
  * Força bruta distribuída: só os clientes com até 20 falhas contam, e os outros ficam de fora da soma (o desenho pede
- * "cada um até 20"). Se bastasse um cliente barulhento para a regra não valer, o atacante mandaria um.
+ * "cada um até 20"). Se bastasse um cliente barulhento para a regra não valer, o atacante mandaria um. Os 30 clientes são
+ * sempre distintos e contados um a um, mesmo na amostra; as falhas é que podem ser estimadas dela.
  */
 function distributedHits(
   view: WindowView,
@@ -765,48 +825,17 @@ function distributedHits(
   for (const slot of view.short) {
     for (const route of slot.login.values()) {
       const key = baselineKey(route.host, route.routeId);
-      let group = groups.get(key);
-      if (group === undefined) {
-        group = {
-          route,
-          clients: new Map(),
-          evictedClients: 0,
-          evictedFailures: 0,
-          firstMs: Infinity,
-          lastMs: 0,
-          truncated: false,
-        };
-        groups.set(key, group);
-      }
-      group.evictedClients += route.evictedClients;
-      group.evictedFailures += route.evictedFailures;
-      group.truncated ||= slot.truncated;
-      if (route.evictedFailures > 0) {
-        group.firstMs = Math.min(group.firstMs, slot.startMs);
-        group.lastMs = Math.max(group.lastMs, slot.endMs - 1);
-      }
-      for (const [client, { client: ref, cell }] of route.cells) {
-        if (cell.failures === 0) continue;
-        group.firstMs = Math.min(group.firstMs, slot.startMs + cell.first);
-        group.lastMs = Math.max(group.lastMs, slot.startMs + cell.last);
-        const held = group.clients.get(client);
-        if (held === undefined) {
-          group.clients.set(client, { client: ref, failures: cell.failures, attempts: cell.attempts });
-        } else {
-          held.failures += cell.failures;
-          held.attempts += cell.attempts;
-        }
-      }
+      const group = groups.get(key);
+      if (group === undefined) groups.set(key, { route, parts: [{ slot, route }] });
+      else group.parts.push({ slot, route });
     }
   }
   for (const [key, group] of groups) {
     const { route } = group;
-    const low = [...group.clients.values()].filter(
-      ({ failures }) => failures <= THRESHOLDS.distributedPerClient,
-    );
-    const clients = low.length + group.evictedClients;
-    const failures = low.reduce((sum, item) => sum + item.failures, 0) + group.evictedFailures;
-    if (clients < THRESHOLDS.distributedClients) continue;
+    const { low, scale, firstMs, lastMs } = distributionOf(group, context);
+    if (low.length < THRESHOLDS.distributedClients) continue;
+    const clients = low.length * scale;
+    const failures = low.reduce((sum, item) => sum + item.failures, 0) * scale;
     const limit = (base: number): number => scaled(base, route.multiplier);
     const median = context.baselines.get(key);
     const spike =
@@ -814,9 +843,11 @@ function distributedHits(
       failures >= limit(THRESHOLDS.distributedBaselineFailures) &&
       failures >= THRESHOLDS.distributedBaselineFactor * median;
     if (failures < limit(THRESHOLDS.distributedFailures) && !spike) continue;
+    const known = low.flatMap(({ client, ...item }) => (client === null ? [] : [{ client, ...item }]));
+    known.sort((a, b) => b.failures - a.failures || (a.client.key < b.client.key ? -1 : 1));
     const notes = new Set<EvidenceNote>();
-    if (low.some(({ client }) => client.cls !== 'direct')) notes.add('client_not_direct');
-    low.sort((a, b) => b.failures - a.failures || (a.client.key < b.client.key ? -1 : 1));
+    if (known.some(({ client }) => client.cls !== 'direct')) notes.add('client_not_direct');
+    if (scale > 1) notes.add('counts_are_estimated');
     hits.push({
       rule: '990407',
       level: 10,
@@ -830,18 +861,18 @@ function distributedHits(
         semantics: semantics.get(route.routeId) ?? 'unknown',
       },
       techniques: WEB_RULES['990407'].techniques,
-      eventName: `${failures} falhas de login de ${clients} endereços, até 20 cada um, em 15 min`,
+      eventName: `${scale > 1 ? 'cerca de ' : ''}${failures} falhas de login de ${clients} endereços, até 20 cada um, em 15 min`,
       weight: failures,
-      firstMs: group.firstMs,
-      lastMs: group.lastMs,
+      firstMs,
+      lastMs,
       counters: {
         ...emptyCounters(),
-        attempts: low.reduce((sum, item) => sum + item.attempts, 0) + group.evictedFailures,
+        attempts: low.reduce((sum, item) => sum + item.attempts, 0) * scale,
         failures,
         clients,
       },
       entries: [],
-      participants: low.map((item) => ({
+      participants: known.map((item) => ({
         client: item.client,
         requests: item.attempts,
         count: item.failures,
@@ -849,7 +880,7 @@ function distributedHits(
       families: 0,
       samples: [],
       notes,
-      truncated: group.truncated || group.evictedClients > 0,
+      truncated: group.parts.some(({ slot }) => slot.truncated),
       ...windowOf(view, view.short),
       load: null,
     });
@@ -870,8 +901,8 @@ function answeredHits(view: WindowView, hits: WebHit[]): number {
   for (const slot of view.short) {
     for (const group of slot.answered.values()) {
       const isCatchAll = catchAllGuard(view.long, group);
-      for (const [key, item] of group.clients) {
-        if (isCatchAll(key)) {
+      for (const item of group.clients.values()) {
+        if (isCatchAll(item.client.key)) {
           suppressed += item.count;
           continue;
         }

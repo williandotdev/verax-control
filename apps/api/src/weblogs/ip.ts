@@ -145,3 +145,8 @@ function formatNet64(words: readonly number[]): string {
 export function clientKeyOf(ip: Ip): string {
   return ip.version === 4 ? formatIpv4(ip.words[0] ?? 0) : formatNet64(ip.words);
 }
+
+/** Um endereço da chave: o IPv4, ou o primeiro do /64 (as faixas declaradas nunca são mais estreitas que o /64). */
+export function ipOfClientKey(key: string): Ip | null {
+  return parseIp(key.endsWith('/64') ? key.slice(0, -3) : key);
+}

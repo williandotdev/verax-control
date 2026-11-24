@@ -250,6 +250,14 @@ export class NoiseDigest {
     }
   }
 
+  /** Esquece os clientes que deixaram de ser diretos: o resumo e a barra são por endereço de um visitante. */
+  forget(isDirect: (key: string) => boolean): void {
+    for (const { clients } of this.days.values()) {
+      for (const key of clients.keys()) if (!isDirect(key)) clients.delete(key);
+    }
+    for (const key of this.tracks.keys()) if (!isDirect(key)) this.tracks.delete(key);
+  }
+
   /** Esquece os dias e as marcas que não valem mais. */
   prune(now: number): void {
     for (const index of this.days.keys()) if (index < dayOf(now) - 1) this.days.delete(index);

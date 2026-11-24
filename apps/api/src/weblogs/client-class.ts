@@ -59,6 +59,8 @@ function providerCidrs(provider: ProviderRanges): Cidr[] {
 
 export class ClientClassifier {
   readonly status: RangesStatus;
+  /** Igual em dois classificadores que dão sempre a mesma classe. */
+  readonly signature: string;
   private readonly providers: readonly { provider: ProxyProvider; cidrs: readonly Cidr[] }[];
   private readonly proxies: readonly Cidr[];
 
@@ -79,6 +81,13 @@ export class ClientClassifier {
     } else {
       this.status = options.now - Math.min(...dates) > RANGES_MAX_AGE_MS ? 'stale' : 'ok';
     }
+    const list = (cidrs: readonly Cidr[]): string =>
+      cidrs.map(({ words, prefix }) => `${words.join('.')}/${prefix}`).join(' ');
+    this.signature = [
+      this.status === 'unavailable',
+      list(this.proxies),
+      ...this.providers.map(({ provider, cidrs }) => `${provider} ${list(cidrs)}`),
+    ].join('|');
   }
 
   classify(ip: Ip): ClientClass {

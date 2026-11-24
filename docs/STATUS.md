@@ -6620,7 +6620,12 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
   ficam estão no cabeçalho de `weblogs/engine.ts`.
 - **Arquivos:** `apps/api/src/weblogs/**`, `apps/api/test/support/alb-lines.ts`, `scripts/bench-weblogs.mjs`.
 - **Dependências:** nenhuma.
-- **Testes:** 538 novos em 7 arquivos (cada regra em limite −1/0/+1, leitor, máscara, entradas hostis); 174 mutações em
+- **Correções da revisão (PR #190):** a 990407 conta quem saiu da memória uma vez só e com a soma da janela (registro por
+  hash com chave, `weblogs/evicted.ts`), nos dois sentidos: poucos clientes barulhentos não viram muitos discretos, e a
+  saída forçada por enchente não some com a distribuída; a troca de proxy na configuração acerta na hora a classe de tudo
+  o que está na memória (registros, pares de login, respostas, resumo do dia, barra e maior nível). O que foi contado
+  quando o endereço era proxy nunca vira acusação a um IP.
+- **Testes:** 574 novos em 7 arquivos (cada regra em limite −1/0/+1, leitor, máscara, entradas hostis); 174 mutações em
   série: 157 mortas de primeira e 13 depois de testes novos; das 4 que sobraram, duas saíram com o código redundante e
   duas são equivalentes.
 - **Benchmark (só por pedido, `node --expose-gc scripts/bench-weblogs.mjs`), 1 milhão de linhas:** tráfego comum, 18 a 24 s

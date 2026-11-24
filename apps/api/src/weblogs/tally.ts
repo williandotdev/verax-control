@@ -1,6 +1,7 @@
 import { type AlbLine, parseAlbLine } from './alb/alb-line.js';
 import type { ClientClass, ClientClassifier } from './client-class.js';
 import { methodOf, type WebMethod } from './evidence.js';
+import { EvictedLedger, isSampled, MIN_LEDGER_CELLS } from './evicted.js';
 import { IntSet, type KeyedHash } from './hash.js';
 import { clientKeyOf, parseIp } from './ip.js';
 import { SLOT_MS, type WebLimits } from './limits.js';
@@ -82,6 +83,8 @@ export interface ClientRef {
   key: string;
   ip: string;
   cls: ClientClass;
+  /** Hash com chave do cliente (`tagOf`); null até alguém precisar. */
+  tag: number | null;
 }
 
 /** Um cliente num slot. */
@@ -192,9 +195,8 @@ export interface LoginRoute {
   /** Recusas da aplicação que não são limite de taxa: provam que a rota distingue falha de sucesso. */
   hard: number;
   cells: Map<string, { client: ClientRef; cell: LoginCell }>;
-  /** O que saiu por falta de memória: sempre de poucos registros por cliente. */
-  evictedClients: number;
-  evictedFailures: number;
+  /** Quem saiu por falta de memória, com as falhas (para a 990407); null se ninguém. */
+  evicted: EvictedLedger | null;
 }
 
 /** Sondas de família secreta respondidas, por host, assinatura e tamanho (2%). */
@@ -256,6 +258,8 @@ export class Slot {
   foldedClients = 0;
   truncated = false;
   closed = false;
+  /** Saiu das janelas de 15 minutos. */
+  trimmed = false;
 
   constructor(index: number, late: boolean) {
     this.index = index;
@@ -318,6 +322,10 @@ export class WebTally {
   private details = 0;
   private pathSets = 0;
   private hashCells = 0;
+  /** Posições dos registros de quem saiu, além do tamanho mínimo de cada um. */
+  private evictedCells = 0;
+  /** Trocas de classe já feitas. */
+  private generation = 0;
 
   constructor(options: {
     loadBalancer: string;
@@ -333,21 +341,97 @@ export class WebTally {
     this.classifier = options.classifier;
   }
 
-  /** Troca a configuração: vale para as linhas seguintes. */
+  /**
+   * Troca a configuração: as rotas valem para as linhas seguintes; a classe dos clientes, já para tudo o que está na
+   * memória (`reconcile`).
+   */
   configure(routes: RouteTable, classifier: ClientClassifier): void {
+    const changed = classifier.signature !== this.classifier.signature;
     this.routes = routes;
     this.classifier = classifier;
+    if (!changed) return;
     this.identities.clear();
+    this.reconcile();
+  }
+
+  /**
+   * Acerta a classe de quem já está na memória, em todos os slots (registros, pares de rota de login e respostas a sondas).
+   * A linha não diz quem está atrás do endereço, só o endereço: quem mudou de classe é a declaração, e o passado se lê
+   * assim:
+   *
+   * - **direto que virou proxy, CDN ou privado:** ele já era isso quando as linhas chegaram. O que foi contado passa inteiro
+   *   para a classe nova: as regras por IP param na hora, e as marcas do resumo do dia caem;
+   * - **proxy que virou direto:** o que foi contado pode ser de centenas de visitantes, e não vira acusação a um IP. Fica
+   *   de lado, com a classe antiga (`aside`), e as linhas novas começam do zero, no mesmo slot aberto inclusive;
+   * - **de uma classe indireta para outra:** só muda o nome.
+   *
+   * A 990407 não liga para a classe e conta o mesmo endereço uma vez só, dos dois lados.
+   */
+  private reconcile(): void {
+    const memo = new Map<string, ClientClass>();
+    const target = new Map<ClientRef, ClientClass>();
+    const visit = (ref: ClientRef): void => {
+      if (target.has(ref)) return;
+      let cls = memo.get(ref.ip);
+      if (cls === undefined) {
+        const ip = parseIp(ref.ip);
+        cls = ip === null ? ref.cls : this.classifier.classify(ip);
+        memo.set(ref.ip, cls);
+      }
+      target.set(ref, cls);
+    };
+    const all = [...this.slots.values(), ...this.late.values()];
+    for (const slot of all) {
+      for (const entry of slot.clients.values()) visit(entry.ref);
+      for (const route of slot.login.values()) for (const { client } of route.cells.values()) visit(client);
+      for (const group of slot.answered.values())
+        for (const { client } of group.clients.values()) visit(client);
+    }
+    this.generation += 1;
+    const becameDirect = (id: string, ref: ClientRef): boolean =>
+      id === ref.key && ref.cls !== 'direct' && target.get(ref) === 'direct';
+    for (const slot of all) {
+      for (const entry of slot.clients.values())
+        reclassify(slot, entry, target.get(entry.ref) ?? entry.ref.cls);
+      this.setAside(slot.clients, (entry) => entry.ref, becameDirect);
+      for (const route of slot.login.values())
+        this.setAside(route.cells, (item) => item.client, becameDirect);
+      for (const group of slot.answered.values())
+        this.setAside(group.clients, (item) => item.client, becameDirect);
+    }
+    for (const [ref, cls] of target) if (cls !== 'direct') ref.cls = cls;
+  }
+
+  /** Tira da chave do endereço o que foi contado quando ele não era direto. */
+  private setAside<T>(
+    items: Map<string, T>,
+    refOf: (item: T) => ClientRef,
+    moves: (id: string, ref: ClientRef) => boolean,
+  ): void {
+    const moving = [...items].filter(([id, item]) => moves(id, refOf(item)));
+    for (const [id, item] of moving) {
+      items.delete(id);
+      // A chave de lado nunca é um endereço, e a geração a separa da de uma troca anterior no mesmo slot.
+      items.set(`${refOf(item).cls}!${id}!${this.generation}`, item);
+    }
   }
 
   /** Registros na memória (para os testes e para as métricas da tarefa). */
-  get usage(): { clients: number; loginCells: number; details: number; pathSets: number; hashCells: number } {
+  get usage(): {
+    clients: number;
+    loginCells: number;
+    details: number;
+    pathSets: number;
+    hashCells: number;
+    evictedCells: number;
+  } {
     return {
       clients: this.clients,
       loginCells: this.loginCells,
       details: this.details,
       pathSets: this.pathSets,
       hashCells: this.hashCells,
+      evictedCells: this.evictedCells,
     };
   }
 
@@ -430,6 +514,7 @@ export class WebTally {
         key,
         ip: ip.version === 4 ? key : text.toLowerCase(),
         cls: this.classifier.classify(ip),
+        tag: null,
       };
       if (this.identities.size >= IDENTITY_ENTRIES) this.identities.clear();
       this.identities.set(text, identity);
@@ -807,8 +892,7 @@ export class WebTally {
       attempts: 0,
       hard: 0,
       cells: new Map(),
-      evictedClients: 0,
-      evictedFailures: 0,
+      evicted: null,
     };
     slot.login.set(`${route.host ?? ''}|${route.routeId}`, route);
     return route;
@@ -869,8 +953,7 @@ export class WebTally {
   private absorb(slot: Slot, target: LoginRoute, source: LoginRoute): void {
     target.attempts += source.attempts;
     target.hard += source.hard;
-    target.evictedClients += source.evictedClients;
-    target.evictedFailures += source.evictedFailures;
+    this.absorbLedger(slot, target, source);
     for (const [key, item] of source.cells) {
       const held = target.cells.get(key);
       if (held !== undefined) {
@@ -882,7 +965,7 @@ export class WebTally {
         target.cells.set(key, item);
         continue;
       }
-      this.keepCount(target, item.cell);
+      this.keepCount(slot, target, item.client, item.cell.failures);
       this.loginCells -= 1;
     }
   }
@@ -916,7 +999,7 @@ export class WebTally {
     if (known !== undefined) return known.cell;
     if (route.cells.size >= this.limits.maxRouteClients) {
       slot.truncated = true;
-      this.shedCells([route]);
+      this.shedCells(slot, [route]);
     }
     if (this.loginCells >= this.limits.maxLoginCells) {
       slot.truncated = true;
@@ -942,11 +1025,11 @@ export class WebTally {
     }
     if (largest === null) return;
     largest.truncated = true;
-    this.shedCells([...largest.login.values()]);
+    this.shedCells(largest, [...largest.login.values()]);
   }
 
-  /** Sai a metade com menos falhas; a soma dela fica em cada rota, para a distribuída. */
-  private shedCells(routes: readonly LoginRoute[]): void {
+  /** Sai a metade com menos falhas; quem saiu fica no registro de cada rota, para a distribuída. */
+  private shedCells(slot: Slot, routes: readonly LoginRoute[]): void {
     const histogram = new Array<number>(256).fill(0);
     let total = 0;
     for (const route of routes) {
@@ -962,22 +1045,74 @@ export class WebTally {
       cut += 1;
     }
     for (const route of routes) {
-      for (const [key, { cell }] of route.cells) {
+      for (const [key, { client, cell }] of route.cells) {
         const score = cellScore(cell);
         if (score > cut || (score === cut && left <= 0)) continue;
         if (score === cut) left -= 1;
         route.cells.delete(key);
         this.loginCells -= 1;
-        this.keepCount(route, cell);
+        this.keepCount(slot, route, client, cell.failures);
       }
     }
   }
 
-  /** O par sai, e o que conta para a distribuída fica: um cliente com falhas. */
-  private keepCount(route: LoginRoute, cell: LoginCell): void {
-    if (cell.failures === 0) return;
-    route.evictedClients += 1;
-    route.evictedFailures += cell.failures;
+  // -------------------------------------------------------------------------------------------------------------------
+  // Quem saiu das rotas de login (a 990407)
+  // -------------------------------------------------------------------------------------------------------------------
+
+  /** O hash com chave do cliente, sempre diferente de zero. O mesmo endereço tem o mesmo, seja qual for a classe. */
+  tagOf(client: ClientRef): number {
+    client.tag ??= this.hash.of(client.key) || 1;
+    return client.tag;
+  }
+
+  /** O par sai, e o cliente com as falhas dele fica no registro da rota. */
+  private keepCount(slot: Slot, route: LoginRoute, client: ClientRef, failures: number): void {
+    // Fora das janelas de 15 minutos, a 990407 não olha mais o slot.
+    if (failures === 0 || slot.trimmed) return;
+    route.evicted ??= new EvictedLedger();
+    this.remember(route.evicted, this.tagOf(client), failures);
+  }
+
+  private remember(ledger: EvictedLedger, tag: number, failures: number): void {
+    while (isSampled(tag, ledger.shift) && !ledger.add(tag, failures)) {
+      if (this.evictedCells + ledger.cells <= this.limits.maxEvictedCells) {
+        this.evictedCells += ledger.cells;
+        ledger.grow();
+        continue;
+      }
+      // No teto, paga o maior: uma rota inventada cheia de clientes não raleia a de verdade.
+      const largest = this.largestLedger();
+      const target = largest !== null && largest.cells > ledger.cells ? largest : ledger;
+      this.evictedCells -= target.thin();
+    }
+  }
+
+  private largestLedger(): EvictedLedger | null {
+    let largest: EvictedLedger | null = null;
+    for (const slot of [...this.slots.values(), ...this.late.values()]) {
+      for (const { evicted } of slot.login.values()) {
+        if (evicted !== null && evicted.cells > (largest?.cells ?? 0)) largest = evicted;
+      }
+    }
+    return largest;
+  }
+
+  /** O registro de uma rota passa para outra, no nível de amostra do mais raleado. */
+  private absorbLedger(slot: Slot, target: LoginRoute, source: LoginRoute): void {
+    const from = source.evicted;
+    if (from === null) return;
+    this.forgetLedger(source);
+    if (slot.trimmed) return;
+    target.evicted ??= new EvictedLedger();
+    while (target.evicted.shift < from.shift) this.evictedCells -= target.evicted.thin();
+    for (const [tag, failures] of from.entries()) this.remember(target.evicted, tag, failures);
+  }
+
+  private forgetLedger(route: LoginRoute): void {
+    if (route.evicted === null) return;
+    this.evictedCells -= route.evicted.cells - MIN_LEDGER_CELLS;
+    route.evicted = null;
   }
 
   private recordFailure(slot: Slot, cell: LoginCell, offset: number): void {
@@ -1086,17 +1221,18 @@ export class WebTally {
     }
     // Abaixo do corte, saem todos; no corte, só o que falta, dos mais recentes.
     let atCut = excess - below;
-    const entries = [...slot.clients.values()];
+    const entries = [...slot.clients];
     for (let i = entries.length - 1; i >= 0; i -= 1) {
-      const entry = entries[i];
-      if (entry === undefined) continue;
+      const held = entries[i];
+      if (held === undefined) continue;
+      const [id, entry] = held;
       const { score } = entry;
       if (score > cut) continue;
       if (score === cut) {
         if (atCut <= 0) continue;
         atCut -= 1;
       }
-      slot.clients.delete(entry.ref.key);
+      slot.clients.delete(id);
       slot.foldedClients += 1;
       slot.foldedRequests += entry.total;
       this.release(entry);
@@ -1112,8 +1248,10 @@ export class WebTally {
 
   /** O slot saiu de toda janela de 15 minutos aberta: na de 60, só interessam as falhas de login e os tamanhos. */
   trim(slot: Slot): void {
+    slot.trimmed = true;
     slot.answered.clear();
     for (const route of slot.login.values()) {
+      this.forgetLedger(route);
       for (const [key, { cell }] of route.cells) {
         if (cell.open > 0) continue;
         route.cells.delete(key);
@@ -1124,9 +1262,25 @@ export class WebTally {
 
   drop(slot: Slot): void {
     for (const entry of slot.clients.values()) this.release(entry);
-    for (const route of slot.login.values()) this.loginCells -= route.cells.size;
+    for (const route of slot.login.values()) {
+      this.loginCells -= route.cells.size;
+      this.forgetLedger(route);
+    }
     (slot.late ? this.late : this.slots).delete(slot.index);
   }
+}
+
+/** As contas por classe do slot e as marcas do resumo, quando a classe de um registro muda para uma indireta. */
+function reclassify(slot: Slot, entry: ClientEntry, cls: ClientClass): void {
+  const before = entry.ref.cls;
+  if (before === cls || cls === 'direct') return;
+  if (before === 'direct') {
+    slot.direct -= entry.total;
+    // Marcado como varredura por um endereço que não era de um visitante só: sai do resumo.
+    entry.flags = 0;
+  }
+  if (before === 'unverified') slot.unverified -= entry.total;
+  if (cls === 'unverified') slot.unverified += entry.total;
 }
 
 /** Quanto vale guardar um par: as falhas, e um pouco mais se houve sucesso depois delas. */

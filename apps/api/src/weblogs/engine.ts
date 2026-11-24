@@ -5,6 +5,7 @@ import { DAY_MS, NoiseDigest, type DigestState } from './digest.js';
 import { hitIdentity, toWebFindingDraft, type WebFindingDraft, type WebSource } from './draft.js';
 import { type EvidenceNote, MAX_EVIDENCE_CLIENTS } from './evidence.js';
 import { KeyedHash } from './hash.js';
+import { ipOfClientKey } from './ip.js';
 import {
   CLOSE_DELAY_MS,
   DEFAULT_LIMITS,
@@ -27,7 +28,7 @@ import {
   type WebRuleId,
   type WindowView,
 } from './rules.js';
-import { type LineOutcome, type Slot, type TallyCounters, WebTally } from './tally.js';
+import { type ClientRef, type LineOutcome, type Slot, type TallyCounters, WebTally } from './tally.js';
 import { TrustedSources, type WebTrustedSource } from './trusted-sources.js';
 
 /**
@@ -44,7 +45,8 @@ import { TrustedSources, type WebTrustedSource } from './trusted-sources.js';
  * - _Some da análise?_ Aspa, barra invertida ou campos falsos no User-Agent não descartam a linha (`alb-line.ts`). Método
  *   inventado, maiúsculas, `%XX`, `//`, `/./`, `;x=1`, `\`, NUL, `%3F` e PATH_INFO não mudam o caminho que casa (`path.ts`,
  *   `login-paths.ts`). Data no futuro no nome do objeto não empurra a janela (`openObject`). Encher a memória com IPs, /64,
- *   hosts, rotas de login, caminhos ou respostas não tira quem tem mais contagem, e quem chega sempre tem lugar (`tally.ts`).
+ *   hosts, rotas de login, caminhos ou respostas não tira quem tem mais contagem, e quem chega sempre tem lugar (`tally.ts`);
+ *   quem sai das rotas de login continua na conta da distribuída, uma vez só e com a soma inteira (`evicted.ts`).
  * - _Rebaixa o achado?_ Misturar requisições que o WAF barra não rebaixa o que passou; um cliente barulhento não desliga a
  *   distribuída; o próprio acerto não vira cara de NAT; o tamanho da página inicial visto só pelo atacante não suprime a
  *   resposta dele, se alguém mais pediu a página; a escalada de nível é um achado novo (`draft.ts`).
@@ -75,9 +77,19 @@ import { TrustedSources, type WebTrustedSource } from './trusted-sources.js';
  *    10, e uma resposta de verdade pode ficar de fora dele (`counts_are_floor`).
  * 8. **No teto de rotas de login**, a força bruta pode se dividir entre a rota própria e a comum: a detecção vem com até o
  *    dobro de falhas.
- * 9. **Caminho mascarado na dúvida:** um nome próprio num segmento comum não é reconhecível (`path.ts`). Codificação dupla
+ * 9. **No teto de pares de login**, a 990405 e a 990406 de quem saiu recomeçam do zero (piso). A 990407, não; mas, se o
+ *    registro de quem saiu encher (da ordem de 65 mil clientes na janela com uma fonte só, 4 mil com o piso de muitas
+ *    fontes), ela conta uma amostra: as falhas e os endereços são estimados (erro de até uns 18% com 30 clientes na
+ *    amostra, para mais ou para menos), e os 30 distintos são exigidos **na amostra**. Um ataque de 100 endereços no meio
+ *    de uma enchente desse tamanho, na mesma rota e de clientes com mais de 20 falhas cada, pode não aparecer como 990407
+ *    (a enchente aparece como 990405). O mesmo cliente dividido entre hosts, ou entre a rota própria e a comum, tem somas
+ *    separadas, e pode contar como discreto nas duas.
+ * 10. **Troca de configuração:** quando um endereço deixa de ser proxy, o que foi contado antes não acusa ninguém (até 60
+ *    minutos sem história). O achado já entregue não volta atrás, e o resumo do dia que fica sem ninguém não é reescrito. A
+ *    validade das fontes confiáveis e dos proxies só é olhada em `configure`.
+ * 11. **Caminho mascarado na dúvida:** um nome próprio num segmento comum não é reconhecível (`path.ts`). Codificação dupla
  *    (`%252e`) e UTF-8 longo demais (`%c0%ae`) não são decodificados.
- * 10. **Entrega da AWS é "melhor esforço":** linha que não chegou não existe. Não é contabilidade completa.
+ * 12. **Entrega da AWS é "melhor esforço":** linha que não chegou não existe. Não é contabilidade completa.
  */
 export interface EngineOptions {
   source: WebSource;
@@ -147,7 +159,7 @@ export class WebLogEngine {
   private trusted: TrustedSources;
   private classifier: ClientClassifier;
   private closedThrough: number | null = null;
-  private readonly peaks = new Map<string, { level: number; lastMs: number }>();
+  private readonly peaks = new Map<string, { level: number; lastMs: number; client: string | null }>();
 
   constructor(options: EngineOptions) {
     const limits = options.limits ?? DEFAULT_LIMITS;
@@ -174,15 +186,31 @@ export class WebLogEngine {
     });
   }
 
-  /** Troca a configuração do cliente. Vale para as linhas seguintes; as fontes confiáveis, já na próxima avaliação. */
+  /**
+   * Troca a configuração do cliente. As rotas valem para as linhas seguintes; as fontes confiáveis e os proxies, já na
+   * próxima avaliação, para tudo o que está na memória (`WebTally.reconcile`): o resumo do dia, a barra e o maior nível de
+   * cada achado esquecem quem deixou de ser direto. O achado já entregue não volta atrás. Não pode ser chamada entre os
+   * passos de uma avaliação. A validade das fontes só é olhada aqui: a tarefa a chama a cada passo, mesmo sem mudança.
+   */
   configure(config: {
     now: number;
     routes: readonly WebRoute[];
     trusted: readonly WebTrustedSource[];
   }): void {
+    const before = this.classifier.signature;
     this.trusted = new TrustedSources(config.trusted, config.now);
     this.classifier = this.classifierFor(config.now);
     this.tally.configure(new RouteTable(config.routes), this.classifier);
+    if (this.classifier.signature === before) return;
+    this.digest.forget((key) => this.isDirect(key));
+    for (const [key, { client }] of this.peaks) {
+      if (client !== null && !this.isDirect(client)) this.peaks.delete(key);
+    }
+  }
+
+  private isDirect(clientKey: string): boolean {
+    const ip = ipOfClientKey(clientKey);
+    return ip !== null && this.classifier.classify(ip) === 'direct';
   }
 
   get usage(): WebTally['usage'] {
@@ -244,13 +272,14 @@ export class WebLogEngine {
 
   /**
    * O mesmo, em passos: a tarefa solta o laço de eventos entre eles (um ataque de milhares de endereços custa centenas de
-   * milissegundos). Nenhuma linha pode ser lida neste motor entre o primeiro e o último passo.
+   * milissegundos). Entre o primeiro e o último passo, nenhuma linha lida e nenhuma configuração trocada neste motor.
    */
   *evaluateSteps(input: EvaluateInput): Generator<void, EvaluateResult> {
     const { now } = input;
     const context = {
       wafCollecting: input.wafCollecting ?? false,
       baselines: input.baselines ?? new Map<string, number>(),
+      tagOf: (client: ClientRef): number => this.tally.tagOf(client),
     };
     const open = [...this.tally.slots.keys()]
       .filter((index) => this.closedThrough === null || index > this.closedThrough)
@@ -374,7 +403,8 @@ export class WebLogEngine {
       if (oldest !== undefined) this.peaks.delete(oldest);
     }
     this.peaks.delete(key);
-    this.peaks.set(key, { level, lastMs: Math.max(held?.lastMs ?? 0, hit.lastMs) });
+    const lastMs = Math.max(held?.lastMs ?? 0, hit.lastMs);
+    this.peaks.set(key, { level, lastMs, client: hit.client?.key ?? null });
     return level;
   }
 
@@ -469,8 +499,10 @@ export class WebLogEngine {
     return this.digest.snapshot();
   }
 
+  /** Quem, no estado guardado, hoje não é direto (a configuração mudou no meio) é esquecido. */
   restore(state: unknown): void {
     this.digest.restore(state);
+    this.digest.forget((key) => this.isDirect(key));
   }
 }
 
