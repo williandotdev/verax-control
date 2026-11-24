@@ -103,6 +103,7 @@ function merge(deltas: readonly TrafficDelta[]): TrafficDelta[] {
 }
 
 const floorTo = (at: Date, step: number): Date => new Date(Math.floor(at.getTime() / step) * step);
+const ceilTo = (at: Date, step: number): Date => new Date(Math.ceil(at.getTime() / step) * step);
 
 /** Os intervalos antes disto passam para as horas: só horas inteiras com mais de 48 h. */
 export function trafficSlotCutoff(now: Date): Date {
@@ -262,13 +263,15 @@ export class WebTrafficStore {
 
   /**
    * O tráfego do cliente por país e classe, de `from` (inclusive) a `to` (exclusive), do maior para o menor. Até 48 h atrás
-   * a resolução é de 5 minutos; antes disso, a hora em que `from` cai entra inteira. As duas tabelas são lidas numa
-   * instrução (um retrato só): a passagem para as horas no meio da leitura não some com nada nem conta duas vezes.
+   * a resolução é de 5 minutos; antes disso, só entram as horas inteiras dentro do intervalo: a hora cortada por uma das
+   * pontas somaria o que está fora dele. As duas tabelas são lidas numa instrução (um retrato só): a passagem para as
+   * horas no meio da leitura não some com nada nem conta duas vezes.
    *
    * `tenantId` é o da sessão (`prisma.scopeTenantId()`) ou o da tarefa, nunca um vindo do request.
    */
   async byCountry(tenantId: string, from: Date, to: Date): Promise<CountryTraffic[]> {
-    const fromHour = floorTo(from, HOUR_MS);
+    const fromHour = ceilTo(from, HOUR_MS);
+    const toHour = floorTo(to, HOUR_MS);
     // Cada tabela é somada antes da união: o banco sabe quantos países há em cada uma e agrega na memória. Somar só depois
     // dela ordenava as linhas todas em disco (dez vezes mais, no pior caso de 24 h).
     return this.prisma.db().$queryRaw<CountryTraffic[]>`
@@ -288,7 +291,7 @@ export class WebTrafficStore {
           sum("flagged")
         FROM "WebTrafficHour"
         WHERE "tenantId" = ${tenantId}::uuid
-          AND "hourStart" >= ${fromHour}::timestamptz AND "hourStart" < ${to}::timestamptz
+          AND "hourStart" >= ${fromHour}::timestamptz AND "hourStart" < ${toHour}::timestamptz
         GROUP BY "country", "clientClass"
       ) AS traffic
       GROUP BY "country", "clientClass"

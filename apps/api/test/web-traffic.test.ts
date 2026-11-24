@@ -702,7 +702,7 @@ describe('tráfego por país e registro dos objetos do ALB', () => {
       expect(await store.byCountry(randomUUID(), at(-DAY), at(DAY))).toEqual([]);
     });
 
-    it('além de 48 h, a hora em que `from` cai entra inteira; a de `to`, não', async () => {
+    it('além de 48 h, só as horas inteiras dentro do intervalo', async () => {
       const source = await newSource('horas (mapa)');
       const cutoff = trafficSlotCutoff(NOW).getTime();
       await add(
@@ -714,7 +714,11 @@ describe('tráfego por país e registro dos objetos do ALB', () => {
       const countries = async (from: number, to: number) =>
         (await store.byCountry(source.tenantId, new Date(from), new Date(to))).map((row) => row.country);
       expect(await countries(cutoff - 2 * HOUR, cutoff)).toEqual(['BR', 'CL']);
-      expect(await countries(cutoff - 2 * HOUR + 59 * MINUTE, cutoff)).toEqual(['BR', 'CL']);
+      expect(await countries(cutoff - 2 * HOUR + 1, cutoff)).toEqual(['CL']);
+      expect(await countries(cutoff - 2 * HOUR - 1, cutoff)).toEqual(['BR', 'CL']);
+      expect(await countries(cutoff - 3 * HOUR, cutoff - HOUR - 1)).toEqual(['AR']);
+      expect(await countries(cutoff - 3 * HOUR, cutoff - HOUR + 59 * MINUTE)).toEqual(['AR', 'BR']);
+      expect(await countries(cutoff - 2 * HOUR + MINUTE, cutoff - 2 * HOUR + 50 * MINUTE)).toEqual([]);
       expect(await countries(cutoff - 3 * HOUR, cutoff - HOUR)).toEqual(['AR', 'BR']);
     });
   });
@@ -777,10 +781,11 @@ describe('tráfego por país e registro dos objetos do ALB', () => {
         const withDb = Object.assign(logged, { db: () => logged }) as unknown as PrismaService;
         const rows = await new WebTrafficStore(withDb).byCountry(tenantId, from, to);
         expect(sql).toContain('"WebTrafficSlot"');
-        const fromHour = new Date(Math.floor(from.getTime() / HOUR) * HOUR);
+        const fromHour = new Date(Math.ceil(from.getTime() / HOUR) * HOUR);
+        const toHour = new Date(Math.floor(to.getTime() / HOUR) * HOUR);
         const { rows: explained } = await client.query<{ 'QUERY PLAN': unknown }>(
           `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`,
-          [tenantId, from, to, tenantId, fromHour, to],
+          [tenantId, from, to, tenantId, fromHour, toHour],
         );
         return { plan: JSON.stringify(explained), rows };
       } finally {
