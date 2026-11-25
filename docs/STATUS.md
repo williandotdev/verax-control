@@ -7755,7 +7755,9 @@ cloudflare-oauth-steps.tsx,zone-health.tsx,labels.ts,oauth-return.ts,oauth-retur
   sem OAuth). Navegador (projeto `mock`, portas 5381/5382), 11 de 11: retorno com sucesso, recusa, vencido no retorno e na
   escolha, `state` de outra tentativa, emissor errado, repetição do mesmo fragmento, fragmento alterado sem chamada à
   API, escolha pelo teclado, ID digitado, migração e nó anterior; acessibilidade (WCAG 2.2 AA) nos dois temas em 360, 768
-  e 1280 px. `pnpm lint` (sem aviso) e `pnpm typecheck`, limpos.
+  e 1280 px. Junto, os e2e que abrem Contas cloud (`cloud-account-delete`, `pages`, `aws-buckets`, `aws-onboarding`,
+  `web-attacks`): 112 de 112 com os novos. `pnpm lint` (sem aviso) e `pnpm typecheck` (todos os pacotes), limpos. API não
+  mudou: nenhuma suíte dela rodou, e nenhum PostgreSQL foi criado.
 - **Teste manual:** `pnpm --filter @verax/web dev:mock` com `localStorage['verax.mock.cloudflare-oauth'] = 'multi'`, como
   administrador do cliente: Contas cloud, "Conectar com Cloudflare" (sem o Cloudflare de mentira, o navegador vai ao
   Cloudflare de verdade e para lá), e o detalhe da conta do Cloudflare da Alfa (migração e zonas).
