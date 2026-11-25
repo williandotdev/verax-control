@@ -7070,3 +7070,17 @@ source-monitor,source-parts,sources,onboarding-labels,onboarding-section}`; `lib
 - **Riscos e sugestões:** nenhum dado real de ALB foi usado. A primeira visita depois de autorizar a fonte ainda desloca a lista (o
   lugar só é guardado a partir dela). Não foi conferido em leitor de tela de verdade, no Firefox e no Safari. Sugestão: um filtro por
   país nas listas, para o clique num país levar aos alertas dele.
+
+## Ataques web pelos logs do ALB, PR-6: a linha do `node.conf` e o runbook (desligado por padrão)
+
+- **O que é:** `AWS_WEB_LOGS_ENABLED` no `node.conf` (opcional) vai igual para a API e o worker pelo `start.sh`, e o runbook
+  `docs/runbooks/ataques-web.md`. Vai para `integracao/alb`. **⚠️ `infra/`: revisar linha a linha.**
+- **Nenhum nó muda:** sem a linha, o `api.env` e o `worker.env` saem byte a byte como antes (o teste do pacote confere os dois
+  inteiros). Fora do formato (a linha vazia também), o nó sobe com a leitura desligada, com o aviso.
+- **O nó gerenciado já instalado não recebe linha nova no `node.conf`** (a atualização da frota não o reescreve, e não há SSH):
+  nele, quem liga é o padrão da versão, numa versão depois da que leva os contratos. Cada balanceador continua dependendo da
+  autorização no painel.
+- **Arquivos:** `infra/node/{bin/start.sh,node.conf.example,tests/start-test.sh}`, `docs/ARQUITETURA.md`,
+  `docs/runbooks/ataques-web.md` (novo).
+- **Dependências:** nenhuma.
+- **Ficou para depois:** a frase do DPA (texto jurídico, com o responsável) e o teste com a máquina ociosa.
