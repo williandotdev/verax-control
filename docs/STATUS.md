@@ -6885,3 +6885,77 @@ test.ts`, `test/case-{assign,assign-api,assign-concurrency,assign-benchmark,reco
 - **Riscos e sugestões:** a lista de códigos do gerador é cópia da de `apps/api/src/geo/country-codes.ts` (outra branch): quando
   as duas estiverem na `main`, um teste pode comparar. Não foi conferido em leitor de tela de verdade, nem no Firefox e no
   Safari.
+
+## Casos, parte 3: a leitura pela API (PR-3 do desenho de 24/11/2026)
+
+- **O que muda:** nada enquanto `CASES_MODE` for `off`, o padrão (na API também, agora): as rotas novas respondem 404, como
+  uma que não existe. Com `shadow`, só a equipe da Verax lê, no cliente escolhido; com `on`, todos os papéis leem os casos
+  do próprio cliente. Nenhuma tela, aviso ou e-mail usa os casos ainda, e nenhuma rota grava. A regra inteira está em
+  `docs/ARQUITETURA.md`, "Leitura dos casos pela API".
+- **Rotas** (`findings:read`, sem permissão nova): `GET /v1/cases`, `/v1/cases/status`, `/v1/cases/groups`, `/v1/cases/:id`,
+  `/v1/cases/:id/findings`, `/v1/cases/:id/timeline` e `/v1/findings/:id/triage`. Contrato em `packages/shared/src/cases.ts`.
+- **Decisões desta parte** (no código, para revisão):
+  - O painel sabe dos casos por `GET /v1/cases/status`, a única rota que responde com eles desligados. O `/v1/me` (módulo
+    `auth`) não mudou; se preferirem o `cases: 'on'` lá, o `meSchema` ganha um campo opcional e o `MeController` lê o
+    `casesVisibleTo`.
+  - O `CASES_MODE` é conferido num guard, antes da query e do id: um pedido inválido a uma rota desligada também é 404. Com
+    `shadow`, a situação diz `off` para quem não é da Verax.
+  - Prioridade: pior severidade pendente, item protegido (pelas amostras), chegada do último alerta, id. É sempre total, e
+    usa a chegada no servidor, nunca o horário do log.
+  - O período vale pelo evento **ou** pela chegada: alerta com data antiga não tira o caso das últimas 24 h.
+  - A severidade só filtra o que está pendente; com `treated` ou `all` é 400 (o caso não guarda a do que já foi tratado, e
+    uma lista que esconde casos enganaria).
+  - A fonte não é coluna do caso: sai da família e das regras (`case-sources.ts`), com um quadro só para o filtro e a tela.
+    A família que não se conhece aparece em todo filtro de fonte.
+  - Grupos da fila de vulnerabilidades (D1): pacote e recurso da chave (`keyParts`), conta da amostra; nenhum alerta é lido.
+  - A busca olha também as partes da chave (o desenho dizia título e amostras): é onde está o pacote.
+  - O cursor é conferido, não assinado: ele não autoriza nada (a consulta filtra por cliente e caso), e assinar pediria uma
+    chave nova ou o reuso de um segredo.
+  - Sem índice novo e sem migration: as metas cabem nos índices da parte 1 (uma no limite: o filtro que não acha nenhum alerta num caso de 20 mil, p95 de 30,5 ms para 30).
+- **Arquivos:** `packages/shared/src/cases.ts` (e teste); `apps/api/src/cases/` (`cases.{controller,service,module,guard}.ts`,
+  `case-read-store.ts`, `case-{cursor,sources,timeline}.ts`, novos, com testes; `cases-mode.ts`); `case-store.ts` e
+  `findings/finding-filters.ts` só exportam uma função que já existia; `common/config/env.schema.ts`, `app.module.ts`;
+  testes `test/cases-read{,-findings,-off,-shadow,-history,-benchmark}.test.ts`, `test/support/{cases,create-app}.ts` e
+  `load-config.test.ts`; `docs/ARQUITETURA.md`.
+- **Dependências novas:** nenhuma. Sem mudança em `infra/`, `.github/`, no módulo `auth` ou em `.claude/`, e sem migration.
+- **Testes:** `pnpm lint`, `pnpm typecheck` (todos os pacotes) e `format:check` limpos. Pacote `shared`: 30 arquivos, 553
+  testes. API com Postgres descartável: 220 arquivos, 4311 testes (dois deles, as medições de carga, só com
+  `CASES_BENCH=1`). Duas rodadas inteiras, sem nenhum teste reprovado: na primeira caiu um arquivo com o erro conhecido do
+  worker do vitest no Windows (3221226505), e na segunda, cinco, todos de outros assuntos; os seis passaram rodados de novo
+  (um deles, na segunda vez). Novos: 66 na lista, grupos, detalhe, trilha e situação; 33 nos alertas e na linha do tempo; 17 com `off`, `shadow` e o histórico do plano; 54 sem banco (cursor, fontes, linha do tempo e modo) e 37 do contrato. Não rodou: as
+  suítes do painel e do console (nada mudou neles) e a API de verdade num nó.
+- **Mutações:** 150, uma por vez, com prazo e restauração conferida por hash: todas mortas no fim. Na primeira rodada
+  sobreviveram sete: seis viraram testes e uma mostrou uma conferência repetida no cursor, que saiu; nas quatro extras, uma
+  virou teste. Não entraram as que tiram só o `tenantId` das leituras presas a um caso: a chave estrangeira composta já as
+  torna iguais ao original (é a segunda barreira).
+- **Carga** (Postgres 18 em Docker com 512 MB, 2 CPUs e `work_mem` de 2 MB, numa máquina Windows dividida com outros
+  trabalhos; 60 rodadas por rota, pelo service, sem o HTTP): 250 mil alertas em 3 mil casos (1.823 pendentes), mais 50 mil
+  de outro cliente, com os alertas de cada caso espalhados pela tabela. Em ms, p50 e p95:
+
+  | Rota                                                     | p50  | p95  | Meta |
+  | -------------------------------------------------------- | ---- | ---- | ---- |
+  | Lista, por prioridade (com 60 itens protegidos)          | 20,2 | 31,1 | 60   |
+  | Lista, a mais lenta das outras (todos, página 20 de 100) | 21,5 | 32   | 60   |
+  | Lista, busca sem resultado, em todos os estados          | 22   | 30,6 | 60   |
+  | Grupos por recurso                                       | 8,6  | 12,2 | 150  |
+  | Detalhe de um caso comum                                 | 9,9  | 15   | 150  |
+  | Detalhe do caso com 20.833 alertas                       | 65,4 | 92,7 | 150  |
+  | Alertas do caso grande, primeira página                  | 6,1  | 11,2 | 30   |
+  | Alertas do caso grande, depois de 19 mil                 | 7,5  | 10,9 | 30   |
+  | Alertas do caso grande, filtro que não acha nenhum       | 23,6 | 30,5 | 30   |
+  | Linha do tempo do caso grande                            | 32,1 | 46,9 | 80   |
+  | Situação                                                 | 2,7  | 3,6  | -    |
+
+  A página de alertas lê 5 blocos do índice, no começo e no fundo; o filtro que não acha nenhum lê os 20 mil do caso (15,6
+  mil blocos). A lista lê a tabela de casos do cliente (882 blocos) e ordena em memória (30 kB). Antes de duas correções, o
+  filtro por fonte ligava o JIT do Postgres (200 ms) e a busca sem resultado levava 79 ms.
+
+- **Teste manual:** no nó piloto, com o worker em `shadow`, `CASES_MODE=shadow` na API e a sessão da Verax com o cliente
+  escolhido: `GET /v1/cases/status` (`mode: shadow`, atraso 0 ou nulo), a lista, um caso e os grupos. Com a sessão do
+  cliente, `GET /v1/cases` tem de dar 404.
+- **Para ligar:** a linha `CASES_MODE` no `.env.example` e a variável no ambiente da API que o `start.sh` do nó escreve
+  (além da do worker, da parte 2). Nenhum dos dois foi tocado aqui.
+- **Riscos e dúvidas:** o item protegido e a conta, a tática e a técnica dos filtros saem de amostras limitadas (um caso com
+  mais de 20 recursos pode tocar um item protegido fora delas); "ainda ativo na origem" compara com a primeira triagem
+  (`triagedAt`), não com a data em que foi resolvido, que o alerta não guarda; a lista de vulnerabilidades ainda não diz
+  quantos alertas de cada caso seguem ativos na origem (pediria ler os alertas da página).

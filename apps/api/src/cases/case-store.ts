@@ -156,7 +156,7 @@ export async function loadPreviousCases(
 }
 
 /** As partes da chave gravadas, só para contar o fan-out (o que não for do formato não conta). */
-function partsOf(value: Prisma.JsonValue): CaseKeyPart[] {
+export function partsOf(value: Prisma.JsonValue): CaseKeyPart[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((part) =>
     typeof part === 'object' &&

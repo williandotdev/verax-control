@@ -2080,21 +2080,24 @@ nenhum endereço sai do nó.
 
 ## Casos: agrupamento dos alertas (`apps/api/src/cases/`)
 
-_(partes 1 e 2: o banco, a chave e a atribuição. A leitura, a tela, a triagem em massa e os avisos por caso vêm depois;
-até lá, nada no painel nem no e-mail muda)_
+_(partes 1 a 3: o banco, a chave, a atribuição e a leitura pela API. A tela, a triagem em massa e os avisos por caso vêm
+depois; até lá, nada no painel nem no e-mail muda)_
 
 Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é só o
 worker; a pessoa trata alertas, e as contagens do caso são de gatilhos da tabela de alertas.
 
-- **Interruptor:** `CASES_MODE` no ambiente do worker, conferido na partida (valor fora da lista não sobe).
+- **Interruptor:** `CASES_MODE`, o mesmo valor no ambiente do worker e no da API, conferido na partida (valor fora da
+  lista não sobe).
 
-  | Valor    | O que faz                                                                                                 |
-  | -------- | --------------------------------------------------------------------------------------------------------- |
-  | `off`    | Padrão. Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo diário só confere se há caso a apagar) |
-  | `shadow` | Os alertas ganham caso, e nada usa os casos (a medição no nó piloto)                                      |
-  | `on`     | O mesmo que `shadow`, por enquanto                                                                        |
+  | Valor    | No worker                                                                                          | Na API                                                                                           |
+  | -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+  | `off`    | Padrão. Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo só confere se há caso a apagar) | Padrão. As rotas dos casos respondem 404, iguais a uma rota que não existe, para todos os papéis |
+  | `shadow` | Os alertas ganham caso (a medição no nó piloto)                                                    | Só a equipe da Verax (`admin_verax`) lê, no cliente escolhido; para os outros papéis, como `off` |
+  | `on`     | O mesmo que `shadow`, por enquanto                                                                 | Todos os papéis leem os casos do próprio cliente                                                 |
 
-  O `start.sh` do nó ainda não escreve a variável no `worker.env`: ligar num nó pede essa linha em `infra/`.
+  O `start.sh` do nó ainda não escreve a variável no `worker.env` nem no ambiente da API: ligar num nó pede essas linhas
+  em `infra/`. A API lê o que houver no banco: com o worker em `off` e a API em `on`, os casos ficam parados no tempo (a
+  situação mostra a última passagem).
 
 - **Tarefas do worker** (só com `shadow` ou `on`):
   - `case-assign` (a cada 10 s, concessão no `SyncState`): lotes de 200 alertas por cliente, na ordem de chegada, no
@@ -2142,6 +2145,62 @@ worker; a pessoa trata alertas, e as contagens do caso são de gatilhos da tabel
 - **Falhas:** o erro de um cliente não para os outros nem a coleta. O lote que falha por culpa de um alerta é partido ao
   meio até isolar qual; ele fica de fora de 1 min a 1 h (dobra a cada falha), com o id e o SQLSTATE no log. Falha de
   banco ou espera longa só adiam o cliente; a passagem seguinte continua depois do trecho que falhou e volta ao começo.
+
+### Leitura dos casos pela API
+
+_(`cases.controller.ts`, `cases.service.ts` e `case-read-store.ts`; contrato em `packages/shared/src/cases.ts`)_
+
+Só leitura, com a permissão `findings:read` (todos os papéis) e o cliente da sessão. Caso ou alerta de outro cliente é 404,
+igual a um que não existe. Parâmetro desconhecido é 400. O `CASES_MODE` é conferido num guard, antes da query e do id.
+
+| Rota                          | O que devolve                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET /v1/cases/status`        | `mode`, a última passagem da tarefa (`asOf`) e há quantos minutos espera o alerta mais antigo sem caso |
+| `GET /v1/cases`               | Os casos, com filtros, ordem e página (até 100 por página e 10.000 páginas)                            |
+| `GET /v1/cases/groups`        | A fila de vulnerabilidades agrupada por pacote, recurso ou conta                                       |
+| `GET /v1/cases/:id`           | O caso inteiro, o que sai dos alertas dele, os casos anteriores, os incidentes e as operações          |
+| `GET /v1/cases/:id/findings`  | Os alertas do caso, por cursor                                                                         |
+| `GET /v1/cases/:id/timeline`  | Os alertas por hora ou por dia                                                                         |
+| `GET /v1/findings/:id/triage` | As operações de triagem em massa que mexeram num alerta (nenhuma existe ainda)                         |
+
+- **Situação:** é a única rota que responde com os casos desligados (`off`, sem ler o banco). É por ela que o painel sabe
+  se os casos valem: o `/v1/me` é do módulo `auth` e não mudou.
+- **Estados da lista:** `pending` (o padrão: há alerta fora de incidente, novo ou em análise), `investigating`, `treated`
+  (nada pendente) e `all`. O caso sem nenhum alerta guardado não entra em lista; abre pelo id.
+- **Prioridade** (a ordem padrão), sempre total: a pior severidade pendente; nela, quem toca um item da lista de proteção;
+  dentro disso, a chegada do último alerta (relógio do servidor), a mais recente primeiro; no empate, o id. O item
+  protegido sai das amostras de recurso, usuário e IP (até 20 valores de cada; a chave de acesso não é amostra). As outras
+  ordens são `recent` e `volume` (alertas pendentes). As contagens não têm índice de propósito: a ordem é feita em memória,
+  sobre os casos do cliente que saem do índice `(tenantId, queue, pending)`.
+- **Severidade:** há alerta pendente dela. Só com `pending` e `investigating`: o caso não guarda a severidade do que já foi
+  tratado, e a combinação com `treated` e `all` é 400, em vez de uma lista que esconde casos.
+- **Período:** o caso ativo em algum momento da janela, pelo horário do evento **ou** pelo da chegada no servidor. Um caso
+  que acabou de receber alertas com data antiga (ou forjada) não some das últimas 24 h. O começo não passa do histórico do
+  plano, como nos alertas.
+- **Fonte:** sai da família da chave e, nas famílias de mais de uma fonte, das regras (`case-sources.ts`). A família que não
+  se conhece aparece em todo filtro de fonte.
+- **Conta, tática e técnica:** pelas amostras do caso (até 50 contas, 20 táticas e 50 técnicas).
+- **Busca:** no título, nas partes da chave e nas amostras, nunca nos alertas, com os curingas do `ILIKE` escapados.
+- **Grupos (decisão D1):** o pacote e o recurso saem das partes da chave, e a conta, da amostra (na fila de vulnerabilidades
+  cada caso é de um pacote, um recurso e uma conta): nenhum alerta é lido. O valor nulo reúne os casos sem ele (a
+  vulnerabilidade no código não tem pacote). A lista aceita o grupo: `groupBy` com `group` (o valor exato), ou `groupBy`
+  sozinho para os sem valor. Um recurso com mais de 256 caracteres está cortado na chave: dois iguais até ali ficam no
+  mesmo grupo.
+- **Detalhe:** os 50 mil alertas mais recentes do caso são lidos uma vez, com prazo de 1,5 s no banco (`statement_timeout`,
+  transação só de leitura): os 10 IPs e os 10 usuários menos frequentes, os 50 subgrupos mais graves, os resolvidos que a
+  origem voltou a ver (`lastSeenAt` depois de `triagedAt`), os incidentes e as operações em vigor. Passou do prazo, sai
+  `analysis: null`, e o resto do detalhe vale. Passou dos 50 mil, sai `complete: false`.
+- **Casos anteriores:** a corrente de `previousCaseId`, até 10, dentro do cliente; para no que já saiu pela retenção.
+- **Alertas do caso:** do mais recente para trás, pelo índice `(tenantId, caseId, occurredAt, id)`, sem limite de
+  profundidade. O horário e o id de um alerta não mudam: um alerta novo não empurra os outros. O cursor é opaco e conferido
+  (formato, faixa, escrita única e a marca do caso com os filtros); montado à mão, só muda o ponto de partida dentro do
+  caso que a pessoa já pode ler, porque a consulta filtra sempre pelo cliente e pelo caso.
+- **Linha do tempo:** por hora cheia até 7 dias; além disso, por dia de Brasília (UTC-3 o ano todo, vira às 03:00 UTC), no
+  máximo 366 dias até o alerta mais recente. Sem buracos. Horário no futuro e alerta antigo demais ficam fora, avisados em
+  `truncated`. Prazo de 3 s no banco; passou, 503.
+- **Operações:** as em vigor nos alertas do caso (`Finding.triageOpId`) e as que elas desfizeram, até 20.
+- **Texto do evento** (amostras, partes da chave, subgrupos, títulos dos alertas) sai só como dado, limitado em quantidade e
+  tamanho; o título do caso é do dicionário.
 
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 

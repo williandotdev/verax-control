@@ -135,6 +135,64 @@ export async function insertIncident(
   return id;
 }
 
+/**
+ * Um caso gravado direto, sem a tarefa (as rotas só leem). Aberto, se não vier selado; as contagens são dos gatilhos:
+ * põem-se os alertas depois, com `caseId`.
+ */
+export async function insertCase(
+  prisma: PrismaService,
+  tenantId: string,
+  overrides: Partial<Prisma.AlertCaseUncheckedCreateInput> = {},
+): Promise<string> {
+  const now = new Date();
+  const groupKey = overrides.groupKey ?? randomBytes(32).toString('hex');
+  const { id } = await prisma.alertCase.create({
+    data: {
+      tenantId,
+      queue: 'detection',
+      keyVersion: 1,
+      groupKey,
+      openKey: overrides.sealedAt ? null : groupKey,
+      family: 'cloudtrail',
+      title: 'Atividade suspeita na conta da AWS',
+      keyParts: [],
+      anchorFindingId: randomUUID(),
+      openedAt: now,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      lastAlertAt: now,
+      ruleIds: ['100305'],
+      accounts: [CASE_ACCOUNT],
+      ...overrides,
+    },
+    select: { id: true },
+  });
+  return id;
+}
+
+/** Uma operação de triagem em massa gravada direto (nenhuma rota as cria ainda). */
+export async function insertOperation(
+  prisma: PrismaService,
+  tenantId: string,
+  overrides: Partial<Prisma.TriageOperationUncheckedCreateInput> = {},
+): Promise<string> {
+  const { id } = await prisma.triageOperation.create({
+    data: {
+      tenantId,
+      requestId: randomUUID(),
+      action: 'status',
+      status: 'resolved',
+      target: { caseIds: [] },
+      cutoffAt: new Date(),
+      expectedCount: 0,
+      state: 'done',
+      ...overrides,
+    },
+    select: { id: true },
+  });
+  return id;
+}
+
 /** A tarefa presa aos clientes do teste, com a linha dela no `SyncState` (outra por teste). */
 export function assignJob(
   prisma: PrismaService,
