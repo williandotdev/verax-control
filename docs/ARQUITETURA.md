@@ -2080,11 +2080,12 @@ nenhum endereço sai do nó.
 
 ## Casos: agrupamento dos alertas (`apps/api/src/cases/`)
 
-_(partes 1 a 3: o banco, a chave, a atribuição e a leitura pela API. A tela, a triagem em massa e os avisos por caso vêm
+_(partes 1 a 4: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API. A tela e os avisos por caso vêm
 depois; até lá, nada no painel nem no e-mail muda)_
 
-Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é só o
-worker; a pessoa trata alertas, e as contagens do caso são de gatilhos da tabela de alertas.
+Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é o worker
+(a pessoa só divide um que juntou coisas demais); a pessoa trata alertas, um por um ou em massa, e as contagens do caso são
+de gatilhos da tabela de alertas.
 
 - **Interruptor:** `CASES_MODE`, o mesmo valor no ambiente do worker e no da API, conferido na partida (valor fora da
   lista não sobe).
@@ -2093,7 +2094,7 @@ worker; a pessoa trata alertas, e as contagens do caso são de gatilhos da tabel
   | -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
   | `off`    | Padrão. Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo só confere se há caso a apagar) | Padrão. As rotas dos casos respondem 404, iguais a uma rota que não existe, para todos os papéis |
   | `shadow` | Os alertas ganham caso (a medição no nó piloto)                                                    | Só a equipe da Verax (`admin_verax`) lê, no cliente escolhido; para os outros papéis, como `off` |
-  | `on`     | O mesmo que `shadow`, por enquanto                                                                 | Todos os papéis leem os casos do próprio cliente                                                 |
+  | `on`     | O mesmo que `shadow`, e mais a fila da triagem em massa (`triage-ops`)                             | Todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa              |
 
   O `start.sh` do nó ainda não escreve a variável no `worker.env` nem no ambiente da API: ligar num nó pede essas linhas
   em `infra/`. A API lê o que houver no banco: com o worker em `off` e a API em `on`, os casos ficam parados no tempo (a
@@ -2108,6 +2109,8 @@ worker; a pessoa trata alertas, e as contagens do caso são de gatilhos da tabel
     10 min, é aviso no log. O aviso por e-mail desse atraso vem com os avisos por caso.
   - `case-reconcile` (uma vez por semana): refaz as contagens de cada caso e corrige a que não bate. É a única escrita
     de contagem fora dos gatilhos, e qualquer correção vai para o log.
+  - `triage-ops` (a cada 5 s, concessão no `SyncState`; **só com `on`**): as operações de triagem em massa que não cabem na
+    requisição (abaixo).
 
 - **Um lote é uma transação**, com a ordem de travas do projeto: o lock dos alertas do cliente (o dos coletores), as
   linhas dos alertas (`FOR UPDATE SKIP LOCKED`, todas de uma vez) e só então os casos. O alerta preso por uma triagem em
@@ -2161,7 +2164,7 @@ igual a um que não existe. Parâmetro desconhecido é 400. O `CASES_MODE` é co
 | `GET /v1/cases/:id`           | O caso inteiro, o que sai dos alertas dele, os casos anteriores, os incidentes e as operações          |
 | `GET /v1/cases/:id/findings`  | Os alertas do caso, por cursor                                                                         |
 | `GET /v1/cases/:id/timeline`  | Os alertas por hora ou por dia                                                                         |
-| `GET /v1/findings/:id/triage` | As operações de triagem em massa que mexeram num alerta (nenhuma existe ainda)                         |
+| `GET /v1/findings/:id/triage` | As operações de triagem em massa que mexeram num alerta                                                |
 
 - **Situação:** é a única rota que responde com os casos desligados (`off`, sem ler o banco). É por ela que o painel sabe
   se os casos valem: o `/v1/me` é do módulo `auth` e não mudou.
@@ -2201,6 +2204,92 @@ igual a um que não existe. Parâmetro desconhecido é 400. O `CASES_MODE` é co
 - **Operações:** as em vigor nos alertas do caso (`Finding.triageOpId`) e as que elas desfizeram, até 20.
 - **Texto do evento** (amostras, partes da chave, subgrupos, títulos dos alertas) sai só como dado, limitado em quantidade e
   tamanho; o título do caso é do dicionário.
+
+### Triagem em massa
+
+_(`triage-operations.{controller,service}.ts`, `triage-{engine,store,view}.ts`, `triage-ops-job.ts`, `case-split*.ts`;
+contrato em `packages/shared/src/triage-operations.ts`)_
+
+Uma pessoa trata muitos alertas de uma vez, com desfazer. Uma operação é um `TriageOperation` (o pedido e o andamento) e um
+`TriageOperationItem` por alerta mudado (o que ele era antes).
+
+| Rota                                      | O que faz                                                                                           | Quem                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `POST /v1/triage-operations`              | `status`, `promote`, `attach` ou `undo_all_of`. 201 feita, 202 na fila, 200 repetida                | `findings:triage`; incidente, também `incidents:write` |
+| `GET /v1/triage-operations[/:id]`         | Lista (por página, com autor) e detalhe, com andamento e o que quem vê pode fazer                   | `findings:read`                                        |
+| `GET /v1/triage-operations/preview`       | Quantos casos e alertas um filtro da lista alcança agora                                            | `findings:triage`                                      |
+| `POST /v1/triage-operations/:id/undo`     | Desfaz. A resposta é a operação que desfaz (201, 202 ou 200)                                        | quem pediu, ou quem administra                         |
+| `POST /v1/triage-operations/:id/cancel`   | Para uma na fila ou em curso, ou desiste de uma parada; o que já foi feito fica e pode ser desfeito | quem pediu, ou quem administra                         |
+| `POST /v1/triage-operations/:id/continue` | Retoma uma que parou antes do fim (o que faltou e o que falhou)                                     | quem pediu, ou quem administra                         |
+| `POST /v1/cases/:id/split`                | Divide um caso                                                                                      | `findings:triage`                                      |
+
+- **Modos:** com `off`, 404 em todas; com `shadow`, a equipe da Verax só lê, e as escritas são 404 para todos; com `on`, tudo.
+  A escrita recusada pelo modo, de quem tem sessão, fica na trilha (`denied`, 404). Na medição ninguém opera: a fila não roda.
+- **Alvo:** até 50 casos (ou um subgrupo deles, o valor inteiro de `caseGroup`), até 500 alertas, ou um filtro da lista de
+  casos. O filtro é o **mesmo `WHERE`** da lista (`caseSetWhere`), sem a página: escolhe casos, e a operação alcança os
+  alertas pendentes deles (a severidade do filtro não estreita os alertas). Só os estados `pending` e `investigating`, e com
+  um campo que estreite além da fila, do estado e do período. Um id de outro cliente recusa o pedido inteiro com 404.
+- **Conjunto congelado:** os alertas do alvo que chegaram até a hora do pedido (`cutoffAt`) e estão pendentes (novos ou em
+  análise, fora de incidente, ainda sem o status pedido), num comando só, os piores primeiro. Os ids ficam em
+  `TriageOperation.target.ids` até a operação terminar: só o corte não bastaria, porque a atribuição pode pôr no caso, no meio,
+  um alerta mais antigo que ninguém viu ao confirmar, e o filtro deixa de achar um caso que a própria operação já mudou.
+  Teto de 50 mil alertas (2 MB de ids).
+- **Confirmação:** se o conjunto passa do que a pessoa confirmou em mais de 10% e 20 alertas, 409 `TRIAGE_SCOPE_CHANGED` com a
+  contagem nova (`details.count`). Crítico só entra com `includeCritical`; sem ele fica de fora, e a resposta e a trilha dizem
+  quantos (`excludedCritical`). O motivo é obrigatório para marcar mais de um como legítimo ou resolvido.
+- **Idempotência:** `requestId` único por cliente. O mesmo pedido devolve a operação que ele criou; o mesmo id num pedido
+  diferente (ou de outra pessoa) é 409. Os pedidos de um cliente são conferidos um por vez (um lock próprio, que os coletores
+  não esperam).
+- **Cotas de quem não administra** (o analista): 2.000 alertas por operação e 5.000 em 24 h, somados no banco. São por
+  **papel** (`isMassTriageRole`), sem permissão nova: o `/v1/me` devolve as permissões como um enum fechado, e um painel aberto
+  de antes recusaria a resposta inteira. Na fila, até 10 operações por cliente.
+- **O que muda num alerta:** `status`, com a mesma regra de `triagedAt` da triagem de um só (a primeira saída de "novo" marca);
+  ou `incidentId` (o status não muda, como ao promover à mão); `triageOpId`; e o `updatedAt`, de propósito: é atividade de uma
+  pessoa, que a retenção lê. `PATCH /v1/findings/:id/status` tira o `triageOpId`: a decisão mais nova vale.
+- **Um lote é uma transação** (até 500 alertas): o lock dos alertas do cliente, a linha da operação, a do incidente, as dos
+  alertas (`FOR UPDATE`, todas, por id) e só então, pelos gatilhos, as dos casos. O item e a mudança de cada alerta são o mesmo
+  comando. Até 200 alertas, o lote roda na requisição; além disso, no worker, com 100 ms entre dois lotes, um lote por cliente
+  de cada vez e uma operação por cliente (na ordem do pedido).
+- **Exatamente uma vez:** o cursor avança na mesma transação em que os alertas mudam, sob a linha da operação travada. Uma
+  queda desfaz os dois, e a retomada recomeça do mesmo lugar; duas réplicas se serializam no lock, e a segunda vê o cursor
+  adiante. Por baixo, um alerta só muda se o item dele acabou de nascer (chave primária). Não depende da concessão.
+- **O que muda no meio** (alguém tratou, promoveu, a origem deixou crítico, saiu na retenção) conta como `skipped` e não é
+  tocado. Uma triagem em curso num alerta segura só aquele lote, por no máximo 1 s, e ele volta na passagem seguinte.
+- **Falhas:** o lote que falha por culpa de um alerta é cortado ao meio até sobrar ele, que conta como pulado e fica anotado;
+  com 50 assim, a operação para. O que falha por culpa do banco é tentado em dez passagens seguidas. Parada antes do fim, a
+  operação fica `partial` (ou `failed`, se não mudou nada), com o motivo em `stop`, e aceita "continuar" por 24 h; a seguinte
+  da fila roda. Uma que nem encerrar deixa sai da vez por 10 min.
+- **Promover:** o incidente abre na requisição, pelo mesmo caminho de promover à mão (`IncidentsService.open`), com o alerta que
+  abriu o caso (num caso só) ou o pior, e até 49 dos piores; os outros entram nos lotes. Um aviso por e-mail só, o da abertura:
+  os piores já estão nele. O caso promovido inteiro aponta para o incidente (`AlertCase.incidentId`). **Anexar:** a um incidente
+  não resolvido; se a severidade sobe, um aviso.
+- **Resumo do incidente:** acima de 500 alertas é feito no banco (`aggregateIncidentSummary`), com o mesmo resultado do feito em
+  memória (os textos são comparados byte a byte nos dois), também ao anexar e tirar à mão. Nos lotes de um incidente grande,
+  o resumo dele é juntado com o dos alertas do lote (`mergeIncidentSummary`, exato ao anexar); ao desfazer, só a contagem
+  acompanha. No fim da operação (ou quando ela para, ou um desfazer é cancelado), refaz-se tudo.
+- **Desfazer**, até 24 h depois do fim: volta só o alerta em que a operação ainda é a última (`triageOpId`) e que está como ela
+  deixou; o resto conta como pulado, e o que saiu na retenção nem entra na conta. O alerta volta ao status e ao `triagedAt` de
+  antes (ou sai do incidente) e passa a apontar para o desfazer: o histórico mostra os dois. Desfazer não se desfaz; para
+  refazer, um pedido novo. Duas operações sobre o mesmo alerta se desfazem da última para a primeira, e só um nível: o
+  desfazer da primeira, depois do da segunda, já não é dono do alerta.
+  - **Promover desfeito:** saem todos menos o alerta que abriu o incidente, que é encerrado (registro `incident.update` do
+    sistema, com o motivo). Com outro alerta nele (posto por alguém), o incidente fica aberto. O aviso que saiu não volta
+    (`warnings` na resposta). Incidente resolvido não perde alerta: reabre-se antes.
+  - **Caso selado:** o caso tratado é selado só quando chega o alerta seguinte da chave. Desfeita a operação, os alertas voltam
+    a ele como pendentes; se ele estava selado por `treated` e ninguém está aberto com a chave, reabre (o selado por último);
+    com um sucessor aberto, continua selado e listado, e os alertas seguintes são do sucessor. O selado por janela ou divisão
+    não reabre.
+  - **`undo_all_of`** (só quem administra): cancela o que a pessoa tem na fila e põe um desfazer para cada operação dela no
+    prazo (até 100), da mais recente para a mais antiga.
+- **Dividir um caso:** os alertas escolhidos (até 500, ou um subgrupo de até 2.000) vão para um caso novo, com a mesma chave, que
+  nasce selado (`split`), com o original como anterior: a chave só tem um caso aberto, e os alertas seguintes continuam no
+  original. As amostras e os horários dos dois se refazem; o `updatedAt` dos alertas não muda. O caso nunca fica sem alerta.
+- **Trilha (decisão D7):** `triage.bulk.request` (o alvo, o corte, as contagens de antes por status e severidade, o motivo) e um
+  `triage.bulk.finish` do sistema; mais `triage.bulk.{undo,undo_all,cancel,continue,replay}`, `case.split` e, ao promover,
+  `incident.create`. O alerta não ganha registro próprio: a trilha dele é o item, que vive enquanto ele viver. O alvo de muitos
+  alertas vai com a contagem e os 100 primeiros ids, para caber nos 16 KB de um estado.
+- **Banco ocupado:** na requisição, a espera pelo lock do cliente tem 3 s; com ele na mão (os coletores esperam por ele), a de uma
+  linha presa, 1 s; e cada comando, 6 s. Passou, 503 sem mudar nada (o limite da requisição de escrita é de 15 s).
 
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
@@ -2591,6 +2680,7 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
   | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira                                  |
   | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                                                            |
   | Casos                                                                    | Sem nenhum achado guardado, sem achado novo desde o corte (pelo relógio do servidor) e fora de incidente; o que ficou aberto também, porque só o alerta seguinte o selaria. Vale com qualquer `CASES_MODE`                                                                                  |
+  | Operações de triagem em massa                                            | O cabeçalho, 13 meses depois do pedido, se nenhum achado que ela mudou está guardado (o item sai em cascata com o achado). Vale com qualquer plano e qualquer `CASES_MODE`                                                                                                                  |
   | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                                                            |
   | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                                                   |
   | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                                                     |

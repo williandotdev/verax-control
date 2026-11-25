@@ -12,7 +12,7 @@ import type {
 import { lockTenantFindings } from '../alerts/finding-store.js';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
-import { requestContext } from '../common/context/request-context.js';
+import { type AuditDetails, requestContext } from '../common/context/request-context.js';
 import { ApiError } from '../common/http/api-error.js';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
@@ -25,6 +25,7 @@ import {
   incidentSummaryData,
   protectedItemsOf,
 } from './incident-summary.js';
+import { resummarizeIncident } from './incident-summary-store.js';
 
 /** A linha do tempo do detalhe mostra até 500 achados, o limite do contrato: os mais recentes. */
 const MAX_TIMELINE = 500;
@@ -184,6 +185,16 @@ export class IncidentsService {
    * severidade (`incident_opened`).
    */
   async create(auth: RequestAuth, input: IncidentCreate): Promise<IncidentDetail> {
+    const { id, details } = await this.open(auth, input);
+    this.audit.describe(details);
+    return this.get(id);
+  }
+
+  /**
+   * O mesmo que `create`, para quem abre o incidente no meio de outra operação (a triagem em massa): devolve o registro
+   * da auditoria, que quem chama grava, e não o detalhe.
+   */
+  async open(auth: RequestAuth, input: IncidentCreate): Promise<{ id: string; details: AuditDetails }> {
     const { db, tenantId } = await this.lockedScope();
     const findings = await this.freeFindings(db, input.findingIds);
     if (input.assigneeId) await this.assertAssignee(auth, input.assigneeId);
@@ -205,18 +216,20 @@ export class IncidentsService {
       db,
       incidentNotices(tenantId, { change: 'opened', incidentId: id, severity: data.severity }),
     );
-    this.audit.describe({
-      action: 'incident.create',
-      resourceType: 'incident',
-      resourceId: id,
-      before: null,
-      after: {
-        findingIds: [...input.findingIds],
-        assigneeId: input.assigneeId ?? null,
-        ...summaryOf(data),
+    return {
+      id,
+      details: {
+        action: 'incident.create',
+        resourceType: 'incident',
+        resourceId: id,
+        before: null,
+        after: {
+          findingIds: [...input.findingIds],
+          assigneeId: input.assigneeId ?? null,
+          ...summaryOf(data),
+        },
       },
-    });
-    return this.get(id);
+    };
   }
 
   /**
@@ -231,7 +244,7 @@ export class IncidentsService {
       where: { id: { in: [...input.findingIds] }, incidentId: null },
       data: { incidentId: id },
     });
-    const data = await this.resummarize(db, id);
+    const data = await resummarizeIncident(this.prisma.db(), tenantId, id);
     await enqueueNotices(
       db,
       incidentNotices(tenantId, {
@@ -271,7 +284,7 @@ export class IncidentsService {
       );
     }
     await db.finding.update({ where: { id: findingId }, data: { incidentId: null }, select: { id: true } });
-    const data = await this.resummarize(db, id);
+    const data = await resummarizeIncident(this.prisma.db(), tenantId, id);
     this.audit.describe({
       action: 'incident.detach',
       resourceType: 'incident',
@@ -341,14 +354,6 @@ export class IncidentsService {
       );
     }
     return rows;
-  }
-
-  /** Recalcula e grava o resumo do incidente a partir dos alertas dele agora. */
-  private async resummarize(db: Prisma.TransactionClient, id: string) {
-    const findings = await db.finding.findMany({ where: { incidentId: id }, select: incidentFindingSelect });
-    const data = incidentSummaryData(findings, await this.protectedItems(db));
-    await db.incident.update({ where: { id }, data, select: { id: true } });
-    return data;
   }
 
   /** A lista de proteção do cliente (+15 na nota de risco). */

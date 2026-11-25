@@ -63,7 +63,8 @@ const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
  * (`usage/usage-meter.ts`, `usage/aws-volume.ts`). E, no nó dedicado, o resultado de cada item da sincronização com o
  * plano de controle (`ControlPlaneSyncItem`, a tarefa `control-plane-sync` e a exclusão da conta do console pelo
  * cliente, `control-plane-sync/deleted-in-panel.ts`). Os casos (`AlertCase`) também: quem abre e sela um caso é o
- * sistema, e as contagens são dos gatilhos da tabela de alertas; a pessoa trata os alertas. No escopo do cliente, só a
+ * sistema (a pessoa só divide um, por `cases/case-split-store.ts`), e as contagens são dos gatilhos da tabela de alertas; a
+ * pessoa trata os alertas. No escopo do cliente, só a
  * leitura passa; a gravação é recusada mesmo que um service a tente, e quem grava usa o cliente base, fora do escopo
  * (`tenants/tenant-host.ts`, `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`, `control-plane-sync/`, `cases/`).
  */

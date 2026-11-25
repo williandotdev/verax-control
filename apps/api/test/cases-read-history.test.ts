@@ -7,6 +7,7 @@ import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { createSignedInUser, createTenant } from './support/auth-helpers.js';
 import { cleanCases, insertCase, insertFinding } from './support/cases.js';
 import { createApp } from './support/create-app.js';
+import { operate, type Operator, operatorFor, post, read, statusRequest } from './support/triage.js';
 
 const DAY_MS = 24 * 3_600_000;
 const HISTORY_DAYS = resolvePlan('essencial').limits.historyDays as number;
@@ -17,6 +18,7 @@ describe('casos e o histórico do plano (Essencial)', () => {
   let prisma: PrismaService;
   let tenantId: string;
   let cookie: string;
+  let analyst: Operator;
 
   beforeAll(async () => {
     app = await createApp({ casesMode: 'on', plan: { PLAN: 'essencial' } });
@@ -24,6 +26,7 @@ describe('casos e o histórico do plano (Essencial)', () => {
     prisma = app.get(PrismaService);
     tenantId = await createTenant(app, 'Cliente Demo (casos e histórico)');
     cookie = (await createSignedInUser(app, { role: 'leitura', tenantId })).cookie;
+    analyst = await operatorFor(app, tenantId, 'analista_cliente');
     const at = new Date(Date.now() - 60 * DAY_MS);
     const caseId = await insertCase(prisma, tenantId, {
       openedAt: at,
@@ -64,5 +67,22 @@ describe('casos e o histórico do plano (Essencial)', () => {
     const range = await list(`from=${daysAgo(120)}&to=${daysAgo(100)}`).expect(400);
     expect(range.body).toMatchObject({ code: PERIOD_BEYOND_HISTORY_CODE });
     await list(`from=${daysAgo(89)}&to=${daysAgo(1)}`).expect(200);
+  });
+
+  it('o filtro da triagem em massa segue o mesmo limite, na prévia e no pedido', async () => {
+    const range = { from: daysAgo(120), to: daysAgo(100) };
+    for (const beyond of [{ period: '12m' }, range]) {
+      const filter = { severity: 'high', ...beyond };
+      const query = new URLSearchParams(filter).toString();
+      const preview = await read(app, analyst, `/v1/triage-operations/preview?${query}`).expect(400);
+      expect(preview.body).toMatchObject({ code: PERIOD_BEYOND_HISTORY_CODE });
+      const refused = await post(app, analyst, '/v1/triage-operations', statusRequest({ filter }, 1)).expect(
+        400,
+      );
+      expect(refused.body).toMatchObject({ code: PERIOD_BEYOND_HISTORY_CODE });
+    }
+    expect(await prisma.triageOperation.count({ where: { tenantId } })).toBe(0);
+    const filter = { severity: 'high', period: '90d' };
+    expect(await operate(app, analyst, statusRequest({ filter }, 1))).toMatchObject({ changed: 1 });
   });
 });

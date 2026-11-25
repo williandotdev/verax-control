@@ -69,6 +69,9 @@ export function isPrivilegedIdentity(finding: Pick<FindingDraft, 'actorUser' | '
 }
 
 const BASE_SCORE: Readonly<Record<FindingSeverity, number>> = { critical: 70, high: 50, medium: 30, low: 10 };
+const PROTECTED_SCORE = 15;
+const PRIVILEGED_SCORE = 10;
+const volumeScore = (count: number): number => Math.min(15, (count - 1) * 3);
 
 /**
  * Nota de risco de 0 a 100: base pela severidade mais alta (crítica 70, alta 50, média 30, baixa 10), +15 se
@@ -81,13 +84,34 @@ export function incidentRiskScore(input: {
   privilegedIdentity: boolean;
 }): number {
   if (input.severities.length === 0) return 0;
-  const volume = Math.min(15, (input.severities.length - 1) * 3);
   const score =
     BASE_SCORE[highestSeverity(input.severities)] +
-    (input.touchesProtected ? 15 : 0) +
-    (input.privilegedIdentity ? 10 : 0) +
-    volume;
+    (input.touchesProtected ? PROTECTED_SCORE : 0) +
+    (input.privilegedIdentity ? PRIVILEGED_SCORE : 0) +
+    volumeScore(input.severities.length);
   return Math.min(100, score);
+}
+
+/**
+ * O caminho de volta: o que uma nota diz do item protegido e da identidade privilegiada. Null se ela não diz: a nota no
+ * teto (nem precisa: com mais alertas, continua nele) ou a que não é desta conta.
+ */
+export function riskFlags(
+  score: number,
+  severity: FindingSeverity,
+  count: number,
+): { touchesProtected: boolean; privilegedIdentity: boolean } | null {
+  const rest = score - BASE_SCORE[severity] - volumeScore(count);
+  if (
+    score >= 100 ||
+    ![0, PRIVILEGED_SCORE, PROTECTED_SCORE, PRIVILEGED_SCORE + PROTECTED_SCORE].includes(rest)
+  ) {
+    return null;
+  }
+  return {
+    touchesProtected: rest >= PROTECTED_SCORE,
+    privilegedIdentity: rest === PRIVILEGED_SCORE || rest > PROTECTED_SCORE,
+  };
 }
 
 export function highestSeverity(severities: readonly FindingSeverity[]): FindingSeverity {
@@ -126,7 +150,13 @@ export interface IncidentSummary {
   mitreTechniques: string[];
 }
 
-const sortedUnique = <T extends string>(values: Iterable<T>): T[] => [...new Set(values)].sort();
+/**
+ * Byte a byte em UTF-8, a ordem do banco com `COLLATE "C"`: o resumo feito no banco (`incident-summary-store.ts`) corta
+ * as mesmas chaves que este. Só difere do `sort()` padrão em textos com caracteres fora do plano básico.
+ */
+const byBytes = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
+export const sortedUnique = <T extends string>(values: Iterable<T>): T[] =>
+  [...new Set(values)].sort(byBytes);
 
 /**
  * Resumo de um incidente a partir dos achados dele. `protectedItems` é a lista de proteção do cliente, no mesmo

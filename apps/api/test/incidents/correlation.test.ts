@@ -5,6 +5,8 @@ import {
   incidentRiskScore,
   isPrivilegedIdentity,
   relatedFindings,
+  riskFlags,
+  sortedUnique,
   summarizeIncident,
 } from '../../src/incidents/correlation.js';
 
@@ -110,6 +112,23 @@ describe('nota de risco do incidente (T5.6)', () => {
     );
   });
 
+  it('a nota diz as parcelas dela, em toda severidade e volume, menos no teto; a de outra conta não diz nada', () => {
+    for (const severity of ['critical', 'high', 'medium', 'low'] as const) {
+      for (const count of [1, 2, 3, 4, 5, 6, 7, 500]) {
+        for (const touchesProtected of [false, true]) {
+          for (const privilegedIdentity of [false, true]) {
+            const severities = Array.from({ length: count }, () => severity);
+            const score = incidentRiskScore({ severities, touchesProtected, privilegedIdentity });
+            expect(riskFlags(score, severity, count), `${severity} ${count} ${score}`).toEqual(
+              score >= 100 ? null : { touchesProtected, privilegedIdentity },
+            );
+          }
+        }
+      }
+    }
+    for (const score of [0, 1, 33, 51, 64, 66, 76, 99]) expect(riskFlags(score, 'high', 1)).toBeNull();
+  });
+
   it('identidade privilegiada: root ou "admin" no nome, sem pegar palavras que só contêm "admin"', () => {
     expect(isPrivilegedIdentity({ actorType: 'Root', actorUser: null })).toBe(true);
     expect(isPrivilegedIdentity({ actorType: null, actorUser: 'arn:aws:iam::111122223333:root' })).toBe(true);
@@ -160,6 +179,11 @@ describe('resumo do incidente (T5.6 e T5.7)', () => {
       mitreTactics: ['Credential Access', 'Initial Access'],
       mitreTechniques: ['T1078', 'T1110'],
     });
+  });
+
+  it('as listas vão na ordem dos bytes em UTF-8, a do banco, e não na das unidades de 16 bits', () => {
+    const values = ['\u{1F600}', '\uE000', 'z', 'Z', 'á', 'a', ''];
+    expect(sortedUnique([...values, ...values])).toEqual(['', 'Z', 'a', 'z', 'á', '\uE000', '\u{1F600}']);
   });
 
   it('recusa incidente vazio ou com achados de clientes diferentes', () => {

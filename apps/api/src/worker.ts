@@ -219,7 +219,8 @@ async function awsConnectionSetup(
  *
  * Com `CASES_MODE` em `shadow` ou `on` (o padrão é `off`), entram as tarefas dos casos: `case-assign` (a cada 10 s dá um
  * caso a cada alerta pendente que ainda não tem), `case-watch` (a cada minuto mede o atraso da atribuição, no log) e
- * `case-reconcile` (uma vez por semana confere as contagens dos casos).
+ * `case-reconcile` (uma vez por semana confere as contagens dos casos). Só com `on`, `triage-ops` (a cada 5 s executa em
+ * lotes as operações de triagem em massa que não cabem na requisição).
  *
  * Na célula (`NODE_MODE=cell`, com `CELL_ID`, `CELL_COMMANDS_SUBSCRIPTION` e `CELL_REPORTS_TOPIC`), o canal com o plano
  * de controle (CE-05): `cell-commands` (a cada 10 s) lê os comandos e aplica cada um numa transação, com o relatório na

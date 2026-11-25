@@ -6959,3 +6959,93 @@ test.ts`, `test/case-{assign,assign-api,assign-concurrency,assign-benchmark,reco
   mais de 20 recursos pode tocar um item protegido fora delas); "ainda ativo na origem" compara com a primeira triagem
   (`triagedAt`), não com a data em que foi resolvido, que o alerta não guarda; a lista de vulnerabilidades ainda não diz
   quantos alertas de cada caso seguem ativos na origem (pediria ler os alertas da página).
+
+## Casos, parte 4: a triagem em massa com desfazer (PR-4 do desenho de 24/11/2026)
+
+- **O que muda:** nada enquanto `CASES_MODE` for `off`, o padrão: as rotas novas respondem 404, a tarefa nova não existe e
+  nenhuma tela as usa. Com `shadow`, a equipe da Verax só lê as operações e ninguém opera; com `on`, quem faz triagem opera em
+  massa. A regra inteira está em `docs/ARQUITETURA.md`, "Triagem em massa". Fora dos casos, quatro mudanças valem em qualquer
+  modo: o `PATCH /v1/findings/:id/status` tira o `triageOpId` do alerta; o resumo de um incidente com mais de 500 alertas é
+  feito no banco; as listas do resumo vão na ordem dos bytes em UTF-8 (só difere da de antes em caracteres fora do plano
+  básico); e o expurgo tira os cabeçalhos de operação com mais de 13 meses e sem alerta.
+- **Rotas:** `POST /v1/triage-operations` (`status`, `promote`, `attach`, `undo_all_of`), `GET` da lista, do detalhe e da prévia
+  de um filtro, `POST .../:id/{undo,cancel,continue}` e `POST /v1/cases/:id/split`. Contrato em
+  `packages/shared/src/triage-operations.ts`. Tarefa `triage-ops` (5 s, só com `on`).
+- **Decisões desta parte** (no código, para revisão):
+  - **Conjunto congelado por ids** (em `TriageOperation.target.ids`, fora da lista e do detalhe, até a operação terminar), e não só
+    pelo corte: a atribuição pode pôr no caso, depois do pedido, um alerta que chegou antes e ninguém viu; e um filtro deixa de
+    achar um caso que a própria operação já mudou. Sem migration.
+  - **Cotas por papel** (`isMassTriageRole`), sem a permissão `findings:triage_mass` do desenho: o `meSchema` é um enum fechado, e
+    um painel aberto de antes recusaria o `/v1/me` inteiro (conferido por teste).
+  - **O filtro precisa de mais que a fila, o estado e o período.** O desenho dizia "além do período"; a fila sozinha é quase a tela
+    inteira. A severidade do filtro escolhe casos e não estreita os alertas deles: o mesmo que marcar os casos na lista.
+  - **Rota de prévia** (`GET .../preview`), que não estava no desenho: sem ela o painel não tem de onde tirar o `expectedCount` de
+    um filtro. Sai das contagens dos casos, sem ler alerta.
+  - **`details` nos erros** (`ApiError`): só números, para o 409 levar a contagem nova.
+  - **O caso tratado não é selado na hora** (o desenho dizia que sim): continua como na parte 2, selado quando chega o alerta
+    seguinte. Desfazer antes disso não tem o que reabrir; depois, o caso selado por `treated` reabre se ninguém está aberto com a
+    chave dele.
+  - **Um nível de desfazer:** o alerta volta ao que era antes da última operação dele. Desfeita a segunda, a primeira já não é
+    dona do alerta (ele aponta para o desfazer), e conta como pulado. O `undo_all_of` segue a mesma regra.
+  - **Desfazer um `promote`:** o incidente só é encerrado se ficou só com o alerta que o abriu. Incidente resolvido não perde
+    alerta, como à mão: recusa, e o painel diz para reabrir.
+  - **Dividir:** o caso novo nasce selado, com a abertura do original (não conta nos limites de abertura), e o `updatedAt` dos
+    alertas não muda. Por subgrupo, até 2.000 alertas.
+  - **`shadow` é só leitura**, até para a equipe da Verax. A escrita recusada pelo modo fica na trilha (`denied`, 404).
+  - **Resumo do incidente nos lotes** juntado, e refeito no fim: na primeira medição, refazer tudo a cada lote segurava o lock
+    por 540 ms (p50) num incidente de 24 mil; agora, 172 ms.
+  - Um alerta que falha na operação que roda na requisição (até 200) derruba o pedido inteiro com 500, sem mudar nada; isolar o
+    alerta é só do worker.
+- **Arquivos:** `packages/shared/src/triage-operations.ts` (e teste) e `cases.ts` (o filtro da lista em peças);
+  `apps/api/src/cases/`: `triage-{engine,store,view,ops-job}.ts`, `triage-operations.{controller,service}.ts`,
+  `case-split{.service,-store}.ts`, `case-filter.ts` (novos), `case-read-store.ts` (o `WHERE` da lista numa função),
+  `cases.{service,module,guard}.ts`, `cases-mode.ts`, `case-tasks.ts`; `incidents/`: `incident-summary-store.ts` (novo),
+  `incident-summary.ts`, `correlation.ts`, `incidents.{service,module}.ts`; `findings/findings.service.ts` (uma linha);
+  `common/http/{api-error,all-exceptions.filter}.ts`; `retention/retention-job.ts`; `worker.ts` (comentário); testes
+  `test/triage-{operations,requests,undo,ops-job,incidents,concurrency,off,shadow,retention,benchmark}.test.ts`, `case-split.test.ts`,
+  `test/support/triage.ts`, `test/incidents/correlation.test.ts`; `docs/ARQUITETURA.md`.
+- **Dependências novas:** nenhuma. Sem migration, e sem mudança em `infra/`, `.github/`, no módulo `auth` ou em `.claude/`.
+- **Testes:** `pnpm lint`, `pnpm typecheck` (todos os pacotes) e `format:check` limpos. Pacote `shared`: 31 arquivos, 577
+  testes. API com Postgres descartável: 231 arquivos, 4485 testes (quatro deles, as medições de carga, só com
+  `CASES_BENCH=1`). Novos: 171 na API (55 no pedido, 33 nos incidentes, 23 na tarefa, 20 no desfazer, 11 em dividir, 9 ao mesmo
+  tempo, 6 no expurgo, 10 com `off` e `shadow`, e 4 em arquivos que já existiam) e 24 no contrato.
+  - Três rodadas inteiras, com a máquina dividida com outros testes pesados. Na primeira, reprovou só a conferência da lista de
+    tarefas do worker, que ganhou a nova, e três arquivos caíram com o erro conhecido do worker do vitest no Windows
+    (3221226505). Na segunda, reprovou a mistura nova, porque um coletor esperou mais de 5 s pelo lock do cliente (daí a espera
+    por linha de 1 s com ele na mão; o coletor do teste passou a reler, como o de verdade), e um arquivo caiu. Na terceira, a
+    mistura antiga da atribuição passou dos 30 s, um arquivo de outro assunto não subiu a tempo e dois caíram. Todos passaram
+    rodados de novo. O arquivo novo que mais caía, o maior, foi dividido em dois. Não rodou: as suítes do painel e do console
+    (nada mudou neles) e a API e o worker de verdade num nó.
+  - Isolamento A/B em toda rota e em todo id do corpo, com o cliente B conferido linha a linha; papéis e modos; idempotência
+    com envios ao mesmo tempo; queda da conexão no meio de um lote, três réplicas sem concessão, triagem presa, banco que falha,
+    alerta que não grava; desfazer em cada estado; contagens conferidas em quatro sequências aleatórias de 90 passos e com
+    coletores, atribuição, expurgo, conferência, triagem um a um, incidentes e divisões rodando juntos (nenhum deadlock).
+- **Mutações:** 184, uma por vez, com prazo e restauração conferida por hash. Na primeira rodada sobreviveram 21: 16 viraram
+  testes, duas mostraram código repetido, que saiu, e três são equivalentes (o `tenantId` a mais no congelamento e na divisão,
+  segunda barreira atrás da conferência pelo escopo; e a permissão `incidents:write`, que hoje têm os mesmos papéis da
+  triagem). As outras, mortas.
+- **Carga** (Postgres 18 em Docker com 512 MB, 2 CPUs e `work_mem` de 2 MB, numa máquina Windows dividida com outros trabalhos):
+  24 mil alertas pendentes em 1.200 casos, numa tabela com mais 200 mil, e um coletor gravando sem parar. Lotes de 500 com 100
+  ms entre eles (48 por operação). Em ms:
+
+  | Operação                   | Pedido | Total  | Lock do cliente por lote (p50, p95, máx.) | Coletor esperando (p50, p95, máx.) |
+  | -------------------------- | ------ | ------ | ----------------------------------------- | ---------------------------------- |
+  | Mudar o status             | 223    | 10.399 | 100, 150, 152                             | 6, 99, 160                         |
+  | Desfazer                   | 52     | 10.826 | 116, 144, 149                             | 6, 115, 156                        |
+  | Promover                   | 473    | 13.711 | 172, 250, 462                             | 6, 146, 467                        |
+  | Desfazer o promover        | 86     | 14.580 | 184, 267, 324                             | 8, 186, 336                        |
+  | 200 na requisição          | 98     | -      | (p95 116, máx. 126)                       | 8, 95, 107                         |
+  | Desfazer 200 na requisição | 100    | -      | (p95 115, máx. 123)                       | -                                  |
+
+  O coletor sozinho: p50 8, p95 12. O conjunto congelado de 24 mil ocupa 914 KB de JSON. Numa rodada anterior, com a máquina
+  mais ocupada, mudar o status levou 16,2 s e o lock, p50 219, p95 283 e máximo 293 ms. A requisição de 200 alertas, no pior caso
+  medido (313 ms, com o coletor gravando), fica longe dos 15 s. A conferência das contagens no fim não achou diferença.
+
+- **Teste manual:** no nó piloto, depois da medição, `CASES_MODE=on` no worker e na API; com uma sessão de analista, pela API:
+  `GET /v1/triage-operations/preview?queue=vulnerability&severity=low`, o `POST` com o `expectedCount` dela, `GET` da operação até
+  `done`, o `undo`, e a trilha (`triage.bulk.*`). No log do worker, `triage-ops` com `stalled` e `isolated` em 0.
+- **Para ligar:** nada além do `CASES_MODE` das partes 2 e 3 (a linha no `.env.example`, e a variável no ambiente do worker e da
+  API que o `start.sh` do nó escreve). Nenhum dos dois foi tocado aqui.
+- **Riscos e dúvidas:** a trilha grava 201 no pedido que respondeu 202 ou 200 (o interceptor lê o status declarado da rota); a
+  tela Auditoria mostra as ações novas pelo nome gravado até o painel ganhar os textos (`features/audit/labels.ts`), e a área
+  `triage_operation` ainda não está no filtro dela; o aviso por e-mail ao administrador acima de 500 alertas fica para a parte dos avisos.

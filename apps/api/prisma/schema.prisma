@@ -792,7 +792,8 @@ model TriageOperation {
   requestId       String                @db.Uuid
   /// `status`, `promote`, `attach`, `undo` ou `undo_all_of`. Como o estado, é texto com CHECK, e não enum.
   action          String                @db.VarChar(16)
-  /// O alvo do pedido (casos, alertas ou filtro), já validado pela API.
+  /// O alvo do pedido (casos, alertas, filtro, a operação desfeita ou a pessoa), já validado pela API, e o que o motor
+  /// guarda com ele: `run` (o andamento, pequeno) e `ids` (o conjunto congelado, que sai quando a operação termina).
   target          Json
   /// O status pedido (`status`) e o incidente (`promote` e `attach`; sem chave estrangeira: ele pode sair na retenção).
   status          FindingStatus?
