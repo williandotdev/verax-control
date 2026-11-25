@@ -2,9 +2,12 @@ import type { MitreTactic } from '@verax/shared';
 import { TACTIC_LABELS } from './labels';
 
 /**
- * A participação de cada tática no período: os alertas dela divididos pela soma dos alertas das 14 táticas. Um alerta
- * com duas táticas entra nas duas, então a soma é de marcações, e não de alertas.
+ * A participação de cada tática no período: os casos dela divididos pela soma dos casos das 14 táticas ou, sem os casos, os
+ * alertas pelos alertas. Um caso (ou alerta) com duas táticas entra nas duas, então a soma é de marcações.
  */
+
+/** O que a participação conta. */
+export type ShareBasis = 'cases' | 'findings';
 
 export interface TacticShare {
   tactic: MitreTactic;
@@ -14,21 +17,35 @@ export interface TacticShare {
   share: number;
 }
 
+/**
+ * Com os casos no relatório, conta casos: 20 mil alertas iguais são um caso, e não 20 mil ataques. Se nenhum alerta do período
+ * tem caso (o histórico de antes deles), conta alertas: uma teia zerada pareceria quebrada.
+ */
+export function shareBasis(tactics: readonly MitreTactic[]): ShareBasis {
+  return tactics.some((tactic) => (tactic.cases ?? 0) > 0) ? 'cases' : 'findings';
+}
+
+const weightOf = (tactic: MitreTactic, basis: ShareBasis): number =>
+  basis === 'cases' ? (tactic.cases ?? 0) : tactic.findings;
+
 /** As táticas na ordem dada (a da cadeia de ataque), com a participação de cada uma. */
-export function tacticShares(tactics: readonly MitreTactic[]): TacticShare[] {
-  const total = tactics.reduce((sum, tactic) => sum + tactic.findings, 0);
+export function tacticShares(
+  tactics: readonly MitreTactic[],
+  basis: ShareBasis = shareBasis(tactics),
+): TacticShare[] {
+  const total = tactics.reduce((sum, tactic) => sum + weightOf(tactic, basis), 0);
   return tactics.map((tactic) => ({
     tactic,
     label: TACTIC_LABELS[tactic.name] ?? tactic.name,
-    share: total === 0 ? 0 : tactic.findings / total,
+    share: total === 0 ? 0 : weightOf(tactic, basis) / total,
   }));
 }
 
-/** Só as táticas com alerta, da maior para a menor; empatadas, na ordem da cadeia de ataque. */
+/** Só as táticas com alerta, da maior para a menor; empatadas, a de mais alertas e, por fim, a ordem da cadeia de ataque. */
 export function rankedTactics(shares: readonly TacticShare[]): TacticShare[] {
   return shares
     .filter(({ tactic }) => tactic.findings > 0)
-    .sort((left, right) => right.tactic.findings - left.tactic.findings);
+    .sort((left, right) => right.share - left.share || right.tactic.findings - left.tactic.findings);
 }
 
 /**

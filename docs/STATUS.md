@@ -7535,3 +7535,100 @@ source-monitor,source-parts,sources,onboarding-labels,onboarding-section}`; `lib
 - **Arquivos:** `infra/node/{bin/start.sh,node.conf.example,tests/start-test.sh}`, `docs/ARQUITETURA.md`,
   `docs/runbooks/casos.md` (novo).
 - **Dependências:** nenhuma.
+
+## Casos, parte 8: a Torre, o radar e os relatórios (PR-8 do desenho de 24/11/2026)
+
+- **O que muda:** com os casos ligados, a Torre, o radar e os relatórios passam a contar casos, e a API ganha cinco coisas que a
+  tela dos casos tinha pedido. Com os casos desligados (o padrão de um nó), tudo é o de sempre, byte a byte. Na medição (`shadow`),
+  só a equipe da Verax vê, e ninguém decide por caso.
+  - **Torre** (`GET /v1/tower?cases=true`): `cases` (os casos pendentes por fila e pior severidade, e a abertura do mais antigo de
+    cada uma) e as decisões `untriaged_case` e `untriaged_vulnerability_case`; `untriaged_finding` fica só com os alertas que nenhum
+    caso cobre. Os botões das decisões levam à lista de casos (detecção e postura) e às vulnerabilidades.
+  - **Radar** (`radar.cases`): os casos de detecção ativos em 24 h, até 100, os mais graves primeiro; o ponto tem o tamanho do caso
+    e abre `?caso=`; a frase diz "N alertas em M casos".
+  - **Relatórios** (`GET /v1/reports/{summary,mitre}?cases=true`): `summary.cases` (abertos, tratados, pendentes e a mediana até
+    tratar) e `cases` em cada tática do MITRE. O gráfico conta casos na mesma escala, com os alertas no detalhe. Colunas novas nos
+    CSVs.
+  - **API:** o `can` do caso segue o modo; cada operação do detalhe do caso diz o que se pode fazer com ela; a prévia de um filtro
+    diz quantos casos tocam a lista de proteção e os novos e os em análise por severidade; `GET /v1/triage-operations/authors`
+    (quem pediu operações nos últimos 30 dias); e `recurrenceTreated` na lista e no detalhe, sem migration.
+  - A regra inteira está em `docs/ARQUITETURA.md`, "Casos na Torre, no radar e nos relatórios".
+- **Decisões desta parte** (no código, para revisão):
+  - **O semáforo não muda**, nem a conta dele: alerta alto ou crítico em "novo", em caso ou não, dentro ou fora de incidente. A cor
+    e os motivos são os mesmos em todo modo; só as decisões contam casos. Cada alerta que o semáforo olha está numa decisão só: o
+    amarelo sempre tem uma que o explica (se as contagens dos casos estiverem erradas, as decisões voltam a contar alertas).
+  - **Os campos só vêm para quem pede** (`cases=true`). As respostas são estritas: um painel já publicado recusaria a Torre inteira
+    por um valor novo de enum. O painel novo só pede quando `GET /v1/cases/status` diz que pode, e, se o nó recusa ou manda o que
+    ele não entende, pede de novo sem os casos.
+  - Na medição, a equipe da Verax vê os casos no radar e nas contagens, e as decisões continuam contando alertas.
+  - O caso só com altos em análise não é decisão, como hoje um alerta em análise não é. O alerta num incidente aberto segue
+    contando (promover não muda o status dele), na linha "fora dos casos".
+  - O radar usa o mesmo `WHERE` da lista de casos em 24 h: o total bate com o da lista. O caso com alerta num incidente aberto tem,
+    sem nada pendente, a gravidade do incidente.
+  - A mediana é por caso, da abertura até o último alerta dele ser triado (ou entrar num incidente): tratar 20 mil alertas de uma
+    vez distorce o tempo médio por alerta. Só entram os casos abertos no período, e `tratados + pendentes = abertos`.
+  - No MITRE, sem nenhum caso no período (o histórico de antes), o gráfico conta alertas.
+  - O CSV dos casos do período é do Resumo; o da lista de casos ganha "Voltas depois de tratado".
+  - Os números dos casos na Torre não ficam guardados (a Torre relida depois de tratar já diz o novo); o MITRE com casos tem uma
+    memória de 30 s à parte da do MITRE de sempre.
+- **Arquivos:** API: `cases/{case-summary-store,case-radar,case-bounded,case-protected}.ts` (novos),
+  `cases/{case-read-store,cases.service,triage-operations.controller,triage-operations.service,triage-store,triage-view}.ts`,
+  `tower/{tower-rules,tower.controller,tower.service}.ts`, `reports/{reports.controller,reports.service}.ts`. Contrato:
+  `packages/shared/src/{tower,cases,reports,triage-operations}.ts`. Painel: `components/security/{detection-radar,radar-geometry}`,
+  `features/cases/`, `features/detections/{export,situation-strip,tower-reason,url-state}`,
+  `features/reports/{mitre-radar,report-views,reports-api,tactic-share}`, `features/tour/steps.ts` (dois textos) e os `mocks`. Testes:
+  `apps/api/test/cases-{tower,tower-off,tower-shadow,tower-benchmark,reports,gaps}.test.ts`, `test/support/{case-world,case-bench}.ts`,
+  `pages/detections-cases-tower.test.tsx` e `e2e/casos-torre.mock.spec.ts` (novos), e acréscimos nos que existiam.
+- **Dependências novas:** nenhuma. Sem migration, e sem mudança em `infra/`, `.github/`, no módulo `auth` ou em `.claude/`.
+- **Testes:** `pnpm lint` (zero avisos), `pnpm typecheck` (todos os pacotes), `format:check`, `test:lint-rules`, `pnpm build` e
+  `build:demo` do painel (com a varredura do pacote) limpos. Painel: 69 arquivos, 1083 testes (59 novos). Pacote `shared`: 31
+  arquivos, 600 testes (23 novos). API: 238 arquivos e 4.583 testes, com PostgreSQL 18 descartável: 4.578 passam e 5 (em 4
+  arquivos opcionais, de medição) ficam de fora, como antes. Três notas da rodada: dois arquivos desta parte caíram com o erro do
+  worker do vitest no Windows (3221226505) e passaram ao repetir (o `cases-read`, de antes, também cai às vezes nesta máquina); e o
+  teste da troca de senha do `db-bootstrap` não vale num banco que confia em toda conexão: passou (15 de 15) num segundo banco, com
+  senha. Não rodaram: o console e o e2e com a API (`fullstack`).
+  - **Byte a byte:** o código de antes (da base) e o novo, no mesmo banco e no mesmo relógio: 18 clientes sorteados, três modos,
+    quatro papéis, a Torre e os sete relatórios, 618 respostas iguais sem o pedido. No painel desligado, 48 telas (dois papéis, três
+    larguras, oito endereços) com o HTML e os papéis de acessibilidade iguais, e os mesmos pedidos.
+  - **Contagens:** clientes sorteados, com casos e alertas em todo estado, conferidos contra uma conta feita alerta por alerta
+    (Torre, radar, resumo, MITRE, prévia e `recurrenceTreated`); isolamento entre dois clientes; papéis; versões diferentes nos dois
+    sentidos; a memória do MITRE (validade, cliente e quem não pede).
+  - **Navegador:** 233 de 233 testes (projetos `mock` e `catalogo`, em portas próprias): sem violação de acessibilidade (WCAG 2.2 AA) nos
+    dois temas e em 360, 768 e 1280 px; nenhuma rolagem horizontal de 320 a 1920; teclado, toque, o orçamento de animação
+    (só `transform` e `opacity`, nenhuma mudança no DOM) e movimento reduzido. Os e2e do radar e do MITRE de sempre rodam com
+    `verax.mock.cases=off`.
+- **Mutações:** 162 na lógica (77 na API, 75 no painel e 10 no contrato), uma por vez em cada pacote (as da API e as do painel ao
+  mesmo tempo, em arquivos diferentes), com prazo e restauração conferida por hash. Na primeira rodada sobreviveram seis: quatro
+  viraram testes (um deles passava sem conferir nada: o CSV tem ponto e vírgula dentro das células), e duas são equivalentes (o
+  filtro de caso nulo antes de um `count(DISTINCT)`, que já ignora nulos; e a permissão dos incidentes no desfazer, que hoje é dos
+  mesmos papéis da triagem). Nenhuma ficou no código.
+- **Carga** (PostgreSQL 18 num contêiner de 512 MB e 2 CPUs, `work_mem` de 2 MB; 250.300 alertas, 2.000 casos, 1.196 pendentes, 10
+  mil alertas num incidente aberto, e 50 mil de outro cliente), em ms, mediana e p95:
+
+  | Leitura                            | Sem casos     | Com casos     |
+  | ---------------------------------- | ------------- | ------------- |
+  | Torre, MITRE guardado              | 43,9 / 52,3   | 73,1 / 81,8   |
+  | Torre, MITRE frio                  | 180,5 / 246,1 | 320,6 / 347,7 |
+  | Relatório MITRE, 30 dias           | 123,8 / 170,2 | 204,4 / 231   |
+  | Resumo, 30 dias (lê tudo, em JS)   | 3.970 / 4.158 | 4.345 / 4.445 |
+  | Dez painéis juntos, MITRE frio     | 666           | 949           |
+  | Comando: casos pendentes           |               | 11,1 / 13,1   |
+  | Comando: casos do radar            |               | 16,1 / 18,4   |
+  | Comando: casos do período, 30 dias |               | 133,8 / 156,2 |
+  | Prévia de um filtro grande         |               | 156,7 / 175,8 |
+  | Prévia por severidade              |               | 154,5 / 172,2 |
+  | Autores das operações              |               | 1,1 / 1,2     |
+  | Lista de 100 casos, com as voltas  |               | 17,4 / 22,2   |
+
+- **Teste manual:** na demonstração, a Situação (o radar de casos, as decisões e os botões delas), o Resumo e o MITRE em Análises, e,
+  na visão Casos, um filtro por severidade e "Em análise" (a conta exata). No nó piloto, com `CASES_MODE=shadow` e a sessão da Verax:
+  o radar de casos e as contagens, com as decisões de sempre; com a do cliente, a tela de sempre. Com `on`: comparar a cor do
+  semáforo antes e depois, e as contagens das decisões com as listas a que elas levam.
+- **Riscos e dúvidas:**
+  - Não rodou num nó de verdade, nem o e2e com a API (`fullstack`): só a API contra um PostgreSQL de teste e o painel contra a
+    demonstração.
+  - O alerta em "novo" dentro de um incidente continua deixando a Torre amarela, como antes. Mudar isso é mudar o semáforo.
+  - `triagedAt` é a primeira triagem: um alerta que passou dias em análise conta, na mediana, até entrar em análise.
+  - O relatório de Resumo continua lendo todos os alertas do período em JS (4 s nesta carga); os casos somam cerca de 0,4 s.
+  - A parte dos avisos por caso mexe nos mesmos `url-state.ts`, `detections-cases.test.tsx`, `ARQUITETURA.md` e `STATUS.md`: quem
+    entrar depois resolve os conflitos, que são de linhas vizinhas.

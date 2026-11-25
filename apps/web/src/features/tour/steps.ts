@@ -47,14 +47,14 @@ export const TOUR_STEPS: readonly TourStep[] = [
     path: '/',
     target: [tour('deteccoes-decisoes'), tour('deteccoes-situacao')],
     title: 'O que decidir agora',
-    body: 'Cada linha é uma decisão esperando alguém: incidentes sem responsável, alertas altos ou críticos para validar e, para a equipe da Verax, alertas de contas não cadastradas. O botão filtra a lista. Ao lado, a saúde da coleta abre o detalhe de cada fonte.',
+    body: 'Cada linha é uma decisão esperando alguém: incidentes sem responsável, casos com alerta alto ou crítico para validar e, para a equipe da Verax, alertas de contas não cadastradas. O botão filtra a lista. Ao lado, a saúde da coleta abre o detalhe de cada fonte.',
   },
   {
     id: 'deteccoes-radar',
     path: '/',
     target: [tour('deteccoes-radar'), tour('deteccoes-situacao')],
     title: 'Radar das últimas 24 horas',
-    body: 'Cada ponto é uma detecção: o ângulo é a origem (AWS, GCP, Cloudflare ou agentes), a distância do centro é a idade e a forma é a severidade. Passe o mouse, use as setas do teclado ou abra a tabela; Enter abre o alerta.',
+    body: 'Cada ponto é um caso de detecção: o ângulo é a origem (AWS, GCP, Cloudflare ou agentes), a distância do centro é a idade, a forma é a severidade e o tamanho, quantos alertas ele reúne. Passe o mouse, use as setas do teclado ou abra a tabela; Enter abre o caso.',
   },
   {
     id: 'deteccoes-origens',

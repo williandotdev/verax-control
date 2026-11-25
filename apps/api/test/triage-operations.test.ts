@@ -557,6 +557,11 @@ describe('triagem em massa', () => {
         new: 30,
         investigating: 0,
         pending: { critical: 0, high: 30, medium: 0, low: 0 },
+        protectedCases: 0,
+        byStatus: {
+          new: { critical: 0, high: 30, medium: 0, low: 0 },
+          investigating: { critical: 0, high: 0, medium: 0, low: 0 },
+        },
       });
       const made = await operate(app, who, statusRequest({ filter }, preview.alerts));
       expect(made).toMatchObject({

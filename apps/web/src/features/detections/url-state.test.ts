@@ -4,6 +4,7 @@ import {
   activeFilterCount,
   CASE_FILTER_KEYS,
   caseQueueSlug,
+  casesSearch,
   caseSortSlug,
   caseStateSlug,
   dayBoundary,
@@ -310,5 +311,26 @@ describe('endereços de antes', () => {
     ['/incidentes/', '', '/?visao=incidentes'],
   ])('%s%s → %s', (path, search, target) => {
     expect(legacyDetectionsUrl(path, search)).toBe(target);
+  });
+});
+
+describe('atalhos da situação para a lista de casos', () => {
+  it('com eles ligados, o endereço curto; na medição, a visão pelo nome', () => {
+    expect(casesSearch('on')).toBe('');
+    expect(casesSearch('on', { queue: 'posture' })).toBe('?fila=postura');
+    expect(casesSearch('on', { state: 'all', period: '24h' })).toBe('?estado=todos&periodo=24h');
+    expect(casesSearch('shadow', { state: 'all', period: '24h' })).toBe(
+      '?visao=casos&estado=todos&periodo=24h',
+    );
+  });
+
+  it('a tela lê de volta o que o atalho diz', () => {
+    for (const mode of ['on', 'shadow'] as const) {
+      const params = new URLSearchParams(
+        casesSearch(mode, { state: 'all', queue: 'posture', period: '24h' }),
+      );
+      expect(readDetectionState(params, mode)).toMatchObject({ view: 'cases', periodChoice: '24h' });
+      expect(readCaseState(params)).toMatchObject({ state: 'all', queue: 'posture' });
+    }
   });
 });

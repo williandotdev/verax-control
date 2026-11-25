@@ -1,5 +1,6 @@
 import {
   CASE_PREVIEW_SAMPLES,
+  CASE_QUEUES,
   type CaseDetail,
   type CaseFilterFields,
   type CaseGroup,
@@ -17,6 +18,12 @@ import {
   MAX_CASE_GROUPS,
   MAX_RARE_VALUES,
   filterWindow,
+  RADAR_CASES_LIMIT,
+  RADAR_WINDOW_HOURS,
+  radarSectorOf,
+  type SummaryReport,
+  type TowerCases,
+  type TowerRadarCases,
 } from '@verax/shared';
 import { DEMO_STILL_ACTIVE } from './case-fixtures';
 
@@ -39,6 +46,13 @@ export interface DemoCase {
   /** Promovido inteiro: o incidente dele. */
   incidentId: string | null;
   findingIds: Set<string>;
+}
+
+/** Um incidente como o radar de casos precisa dele. */
+export interface DemoRadarIncident {
+  id: string;
+  open: boolean;
+  severity: FindingSeverity;
 }
 
 interface Key {
@@ -288,6 +302,7 @@ export class DemoCases {
       sealedAt: target.sealedAt,
       sealReason: target.sealReason,
       recurrence: target.recurrence,
+      recurrenceTreated: this.treatedBefore(target),
       openedAt: first,
       firstSeenAt: first,
       lastSeenAt: last,
@@ -300,6 +315,125 @@ export class DemoCases {
       },
       mitreTactics: unique(findings.flatMap((finding) => finding.mitreTactics)).slice(0, 20),
     };
+  }
+
+  /** Das voltas, quantas foram depois de o caso anterior ter sido tratado. */
+  private treatedBefore(target: DemoCase): number {
+    const before = target.previousCaseId === null ? undefined : this.byId(target.previousCaseId);
+    if (!before) return 0;
+    return (before.sealReason === 'treated' ? 1 : 0) + this.treatedBefore(before);
+  }
+
+  /** Os casos pendentes por fila e pior severidade, como o resumo da situação os conta. */
+  pendingByQueue(): TowerCases {
+    const result: TowerCases = {
+      detection: noPending(),
+      vulnerability: noPending(),
+      posture: noPending(),
+      oldestPendingAt: { detection: null, vulnerability: null, posture: null },
+    };
+    for (const target of this.cases) {
+      const row = this.summary(target);
+      if (row.severity === null) continue;
+      result[row.queue][row.severity] += 1;
+      const oldest = result.oldestPendingAt[row.queue];
+      if (oldest === null || row.openedAt < oldest) result.oldestPendingAt[row.queue] = row.openedAt;
+    }
+    return result;
+  }
+
+  /** O que falta validar, pelos casos: cada alerta alto ou crítico em "novo" num lugar só. */
+  validation(): { cases: number; vulnerabilityCases: number; uncovered: number } {
+    const serious = this.findings.filter(
+      ({ status, severity }) => status === 'new' && (severity === 'critical' || severity === 'high'),
+    );
+    const covered = serious.filter(({ incidentId }) => incidentId === null);
+    const ids = new Set(covered.map(({ id }) => this.caseOfFinding.get(id)));
+    const queues = [...ids].map((id) => this.cases.find((row) => row.id === id)?.queue);
+    const vulnerabilityCases = queues.filter((queue) => queue === 'vulnerability').length;
+    return {
+      cases:
+        queues.filter((queue) => CASE_QUEUES.some((known) => known === queue)).length - vulnerabilityCases,
+      vulnerabilityCases,
+      uncovered: serious.length - covered.length,
+    };
+  }
+
+  /** Os casos de detecção do radar, os mais graves primeiro. */
+  radar(incidents: readonly DemoRadarIncident[], now: Date): TowerRadarCases {
+    const since = new Date(now.getTime() - RADAR_WINDOW_HOURS * HOUR_MS).toISOString();
+    const until = now.toISOString();
+    const recentOf = (target: DemoCase) =>
+      this.findingsOf(target).filter(({ occurredAt }) => occurredAt >= since && occurredAt <= until).length;
+    const active = this.list(
+      { queue: 'detection', state: 'all', sort: 'priority', from: since, to: until },
+      now,
+    ).flatMap((row) => {
+      const target = this.byId(row.id);
+      if (!target) return [];
+      const own = new Set(this.findingsOf(target).map(({ incidentId }) => incidentId));
+      const open = incidents
+        .filter((incident) => incident.open && own.has(incident.id))
+        .sort((a, b) => FINDING_SEVERITIES.indexOf(a.severity) - FINDING_SEVERITIES.indexOf(b.severity))[0];
+      const incident = open ?? incidents.find(({ id }) => id === target.incidentId) ?? null;
+      return [{ row, incident, recent: recentOf(target) }];
+    });
+    const rank = ({ row, incident }: (typeof active)[number]) =>
+      Math.min(
+        row.severity === null ? FINDING_SEVERITIES.length : FINDING_SEVERITIES.indexOf(row.severity),
+        incident?.open ? FINDING_SEVERITIES.indexOf(incident.severity) : FINDING_SEVERITIES.length,
+      );
+    return {
+      total: active.length,
+      alerts: active.reduce((sum, { recent }) => sum + recent, 0),
+      limit: RADAR_CASES_LIMIT,
+      items: active
+        .sort((a, b) => rank(a) - rank(b))
+        .slice(0, RADAR_CASES_LIMIT)
+        .map(({ row, incident, recent }) => ({
+          id: row.id,
+          title: row.title,
+          severity: row.severity,
+          sources: row.sources,
+          sector: radarSectorOf(row.sources[0] ?? 'cloudtrail'),
+          total: row.counts.total,
+          pending: row.counts.new + row.counts.investigating,
+          recent,
+          lastActivityAt: row.lastSeenAt > until ? until : row.lastSeenAt,
+          incident,
+        })),
+    };
+  }
+
+  /** Os casos abertos num período e em que pé estão. Na demonstração, todo alerta é triado 42 minutos depois. */
+  outcomes(from: string, to: string): NonNullable<SummaryReport['cases']> {
+    const opened = this.cases
+      .map((target) => ({ target, row: this.summary(target) }))
+      .filter(({ row }) => row.counts.total > 0 && row.openedAt >= from && row.openedAt <= to);
+    const treated = opened.filter(({ row }) => row.severity === null);
+    const minutes = treated
+      .map(({ row }) => (Date.parse(row.lastSeenAt) - Date.parse(row.openedAt)) / 60_000 + 42)
+      .sort((a, b) => a - b);
+    const middle = Math.floor(minutes.length / 2);
+    const median =
+      minutes.length % 2 === 1 ? minutes[middle] : ((minutes[middle - 1] ?? 0) + (minutes[middle] ?? 0)) / 2;
+    return {
+      opened: opened.length,
+      treated: treated.length,
+      pending: opened.length - treated.length,
+      medianMinutesToTreat: minutes.length === 0 ? null : Math.round(median ?? 0),
+    };
+  }
+
+  /** Quantos casos têm alerta de cada tática num período. */
+  casesByTactic(from: string, to: string): Map<string, number> {
+    const ids = new Map<string, Set<string>>();
+    for (const finding of this.findings) {
+      const id = this.caseOfFinding.get(finding.id);
+      if (id === undefined || finding.occurredAt < from || finding.occurredAt > to) continue;
+      for (const tactic of finding.mitreTactics) ids.set(tactic, (ids.get(tactic) ?? new Set()).add(id));
+    }
+    return new Map([...ids].map(([tactic, cases]) => [tactic, cases.size]));
   }
 
   private groupValue(row: CaseSummary, by: CaseGrouping): string | null {

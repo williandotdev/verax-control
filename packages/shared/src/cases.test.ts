@@ -6,12 +6,14 @@ import {
   caseFindingsQuerySchema,
   caseGroupsQuerySchema,
   caseListQuerySchema,
+  caseOperationSchema,
   casePageSchema,
   caseStatusSchema,
   caseSummarySchema,
   caseTimelineSchema,
   findingTriageSchema,
   MAX_CASE_PAGE,
+  triageOperationSchema,
 } from './cases.js';
 import { FINDING_SEVERITIES } from './findings.js';
 
@@ -191,6 +193,34 @@ describe('respostas', () => {
     };
     expect(ok(caseDetailSchema, detail)).toBe(true);
     expect(ok(caseDetailSchema, { ...detail, can: { triage: true } })).toBe(false);
+  });
+
+  it('versões diferentes: as voltas depois de tratado e o `can` das operações são opcionais (um nó de antes não manda)', () => {
+    expect(
+      caseSummarySchema.parse({ ...summary, recurrence: 3, recurrenceTreated: 2 }).recurrenceTreated,
+    ).toBe(2);
+    expect(ok(caseSummarySchema, { ...summary, recurrenceTreated: -1 })).toBe(false);
+    const operation = {
+      id: summary.id,
+      action: 'status',
+      status: 'resolved',
+      state: 'done',
+      reason: null,
+      author: null,
+      createdAt: summary.openedAt,
+      matched: 1,
+      changed: 1,
+      skipped: 0,
+      undoUntil: null,
+      undoOfId: null,
+    };
+    const can = { cancel: false, continue: false, undo: true };
+    expect(ok(caseOperationSchema, operation)).toBe(true);
+    expect(ok(caseOperationSchema, { ...operation, can })).toBe(true);
+    expect(ok(caseOperationSchema, { ...operation, can: { ...can, promote: true } })).toBe(false);
+    expect(ok(caseOperationSchema, { ...operation, can: { undo: true } })).toBe(false);
+    // A trilha de um alerta continua sem ele: não há o que fazer a partir dela.
+    expect(ok(triageOperationSchema, { ...operation, can })).toBe(false);
   });
 
   it('sem operação, o alerta não tem trilha de triagem em massa', () => {

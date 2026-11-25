@@ -1215,6 +1215,7 @@ describe('leitura dos casos', () => {
         skipped: 1,
         undoUntil: null,
         undoOfId: null,
+        can: { cancel: false, continue: false, undo: false },
       });
       expect(JSON.stringify(operations)).not.toContain(unrelated);
       // Um id de operação que já saiu (o cabeçalho tem retenção própria) não quebra nada.

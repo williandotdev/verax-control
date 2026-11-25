@@ -73,8 +73,12 @@ export interface BulkScope {
   pending: PendingCounts;
   /** Dos pendentes, os que já estão em análise; null se não se sabe. */
   investigating: number | null;
-  /** Os casos que tocam a lista de proteção; null se não se sabe (um filtro não diz). */
+  /** Os pendentes ainda novos, por severidade; null se não se sabe (só a prévia de um filtro diz). */
+  fresh?: PendingCounts | null;
+  /** Os casos que tocam a lista de proteção; null se não se sabe quais (um filtro só diz quantos). */
   protectedTitles: readonly string[] | null;
+  /** Quantos casos de um filtro tocam a lista de proteção; null se o nó não diz. */
+  protectedCases?: number | null;
   /** Há filtro de severidade: ele escolhe casos, não alertas. */
   severityFiltered?: boolean;
 }
@@ -125,7 +129,9 @@ export function scopeOfFilter(filter: TriageFilter, label: string, preview: Tria
     cases: preview.cases,
     pending: preview.pending,
     investigating: preview.investigating,
+    fresh: preview.byStatus?.new ?? null,
     protectedTitles: null,
+    protectedCases: preview.protectedCases ?? null,
     severityFiltered: filter.severity !== undefined,
   };
 }
@@ -168,17 +174,21 @@ export function groupFilter(
 
 /**
  * Quantos alertas a operação alcança: sem os críticos, se eles não foram incluídos; e, para "em análise", sem os que já
- * estão. `exact: false` quando não dá para saber quantos dos críticos que saem já estavam em análise: é um teto, e a API
- * só recusa o conjunto que veio maior que o confirmado.
+ * estão (a prévia de um filtro diz os novos por severidade). `exact: false` quando não dá para saber quantos dos críticos que
+ * saem já estavam em análise: é um teto, e a API só recusa o conjunto que veio maior que o confirmado.
  */
 export function expectedCount(
-  scope: Pick<BulkScope, 'pending' | 'investigating'>,
+  scope: Pick<BulkScope, 'pending' | 'investigating' | 'fresh'>,
   includeCritical: boolean,
   action: BulkAction,
 ): { count: number; exact: boolean } {
   const total = sumPending(scope.pending);
   const count = includeCritical ? total : total - scope.pending.critical;
   if (action !== 'investigating' || scope.investigating === 0) return { count, exact: true };
+  if (scope.fresh) {
+    const fresh = sumPending(scope.fresh);
+    return { count: includeCritical ? fresh : fresh - scope.fresh.critical, exact: true };
+  }
   if (scope.investigating === null || count !== total) return { count, exact: false };
   return { count: total - scope.investigating, exact: true };
 }

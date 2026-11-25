@@ -9,10 +9,10 @@ import {
   type CaseGroup,
   type CaseGroupsQuery,
   type CaseListQuery,
+  type CaseOperation,
   type CaseStatus,
   type CaseSummary,
   type CaseTimeline,
-  type FindingSeverity,
   type FindingTriage,
   hasPermission,
   INVALID_CASE_CURSOR_CODE,
@@ -23,7 +23,6 @@ import {
   MAX_PREVIOUS_CASES,
   MAX_RARE_VALUES,
   type Paginated,
-  type TriageOperationView,
 } from '@verax/shared';
 import type { RequestAuth } from '../common/auth/request-auth.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
@@ -33,13 +32,12 @@ import { PrismaService } from '../common/prisma/prisma.service.js';
 import { escapeLike } from '../findings/finding-filters.js';
 import { findingSelect, toFinding } from '../findings/findings.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
-import { protectedItemsOf } from '../incidents/incident-summary.js';
 import { CASE_ASSIGN_TASK } from './case-assign-job.js';
+import { boundedRead } from './case-bounded.js';
 import { CASE_CURSOR_START, caseCursorScope, decodeCaseCursor, encodeCaseCursor } from './case-cursor.js';
-import { sqlStateOf } from './case-errors.js';
 import { caseSetFilter } from './case-filter.js';
-import { firstCharacters } from './case-key.js';
-import { SAMPLE_VALUE_MAX } from './case-plan.js';
+import { caseProtectedItems } from './case-protected.js';
+import { worstPending } from './case-radar.js';
 import {
   caseAnalysis,
   type CaseAnalysisRow,
@@ -50,12 +48,20 @@ import {
   previousCaseIds,
   timelineCounts,
   timelineRange,
+  treatedRecurrences,
 } from './case-read-store.js';
 import { sourcesOfCase } from './case-sources.js';
 import { partsOf } from './case-store.js';
 import { fillTimeline, timelineCap, timelineWindow } from './case-timeline.js';
-import { casesVisibleTo } from './cases-mode.js';
-import { known, operationSelect, toOperation } from './triage-view.js';
+import { casesOperable, casesVisibleTo } from './cases-mode.js';
+import {
+  caseOperationSelect,
+  known,
+  operationCan,
+  operationSelect,
+  type OperationViewer,
+  toOperation,
+} from './triage-view.js';
 
 /** Os tetos da leitura dos alertas de um caso: um com milhões deles não prende o banco. */
 export interface CaseReadLimits {
@@ -72,8 +78,6 @@ export const DEFAULT_CASE_READ_LIMITS: CaseReadLimits = {
 };
 /** Os tetos, como provider (os testes usam menores). */
 export const CASE_READ_LIMITS = Symbol('CASE_READ_LIMITS');
-/** O SQLSTATE de um comando que passou do `statement_timeout`. */
-const QUERY_CANCELED = '57014';
 
 const CASE_NOT_FOUND = 'Caso não encontrado';
 const FINDING_NOT_FOUND = 'Alerta não encontrado';
@@ -128,13 +132,6 @@ const countsOf = (row: CountRow): CaseSummary['counts'] => ({
   incident: row.incidentCount,
 });
 
-function worstPending(row: CaseRow): FindingSeverity | null {
-  if (row.pendingCritical > 0) return 'critical';
-  if (row.pendingHigh > 0) return 'high';
-  if (row.pendingMedium > 0) return 'medium';
-  return row.pendingLow > 0 ? 'low' : null;
-}
-
 const head = (values: readonly string[]): string[] => values.slice(0, CASE_PREVIEW_SAMPLES);
 
 /** O caso toca a lista de proteção, pelo que está nas amostras. */
@@ -142,7 +139,11 @@ function touchesProtectedSample(row: CaseRow, protectedItems: ReadonlySet<string
   return [...row.resources, ...row.actors, ...row.ips].some((value) => protectedItems.has(value));
 }
 
-function toCaseSummary(row: CaseRow, protectedItems: ReadonlySet<string>): CaseSummary {
+function toCaseSummary(
+  row: CaseRow,
+  protectedItems: ReadonlySet<string>,
+  treatedBefore: ReadonlyMap<string, number>,
+): CaseSummary {
   const keyParts = partsOf(row.keyParts);
   return {
     id: row.id,
@@ -163,6 +164,7 @@ function toCaseSummary(row: CaseRow, protectedItems: ReadonlySet<string>): CaseS
     sealedAt: row.sealedAt?.toISOString() ?? null,
     sealReason: known(CASE_SEAL_REASONS, row.sealReason),
     recurrence: row.recurrence,
+    recurrenceTreated: treatedBefore.get(row.id) ?? 0,
     openedAt: row.openedAt.toISOString(),
     firstSeenAt: row.firstSeenAt.toISOString(),
     lastSeenAt: row.lastSeenAt.toISOString(),
@@ -242,7 +244,7 @@ export class CasesService {
 
   async list(query: CaseListQuery, now = new Date()): Promise<Paginated<CaseSummary>> {
     const db = this.prisma.scoped();
-    const protectedItems = await this.protectedItems(db);
+    const protectedItems = await caseProtectedItems(db);
     const { skip, take } = toPrismaPage(query);
     const { total, ids } = await caseListPage(this.prisma.db(), this.prisma.scopeTenantId(), {
       ...caseSetFilter(query, now),
@@ -254,10 +256,11 @@ export class CasesService {
     const rows =
       ids.length === 0 ? [] : await db.alertCase.findMany({ where: { id: { in: ids } }, select: caseSelect });
     const byId = new Map(rows.map((row) => [row.id, row]));
+    const treatedBefore = await this.treatedBefore(rows);
     // Um caso que saiu entre as duas leituras (expurgo) só some da página.
     const items = ids.flatMap((id) => {
       const row = byId.get(id);
-      return row === undefined ? [] : [toCaseSummary(row, protectedItems)];
+      return row === undefined ? [] : [toCaseSummary(row, protectedItems, treatedBefore)];
     });
     return toPaginated(items, total, query);
   }
@@ -281,12 +284,12 @@ export class CasesService {
     return toPaginated(groups, total, query);
   }
 
-  async get(auth: RequestAuth, id: string): Promise<CaseDetail> {
+  async get(auth: RequestAuth, id: string, now = new Date()): Promise<CaseDetail> {
     const db = this.prisma.scoped();
     const row = await db.alertCase.findUnique({ where: { id }, select: caseSelect });
     if (!row) throw new ApiError(HttpStatus.NOT_FOUND, CASE_NOT_FOUND);
     const tenantId = this.prisma.scopeTenantId();
-    const protectedItems = await this.protectedItems(db);
+    const protectedItems = await caseProtectedItems(db);
     const analysis = await this.bounded(this.limits.analysisTimeoutMs, (tx) =>
       caseAnalysis(tx, tenantId, id, {
         alerts: this.limits.analysisAlerts,
@@ -297,9 +300,11 @@ export class CasesService {
       }),
     );
     if (analysis === null) this.logger.warn({ caseId: id }, 'a leitura dos alertas do caso passou do prazo');
-    const triage = hasPermission(auth.role, 'findings:triage');
+    // Na medição (`shadow`) ninguém opera, nem a equipe da Verax: as escritas respondem 404.
+    const operating = casesOperable(this.config.CASES_MODE);
+    const triage = operating && hasPermission(auth.role, 'findings:triage');
     return {
-      ...toCaseSummary(row, protectedItems),
+      ...toCaseSummary(row, protectedItems, await this.treatedBefore([row])),
       samples: {
         ruleIds: row.ruleIds,
         accounts: row.accounts,
@@ -311,7 +316,12 @@ export class CasesService {
       analysis: analysis === null ? null : toAnalysis(analysis, row.total, this.limits.analysisAlerts),
       previous: await this.previousCases(db, tenantId, row.previousCaseId),
       incidents: await this.incidents(db, row.incidentId, analysis?.incidents ?? []),
-      operations: await this.operations(db, analysis?.operationIds ?? []),
+      operations: await this.operations(
+        db,
+        analysis?.operationIds ?? [],
+        { role: auth.role, userId: auth.userId, operating },
+        now,
+      ),
       can: { triage, promote: triage && hasPermission(auth.role, 'incidents:write') },
     };
   }
@@ -420,17 +430,19 @@ export class CasesService {
     };
   }
 
+  /** Dos casos que já voltaram, quantas vezes foi depois de tratado. */
+  private async treatedBefore(
+    rows: readonly { id: string; recurrence: number }[],
+  ): Promise<ReadonlyMap<string, number>> {
+    const ids = rows.filter((row) => row.recurrence > 0).map((row) => row.id);
+    if (ids.length === 0) return new Map();
+    const counts = await treatedRecurrences(this.prisma.db(), this.prisma.scopeTenantId(), ids);
+    return new Map(counts.map(({ id, treated }) => [id, treated]));
+  }
+
   private async assertCase(db: Prisma.TransactionClient, id: string): Promise<void> {
     const row = await db.alertCase.findUnique({ where: { id }, select: { id: true } });
     if (!row) throw new ApiError(HttpStatus.NOT_FOUND, CASE_NOT_FOUND);
-  }
-
-  /** A lista de proteção do cliente, cortada no tamanho das amostras, que é com o que ela é comparada. */
-  private async protectedItems(db: Prisma.TransactionClient): Promise<Set<string>> {
-    const items = protectedItemsOf(
-      await db.protectedResource.findMany({ select: { type: true, identifier: true } }),
-    );
-    return new Set([...items].map((item) => firstCharacters(item, SAMPLE_VALUE_MAX)));
   }
 
   private async previousCases(
@@ -493,39 +505,27 @@ export class CasesService {
   private async operations(
     db: Prisma.TransactionClient,
     ids: readonly string[],
-  ): Promise<TriageOperationView[]> {
+    viewer: OperationViewer,
+    now: Date,
+  ): Promise<CaseOperation[]> {
     if (ids.length === 0) return [];
     const rows = await db.triageOperation.findMany({
       // As que elas desfizeram também: a chave estrangeira do desfazer leva o cliente.
       where: { OR: [{ id: { in: [...ids] } }, { undoneBy: { some: { id: { in: [...ids] } } } }] },
-      select: operationSelect,
+      select: caseOperationSelect,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: MAX_CASE_OPERATIONS,
     });
-    return rows.flatMap((row) => toOperation(row) ?? []);
+    return rows.flatMap((row) => {
+      const operation = toOperation(row);
+      return operation === null ? [] : [{ ...operation, can: operationCan(row, viewer, now) }];
+    });
   }
 
-  /**
-   * Uma leitura com prazo, numa transação só de leitura; null se o banco a cortou. O prazo é do comando no banco: quem
-   * pede demais não fica com a conexão. Sem JIT: num caso grande, compilar o comando demoraria mais que rodá-lo.
-   */
-  private async bounded<T>(
+  private bounded<T>(
     milliseconds: number,
     read: (tx: Prisma.TransactionClient) => Promise<T>,
   ): Promise<T | null> {
-    try {
-      return await this.prisma.$transaction(
-        async (tx) => {
-          await tx.$executeRaw`
-            SELECT set_config('statement_timeout', ${`${milliseconds}ms`}, true), set_config('jit', 'off', true),
-              set_config('transaction_read_only', 'on', true)`;
-          return read(tx);
-        },
-        { timeout: milliseconds * 2 + 5_000 },
-      );
-    } catch (error) {
-      if (sqlStateOf(error) === QUERY_CANCELED) return null;
-      throw error;
-    }
+    return boundedRead(this.prisma, milliseconds, read);
   }
 }

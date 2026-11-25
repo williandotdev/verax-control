@@ -10,7 +10,9 @@ import {
   type FindingDetail,
   hasPermission,
   INVALID_CASE_CURSOR_CODE,
+  MAX_TRIAGE_AUTHORS,
   type Permission,
+  TRIAGE_AUTHORS_DAYS,
   triageFilterSchema,
   triageOperationCreateSchema,
   triageOperationListQuerySchema,
@@ -76,6 +78,16 @@ interface World {
   triage: DemoTriage;
 }
 
+/** Os casos da demonstração, compartilhados pelas rotas deles, pela Torre e pelos relatórios. */
+export interface CaseWorlds {
+  mode: CaseMode;
+  /** O modo para quem está vendo: com `shadow`, só a equipe da Verax. */
+  visibleMode: () => CaseMode;
+  worldOf: (tenantId: string) => World;
+  /** Os casos do cliente, se quem pede os quer (`cases=true`) e pode vê-los; senão, null. */
+  requested: (tenantId: string, query: { cases?: 'true' | undefined }) => DemoCases | null;
+}
+
 const CURSOR_MARK = '.';
 const encodeCursor = (text: string): string =>
   [...btoa(text)]
@@ -90,16 +102,12 @@ const decodeCursor = (text: string): string | null => {
   }
 };
 
-/**
- * Casos e triagem em massa do modo mock, com o mesmo contrato da API, montados dos mesmos alertas das outras telas. Com os
- * casos desligados, só a situação responde (`off`), e as outras rotas são 404, como num nó com eles desligados.
- */
-export function createCaseHandlers(
+export function createCaseWorlds(
   state: MockState,
   findings: Map<string, FindingDetail[]>,
   incidents: Map<string, IncidentState>,
   admin: AdminStore,
-) {
+): CaseWorlds {
   const mode = demoCaseMode(state);
   const worlds = new Map<string, World>();
 
@@ -135,11 +143,29 @@ export function createCaseHandlers(
     return world;
   };
 
-  /** Quem vê: com `shadow`, só a equipe da Verax. */
   const visibleMode = (): CaseMode => {
     if (mode === 'shadow' && state.me?.role !== 'admin_verax') return 'off';
     return mode;
   };
+  return {
+    mode,
+    visibleMode,
+    worldOf,
+    requested: (tenantId, { cases }) =>
+      cases === 'true' && visibleMode() !== 'off' ? worldOf(tenantId).cases : null,
+  };
+}
+
+/**
+ * Casos e triagem em massa do modo mock, com o mesmo contrato da API, montados dos mesmos alertas das outras telas. Com os
+ * casos desligados, só a situação responde (`off`), e as outras rotas são 404, como num nó com eles desligados.
+ */
+export function createCaseHandlers(
+  state: MockState,
+  findings: Map<string, FindingDetail[]>,
+  incidents: Map<string, IncidentState>,
+  { mode, visibleMode, worldOf }: CaseWorlds,
+) {
   const scoped = (permission: Permission = 'findings:read') => {
     if (!state.me) return { error: problem(401, 'Não autenticado') } as const;
     if (!state.me.permissions.includes(permission)) return { error: problem(403, 'Sem permissão') } as const;
@@ -203,13 +229,17 @@ export function createCaseHandlers(
       const row = scope.cases.byId(String(params['id']));
       if (!row) return problem(404, 'Caso não encontrado');
       const summaries = incidentSummaries(scope.tenantId, findings, incidents);
-      const triage = hasPermission(scope.me.role, 'findings:triage');
+      const triage = mode === 'on' && hasPermission(scope.me.role, 'findings:triage');
+      const { me } = scope;
       const detail: CaseDetail = {
         ...scope.cases.detail(row, (id) => {
           const incident = summaries.find((candidate) => candidate.id === id);
           return incident && { status: incident.status, severity: incident.severity };
         }),
-        operations: scope.triage.ofFindings(row.findingIds),
+        operations: scope.triage.ofFindings(row.findingIds).map((operation) => {
+          const alone = scope.triage.get(me, operation.id);
+          return alone ? { ...operation, can: readOnlyIn(mode)(alone).can } : operation;
+        }),
         can: { triage, promote: triage && hasPermission(scope.me.role, 'incidents:write') },
       };
       return HttpResponse.json(detail);
@@ -316,6 +346,20 @@ export function createCaseHandlers(
       return page(scope.triage.list(scope.me, filter).map(readOnlyIn(mode)), number, pageSize);
     }),
 
+    http.get(url('/v1/triage-operations/authors'), () => {
+      const scope = scoped();
+      if ('error' in scope) return scope.error;
+      const since = Date.now() - TRIAGE_AUTHORS_DAYS * 24 * 3_600_000;
+      const authors = new Map<string, string>();
+      for (const { author, createdAt } of scope.triage.list(scope.me, {})) {
+        if (author && Date.parse(createdAt) >= since) authors.set(author.id, author.name);
+      }
+      return HttpResponse.json({
+        items: [...authors].map(([id, name]) => ({ id, name })).slice(0, MAX_TRIAGE_AUTHORS),
+        truncated: authors.size > MAX_TRIAGE_AUTHORS,
+      });
+    }),
+
     http.get(url('/v1/triage-operations/preview'), ({ request }) => {
       const scope = scoped('findings:triage');
       if ('error' in scope) return scope.error;
@@ -323,15 +367,21 @@ export function createCaseHandlers(
       if (!parsed.success) return problem(400, 'Filtro inválido');
       const rows = scope.cases.matching(parsed.data);
       const pending = rows.flatMap((row) => scope.cases.findingsOf(row)).filter(isPending);
-      const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
-      for (const finding of pending) bySeverity[finding.severity] += 1;
-      const investigating = pending.filter((finding) => finding.status === 'investigating').length;
+      const tally = (chosen: readonly FindingDetail[]) => {
+        const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+        for (const finding of chosen) counts[finding.severity] += 1;
+        return counts;
+      };
+      const investigating = pending.filter((finding) => finding.status === 'investigating');
+      const fresh = pending.filter((finding) => finding.status === 'new');
       return HttpResponse.json({
         cases: rows.length,
         alerts: pending.length,
-        new: pending.length - investigating,
-        investigating,
-        pending: bySeverity,
+        new: fresh.length,
+        investigating: investigating.length,
+        pending: tally(pending),
+        protectedCases: rows.filter((row) => scope.cases.summary(row).protected).length,
+        byStatus: { new: tally(fresh), investigating: tally(investigating) },
       });
     }),
 

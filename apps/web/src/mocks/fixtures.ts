@@ -15,8 +15,10 @@ import {
   type Role,
   type TenantSummary,
   tenantSummarySchema,
+  type TowerCases,
   type TowerPulse,
   type TowerRadar,
+  type TowerRadarCases,
   type TowerSummary,
   towerSummarySchema,
 } from '@verax/shared';
@@ -279,6 +281,12 @@ export function demoTower(
     findings?: readonly RadarFinding[];
     /** Os incidentes não resolvidos do cliente, para o anel do radar. */
     openIncidentIds?: ReadonlySet<string>;
+    /** Os casos, para quem os pede. Sem `validation` (a medição), as decisões continuam contando alertas. */
+    cases?: {
+      pending: TowerCases;
+      radar: TowerRadarCases;
+      validation: { cases: number; vulnerabilityCases: number; uncovered: number } | null;
+    };
     now?: Date;
   },
 ): TowerSummary {
@@ -292,6 +300,7 @@ export function demoTower(
   const warningBelow = 70;
   const sources = demoSources(alfa, now);
   const untriagedFindings = options.untriagedFindings ?? (alfa ? 5 : 0);
+  const validation = options.cases?.validation;
   const reasons = [
     ...(open.critical > 0 ? ['critical_incident' as const] : []),
     ...(open.high > 0 ? ['high_incident' as const] : []),
@@ -307,7 +316,9 @@ export function demoTower(
     reasons,
     pendingDecisions: [
       { kind: 'unassigned_incident', count: options.unassignedIncidents ?? (alfa ? 2 : 0) },
-      { kind: 'untriaged_finding', count: untriagedFindings },
+      { kind: 'untriaged_case', count: validation?.cases ?? 0 },
+      { kind: 'untriaged_vulnerability_case', count: validation?.vulnerabilityCases ?? 0 },
+      { kind: 'untriaged_finding', count: validation?.uncovered ?? untriagedFindings },
       { kind: 'unowned_alert', count: options.includeUnowned ? (options.unownedAlerts ?? 3) : 0 },
     ].filter((decision) => decision.count > 0),
     openIncidents: open,
@@ -336,7 +347,11 @@ export function demoTower(
       sources,
     },
     pulse: demoPulse(alfa, options.findings ?? [], now),
-    radar: demoRadar(options.findings ?? [], options.openIncidentIds ?? new Set(), now),
+    radar: {
+      ...demoRadar(options.findings ?? [], options.openIncidentIds ?? new Set(), now),
+      ...(options.cases && { cases: options.cases.radar }),
+    },
+    ...(options.cases && { cases: options.cases.pending }),
     mitre: options.mitre ?? { periodDays: 30, tactics: mitreTactics([], []) },
     generatedAt: now.toISOString(),
   });

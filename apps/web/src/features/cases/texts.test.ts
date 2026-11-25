@@ -85,6 +85,20 @@ describe('os textos de um caso', () => {
     expect(recurrenceLabel({ queue: 'detection', recurrence: 3 }, 0)).toBe('Voltou (3×)');
   });
 
+  it('a API diz quantas voltas foram depois de tratado: vale em toda fila, na lista e no detalhe', () => {
+    const row = (queue: 'detection' | 'vulnerability', recurrence: number, recurrenceTreated: number) => ({
+      queue,
+      recurrence,
+      recurrenceTreated,
+    });
+    expect(recurrenceLabel(row('detection', 3, 2))).toBe('Voltou depois de tratado (2×)');
+    expect(recurrenceLabel(row('detection', 3, 0))).toBe('Voltou (3×)');
+    expect(recurrenceLabel(row('vulnerability', 3, 0))).toBe('Voltou (3×)');
+    // Os casos anteriores que o detalhe conhece são no máximo dez: a conta da API vale mais.
+    expect(recurrenceLabel(row('detection', 14, 12), 10)).toBe('Voltou depois de tratado (12×)');
+    expect(recurrenceLabel(row('detection', 0, 0))).toBeNull();
+  });
+
   it('o que identifica o caso: até dois, e "e outros" quando há mais de um valor', () => {
     const preview = { accounts: [], actors: ['ana', 'joao'], ips: ['203.0.113.1'], resources: ['i-1'] };
     expect(mainSubjects({ queue: 'detection', keyParts: [], preview })).toEqual([

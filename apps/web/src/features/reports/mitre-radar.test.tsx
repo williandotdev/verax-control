@@ -284,3 +284,56 @@ describe('gráfico do MITRE ATT&CK', () => {
     expect(await screen.findByTestId('where')).toHaveTextContent('/lista?tatica=TA0005');
   });
 });
+
+describe('gráfico do MITRE ATT&CK com os casos', () => {
+  /** 20 mil alertas de um caso só, e poucos alertas em mais casos. */
+  const CASED = matrix(
+    tactic('Reconnaissance', {
+      findings: 20_000,
+      cases: 1,
+      incidents: 2,
+      techniques: [{ id: 'T1595', findings: 20_000 }],
+    }),
+    tactic('Defense Evasion', { findings: 12, cases: 6 }),
+    tactic('Impact', { findings: 9, cases: 3 }),
+    // Só alertas de antes dos casos.
+    tactic('Discovery', { findings: 400, cases: 0 }),
+  ).map((item) => ({ ...item, cases: item.cases ?? 0 }));
+
+  it('a participação é por casos, com os alertas no detalhe', () => {
+    renderRadar(CASED);
+    expect(screen.getByRole('heading', { name: 'Casos por tática' })).toBeInTheDocument();
+    expect(chart()).toHaveAccessibleName(
+      'Gráfico de radar das táticas do MITRE ATT&CK: 4 de 14 com alertas. As maiores: Evasão de defesas, 6 casos (60%); ' +
+        'Impacto, 3 casos (30%); Reconhecimento, 1 caso (10%). ' +
+        'Use as setas para percorrer as táticas e Enter para ver os alertas da tática.',
+    );
+    expect(axis('Reconnaissance')).toHaveAccessibleName(
+      /^Reconhecimento \(TA0043\): 1 caso \(10% do total\), 20\.000 alertas, 2 incidentes\. Técnicas mais vistas: T1595\.$/,
+    );
+    expect(axis('Discovery')).toHaveAccessibleName(/: 0 casos \(0% do total\), 400 alertas, 0 incidentes\.$/);
+  });
+
+  it('a lista traz os dois números, na ordem dos casos', () => {
+    renderRadar(CASED);
+    const rows = within(screen.getByRole('list', { name: 'Táticas com alertas' })).getAllByRole('listitem');
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringMatching(/Evasão de defesas.*TA0005 · 12 alertas · 0 incidentes.*6 casos 60%/),
+      expect.stringMatching(/Impacto.*9 alertas.*3 casos 30%/),
+      expect.stringMatching(/Reconhecimento.*20\.000 alertas · 2 incidentes · T1595.*1 caso 10%/),
+      expect.stringMatching(/Descoberta.*400 alertas.*0 casos 0%/),
+    ]);
+  });
+
+  it('a dica mostra os casos e os alertas', () => {
+    renderRadar(CASED);
+    fireEvent.focus(axis('Impact'));
+    expect(tip()).toHaveTextContent(/Impacto TA0040.*30% · 3 casos · 9 alertas · 0 incidentes/);
+  });
+
+  it('sem nenhum caso no período, conta alertas como sempre', () => {
+    renderRadar(CASED.map((item) => ({ ...item, cases: 0 })));
+    expect(screen.getByRole('heading', { name: 'Alertas por tática' })).toBeInTheDocument();
+    expect(chart()).toHaveAccessibleName(/As maiores: Reconhecimento, 20\.000 alertas \(98%\)/);
+  });
+});

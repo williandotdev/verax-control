@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { lockTenantFindings } from '../alerts/finding-store.js';
 import { type FindingSeverity, type FindingStatus, Prisma } from '../generated/prisma/client.js';
-import { type CaseSetFilter, caseSetWhere } from './case-read-store.js';
+import { type CaseSetFilter, caseSetWhere, protectedCaseWhere } from './case-read-store.js';
 import { setLockTimeout } from './case-store.js';
 
 /**
@@ -202,42 +202,101 @@ export async function freezeOperation(tx: Tx, input: FreezeInput): Promise<Froze
   return row;
 }
 
-/** O que um filtro alcança agora, pelas contagens dos casos. */
-export async function previewFilter(
-  db: Pick<Tx, '$queryRaw'>,
-  tenantId: string,
-  filter: CaseSetFilter,
-): Promise<{
-  cases: number;
-  new: number;
-  investigating: number;
+interface SeverityTally {
   critical: number;
   high: number;
   medium: number;
   low: number;
-}> {
-  const [row] = await db.$queryRaw<
-    {
-      cases: number;
-      new: number;
-      investigating: number;
-      critical: number;
-      high: number;
-      medium: number;
-      low: number;
-    }[]
-  >`
+}
+
+export interface FilterPreview extends SeverityTally {
+  cases: number;
+  protectedCases: number;
+  new: number;
+  investigating: number;
+  /** Os pendentes novos e em análise, por severidade; null sem `byStatus`. */
+  byStatus: { new: SeverityTally; investigating: SeverityTally } | null;
+}
+
+/**
+ * O que um filtro alcança agora, pelas contagens dos casos. Com `byStatus`, também os novos e os em análise por severidade:
+ * o caso que só tem de um dos dois diz pelas contagens; no que tem dos dois, os alertas dele são lidos (quem chama põe um
+ * prazo). Um comando só: as contas são do mesmo retrato do banco.
+ */
+export async function previewFilter(
+  db: Pick<Tx, '$queryRaw'>,
+  tenantId: string,
+  filter: CaseSetFilter,
+  { protectedItems, byStatus }: { protectedItems: readonly string[]; byStatus: boolean },
+): Promise<FilterPreview> {
+  const [row] = await db.$queryRaw<FilterPreview[]>`
+    WITH matched AS MATERIALIZED (
+      SELECT c."id", c."newCount" AS fresh, c."investigatingCount" AS held, c."pendingCritical" AS critical,
+        c."pendingHigh" AS high, c."pendingMedium" AS medium, c."pendingLow" AS low,
+        ${protectedCaseWhere(protectedItems)} AS protected
+      FROM "AlertCase" AS c
+      WHERE ${caseSetWhere(tenantId, filter)}
+    ), tallied AS (
+      SELECT CASE WHEN m.held = 0 THEN 'new' ELSE 'investigating' END AS status,
+        sum(m.critical) AS critical, sum(m.high) AS high, sum(m.medium) AS medium, sum(m.low) AS low
+      FROM matched AS m WHERE ${byStatus}::boolean AND (m.held = 0 OR m.fresh = 0)
+      GROUP BY 1
+      UNION ALL
+      SELECT f."status"::text,
+        count(*) FILTER (WHERE f."severity" = 'critical'), count(*) FILTER (WHERE f."severity" = 'high'),
+        count(*) FILTER (WHERE f."severity" = 'medium'), count(*) FILTER (WHERE f."severity" = 'low')
+      FROM matched AS m
+      JOIN "Finding" AS f ON f."tenantId" = ${tenantId}::uuid AND f."caseId" = m."id"
+      WHERE ${byStatus}::boolean AND m.held > 0 AND m.fresh > 0
+        AND f."incidentId" IS NULL AND f."status" IN ('new', 'investigating')
+      GROUP BY 1
+    ), statuses AS (
+      SELECT jsonb_object_agg(s.status, (
+        SELECT jsonb_build_object(
+          'critical', COALESCE(sum(t.critical), 0), 'high', COALESCE(sum(t.high), 0),
+          'medium', COALESCE(sum(t.medium), 0), 'low', COALESCE(sum(t.low), 0)
+        )
+        FROM tallied AS t WHERE t.status = s.status
+      )) AS by_status
+      FROM (VALUES ('new'), ('investigating')) AS s(status)
+    )
     SELECT count(*)::integer AS "cases",
-      COALESCE(sum(c."newCount"), 0)::integer AS "new",
-      COALESCE(sum(c."investigatingCount"), 0)::integer AS "investigating",
-      COALESCE(sum(c."pendingCritical"), 0)::integer AS "critical",
-      COALESCE(sum(c."pendingHigh"), 0)::integer AS "high",
-      COALESCE(sum(c."pendingMedium"), 0)::integer AS "medium",
-      COALESCE(sum(c."pendingLow"), 0)::integer AS "low"
-    FROM "AlertCase" AS c
-    WHERE ${caseSetWhere(tenantId, filter)}`;
+      (count(*) FILTER (WHERE m.protected))::integer AS "protectedCases",
+      COALESCE(sum(m.fresh), 0)::integer AS "new",
+      COALESCE(sum(m.held), 0)::integer AS "investigating",
+      COALESCE(sum(m.critical), 0)::integer AS "critical",
+      COALESCE(sum(m.high), 0)::integer AS "high",
+      COALESCE(sum(m.medium), 0)::integer AS "medium",
+      COALESCE(sum(m.low), 0)::integer AS "low",
+      CASE WHEN ${byStatus}::boolean THEN (SELECT s.by_status FROM statuses AS s) END AS "byStatus"
+    FROM matched AS m`;
   if (row === undefined) throw new Error('a contagem do filtro não devolveu linha');
   return row;
+}
+
+/**
+ * Quem pediu operações no cliente desde `since`, do pedido mais recente para trás. O nome vem da pessoa: quem foi excluído
+ * não aparece.
+ */
+export function operationAuthors(
+  db: Pick<Tx, '$queryRaw'>,
+  tenantId: string,
+  since: Date,
+  limit: number,
+): Promise<{ id: string; name: string }[]> {
+  return db.$queryRaw<{ id: string; name: string }[]>`
+    SELECT u."id", u."name"
+    FROM (
+      SELECT o."createdById" AS author, max(o."createdAt") AS last
+      FROM "TriageOperation" AS o
+      WHERE o."tenantId" = ${tenantId}::uuid AND o."createdAt" >= ${since.toISOString()}::timestamptz
+        AND o."createdById" IS NOT NULL
+      GROUP BY 1
+      ORDER BY last DESC, author
+      LIMIT ${limit}::integer
+    ) AS recent
+    JOIN "User" AS u ON u."id" = recent.author
+    ORDER BY recent.last DESC, recent.author`;
 }
 
 // ---------------------------------------------------------------------------------------------------

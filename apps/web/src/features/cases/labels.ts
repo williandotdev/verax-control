@@ -139,21 +139,23 @@ export function groupingText(
 }
 
 /**
- * "Voltou depois de tratado (2×)". O caso só diz quantas vezes a chave já voltou; na fila de detecção ela também volta
- * quando a janela de tempo passa, então o "depois de tratado" vale sem mais conferência só nas outras filas, que não têm
- * janela. No detalhe, os casos anteriores dizem quantas vezes foi depois de tratado.
+ * "Voltou depois de tratado (2×)": a API diz quantas das voltas foram depois de tratado (`recurrenceTreated`). De um nó de
+ * antes, o caso só diz quantas vezes a chave já voltou; na fila de detecção ela também volta quando a janela de tempo passa,
+ * então o "depois de tratado" vale sem mais conferência só nas outras filas, que não têm janela. No detalhe, os casos
+ * anteriores dizem quantas vezes foi depois de tratado.
  */
 export function recurrenceLabel(
-  row: Pick<CaseSummary, 'queue' | 'recurrence'>,
+  row: Pick<CaseSummary, 'queue' | 'recurrence' | 'recurrenceTreated'>,
   treatedBefore?: number,
 ): string | null {
   if (row.recurrence === 0) return null;
-  if (treatedBefore === undefined) {
+  const treated = row.recurrenceTreated ?? treatedBefore;
+  if (treated === undefined) {
     return row.queue === 'detection'
       ? `Voltou (${row.recurrence}×)`
       : `Voltou depois de tratado (${row.recurrence}×)`;
   }
-  return treatedBefore > 0 ? `Voltou depois de tratado (${treatedBefore}×)` : `Voltou (${row.recurrence}×)`;
+  return treated > 0 ? `Voltou depois de tratado (${treated}×)` : `Voltou (${row.recurrence}×)`;
 }
 
 /** O que identifica o caso numa linha: no de vulnerabilidade, o pacote e o recurso; nos outros, quem, onde e de onde. */

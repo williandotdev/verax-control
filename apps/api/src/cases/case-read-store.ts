@@ -37,6 +37,17 @@ export interface CaseSetFilter {
   group: string | null;
 }
 
+/**
+ * O caso `c` toca a lista de proteção do cliente, pelo que está nas amostras: o mesmo na ordem da lista e na prévia da
+ * triagem em massa.
+ */
+export function protectedCaseWhere(protectedItems: readonly string[]): Prisma.Sql {
+  return Prisma.sql`(cardinality(${[...protectedItems]}::text[]) > 0 AND EXISTS (
+          SELECT 1 FROM unnest(c."resources" || c."actors" || c."ips") AS s(value)
+          WHERE s.value = ANY(${[...protectedItems]}::text[])
+        ))`;
+}
+
 export interface CaseListFilter extends CaseSetFilter {
   sort: CaseListQuery['sort'];
   /** A lista de proteção do cliente, no tamanho das amostras. */
@@ -110,10 +121,7 @@ export async function caseListPage(
       SELECT c."id", c."lastAlertAt", c."total", c."newCount" + c."investigatingCount" AS waiting,
         CASE WHEN c."pendingCritical" > 0 THEN 4 WHEN c."pendingHigh" > 0 THEN 3 WHEN c."pendingMedium" > 0 THEN 2
           WHEN c."pendingLow" > 0 THEN 1 ELSE 0 END AS severity,
-        (${filter.sort}::text = 'priority' AND cardinality(${[...filter.protectedItems]}::text[]) > 0 AND EXISTS (
-          SELECT 1 FROM unnest(c."resources" || c."actors" || c."ips") AS s(value)
-          WHERE s.value = ANY(${[...filter.protectedItems]}::text[])
-        )) AS protected
+        (${filter.sort}::text = 'priority' AND ${protectedCaseWhere(filter.protectedItems)}) AS protected
       FROM "AlertCase" AS c
       WHERE ${caseSetWhere(tenantId, filter)}
     )
@@ -129,6 +137,25 @@ export async function caseListPage(
         LIMIT ${filter.limit}::integer OFFSET ${filter.offset}::integer
       ) AS ids`;
   return row ?? { total: 0, ids: [] };
+}
+
+/**
+ * De cada caso dado, quantos dos anteriores da mesma chave foram selados por terem sido tratados inteiros: as vezes em que
+ * ele voltou depois de tratado, e não porque a janela de tempo passou. Pelo índice `(tenantId, groupKey)`; a chave não muda
+ * depois de gravada. Conta só os anteriores ainda guardados, e nunca mais que as voltas.
+ */
+export function treatedRecurrences(
+  db: Db,
+  tenantId: string,
+  ids: readonly string[],
+): Promise<{ id: string; treated: number }[]> {
+  return db.$queryRaw<{ id: string; treated: number }[]>`
+    SELECT c."id"::text AS "id", least(count(*), c."recurrence")::integer AS "treated"
+    FROM "AlertCase" AS c
+    JOIN "AlertCase" AS p ON p."tenantId" = c."tenantId" AND p."groupKey" = c."groupKey"
+    WHERE c."tenantId" = ${tenantId}::uuid AND c."id" = ANY(${[...ids]}::uuid[])
+      AND p."sealReason" = 'treated' AND p."openedAt" < c."openedAt"
+    GROUP BY c."id"`;
 }
 
 // ---------------------------------------------------------------------------------------------------

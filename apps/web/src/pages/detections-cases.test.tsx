@@ -197,7 +197,7 @@ describe('a lista de casos', () => {
     const denied = row(/^Abrir o caso: Chamadas negadas/);
     expect(denied).toHaveTextContent(/Baixo.*relatorios-app e outros.*49/);
     expect(row(/^Abrir o caso: Senha de console/)).toHaveTextContent('Item protegido');
-    expect(row(/^Abrir o caso: Grupo de log/)).toHaveTextContent('Voltou (1×)');
+    expect(row(/^Abrir o caso: Grupo de log/)).toHaveTextContent('Voltou depois de tratado (1×)');
     expect(row(/^Abrir o caso: Grupo de segurança/)).toHaveTextContent('Em análise (1)');
     // O mais grave primeiro; nele, o protegido.
     expect(within(table).getAllByRole('button', { name: /^Abrir o caso/ })[0]).toHaveAccessibleName(
@@ -694,9 +694,11 @@ describe('a triagem em massa dos casos', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Tratar: pacote openssl' });
     await userEvent.click(await within(dialog).findByRole('radio', { name: /^Em análise/ }));
     const typed = await within(dialog).findByLabelText(/Digite [\d.]+ para confirmar/);
-    const label = within(dialog).getByText(/Digite [\d.]+ para confirmar/).textContent ?? '';
-    const words = label.split(' ');
-    const asked = words[words.indexOf('Digite') + 1] ?? '';
+    const askedNow = () => {
+      const words = (within(dialog).getByText(/Digite [\d.]+ para confirmar/).textContent ?? '').split(' ');
+      return words[words.indexOf('Digite') + 1] ?? '';
+    };
+    const asked = askedNow();
     const confirm = within(dialog).getByRole('button', { name: /^Colocar/ });
     expect(confirm).toBeDisabled();
     await userEvent.type(typed, '7');
@@ -708,7 +710,11 @@ describe('a triagem em massa dos casos', () => {
     await userEvent.type(within(dialog).getByLabelText(/^Motivo/), 'Combinado.');
     await userEvent.click(within(dialog).getByRole('radio', { name: /^Resolvido/ }));
     expect(within(dialog).getByRole('button', { name: /^Marcar/ })).toBeDisabled();
+    // E são mais: os que já estão em análise também saem da fila.
     await userEvent.type(within(dialog).getByLabelText(/para confirmar$/), asked);
+    expect(within(dialog).getByRole('button', { name: /^Marcar/ })).toBeDisabled();
+    await userEvent.clear(within(dialog).getByLabelText(/para confirmar$/));
+    await userEvent.type(within(dialog).getByLabelText(/para confirmar$/), askedNow());
     expect(within(dialog).getByRole('button', { name: /^Marcar/ })).toBeEnabled();
     await userEvent.click(within(dialog).getByRole('radio', { name: /^Em análise/ }));
     // E incluir os críticos também.
@@ -1153,7 +1159,8 @@ describe('o detalhe do caso', () => {
     expect(
       await screen.findByText('Limpeza programada dos grupos de log antigos.', undefined, SLOW),
     ).toBeInTheDocument();
-    expect(screen.getByText('Nada pendente')).toBeInTheDocument();
+    const panel = screen.getByRole('dialog', { name: 'Grupo de log do CloudWatch apagado' });
+    expect(within(panel).getByText('Nada pendente')).toBeInTheDocument();
     // Passou do prazo: não se desfaz.
     expect(screen.queryByRole('button', { name: /^Desfazer/ })).toBeNull();
   });
@@ -1193,7 +1200,8 @@ describe('o detalhe do caso', () => {
     );
     await userEvent.click(await screen.findByRole('button', { name: 'Marcar como resolvido' }, SLOW));
     await userEvent.click(await screen.findByRole('button', { name: 'Voltar ao caso' }));
-    expect(await screen.findByText('Nada pendente', undefined, SLOW)).toBeInTheDocument();
+    const panel = await screen.findByRole('dialog', { name: 'Login do usuário root no console' }, SLOW);
+    expect(await within(panel).findByText('Nada pendente', undefined, SLOW)).toBeInTheDocument();
     expect(search(router).get('caso')).not.toBeNull();
   });
 });

@@ -2089,8 +2089,8 @@ nenhum endereço sai do nó.
 
 ## Casos: agrupamento dos alertas (`apps/api/src/cases/`)
 
-_(partes 1 a 5 e os avisos por caso: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API, a tela e o
-e-mail. Os números da Torre vêm depois. Nada muda no painel nem no e-mail enquanto `CASES_MODE` for `off`)_
+_(partes 1 a 8: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API, a tela, o e-mail, e os números na
+Torre, no radar e nos relatórios. Nada muda no painel nem no e-mail enquanto `CASES_MODE` for `off`)_
 
 Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é o worker
 (a pessoa só divide um que juntou coisas demais); a pessoa trata alertas, um por um ou em massa, e as contagens do caso são
@@ -2209,7 +2209,12 @@ igual a um que não existe. Parâmetro desconhecido é 400. O `CASES_MODE` é co
 - **Linha do tempo:** por hora cheia até 7 dias; além disso, por dia de Brasília (UTC-3 o ano todo, vira às 03:00 UTC), no
   máximo 366 dias até o alerta mais recente. Sem buracos. Horário no futuro e alerta antigo demais ficam fora, avisados em
   `truncated`. Prazo de 3 s no banco; passou, 503.
-- **Operações:** as em vigor nos alertas do caso (`Finding.triageOpId`) e as que elas desfizeram, até 20.
+- **Operações:** as em vigor nos alertas do caso (`Finding.triageOpId`) e as que elas desfizeram, até 20, cada uma com o que
+  quem vê pode fazer (`can`, a mesma conta de `GET /v1/triage-operations`: `operationCan`). O `can` do caso e o das operações
+  seguem o modo: com `shadow`, nada, nem para a equipe da Verax.
+- **Voltas depois de tratado** (`recurrenceTreated`, na lista e no detalhe): das vezes que a chave voltou, quantas foram depois
+  de o caso anterior ter sido selado por `treated`. Sai do motivo do selo dos anteriores da mesma chave (índice
+  `(tenantId, groupKey)`), numa consulta só por página; conta os anteriores ainda guardados, e nunca mais que `recurrence`.
 - **Texto do evento** (amostras, partes da chave, subgrupos, títulos dos alertas) sai só como dado, limitado em quantidade e
   tamanho; o título do caso é do dicionário.
 
@@ -2226,6 +2231,7 @@ Uma pessoa trata muitos alertas de uma vez, com desfazer. Uma operação é um `
 | `POST /v1/triage-operations`              | `status`, `promote`, `attach` ou `undo_all_of`. 201 feita, 202 na fila, 200 repetida                | `findings:triage`; incidente, também `incidents:write` |
 | `GET /v1/triage-operations[/:id]`         | Lista (por página, com autor) e detalhe, com andamento e o que quem vê pode fazer                   | `findings:read`                                        |
 | `GET /v1/triage-operations/preview`       | Quantos casos e alertas um filtro da lista alcança agora                                            | `findings:triage`                                      |
+| `GET /v1/triage-operations/authors`       | Quem pediu operações nos últimos 30 dias (até 100, só o id e o nome), para o filtro do histórico    | `findings:read`                                        |
 | `POST /v1/triage-operations/:id/undo`     | Desfaz. A resposta é a operação que desfaz (201, 202 ou 200)                                        | quem pediu, ou quem administra                         |
 | `POST /v1/triage-operations/:id/cancel`   | Para uma na fila ou em curso, ou desiste de uma parada; o que já foi feito fica e pode ser desfeito | quem pediu, ou quem administra                         |
 | `POST /v1/triage-operations/:id/continue` | Retoma uma que parou antes do fim (o que faltou e o que falhou)                                     | quem pediu, ou quem administra                         |
@@ -2245,6 +2251,10 @@ Uma pessoa trata muitos alertas de uma vez, com desfazer. Uma operação é um `
 - **Confirmação:** se o conjunto passa do que a pessoa confirmou em mais de 10% e 20 alertas, 409 `TRIAGE_SCOPE_CHANGED` com a
   contagem nova (`details.count`). Crítico só entra com `includeCritical`; sem ele fica de fora, e a resposta e a trilha dizem
   quantos (`excludedCritical`). O motivo é obrigatório para marcar mais de um como legítimo ou resolvido.
+- **Prévia de um filtro:** além dos casos e dos alertas por severidade, quantos casos tocam a lista de proteção (pelas amostras,
+  a mesma marca da lista) e os novos e os em análise por severidade (`byStatus`), para a conta de "em análise" ser exata. As
+  contagens dos casos bastam, menos nos que têm alertas novos e em análise ao mesmo tempo: neles, os alertas são lidos, com
+  prazo de 1,5 s no banco; passou, a prévia vem sem `byStatus`.
 - **Idempotência:** `requestId` único por cliente. O mesmo pedido devolve a operação que ele criou; o mesmo id num pedido
   diferente (ou de outra pessoa) é 409. Os pedidos de um cliente são conferidos um por vez (um lock próprio, que os coletores
   não esperam).
@@ -2317,22 +2327,23 @@ encaixa as peças)_
   padrão), recurso ou conta, que a API agrupa, ou sem agrupar (a lista corrida, com todas as situações). Cada grupo abre os
   casos dele e se trata inteiro, por um filtro com `groupBy` e `group`. A severidade some nos tratados e em todos: a API a
   recusa.
-- **"Voltou depois de tratado":** o caso só diz quantas vezes a chave voltou (`recurrence`), e na fila de detecção ela também
-  volta quando a janela de 24 h ou de 7 dias passa. Na lista, a detecção diz "Voltou (N×)"; as outras filas, que não têm janela,
-  dizem "depois de tratado"; o detalhe confere nos casos anteriores.
+- **"Voltou depois de tratado":** a API diz quantas das voltas foram depois de tratado (`recurrenceTreated`); as outras são
+  "Voltou (N×)". De um nó que não manda o campo, o caso só diz quantas vezes a chave voltou, e na fila de detecção ela também
+  volta quando a janela de 24 h ou de 7 dias passa: a detecção diz "Voltou (N×)"; as outras filas, que não têm janela, "depois de
+  tratado"; o detalhe confere nos casos anteriores.
 - **Seleção:** até 50 casos ou 500 alertas (os tetos da API), de uma página para outra; some quando o filtro muda. A caixa do
   cabeçalho marca só a página. "Selecionar os N casos do filtro" é outro botão, que só existe com um filtro que estreite (o
   contrato é quem diz: `triageFilterSchema`). Só o que tem pendência se marca.
 - **Confirmação:** casos, alertas e a conta por severidade; os críticos só com a caixa que diz quantos são; os casos que tocam a
-  lista de proteção; o motivo, quando a API o exige; a quantidade digitada acima de 1.000; o limite do analista antes de pedir.
-  O `expectedCount` é o que o botão diz. Para "em análise", sai da conta quem já está (quando não dá para saber quantos, é um
-  teto, e o botão diz "até"). O diálogo não é um formulário: um Enter perdido não confirma nada.
+  lista de proteção (num filtro, quantos são); o motivo, quando a API o exige; a quantidade digitada acima de 1.000; o limite do
+  analista antes de pedir. O `expectedCount` é o que o botão diz. Para "em análise", sai da conta quem já está (quando não dá para
+  saber quantos, é um teto, e o botão diz "até"). O diálogo não é um formulário: um Enter perdido não confirma nada.
 - **Recusas:** `TRIAGE_SCOPE_CHANGED` mostra a contagem nova e pede outra confirmação (pedido novo); 503, 5xx e falta de
   conexão dizem que repetir é seguro, e repetem com o **mesmo** `requestId` (um por conteúdo do pedido); cota, fila cheia,
   incidente resolvido e item que sumiu dizem o que fazer. O `ApiRequestError` passa a levar os números de `details`.
 - **Andamento:** o diálogo mostra o resultado na hora ou acompanha a fila; fechar não para nada. "Operações recentes" fica acima
   da lista, recolhida numa linha (some se não há operação): o andamento, cancelar, continuar, desfazer com o prazo, o filtro por
-  pessoa e, para quem administra, desfazer tudo de uma pessoa (nome digitado e motivo). Só se relê sozinha enquanto há operação
+  pessoa (quem pediu algo nos últimos 30 dias, lido ao abrir) e, para quem administra, desfazer tudo de uma pessoa (nome digitado e motivo). Só se relê sozinha enquanto há operação
   andando (3 s; 1,5 s no diálogo). Quando uma termina, as listas, o detalhe e a Torre são relidos.
 - **Detalhe:** resumo, o que os alertas têm em comum em português, o que foge do padrão, linha do tempo, subgrupos, alertas por
   cursor (um que não vale mais recomeça e avisa), casos anteriores, incidentes e operações. O alerta abre no mesmo painel e
@@ -2346,6 +2357,63 @@ encaixa as peças)_
   Com `off`, os alertas a mais não existem.
 - **Auditoria:** as ações `triage.bulk.*` e `case.split` têm nome, e as áreas "Casos" e "Triagem em massa" entram no filtro só
   quando os casos valem (um nó de antes recusa o valor com 400).
+
+### Casos na Torre, no radar e nos relatórios
+
+_(`case-summary-store.ts`, `case-radar.ts`, `tower/`, `reports/`; contrato em `packages/shared/src/{tower,reports}.ts`)_
+
+- **Só para quem pede e pode ver.** `GET /v1/tower?cases=true` e `GET /v1/reports/{summary,mitre}?cases=true`, com a mesma regra de
+  `GET /v1/cases/status` (`casesVisibleTo`): `on`, todos os papéis; `shadow`, a equipe da Verax; `off`, ninguém. Sem o pedido, ou
+  sem poder ver, a resposta é a de sempre, byte a byte.
+- **Versões diferentes.** As respostas são estritas, e um painel recusa a resposta inteira por um campo (ou um valor de enum) que
+  não conhece:
+
+  | Painel               | Nó                                      | O que acontece                                                                      |
+  | -------------------- | --------------------------------------- | ----------------------------------------------------------------------------------- |
+  | De antes (ou aberto) | Novo, com casos                         | Não pede, e recebe a resposta de sempre                                             |
+  | Novo                 | De antes dos casos                      | `GET /v1/cases/status` é 404: o painel não pede                                     |
+  | Novo                 | Com casos, sem este pedido              | 400 (parâmetro desconhecido): o painel pede de novo sem ele, e a tela é a de sempre |
+  | Novo                 | Mais novo, com algo que ele não conhece | A resposta não é entendida: pede de novo sem os casos                               |
+
+  Nas rotas dos casos, os campos novos (`recurrenceTreated`, o `can` das operações, `protectedCases`, `byStatus`) são opcionais, e o
+  painel sem eles faz o de antes. Nenhuma versão com as rotas dos casos tinha saído: não há painel antigo delas.
+
+- **Semáforo: a regra não muda, nem a conta dela.** Vermelho com incidente crítico aberto; amarelo com incidente alto aberto, postura
+  abaixo do limite, coleta parada ou **alerta alto ou crítico em "novo"**; verde nos demais. O último continua contado por alerta,
+  todos, em caso ou não, dentro ou fora de incidente, do mesmo jeito em qualquer modo: a cor e os motivos são iguais com e sem os
+  casos (o teste compara). O caso pesa pelo pior alerta pendente dele: um crítico e mil baixos são um caso crítico.
+- **Decisões, com os casos ligados (`on`) e pedidos.** Cada alerta que o semáforo olha está numa decisão só, então o amarelo sem
+  motivo sempre tem uma que o explica:
+  - `untriaged_case`: os casos de detecção e de postura com algum alerta alto ou crítico em "novo", fora de incidente;
+  - `untriaged_vulnerability_case`: os da fila de vulnerabilidades;
+  - `untriaged_finding`: só os alertas que nenhum desses casos cobre: à espera da atribuição (segundos) ou dentro de um incidente
+    (promover não muda o status do alerta). Um caso só com altos em análise não é decisão, como hoje um alerta em análise não é.
+  - Na medição (`shadow`), a equipe da Verax vê os casos, e as decisões continuam contando alertas: ninguém decide por caso ainda.
+- **`cases`:** os casos pendentes por fila, cada um pela pior severidade pendente, e a abertura do mais antigo de cada fila.
+- **Custo:** as decisões e os casos pendentes saem das contagens dos casos, num comando só, e **não são guardados**: depois de tratar
+  um caso, a Torre relida já diz o novo. Só o caso em que os altos podem estar todos em análise tem os alertas procurados. O MITRE com
+  casos passa pela memória de 30 s por cliente, numa memória à parte da do MITRE de sempre (quem não pede nunca recebe).
+- **Radar** (`radar.cases`): os casos de detecção ativos nas últimas 24 horas, pelo mesmo `WHERE` da lista (o evento ou a chegada: o
+  total bate com o da lista no período, e um alerta com data antiga não esconde o caso), até 100, os mais graves primeiro.
+  `detections`, `total`, `bySeverity` e `bySector` continuam contando alertas; `alerts` é quantos dos alertas da janela estão nesses
+  casos, contados pelo índice `(tenantId, caseId, occurredAt, id)`, sem ler as linhas. O setor vem da primeira fonte do caso (na
+  família que não diz a fonte, do formato da conta), e a distância é a da atividade mais recente, nunca depois de agora.
+  - O caso com alerta num incidente aberto traz o incidente (o mais grave): sem nada pendente, a gravidade dele no radar, e na ordem,
+    é a do incidente. Um crítico confirmado não some para trás dos médios.
+  - No painel, o ponto é o caso: a forma é a gravidade (um círculo vazado, sem nada pendente), o tamanho são os alertas
+    guardados (logarítmico, com teto) e o clique ou o Enter abre `?caso=`. A frase diz "N alertas em M casos de detecção" e onde estão
+    os outros. A tabela tem os mesmos números. A animação é a de antes: uma varredura, um brilho por ponto e o pulso do que chegou,
+    só com `transform` e `opacity`.
+- **Relatórios:** `summary.cases {opened, treated, pending, medianMinutesToTreat}` são os casos abertos no período e em que pé estão
+  agora (`treated` mais `pending` dá `opened`; o caso sem alerta guardado não entra). A mediana vai da abertura até o último alerta do
+  caso sair de "novo" (`triagedAt`) ou entrar num incidente: é por caso, porque tratar 20 mil alertas de uma vez distorce o
+  `meanTimeToTriageMinutes`, que é por alerta. O banco não guarda quando um alerta em análise foi encerrado: vale a primeira triagem.
+  No MITRE, cada tática ganha `cases` (os casos com alerta dela no período); o alerta sem caso conta só nos alertas.
+  - No painel, o gráfico do MITRE passa a mostrar a participação por casos (a mesma escala), com os alertas na dica, na lista e na
+    tabela; se nenhum alerta do período tem caso (o histórico de antes), conta alertas. O CSV do MITRE ganha a coluna "Casos", e o dos
+    casos do período sai do Resumo.
+- **Atalhos:** com os casos, as decisões levam à lista de casos (detecção e postura, uma fila por vez) e às vulnerabilidades; desligados,
+  os de sempre.
 
 ### Avisos por caso
 
@@ -2875,6 +2943,8 @@ da Verax.
     decisão `untriaged_finding`, e a lista de motivos não ganha um valor novo: ela é fechada, e um painel de antes
     recusaria o resumo inteiro. O amarelo pode, então, vir sem motivo, e o painel tira a frase das decisões ("24.321
     alertas altos ou críticos para validar"), inclusive de um nó de antes, que ainda responde verde;
+  - **com os casos**, a regra e a conta são as mesmas; só as decisões passam a contar casos ("Casos na Torre, no radar e nos
+    relatórios");
   - **verde** nos demais casos. No verde, a frase traz a prova: "Tudo calmo. (...) Coleta ativa em 4 de 4 fontes,
     último dado há 2 minutos" só quando todas as fontes configuradas coletam e nada espera uma decisão do cliente (a fila
     sem dono, da Verax, não conta); com uma atrasada ou aguardando, a mesma prova, sem o "Tudo calmo". O cartão de
@@ -2931,7 +3001,7 @@ da Verax.
 - **Contrato entre painel e nó:** os campos novos (`coverage.lastDataAt`, `coverage.sources` e `pulse`) são opcionais,
   e o painel sem eles mostra a Torre de antes (as datas da cobertura, sem a faixa). O schema é estrito, então um painel
   de antes recusa a resposta de um nó novo (o motivo `collection_stalled` e os campos novos): painel e nós sobem juntos,
-  como em toda mudança do contrato.
+  como em toda mudança do contrato. Os campos dos casos são a exceção: só vêm para quem os pede (`cases=true`).
 - **Interface:** os gráficos são SVG próprio, sem biblioteca (`components/charts/`): o cartão de número (`StatTile`) e o
   minigráfico por hora (`MiniBars`, na rampa neutra validada, com setas, mouse e toque e a mesma tabela de "Ver
   tabela"); a linha de saúde da fonte (`SourceHealthRow`) usa ícone de forma própria e rótulo, com o tom de "ok" em

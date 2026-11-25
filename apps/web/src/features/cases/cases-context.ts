@@ -27,6 +27,8 @@ export interface CaseMemory {
 
 export interface CasesContextValue {
   mode: CaseMode;
+  /** Ainda não se sabe o modo: o que muda com os casos espera, para não pedir duas vezes. */
+  loading: boolean;
   status: CaseStatus | null;
   /** Quem vê pode tratar em massa: os casos ligados e a permissão da triagem. */
   canTriage: boolean;
@@ -46,6 +48,7 @@ const nothing = () => undefined;
 /** Fora da tela Detecções, ou com os casos desligados: nada. */
 export const CasesContext = createContext<CasesContextValue>({
   mode: 'off',
+  loading: false,
   status: null,
   canTriage: false,
   canPromote: false,

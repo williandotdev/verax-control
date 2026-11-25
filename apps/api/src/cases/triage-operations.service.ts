@@ -12,10 +12,12 @@ import {
   MAX_ACTIVE_TRIAGE_OPERATIONS,
   MAX_INCIDENT_FINDINGS_PER_REQUEST,
   MAX_TRIAGE_ALERTS,
+  MAX_TRIAGE_AUTHORS,
   MAX_UNDO_ALL_OPERATIONS,
   type Paginated,
   TRIAGE_ALERTS_PER_DAY,
   TRIAGE_ALERTS_PER_OPERATION,
+  TRIAGE_AUTHORS_DAYS,
   TRIAGE_EMPTY_CODE,
   TRIAGE_INCIDENT_RESOLVED_CODE,
   TRIAGE_NOT_ACTIVE_CODE,
@@ -30,6 +32,7 @@ import {
   TRIAGE_SYNC_ALERTS,
   TRIAGE_TOO_LARGE_CODE,
   TRIAGE_UNDO_EXPIRED_CODE,
+  type TriageAuthors,
   type TriageFilter,
   type TriageOperationCreate,
   type TriageOperationDetail,
@@ -49,9 +52,11 @@ import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { IncidentsService } from '../incidents/incidents.service.js';
 import { PlanService } from '../plan/plan.service.js';
+import { boundedRead } from './case-bounded.js';
 import { sqlStateOf } from './case-errors.js';
 import { caseSetFilter } from './case-filter.js';
 import { uuidV7 } from './case-plan.js';
+import { caseProtectedItems } from './case-protected.js';
 import { casesOperable } from './cases-mode.js';
 import {
   ACTIVE_STATES,
@@ -73,6 +78,7 @@ import {
   lockOperation,
   lockTenantTriage,
   markTaken,
+  operationAuthors,
   pointCasesAt,
   previewFilter,
   requeueRest,
@@ -101,6 +107,8 @@ export interface TriageLimits {
   maxActive: number;
   alertsPerOperation: number;
   alertsPerDay: number;
+  /** O prazo, no banco, de ler os alertas na prévia de um filtro. */
+  previewTimeoutMs: number;
   now: () => Date;
 }
 export const DEFAULT_TRIAGE_LIMITS: TriageLimits = {
@@ -109,6 +117,7 @@ export const DEFAULT_TRIAGE_LIMITS: TriageLimits = {
   maxActive: MAX_ACTIVE_TRIAGE_OPERATIONS,
   alertsPerOperation: TRIAGE_ALERTS_PER_OPERATION,
   alertsPerDay: TRIAGE_ALERTS_PER_DAY,
+  previewTimeoutMs: 1_500,
   now: () => new Date(),
 };
 /** Os limites, como provider (os testes usam menores e outro relógio). */
@@ -188,21 +197,42 @@ export class TriageOperationsService {
     return detail;
   }
 
-  /** O que um filtro da lista de casos alcança agora. */
+  /**
+   * O que um filtro da lista de casos alcança agora. Os novos e os em análise por severidade podem pedir a leitura dos
+   * alertas: passou do prazo, a prévia vem sem eles.
+   */
   async preview(filter: TriageFilter): Promise<TriagePreview> {
-    const found = await previewFilter(
-      this.prisma.db(),
-      this.prisma.scopeTenantId(),
-      caseSetFilter(filter, this.limits.now()),
-    );
-    const { cases, critical, high, medium, low } = found;
+    const tenantId = this.prisma.scopeTenantId();
+    const set = caseSetFilter(filter, this.limits.now());
+    const protectedItems = [...(await caseProtectedItems(this.prisma.scoped()))];
+    const read = (db: Pick<Prisma.TransactionClient, '$queryRaw'>, byStatus: boolean) =>
+      previewFilter(db, tenantId, set, { protectedItems, byStatus });
+    const found =
+      (await boundedRead(this.prisma, this.limits.previewTimeoutMs, (tx) => read(tx, true))) ??
+      (await read(this.prisma.db(), false));
+    const { cases, protectedCases, critical, high, medium, low, byStatus } = found;
     return {
       cases,
       alerts: found.new + found.investigating,
       new: found.new,
       investigating: found.investigating,
       pending: { critical, high, medium, low },
+      protectedCases,
+      ...(byStatus !== null && { byStatus }),
     };
+  }
+
+  /** Quem pediu operações nos últimos 30 dias, para o filtro do histórico. */
+  async authors(): Promise<TriageAuthors> {
+    const since = new Date(this.limits.now().getTime() - TRIAGE_AUTHORS_DAYS * DAY_MS);
+    // Uma a mais que o teto: diz se há outras.
+    const found = await operationAuthors(
+      this.prisma.db(),
+      this.prisma.scopeTenantId(),
+      since,
+      MAX_TRIAGE_AUTHORS + 1,
+    );
+    return { items: found.slice(0, MAX_TRIAGE_AUTHORS), truncated: found.length > MAX_TRIAGE_AUTHORS };
   }
 
   private async details(

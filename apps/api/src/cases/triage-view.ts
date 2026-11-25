@@ -6,6 +6,7 @@ import {
   TRIAGE_ACTIONS,
   TRIAGE_STATES,
   TRIAGE_STOPS,
+  type TriageCan,
   type TriageOperationDetail,
   type TriageOperationView,
   type TriageTargetView,
@@ -31,6 +32,13 @@ export const operationSelect = {
   undoUntil: true,
   undoOfId: true,
   createdBy: { select: { id: true, name: true } },
+} as const satisfies Prisma.TriageOperationSelect;
+
+/** A operação no detalhe do caso: com o que diz o que se pode fazer com ela. */
+export const caseOperationSelect = {
+  ...operationSelect,
+  updatedAt: true,
+  undoOf: { select: { action: true } },
 } as const satisfies Prisma.TriageOperationSelect;
 
 /** Sem o alvo: ele pode levar o conjunto congelado, e é lido à parte, sem ele. */
@@ -131,6 +139,34 @@ export interface OperationViewer {
   operating: boolean;
 }
 
+/**
+ * O que quem vê pode fazer com a operação agora: a mesma conta na lista das operações, no detalhe de uma e no do caso. A
+ * permissão é a do que a operação faz; no desfazer, a do que ele desfaz.
+ */
+export function operationCan(
+  row: Prisma.TriageOperationGetPayload<{ select: typeof caseOperationSelect }>,
+  viewer: OperationViewer,
+  now: Date,
+): TriageCan {
+  const manages = viewer.operating && mayManage(viewer, { createdById: row.createdBy?.id ?? null });
+  const effective = row.undoOf?.action ?? row.action;
+  const allowed =
+    manages && (hasPermission(viewer.role, 'incidents:write') || !needsIncidentWrite(effective));
+  const active = ACTIVE_STATES.includes(row.state);
+  const stopped = RESUMABLE_STATES.includes(row.state);
+  return {
+    cancel: allowed && (active || stopped),
+    continue: allowed && stopped && resumeDeadline(row) > now,
+    undo:
+      allowed &&
+      FORWARD_ACTIONS.includes(row.action) &&
+      UNDOABLE_STATES.includes(row.state) &&
+      row.changed > 0 &&
+      row.undoUntil !== null &&
+      row.undoUntil > now,
+  };
+}
+
 /** A operação inteira. `target` é o gravado, sem o conjunto congelado. */
 export function toOperationDetail(
   row: OperationDetailRow,
@@ -141,15 +177,9 @@ export function toOperationDetail(
   const base = toOperation(row);
   if (base === null) return null;
   const run = runOf(target);
-  const manages = viewer.operating && mayManage(viewer, { createdById: row.createdBy?.id ?? null });
-  const incidents = hasPermission(viewer.role, 'incidents:write');
-  const effective = row.undoOf?.action ?? row.action;
-  const allowed = manages && (incidents || !needsIncidentWrite(effective));
-  const active = ACTIVE_STATES.includes(row.state);
-  const stopped = RESUMABLE_STATES.includes(row.state);
   const warnings: TriageWarning[] = [
     ...(run.excludedCritical > 0 ? (['critical_excluded'] as const) : []),
-    ...(row.action === 'undo' && effective === 'promote'
+    ...(row.action === 'undo' && row.undoOf?.action === 'promote'
       ? (['notice_not_recalled', 'anchor_kept'] as const)
       : []),
   ];
@@ -168,16 +198,6 @@ export function toOperationDetail(
     updatedAt: row.updatedAt.toISOString(),
     undoId: row.undoneBy[0]?.id ?? null,
     warnings,
-    can: {
-      cancel: allowed && (active || stopped),
-      continue: allowed && stopped && resumeDeadline(row) > now,
-      undo:
-        allowed &&
-        FORWARD_ACTIONS.includes(row.action) &&
-        UNDOABLE_STATES.includes(row.state) &&
-        row.changed > 0 &&
-        row.undoUntil !== null &&
-        row.undoUntil > now,
-    },
+    can: operationCan(row, viewer, now),
   };
 }

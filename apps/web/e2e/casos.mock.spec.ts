@@ -73,8 +73,8 @@ async function queueGroup(page: Page) {
   await page.getByRole('button', { name: 'Tratar o grupo openssl' }).click();
   const opened = dialog(page, 'Tratar: pacote openssl');
   await opened.getByRole('radio', { name: /^Em análise/ }).check();
-  // Os críticos ficam de fora, e não dá para saber quantos deles já estavam em análise: é um teto.
-  await opened.getByRole('button', { name: /^Colocar até \d+ alertas em análise$/ }).click();
+  // Os críticos ficam de fora, e quem já está em análise também: a prévia diz quantos são os novos de cada severidade.
+  await opened.getByRole('button', { name: /^Colocar \d+ alertas em análise$/ }).click();
   const outcome = dialog(page, 'Em análise: pacote openssl');
   await expect(outcome).toBeVisible();
   return outcome;
