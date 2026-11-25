@@ -15,6 +15,11 @@ describe('parseCloudflareReturn', () => {
       kind: 'return',
       input: { error: 'access_denied', state: STATE },
     });
+    // O repasse manda o `iss` também com o erro: ele não segue para a API.
+    expect(parseCloudflareReturn(`error=access_denied&state=${STATE}&iss=${ISS}`)).toEqual({
+      kind: 'return',
+      input: { error: 'access_denied', state: STATE },
+    });
   });
 
   it('sem fragmento, nada a fazer', () => {

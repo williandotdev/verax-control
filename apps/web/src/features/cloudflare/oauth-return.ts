@@ -14,10 +14,15 @@ export type CloudflareReturn =
 
 const CODE_FIELDS = ['code', 'iss', 'state'] as const;
 const ERROR_FIELDS = ['error', 'state'] as const;
+/** O repasse manda o `iss` quando o Cloudflare o manda, também com o erro; ali ele não decide nada e não segue. */
+const ERROR_WITH_ISSUER_FIELDS = ['error', 'iss', 'state'] as const;
 /** O fragmento inteiro tem teto: o código (até 1.024), o `state`, o emissor e os nomes cabem com folga. */
 const MAX_FRAGMENT_LENGTH = 2_048;
 
-/** Lê o retorno de um fragmento (sem o `#`). Só aceita exatamente os campos de um dos dois formatos, uma vez cada. */
+/**
+ * Lê o retorno de um fragmento (sem o `#`). Só aceita exatamente os campos de um dos formatos, uma vez cada. O código sem
+ * o `iss` não é aceito: a API o recusaria do mesmo jeito (emissor ausente é recusa).
+ */
 export function parseCloudflareReturn(fragment: string): CloudflareReturn {
   if (fragment === '') return { kind: 'none' };
   if (fragment.length > MAX_FRAGMENT_LENGTH) return { kind: 'invalid' };
@@ -26,7 +31,8 @@ export function parseCloudflareReturn(fragment: string): CloudflareReturn {
   if (new Set(keys).size !== keys.length) return { kind: 'invalid' };
   const same = (expected: readonly string[]) =>
     keys.length === expected.length && expected.every((key, index) => keys[index] === key);
-  if (!same(CODE_FIELDS) && !same(ERROR_FIELDS)) return { kind: 'invalid' };
+  if (same(ERROR_WITH_ISSUER_FIELDS)) params.delete('iss');
+  else if (!same(CODE_FIELDS) && !same(ERROR_FIELDS)) return { kind: 'invalid' };
   const parsed = cloudflareOauthCompleteSchema.safeParse(Object.fromEntries(params));
   return parsed.success ? { kind: 'return', input: parsed.data } : { kind: 'invalid' };
 }
