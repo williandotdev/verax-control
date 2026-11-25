@@ -2127,7 +2127,7 @@ nenhum endereço sai do nó.
 ## Casos: agrupamento dos alertas (`apps/api/src/cases/`)
 
 _(partes 1 a 8: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API, a tela, o e-mail, e os números na
-Torre, no radar e nos relatórios. Nada muda no painel nem no e-mail enquanto `CASES_MODE` for `off`)_
+Torre, no radar e nos relatórios. Sem a linha no nó vale `shadow`, a medição: só a equipe da Verax vê os casos, e o e-mail não muda)_
 
 Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é o worker
 (a pessoa só divide um que juntou coisas demais); a pessoa trata alertas, um por um ou em massa, e as contagens do caso são
@@ -2136,11 +2136,11 @@ de gatilhos da tabela de alertas.
 - **Interruptor:** `CASES_MODE`, o mesmo valor no ambiente do worker e no da API, conferido na partida (valor fora da
   lista não sobe).
 
-  | Valor    | No worker                                                                                          | Na API                                                                                           |
-  | -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-  | `off`    | Padrão. Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo só confere se há caso a apagar) | Padrão. As rotas dos casos respondem 404, iguais a uma rota que não existe, para todos os papéis |
-  | `shadow` | Os alertas ganham caso (a medição no nó piloto)                                                    | Só a equipe da Verax (`admin_verax`) lê, no cliente escolhido; para os outros papéis, como `off` |
-  | `on`     | O mesmo que `shadow`, mais a fila da triagem em massa (`triage-ops`) e os avisos por caso          | Todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa              |
+  | Valor    | No worker                                                                                  | Na API                                                                                           |
+  | -------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+  | `off`    | Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo só confere se há caso a apagar) | As rotas dos casos respondem 404, iguais a uma rota que não existe, para todos os papéis         |
+  | `shadow` | Os alertas ganham caso (a medição no nó piloto)                                            | Só a equipe da Verax (`admin_verax`) lê, no cliente escolhido; para os outros papéis, como `off` |
+  | `on`     | O mesmo que `shadow`, mais a fila da triagem em massa (`triage-ops`) e os avisos por caso  | Todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa              |
 
   O `start.sh` passa a linha do `node.conf` à API e ao worker; sem ela, vale o padrão da versão. O nó gerenciado já instalado
   não recebe linha nova: nele, quem liga é o padrão da versão (`docs/runbooks/casos.md`). A API lê o que houver no banco: com o worker em `off` e a API em `on`, os casos ficam parados no tempo (a

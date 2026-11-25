@@ -521,8 +521,8 @@ export function requiresVerifiedTls(databaseUrl: string): boolean {
   }
 }
 
-/** `CASES_MODE`, igual na API e no worker. */
-const casesModeFromEnv = z.enum(CASES_MODES, { error: 'use off, shadow ou on' }).default('off');
+/** `CASES_MODE`, igual na API e no worker. Sem a linha, a medição: ninguém do cliente vê os casos, e os e-mails não mudam. */
+const casesModeFromEnv = z.enum(CASES_MODES, { error: 'use off, shadow ou on' }).default('shadow');
 
 /**
  * Variáveis de ambiente da API. A API não sobe se alguma obrigatória faltar ou for inválida.

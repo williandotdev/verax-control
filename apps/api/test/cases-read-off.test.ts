@@ -9,7 +9,7 @@ import { createSignedInUser, createTenant, withCsrf } from './support/auth-helpe
 import { cleanCases, insertCase, insertFinding } from './support/cases.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 
-/** Com `CASES_MODE=off` (o padrão), as rotas dos casos não existem para ninguém. */
+/** Com `CASES_MODE=off`, as rotas dos casos não existem para ninguém. */
 describe('leitura dos casos desligada (CASES_MODE=off)', () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
