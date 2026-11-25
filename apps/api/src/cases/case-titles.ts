@@ -4,6 +4,7 @@ import { AWS_FINDING_RULES } from '../aws/findings/finding-rules.js';
 import { CLOUDFLARE_RULES } from '../cloudflare/cloudflare-rules.js';
 import { CLOUDFLARE_SECURITY_RULES } from '../cloudflare/cloudflare-security-rules.js';
 import { GCP_RULES } from '../gcp/gcp-rules.js';
+import { WEB_RULES } from '../weblogs/rules.js';
 import { type CaseFamily, type CaseFold, type CaseKeyPart, RULE_PART } from './case-key.js';
 
 /**
@@ -15,6 +16,8 @@ const FAMILY_TITLES: Readonly<Record<CaseFamily, string>> = {
   'console-login': 'Falhas de login no console da AWS',
   guardduty: 'Ameaça acusada pelo GuardDuty',
   waf: 'Ataques web acusados pelo WAF',
+  web: 'Ataque web visto nos logs do balanceador',
+  'web-login': 'Ataque ao login da aplicação',
   'vpc-flow': 'Tráfego de rede suspeito',
   'cloudwatch-logs': 'Alertas nos logs das aplicações',
   'gcp-audit': 'Atividade suspeita no projeto da GCP',
@@ -45,6 +48,7 @@ const SOURCE_TITLES: Readonly<Record<FindingSource, string>> = {
   cloudflare_audit: 'auditoria do Cloudflare',
   cloudflare_waf: 'WAF do Cloudflare',
   wazuh_agent: 'instâncias',
+  alb: 'logs do balanceador da AWS',
 };
 
 const titlesOf = (rules: readonly { id: string; title: string }[]): ReadonlyMap<string, string> =>
@@ -54,6 +58,7 @@ const titlesOf = (rules: readonly { id: string; title: string }[]): ReadonlyMap<
 const RULE_TITLES: Readonly<Partial<Record<CaseFamily, ReadonlyMap<string, string>>>> = {
   cloudtrail: AWS_RULE_TITLES,
   waf: new Map([...AWS_RULE_TITLES, ...titlesOf(CLOUDFLARE_SECURITY_RULES)]),
+  web: new Map(Object.entries(WEB_RULES).map(([id, rule]) => [id, rule.title])),
   'vpc-flow': AWS_RULE_TITLES,
   'gcp-audit': titlesOf(GCP_RULES),
   'cloudflare-audit': titlesOf(CLOUDFLARE_RULES),

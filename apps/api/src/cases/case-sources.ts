@@ -39,6 +39,8 @@ const FAMILY_SOURCES: Readonly<Record<CaseFamily, FamilySources>> = {
     { source: 'waf', besides: CLOUDFLARE_WAF_RULES },
     { source: 'cloudflare_waf', only: CLOUDFLARE_WAF_RULES },
   ],
+  web: 'alb',
+  'web-login': 'alb',
   'vpc-flow': 'vpc_flow',
   'cloudwatch-logs': 'cloudwatch_logs',
   'gcp-audit': 'gcp_audit',

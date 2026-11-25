@@ -15,8 +15,9 @@ import { type EntryAt, loadHit, WEB_RULES, type WebHit, type WebRuleId } from '.
 import { UA_FAMILIES, type UaFamily } from './user-agent.js';
 
 /**
- * De detecção a achado. O formato é o do `FindingDraft`, com a fonte `alb` (que entra em `FINDING_SOURCES` na PR-3) e dois
- * campos que a gravação só passa a conhecer na PR-2: a evidência e a correlação. Nada aqui é ligado ao `FindingStore`.
+ * De detecção a achado. O formato é o do `FindingDraft`, com a fonte `alb` (`FINDING_SOURCES`), a
+ * evidência (que o `FindingStore` grava com o achado) e a correlação (aceita, gravada só com os casos). Quem grava é a
+ * tarefa `web-logs` (`collect/source-reader.ts`), só no modo `alert`.
  *
  * **Chave:** `aws/<conta>/alb:<sha40(regra|balanceador|cliente|host|rota|nível)>`; a versão é a hora cheia (UTC) da última
  * atividade, como nas correlações dos flow logs da VPC: um achado em aberto por atacante, e no máximo uma reincidência por
@@ -37,7 +38,7 @@ export interface WebCorrelation {
   keys: string[];
 }
 
-export interface WebFindingDraft extends Omit<FindingDraft, 'logSource'> {
+export interface WebFindingDraft extends FindingDraft {
   logSource: 'alb';
   evidence: WebEvidence;
   correlation: WebCorrelation;
@@ -210,7 +211,7 @@ export function evidenceOf(hit: WebHit): WebEvidence {
   });
 }
 
-/** As chaves por onde os casos (PR-10) vão juntar achados. */
+/** As chaves do ataque. Os casos saem das colunas do achado (`cases/case-key.ts`), e não delas. */
 export function correlationOf(
   source: WebSource,
   hit: Pick<WebHit, 'rule' | 'client' | 'host' | 'firstMs' | 'lastMs'>,

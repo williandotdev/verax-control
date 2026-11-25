@@ -29,6 +29,8 @@ import type { CaseQueue } from '../generated/prisma/client.js';
  * | `cloudtrail` 80254 e 80255                | detecção        | rede de origem                                     |
  * | `guardduty` e a cópia no Security Hub     | detecção        | tipo + recurso; sem ele, o ator. Nunca o IP remoto |
  * | `waf`, `cloudflare_waf`                   | detecção        | regra + ACL ou zona; nas regras por IP, + rede     |
+ * | `alb` 990405 e 990406 (login)             | detecção        | balanceador + rede                                 |
+ * | `alb`, as outras                          | detecção        | regra + balanceador; com um endereço só, + rede    |
  * | `vpc_flow`                                | detecção        | regra + rede                                       |
  * | `cloudwatch_logs`                         | detecção        | regra + rede; sem ela, o usuário                   |
  * | `gcp_audit`, `cloudflare_audit`           | detecção        | regra + ator; sem ele, o recurso                   |
@@ -58,6 +60,8 @@ export const CASE_FAMILIES = [
   'console-login',
   'guardduty',
   'waf',
+  'web',
+  'web-login',
   'vpc-flow',
   'cloudwatch-logs',
   'gcp-audit',
@@ -365,6 +369,12 @@ const CONSOLE_LOGIN_RULES: ReadonlySet<string> = new Set(['80254', '80255']);
 const WAF_PER_IP_RULES: ReadonlySet<string> = new Set(['80443', '990330', '990331', '990332', '990335']);
 
 /**
+ * A força bruta e o acesso depois de muitas falhas, nos logs do ALB: do mesmo endereço no mesmo balanceador, são o mesmo ataque,
+ * e o caso sobe de severidade quando ele entra. A força bruta distribuída (990407) não tem endereço.
+ */
+const WEB_LOGIN_RULES: ReadonlySet<string> = new Set(['990405', '990406']);
+
+/**
  * As regras de falha de login do Wazuh que entram na faixa alta ou crítica (nível 10 ou mais, grupos
  * `authentication_failed` e `authentication_failures` do 4.14.9): nelas a rede de origem separa. As de nível menor são
  * da faixa `ml`, em que só a regra conta.
@@ -556,6 +566,12 @@ function groupingOf(finding: CaseKeyInput): Grouping {
           ...(WAF_PER_IP_RULES.has(finding.ruleId) ? network : []),
         ],
       };
+    case 'alb': {
+      const balancer = dimension('resource', resourceOf(finding.resource));
+      return WEB_LOGIN_RULES.has(finding.ruleId)
+        ? { queue: 'detection', family: 'web-login', fine: orRule(finding, [...balancer, ...network]) }
+        : { queue: 'detection', family: 'web', fine: [rule, ...balancer, ...network] };
+    }
     case 'vpc_flow':
       return { queue: 'detection', family: 'vpc-flow', fine: [rule, ...network] };
     case 'cloudwatch_logs':

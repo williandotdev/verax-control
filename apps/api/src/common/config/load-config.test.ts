@@ -6,6 +6,7 @@ import { inspect } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { nodePlan } from './env.schema.js';
 import { ConfigValidationError, loadConfig, loadWorkerConfig } from './load-config.js';
+import { awsSourceFeatures } from './web-logs.js';
 
 const validEnv = {
   NODE_ENV: 'development',
@@ -157,6 +158,23 @@ describe('loadConfig', () => {
         'NODE_EGRESS_IPS.0: use IPv4 com /32, separados por vírgula',
       ]);
     }
+  });
+
+  it('ataques web pelos logs do ALB (AWS_WEB_LOGS_ENABLED): desligados sem a linha, e nunca na célula', () => {
+    expect(loadConfig(validEnv).AWS_WEB_LOGS_ENABLED).toBe(false);
+    expect(loadConfig(validProductionEnv).AWS_WEB_LOGS_ENABLED).toBe(false);
+    expect(loadConfig({ ...validEnv, AWS_WEB_LOGS_ENABLED: 'false' }).AWS_WEB_LOGS_ENABLED).toBe(false);
+    expect(loadConfig({ ...validEnv, AWS_WEB_LOGS_ENABLED: 'true' }).AWS_WEB_LOGS_ENABLED).toBe(true);
+    for (const value of ['1', 'TRUE', 'sim', '']) {
+      expect(problemsOf({ ...validEnv, AWS_WEB_LOGS_ENABLED: value })).toEqual([
+        'AWS_WEB_LOGS_ENABLED: use true ou false',
+      ]);
+    }
+    expect(awsSourceFeatures(loadConfig(validEnv))).toEqual({ webLogs: false });
+    expect(awsSourceFeatures(loadConfig({ ...validEnv, AWS_WEB_LOGS_ENABLED: 'true' }))).toEqual({
+      webLogs: true,
+    });
+    expect(awsSourceFeatures({ AWS_WEB_LOGS_ENABLED: true, NODE_MODE: 'cell' })).toEqual({ webLogs: false });
   });
 
   it('onde o nó roda (NODE_PLATFORM): gcp sem a linha; vm só num nó dedicado e sem a conta de serviço do Google', () => {
@@ -740,6 +758,15 @@ describe('configuração do worker do sync (T5.3)', () => {
         'CASES_MODE: use off, shadow ou on',
       );
     }
+  });
+
+  it('ataques web pelos logs do ALB (AWS_WEB_LOGS_ENABLED): a mesma linha da API, desligada por padrão', () => {
+    expect(loadWorkerConfig(workerEnv).AWS_WEB_LOGS_ENABLED).toBe(false);
+    const on = loadWorkerConfig({ ...workerEnv, AWS_WEB_LOGS_ENABLED: 'true' });
+    expect(awsSourceFeatures(on)).toEqual({ webLogs: true });
+    expect(() => loadWorkerConfig({ ...workerEnv, AWS_WEB_LOGS_ENABLED: 'on' })).toThrow(
+      'AWS_WEB_LOGS_ENABLED: use true ou false',
+    );
   });
 
   it('VM própria: NODE_PLATFORM=vm, sem a conta de serviço do Google, e a fonte gcp só com o cofre', () => {

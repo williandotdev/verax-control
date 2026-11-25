@@ -5,6 +5,7 @@ import {
   type FindingComment,
   type FindingCommentCreate,
   type FindingDetail,
+  type FindingEvidence,
   type FindingListQuery,
   type FindingSource,
   type FindingStatusUpdate,
@@ -20,6 +21,7 @@ import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { relatedFindings } from '../incidents/correlation.js';
+import { webEvidenceSchema } from '../weblogs/evidence.js';
 import { findingWhere } from './finding-filters.js';
 import { RAW_EVENT_READER, type RawEventReader } from './raw-events.js';
 
@@ -192,6 +194,33 @@ export class FindingsService {
         const row = byId.get(candidate.id);
         return row ? [toFinding(row)] : [];
       }),
+    };
+  }
+
+  /**
+   * A evidência própria do achado (os ataques web pelos logs do ALB), numa rota à parte do detalhe: o contrato do detalhe é
+   * estrito, e um painel de antes recusaria um campo novo. Sem evidência, `null`, e não 404: o 404 é do achado que não
+   * existe, ou de outro cliente.
+   *
+   * O que vem do banco passa pelo schema estrito antes de ir para a tela, como qualquer entrada. O que não passa (um
+   * formato de outra versão do nó, depois de uma volta de versão) não é mostrado, e o aviso vai para o log.
+   */
+  async evidence(id: string): Promise<FindingEvidence> {
+    const row = await this.prisma.scoped().finding.findUnique({
+      where: { id },
+      select: { evidence: { select: { data: true, firstSeenAt: true, samplesPurgedAt: true } } },
+    });
+    if (!row) throw new ApiError(HttpStatus.NOT_FOUND, NOT_FOUND);
+    if (row.evidence === null) return { evidence: null, samplesPurgedAt: null };
+    const parsed = webEvidenceSchema.safeParse(row.evidence.data);
+    if (!parsed.success) {
+      this.logger.warn({ findingId: id }, 'evidência fora do formato desta versão');
+      return { evidence: null, samplesPurgedAt: null };
+    }
+    return {
+      // A evidência é a da atividade mais recente; a primeira é a do achado.
+      evidence: { ...parsed.data, firstSeenAt: row.evidence.firstSeenAt.toISOString() },
+      samplesPurgedAt: row.evidence.samplesPurgedAt?.toISOString() ?? null,
     };
   }
 

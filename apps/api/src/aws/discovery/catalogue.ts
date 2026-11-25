@@ -5,6 +5,7 @@ import {
   type AwsReaderCapability,
   type AwsSourceAvailability,
   type AwsSourceDetails,
+  type AwsSourceFeatures,
   type AwsSourceKind,
   type AwsSourceLoggingState,
   type AwsSourceNote,
@@ -53,6 +54,8 @@ export interface CatalogueContext {
   legacyBuckets: LogBuckets;
   /** As capacidades do papel pelas tags; null quando não se sabe (template v1, ou a chave de leitura da VM própria). */
   capabilities: readonly AwsReaderCapability[] | null;
+  /** O que o nó tem ligado (`AWS_WEB_LOGS_ENABLED`); sem informar, nada. */
+  features?: Readonly<AwsSourceFeatures>;
 }
 
 // --- O que os serviços responderam ---
@@ -718,26 +721,82 @@ export function configSource(
   };
 }
 
-/** O load balancer com o log de acesso ligado. Descoberto e mostrado; ainda não coletado. */
+/** O balanceador de um ARN: o tipo (`app` é o ALB) e o `<tipo>/<nome>/<id>` que o log e o nome do arquivo usam. */
+export function parseLoadBalancerArn(
+  arn: string | null | undefined,
+): { type: 'app' | 'net' | 'gwy' | null; loadBalancer: string } | null {
+  const marker = ':loadbalancer/';
+  const at = arn == null ? -1 : arn.indexOf(marker);
+  if (arn == null || at < 0 || !arn.startsWith('arn:')) return null;
+  const loadBalancer = arn.slice(at + marker.length);
+  const [type = '', name = '', id = '', ...rest] = loadBalancer.split('/');
+  if (name === '' || id === '' || rest.length > 0) return null;
+  return { type: type === 'app' || type === 'net' || type === 'gwy' ? type : null, loadBalancer };
+}
+
+/**
+ * O load balancer e o log de acesso dele no S3.
+ *
+ * Com os ataques web desligados no nó (o padrão), só o que tem o log ligado aparece, descoberto e ainda não coletado.
+ *
+ * Com eles ligados:
+ * - o ALB com o log ligado pode ser autorizado (volume alto: conta no plano), e o prefixo antes de `AWSLogs/` pede o bucket
+ *   nos adicionais, como nas outras fontes;
+ * - o ALB com o log desligado aparece sem destino, com o aviso de custo de ligá-lo (a Verax nunca liga);
+ * - o NLB e o GWLB, com ou sem log, não servem: o log do NLB é só de TLS e não tem a URL, e o GWLB não tem log;
+ * - o que não teve os atributos lidos continua fora: não dá para dizer se o log está ligado.
+ */
 export function loadBalancerSource(
   balancer: LoadBalancerFact,
   region: string,
   context: CatalogueContext,
 ): DiscoveredSource | null {
-  if (balancer.accessLogs == null || bucketNameProblem(balancer.accessLogs.bucket) !== null) return null;
-  const customPrefix = cleanPrefix(balancer.accessLogs.prefix);
-  return {
-    kind: 'elb_logs',
+  const base = {
+    kind: 'elb_logs' as const,
     region,
     resourceId: balancer.name,
     name: balancer.name,
+    ...unknownPermission,
+  };
+  const { accessLogs } = balancer;
+  if (accessLogs === undefined) return null;
+  const webLogs = context.features?.webLogs === true;
+  const facing: AwsSourceDetails = {
+    arn: balancer.arn,
+    ...(webLogs && { internetFacing: balancer.internetFacing }),
+  };
+  if (webLogs && parseLoadBalancerArn(balancer.arn)?.type !== 'app') {
+    return {
+      ...base,
+      availability: 'unsupported_format',
+      loggingState: accessLogs === null ? 'disabled' : 'logging',
+      notes: [],
+      details: facing,
+    };
+  }
+  if (accessLogs === null) {
+    if (!webLogs) return null;
+    return {
+      ...base,
+      availability: 'no_destination',
+      loggingState: 'disabled',
+      notes: ['aws_cost_alb_logs'],
+      details: { ...facing, destinationType: 'none' },
+    };
+  }
+  if (bucketNameProblem(accessLogs.bucket) !== null) return null;
+  const customPrefix = cleanPrefix(accessLogs.prefix);
+  return {
+    ...base,
     availability: 'available',
     loggingState: 'logging',
-    notes: ['not_collected_yet'],
+    notes: webLogs
+      ? ['high_volume', ...bucketNotes('elb_logs', accessLogs.bucket, customPrefix, context)]
+      : ['not_collected_yet'],
     details: {
-      arn: balancer.arn,
+      ...facing,
       destinationType: 's3',
-      bucket: balancer.accessLogs.bucket,
+      bucket: accessLogs.bucket,
       prefix: awsLogsPrefix({
         customPrefix,
         accountId: context.accountId,
@@ -746,6 +805,21 @@ export function loadBalancerSource(
       }),
       ...(customPrefix !== null && { customPrefix }),
     },
-    ...unknownPermission,
   };
+}
+
+/**
+ * As fontes dos balanceadores de uma região. Com os ataques web ligados, os que aceitam conexão da internet primeiro: são os
+ * que recebem ataque, e os que entram se a conta estourar o teto de fontes.
+ */
+export function loadBalancerSources(
+  balancers: readonly LoadBalancerFact[],
+  region: string,
+  context: CatalogueContext,
+): DiscoveredSource[] {
+  const ordered =
+    context.features?.webLogs === true
+      ? [...balancers].sort((a, b) => Number(b.internetFacing) - Number(a.internetFacing))
+      : balancers;
+  return ordered.flatMap((balancer) => loadBalancerSource(balancer, region, context) ?? []);
 }

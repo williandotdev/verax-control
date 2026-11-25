@@ -6,6 +6,7 @@ import {
   type PlanSeat,
   type PlanUsage,
   type ResolvedPlan,
+  type VolumeAllowance,
 } from '@verax/shared';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
@@ -69,6 +70,13 @@ export class PlanService {
     const plan = await this.plans.planOf(tenantId, this.prisma.db());
     if (plan === null) throw new TenantPlanMissing();
     return plan;
+  }
+
+  /** O volume que o plano do cliente inclui: o do mês ou, com franquia no plano (só na célula), o do dia. */
+  async volumeAllowance(tenantId: string): Promise<VolumeAllowance> {
+    const { limits } = await this.planOf(tenantId);
+    const stored = this.plans.mode === 'cell' ? await readTenantPlan(this.prisma.db(), tenantId) : null;
+    return { monthlyGib: limits.monthlyGib, franchiseGbPerDay: stored?.franchiseGbPerDay ?? null };
   }
 
   /**

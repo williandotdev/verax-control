@@ -33,7 +33,7 @@ export const WEB_RULES = {
     techniques: ['T1595'],
   },
   '990401': {
-    title: 'Ferramenta de ataque identificada pelo User-Agent (5 ou mais requisições em 15 min)',
+    title: 'Ferramenta de ataque identificada pelo User-Agent',
     tactics: ['Reconnaissance'],
     techniques: ['T1595.002'],
   },
@@ -126,6 +126,8 @@ export interface RuleContext {
   baselines: ReadonlyMap<string, number>;
   /** O hash com chave do cliente (`WebTally.tagOf`). */
   tagOf: (client: ClientRef) => number;
+  /** O multiplicador do cliente para o balanceador. */
+  multiplier: number;
 }
 
 export const baselineKey = (host: string | null, routeId: string): string => `${host ?? ''}|${routeId}`;
@@ -185,8 +187,9 @@ export const emptyCounters = (): WebEvidence['counters'] => ({
   answered: 0,
 });
 
+/** O limite multiplicado, para cima. A folga tira o resto do ponto flutuante: 100 vezes 1,1 é 110, e não 111. */
 const scaled = (base: number, ...factors: number[]): number =>
-  Math.ceil(factors.reduce((value, factor) => value * factor, base));
+  Math.ceil(factors.reduce((value, factor) => value * factor, base) - 1e-9);
 
 const plural = (count: number, one: string, many: string): string => `${count} ${count === 1 ? one : many}`;
 
@@ -348,7 +351,7 @@ function heldByWaf(context: RuleContext, blocked: number, total: number, openHit
 }
 
 /** O cliente passa do menor limite de alguma regra: só aí vale montar os totais. */
-function mayHit(key: string, slots: readonly Slot[]): boolean {
+function mayHit(key: string, slots: readonly Slot[], multiplier: number): boolean {
   let tool = 0;
   let probes = 0;
   let families = 0;
@@ -364,10 +367,10 @@ function mayHit(key: string, slots: readonly Slot[]): boolean {
     errors += entry.errors;
   }
   return (
-    tool >= THRESHOLDS.toolRequests ||
-    probes >= THRESHOLDS.probes ||
+    tool >= scaled(THRESHOLDS.toolRequests, multiplier) ||
+    probes >= scaled(THRESHOLDS.probes, multiplier) ||
     countBits(families) >= THRESHOLDS.probeFamilies ||
-    (total >= THRESHOLDS.enumRequests && errors >= THRESHOLDS.enumErrorRatio * total)
+    (total >= scaled(THRESHOLDS.enumRequests, multiplier) && errors >= THRESHOLDS.enumErrorRatio * total)
   );
 }
 
@@ -385,10 +388,10 @@ function* clientHits(
       if (visited % STEP_ITEMS === 0) yield;
       if (!candidate.suspicious || candidate.ref.cls !== 'direct' || seen.has(key)) continue;
       seen.add(key);
-      if (!mayHit(key, view.short)) continue;
+      if (!mayHit(key, view.short, context.multiplier)) continue;
       const totals = totalsOf(candidate.ref, view.short);
       const nat = natKeys.has(key);
-      const factor = nat ? THRESHOLDS.natFactor : 1;
+      const factor = context.multiplier * (nat ? THRESHOLDS.natFactor : 1);
       toolHit(view, context, totals, nat, factor, hits);
       probeHit(view, context, totals, nat, factor, hits);
       enumerationHit(view, context, totals, nat, factor, hits);
@@ -619,6 +622,7 @@ function loginHit(
 
 function bruteForceHits(
   view: WindowView,
+  multiplier: number,
   groups: Map<string, LoginGroup>,
   semantics: ReadonlyMap<string, Semantics>,
   natKeys: ReadonlySet<string>,
@@ -633,7 +637,8 @@ function bruteForceHits(
       if (pair.client.cls !== 'direct') continue;
       const { attempts, failures, successes } = pairTotals(pair);
       const nat = natKeys.has(key);
-      const limit = (base: number): number => scaled(base, route.multiplier, nat ? THRESHOLDS.natFactor : 1);
+      const limit = (base: number): number =>
+        scaled(base, multiplier, route.multiplier, nat ? THRESHOLDS.natFactor : 1);
       // A razão olha só falha e sucesso: um 415 ou um 500 provocado de propósito não dilui.
       if (
         failures >= limit(THRESHOLDS.failures) &&
@@ -711,6 +716,7 @@ function failuresBefore(timeline: ReturnType<typeof timelineOf>): number {
 
 function failuresThenSuccessHits(
   view: WindowView,
+  multiplier: number,
   groups: Map<string, LoginGroup>,
   semantics: ReadonlyMap<string, Semantics>,
   natKeys: ReadonlySet<string>,
@@ -725,7 +731,8 @@ function failuresThenSuccessHits(
       if (pair.client.cls !== 'direct') continue;
       const { open, successes } = pairTotals(pair);
       const nat = natKeys.has(key);
-      const limit = (base: number): number => scaled(base, route.multiplier, nat ? THRESHOLDS.natFactor : 1);
+      const limit = (base: number): number =>
+        scaled(base, multiplier, route.multiplier, nat ? THRESHOLDS.natFactor : 1);
       if (successes === 0 || open < limit(THRESHOLDS.successFailures)) continue;
       const failures = failuresBefore(timelineOf(pair));
       if (failures < limit(THRESHOLDS.successFailures)) continue;
@@ -836,7 +843,7 @@ function distributedHits(
     if (low.length < THRESHOLDS.distributedClients) continue;
     const clients = low.length * scale;
     const failures = low.reduce((sum, item) => sum + item.failures, 0) * scale;
-    const limit = (base: number): number => scaled(base, route.multiplier);
+    const limit = (base: number): number => scaled(base, context.multiplier, route.multiplier);
     const median = context.baselines.get(key);
     const spike =
       median !== undefined &&
@@ -994,10 +1001,10 @@ export function* evaluateWindow(view: WindowView, context: RuleContext): Generat
   const hits: WebHit[] = [];
   const catchAllSuppressed = answeredHits(view, hits);
   yield;
-  failuresThenSuccessHits(view, long, semantics, natKeys, hits);
+  failuresThenSuccessHits(view, context.multiplier, long, semantics, natKeys, hits);
   yield;
   distributedHits(view, context, semantics, hits);
-  bruteForceHits(view, short, semantics, natKeys, hits);
+  bruteForceHits(view, context.multiplier, short, semantics, natKeys, hits);
   yield;
   yield* clientHits(view, context, natKeys, hits);
   if (view.late) for (const hit of hits) hit.notes.add('late_object').add('counts_are_floor');

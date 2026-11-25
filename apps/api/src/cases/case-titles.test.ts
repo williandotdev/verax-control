@@ -32,6 +32,8 @@ describe('títulos dos casos', () => {
     expect(title('vpc-flow', '100400')).toBe(AWS_RULE_TITLES.get('100400'));
     expect(title('waf', '80443')).toBe(AWS_RULE_TITLES.get('80443'));
     expect(title('waf', '990333')).toMatch(/^Ataque DDoS/);
+    expect(title('web', '990403')).toBe('Caminho sensível respondido com conteúdo');
+    expect(title('web-login', '990406', [])).toBe('Ataque ao login da aplicação');
     expect(title('gcp-audit', '990101')).toMatch(/^Logs de auditoria desviados/);
     expect(title('cloudflare-audit', '990324')).toMatch(/^Ação feita pela equipe/);
     expect(title('access-analyzer', '990521')).toBe('Recurso aberto ao público');
@@ -63,7 +65,18 @@ describe('títulos dos casos', () => {
       sourceIp: marker,
       caseGroup: marker,
     };
-    const rules = ['80254', '80303', '80443', '100310', '100400', '990101', '990330', '990501', '990502'];
+    const rules = [
+      '80254',
+      '80303',
+      '80443',
+      '100310',
+      '100400',
+      '990101',
+      '990330',
+      '990405',
+      '990501',
+      '990502',
+    ];
     const others = ['990511', '990512', '990513', '990521', '5763', '19007', '23505', marker];
     const folds: CaseFold[] = ['distributed', 'overflow', 'rollup'];
     for (const logSource of [...FINDING_SOURCES, marker]) {

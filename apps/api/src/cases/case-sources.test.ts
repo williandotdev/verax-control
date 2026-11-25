@@ -5,6 +5,7 @@ import { AWS_FINDING_RULES } from '../aws/findings/finding-rules.js';
 import { CLOUDFLARE_RULES } from '../cloudflare/cloudflare-rules.js';
 import { CLOUDFLARE_SECURITY_RULES } from '../cloudflare/cloudflare-security-rules.js';
 import { GCP_RULES } from '../gcp/gcp-rules.js';
+import { WEB_RULES } from '../weblogs/rules.js';
 import { CASE_FAMILIES, type CaseKeyInput, caseKeyOf, foldedCaseKey, ROLLUP_FAMILY } from './case-key.js';
 import { caseSourceFilter, sourcesOfCase } from './case-sources.js';
 
@@ -38,6 +39,7 @@ const RULES: Readonly<Record<FindingSource, readonly string[]>> = {
   cloudflare_audit: idsOf(CLOUDFLARE_RULES),
   cloudflare_waf: idsOf(CLOUDFLARE_SECURITY_RULES),
   wazuh_agent: ['5763', '2502', '23501', '23504', '23508', '19007', '550', '510'],
+  alb: Object.keys(WEB_RULES),
 };
 
 const TITLES = [

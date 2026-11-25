@@ -266,6 +266,9 @@ describe('filas e famílias por fonte', () => {
     ['guardduty', { logSource: 'guardduty', ruleId: '80303' }, 'detection', 'guardduty'],
     ['waf da AWS', { logSource: 'waf', ruleId: '80443' }, 'detection', 'waf'],
     ['waf do Cloudflare', { logSource: 'cloudflare_waf', ruleId: '990330' }, 'detection', 'waf'],
+    ['logs do ALB, sondagem', { logSource: 'alb', ruleId: '990402' }, 'detection', 'web'],
+    ['logs do ALB, força bruta', { logSource: 'alb', ruleId: '990405' }, 'detection', 'web-login'],
+    ['logs do ALB, força bruta distribuída', { logSource: 'alb', ruleId: '990407' }, 'detection', 'web'],
     ['flow logs', { logSource: 'vpc_flow', ruleId: '100401' }, 'detection', 'vpc-flow'],
     ['CloudWatch Logs', { logSource: 'cloudwatch_logs', ruleId: '5763' }, 'detection', 'cloudwatch-logs'],
     ['auditoria da GCP', { logSource: 'gcp_audit', ruleId: '990102' }, 'detection', 'gcp-audit'],
@@ -483,6 +486,54 @@ describe('detecção: as partes da chave', () => {
     // A contagem no nome do evento muda a cada janela e não separa.
     expect(keyHash({ ...acl, eventName: '500 requisições' })).toBe(
       keyHash({ ...acl, eventName: '501 requisições' }),
+    );
+  });
+
+  it('logs do ALB: a força bruta e o acesso depois das falhas, do mesmo endereço no mesmo balanceador, são um caso só', () => {
+    const login = (overrides: Partial<CaseKeyInput>) =>
+      keyHash({
+        logSource: 'alb',
+        ruleId: '990405',
+        resource: 'alb:app/loja/0000000000000001',
+        sourceIp: '203.0.113.7',
+        ...overrides,
+      });
+    expect(login({})).toBe(login({ ruleId: '990406', severity: 'critical', eventName: 'outro' }));
+    expect(login({})).toBe(login({ sourceIp: '203.0.113.99' }));
+    expect(login({})).not.toBe(login({ sourceIp: '198.51.100.7' }));
+    expect(login({})).not.toBe(login({ resource: 'alb:app/api/0000000000000002' }));
+    // Atrás de uma CDN não há endereço: um caso por balanceador.
+    expect(login({ sourceIp: null })).toBe(login({ sourceIp: null, ruleId: '990406' }));
+    expect(login({ sourceIp: null })).not.toBe(login({}));
+    expect(key({ logSource: 'alb', ruleId: '990405', resource: null, sourceIp: null }).parts).toEqual([
+      { name: 'rule', value: '990405' },
+    ]);
+  });
+
+  it('logs do ALB, o resto: a regra, o balanceador e a rede; a força bruta distribuída, sem rede', () => {
+    const web = (overrides: Partial<CaseKeyInput>) =>
+      keyHash({
+        logSource: 'alb',
+        ruleId: '990403',
+        resource: 'alb:app/loja/0000000000000001',
+        sourceIp: '203.0.113.7',
+        ...overrides,
+      });
+    expect(web({})).toBe(web({ sourceIp: '203.0.113.8', eventName: 'GET /backup.zip' }));
+    expect(web({})).not.toBe(web({ ruleId: '990402' }));
+    expect(web({})).not.toBe(web({ sourceIp: '198.51.100.7' }));
+    expect(web({})).not.toBe(web({ resource: 'alb:app/api/0000000000000002' }));
+    expect(web({ ruleId: '990407', sourceIp: null })).not.toBe(
+      web({ ruleId: '990407', sourceIp: null, resource: 'alb:app/api/0000000000000002' }),
+    );
+    // A sondagem média, de qualquer endereço, cabe num caso por conta e regra.
+    expect(web({ ruleId: '990402', severity: 'medium' })).toBe(
+      web({
+        ruleId: '990402',
+        severity: 'medium',
+        sourceIp: '198.51.100.7',
+        resource: 'alb:app/api/0000000000000002',
+      }),
     );
   });
 
