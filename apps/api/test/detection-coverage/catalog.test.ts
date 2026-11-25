@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import {
   type DetectionScenario,
   detectionScenarioSchema,
@@ -48,9 +48,9 @@ function catalogFiles(): CatalogFile[] {
 }
 
 function allDetectionFiles(dir: URL = DETECTIONS_DIR): CatalogFile[] {
-  return readdirSync(dir).flatMap((name) => {
-    const url = new URL(name, dir);
-    if (statSync(url).isDirectory()) return allDetectionFiles(new URL(`${name}/`, dir));
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.isDirectory()) return allDetectionFiles(new URL(`${entry.name}/`, dir));
+    const url = new URL(entry.name, dir);
     return [{ name: url.pathname, text: readFileSync(url, 'utf8') }];
   });
 }
