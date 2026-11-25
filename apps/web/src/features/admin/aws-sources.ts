@@ -56,7 +56,10 @@ export function awsSourceGroup(source: AwsSource): AwsSourceGroup {
   return source.permission === 'granted' ? 'available' : 'needs_permission';
 }
 
-/** A fonte pode entrar num pedido de autorização (a API recusa as outras, e a tela nem as oferece)? */
+/**
+ * A fonte pode entrar num pedido de autorização (a API recusa as outras, e a tela nem as oferece)? O balanceador também
+ * precisa da estimativa de volume que vale (`usableEstimate`, em `features/web-attacks`): quem olha isso é a lista.
+ */
 export function isAuthorizableSource(source: AwsSource): boolean {
   return (
     source.origin !== 'legacy' &&
@@ -73,10 +76,12 @@ const DISPLAY_ORDER: readonly AwsSourceKind[] = [
 ].flatMap((kind) => (kind === 'guardduty' ? (['guardduty', 'guardduty_export'] as const) : [kind]));
 const KIND_ORDER = new Map<AwsSourceKind, number>(DISPLAY_ORDER.map((kind, index) => [kind, index]));
 
-/** Por tipo (na ordem da tela), depois pela região e pelo nome. */
+/** Por tipo (na ordem da tela), depois o balanceador que aceita conexão da internet, a região e o nome. */
 export function compareAwsSources(a: AwsSource, b: AwsSource): number {
+  const facing = (source: AwsSource): number => (source.details.internetFacing === true ? 0 : 1);
   return (
     (KIND_ORDER.get(a.kind) ?? 0) - (KIND_ORDER.get(b.kind) ?? 0) ||
+    facing(a) - facing(b) ||
     a.region.localeCompare(b.region) ||
     a.name.localeCompare(b.name) ||
     a.id.localeCompare(b.id)

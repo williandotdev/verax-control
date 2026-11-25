@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import {
+  type CaseQueueName,
   type CollectionSourceHealth,
   type PendingDecisionKind,
   type TowerPulse,
@@ -8,7 +9,7 @@ import {
 } from '@verax/shared';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { type ReactNode, useId, useState } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { Link, type To, useSearchParams } from 'react-router';
 import { formatCompact, formatHour } from '@/components/charts/chart-utils';
 import { MiniBars } from '@/components/charts/mini-bars';
 import { StatTile } from '@/components/charts/stat-tile';
@@ -20,8 +21,9 @@ import { buttonVariants } from '@/components/ui/button-variants';
 import { Sheet } from '@/components/ui/sheet';
 import { scoreSeverity } from '@/design/score';
 import { type Severity, SEVERITY_STYLES } from '@/design/severity';
+import { getWithCases } from '@/features/cases/cases-api';
+import { useCasesContext } from '@/features/cases/cases-context';
 import { useMe } from '@/features/session/session';
-import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatDuration, formatList, formatRelative, plural } from '@/lib/format';
 import {
@@ -31,8 +33,16 @@ import {
   proofSentence,
   stalledPhrase,
 } from './tower-collection';
-import { towerReason } from './tower-reason';
-import { selectionSearch, withChanges } from './url-state';
+import {
+  casePhrase,
+  countsByCase,
+  pendingCasesNote,
+  towerReason,
+  uncoveredPhrase,
+  validationPhrase,
+  vulnerabilityPhrase,
+} from './tower-reason';
+import { ALERTS_VIEW, casesSearch, selectionSearch, VULNERABILITIES_VIEW, withChanges } from './url-state';
 
 /**
  * O resumo da situação no topo da tela Detecções (o que era a Torre, enxuto): o radar das últimas 24 horas em
@@ -54,10 +64,14 @@ export function SituationStrip({
   /** Numa coluna só, ao lado da lista: o radar em cima e as decisões embaixo. */
   stacked?: boolean;
 }) {
+  const { mode, loading } = useCasesContext();
+  const cases = mode !== 'off';
   const tower = useQuery({
-    queryKey: ['tower', scope],
-    queryFn: () => api.get('/v1/tower', towerSummarySchema),
+    queryKey: ['tower', scope, cases],
+    queryFn: () => getWithCases('/v1/tower', towerSummarySchema, cases),
     refetchInterval: 60_000,
+    // Sem saber ainda se há casos, espera: a resposta é outra com eles.
+    enabled: !loading,
   });
   const contentId = useId();
   const titleId = useId();
@@ -107,10 +121,12 @@ export function SituationStrip({
 /** Recolhido: as contagens, numa linha. */
 function CompactSituation({ summary }: { summary: TowerSummary }) {
   const decisions = summary.pendingDecisions.reduce((sum, decision) => sum + decision.count, 0);
+  const radarCases = summary.radar?.cases;
   const counts = [
-    `${summary.openIncidents.critical} ${summary.openIncidents.critical === 1 ? 'incidente crítico aberto' : 'incidentes críticos abertos'}`,
-    `${summary.openIncidents.high} ${summary.openIncidents.high === 1 ? 'alto' : 'altos'}`,
+    plural(summary.openIncidents.critical, 'incidente crítico aberto', 'incidentes críticos abertos'),
+    plural(summary.openIncidents.high, 'alto', 'altos'),
     ...(summary.radar ? [plural(summary.radar.total, 'detecção em 24 h', 'detecções em 24 h')] : []),
+    ...(radarCases ? [plural(radarCases.total, 'caso de detecção', 'casos de detecção')] : []),
     plural(decisions, 'decisão pendente', 'decisões pendentes'),
   ];
   return (
@@ -128,11 +144,19 @@ function ExpandedSituation({ summary, stacked }: { summary: TowerSummary; stacke
   const [params] = useSearchParams();
   // Com a lista ao lado, a análise de baixo fica como está. Sem ela, o detalhe só existe na aba Lista: um ponto do radar
   // aberto numa aba de análise volta para a lista.
-  const listParams = stacked ? params : withChanges(params, { analysis: null }, { keepPage: true });
+  const listParams = withChanges(
+    params,
+    { case: null, ...(!stacked && { analysis: null }) },
+    { keepPage: true },
+  );
+  const { mode } = useCasesContext();
   const links: RadarLinks = {
     finding: (id) => ({ search: selectionSearch(listParams, { kind: 'finding', id }) }),
     incident: (id) => ({ search: selectionSearch(listParams, { kind: 'incident', id }) }),
-    all: '/?periodo=24h',
+    // O radar conta alertas: com os casos ligados, a lista padrão é outra.
+    all: mode === 'off' ? '/?periodo=24h' : `/?visao=${ALERTS_VIEW}&periodo=24h`,
+    case: (id) => ({ search: selectionSearch(listParams, { kind: 'case', id }) }),
+    allCases: { pathname: '/', search: casesSearch(mode, { state: 'all', period: '24h' }) },
   };
   return (
     <div className="space-y-4">
@@ -177,30 +201,62 @@ function ExpandedSituation({ summary, stacked }: { summary: TowerSummary; stacke
   );
 }
 
-const DECISIONS: Readonly<
-  Record<
-    PendingDecisionKind,
-    { severity: Severity; title: (count: number) => string; action: string; to: string }
-  >
-> = {
+interface DecisionLink {
+  action: string;
+  to: To;
+}
+
+/** Um cartão de decisão. Com os casos, o texto e os destinos dependem do resumo. */
+interface DecisionCard {
+  severity: Severity;
+  title: (count: number, summary: TowerSummary) => string;
+  links: (summary: TowerSummary) => readonly DecisionLink[];
+}
+
+/** Há caso alto ou crítico pendente nesta fila. */
+const serious = (summary: TowerSummary, queue: CaseQueueName): boolean =>
+  (summary.cases?.[queue].critical ?? 0) + (summary.cases?.[queue].high ?? 0) > 0;
+
+// As decisões dos casos só vêm com eles ligados: o destino é a lista de casos, os mais graves primeiro.
+const DETECTION_CASES: DecisionLink = {
+  action: 'Ver os casos',
+  to: { pathname: '/', search: casesSearch('on') },
+};
+const POSTURE_CASES: DecisionLink = {
+  action: 'Ver a postura',
+  to: { pathname: '/', search: casesSearch('on', { queue: 'posture' }) },
+};
+
+const DECISIONS: Readonly<Record<PendingDecisionKind, DecisionCard>> = {
   unassigned_incident: {
     severity: 'high',
     title: (count) => `${plural(count, 'incidente', 'incidentes')} sem responsável`,
-    action: 'Ver os incidentes',
-    to: '/?visao=incidentes&responsavel=nenhum',
+    links: () => [{ action: 'Ver os incidentes', to: '/?visao=incidentes&responsavel=nenhum' }],
+  },
+  untriaged_case: {
+    severity: 'high',
+    title: casePhrase,
+    // A lista de casos mostra uma fila por vez, e a decisão conta as duas.
+    links: (summary) => {
+      if (!serious(summary, 'posture')) return [DETECTION_CASES];
+      return serious(summary, 'detection') ? [DETECTION_CASES, POSTURE_CASES] : [POSTURE_CASES];
+    },
+  },
+  untriaged_vulnerability_case: {
+    severity: 'high',
+    title: vulnerabilityPhrase,
+    links: () => [{ action: 'Ver as vulnerabilidades', to: `/?visao=${VULNERABILITIES_VIEW}` }],
   },
   untriaged_finding: {
     severity: 'high',
-    title: (count) => `${plural(count, 'alerta alto ou crítico', 'alertas altos ou críticos')} para validar`,
-    action: 'Ver os alertas',
-    to: '/?status=new',
+    title: (count, summary) => (countsByCase(summary) ? uncoveredPhrase(count) : validationPhrase(count)),
+    links: () => [{ action: 'Ver os alertas', to: '/?status=new' }],
   },
   unowned_alert: {
     severity: 'medium',
     title: (count) => `${plural(count, 'alerta', 'alertas')} de conta não cadastrada`,
-    action: 'Ver a fila',
     // A mesma janela que a API conta para esta decisão (os últimos 7 dias): o total da fila bate com o cartão.
-    to: '/alertas-sem-dono?periodo=7d',
+    links: () => [{ action: 'Ver a fila', to: '/alertas-sem-dono?periodo=7d' }],
   },
 };
 
@@ -223,29 +279,57 @@ function PendingDecisions({ summary }: { summary: TowerSummary }) {
         <ul className="grid gap-2 @xl:grid-cols-2">
           {summary.pendingDecisions.map((decision) => {
             const content = DECISIONS[decision.kind];
+            const links = content.links(summary);
             const { icon: Icon, tone, surface } = SEVERITY_STYLES[content.severity];
             return (
               <li
                 key={decision.kind}
-                className={cn('flex items-center justify-between gap-3 rounded-md border px-3 py-2', surface)}
+                className={cn(
+                  'flex items-center justify-between gap-3 rounded-md border px-3 py-2',
+                  // Os textos e os botões dos casos são mais longos: na tela estreita, o botão vai para baixo.
+                  summary.cases && 'flex-wrap gap-y-2',
+                  surface,
+                )}
               >
-                <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                <span
+                  className={cn(
+                    'flex min-w-0 items-center gap-2 text-sm font-medium',
+                    summary.cases && 'flex-1 basis-32',
+                  )}
+                >
                   <Icon aria-hidden className={cn('size-4 shrink-0', tone)} />
                   <span className="sr-only">{SEVERITY_STYLES[content.severity].label}: </span>
-                  {content.title(decision.count)}
+                  {content.title(decision.count, summary)}
                 </span>
-                <Link
-                  to={content.to}
-                  className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'shrink-0')}
-                >
-                  {content.action}
-                </Link>
+                {links.length === 1 ? (
+                  <DecisionButton link={links[0]} />
+                ) : (
+                  <span className="flex shrink-0 flex-col items-stretch gap-1.5">
+                    {links.map((link) => (
+                      <DecisionButton key={link.action} link={link} />
+                    ))}
+                  </span>
+                )}
               </li>
             );
           })}
         </ul>
       )}
+      {summary.cases && (
+        <p className="text-xs text-muted-foreground">
+          {pendingCasesNote(summary.cases, new Date(summary.generatedAt))}
+        </p>
+      )}
     </section>
+  );
+}
+
+function DecisionButton({ link }: { link: DecisionLink | undefined }) {
+  if (!link) return null;
+  return (
+    <Link to={link.to} className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'shrink-0')}>
+      {link.action}
+    </Link>
   );
 }
 

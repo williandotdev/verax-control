@@ -50,6 +50,15 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'cloud_account.aws_source_revoked': 'Desautorizou a coleta de uma fonte de log da conta AWS',
   'cloud_account.aws_source_retry': 'Pediu a conferência da permissão de uma fonte de log da conta AWS',
   'cloud_account.aws_source_collection': 'Mudou o estado da coleta de uma fonte da conta AWS',
+  // Ataques web pelos logs do balanceador: a configuração do cliente.
+  'web_logs.settings_update': 'Alterou o modo ou os limites da detecção de ataques web de um balanceador',
+  'web_logs.estimate_request': 'Pediu a estimativa de volume de um balanceador',
+  'web_logs.trusted_source_create': 'Incluiu fonte confiável na detecção de ataques web',
+  'web_logs.trusted_source_update': 'Alterou fonte confiável da detecção de ataques web',
+  'web_logs.trusted_source_delete': 'Removeu fonte confiável da detecção de ataques web',
+  'web_logs.route_create': 'Declarou rota de um balanceador',
+  'web_logs.route_update': 'Alterou rota declarada de um balanceador',
+  'web_logs.route_delete': 'Removeu rota declarada de um balanceador',
   'cloud_credential.set': 'Guardou a credencial de leitura da conta',
   'cloud_credential.rotate': 'Trocou a credencial de leitura da conta',
   'cloud_credential.remove': 'Removeu a credencial de leitura da conta',
@@ -78,6 +87,15 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'incident.attach': 'Anexou alertas a incidente',
   'incident.detach': 'Removeu alerta de incidente',
   'incident.dissolve': 'Desfez incidente automático (alertas voltaram para validação)',
+  // Casos e triagem em massa (`apps/api/src/cases`): a pessoa pede, e o sistema registra o fim.
+  'case.split': 'Dividiu um caso',
+  'triage.bulk.request': 'Pediu triagem em massa',
+  'triage.bulk.finish': 'Triagem em massa terminou',
+  'triage.bulk.undo': 'Pediu para desfazer uma triagem em massa',
+  'triage.bulk.undo_all': 'Pediu para desfazer tudo o que uma pessoa triou em massa',
+  'triage.bulk.cancel': 'Cancelou uma triagem em massa',
+  'triage.bulk.continue': 'Retomou uma triagem em massa',
+  'triage.bulk.replay': 'Repetiu um pedido de triagem em massa (nada mudou)',
   'agents.install_instructions.view': 'Viu as instruções de instalação dos agentes',
 };
 
@@ -100,8 +118,16 @@ export const AUDIT_RESOURCE_LABELS: Readonly<Record<AuditResourceType, string>> 
   alert_exception: 'Exceções',
   finding: 'Alertas',
   incident: 'Incidentes',
+  alert_case: 'Casos',
+  triage_operation: 'Triagem em massa',
   wazuh_agents: 'Agentes',
 };
+
+/**
+ * As áreas que só existem com os casos ligados. Um nó de antes recusa o valor no filtro (400), então elas só são oferecidas
+ * quando a API diz que os casos valem.
+ */
+export const CASE_AUDIT_AREAS: readonly AuditResourceType[] = ['alert_case', 'triage_operation'];
 
 export function resourceLabel(resourceType: string | null): string | null {
   if (resourceType === null) return null;

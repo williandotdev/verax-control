@@ -30,6 +30,7 @@ import {
 } from '@/features/admin/aws-onboarding-labels';
 import { Tag } from '@/features/admin/aws-ui';
 import { CommandBlock } from '@/features/admin/command-block';
+import { AlbPrefixFix } from '@/features/web-attacks/alb-logging-steps';
 
 /** A região de uma fonte na tela: a da AWS, ou "conta inteira" (o serviço desligado em toda a conta, o bucket). */
 export function SourceRegion({ region }: { region: string }) {
@@ -223,6 +224,8 @@ export function PermissionFix({
         </p>
       </>
     );
+  } else if (detail === 'outside_awslogs_prefix' && source.kind === 'elb_logs') {
+    fix = <AlbPrefixFix source={source} account={account} again={again} />;
   } else if (detail === 'outside_awslogs_prefix') {
     fix = (
       <p>
