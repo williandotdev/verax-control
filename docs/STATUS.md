@@ -7109,3 +7109,101 @@ filter-bar,export,situation-strip}`, `features/{findings,incidents}` (relê os c
   - A prévia de um filtro não diz quantos casos tocam a lista de proteção.
   - A Torre continua contando alertas ("N alertas altos ou críticos para validar"), agora com a lista padrão de casos: muda na
     parte da Torre.
+
+## Avisos por caso (PR-7 do desenho de 24/11/2026) ⚠️ migration nova
+
+- **O que muda:** nada enquanto `CASES_MODE` for `off` (o padrão) ou `shadow`: as linhas e os e-mails são os mesmos, conferidos
+  contra o código da versão anterior. Com `on`, o aviso por e-mail dos alertas passa a ser por caso. A regra inteira está em
+  `docs/ARQUITETURA.md`, "Avisos por caso".
+  - **Detecção:** um aviso por caso e severidade; outro, se tudo o que foi avisado já foi tratado e chegou mais; e no máximo um
+    por dia se o caso cresceu.
+  - **Vulnerabilidade e postura (D4, a confirmar):** no máximo um aviso imediato por hora e cliente, com os casos críticos novos,
+    e um resumo por dia às 09:00 de Brasília. Todos os limites são constantes de `cases/case-notice-policy.ts`.
+  - **Nunca calado:** o alerta alto ou crítico sem caso há mais de 10 min avisa sozinho.
+- **Decisões desta parte** (no código, para revisão):
+  - Os avisos são calculados do estado do banco, no começo da tarefa `notifications`, e não dentro da `case-assign`: avisam mesmo
+    com ela parada, e o que uma execução não viu a seguinte vê.
+  - **"Já avisado" é por alerta**, pelo que está gravado: a linha `finding:<id>` e o que aconteceu com ela, o aviso do caso ou do
+    incidente, o desfazer. O marco de tempo só vale para o alerta sem linha nenhuma, com uma hora de folga. Por isso ligar, voltar
+    e ligar de novo não perdem nem repetem, e o `noticedBefore` da parte 2 saiu (a atribuição com `on` não marca nada).
+  - **A onda seguinte** avisa com outra chave (`case:<id>:<severidade>:<instante>`), porque a primeira já está usada; o aviso pulado
+    por o caso estar tratado, ou que falhou nas cinco tentativas há mais de 6 h, não conta como dado.
+  - **Crescimento:** dez vezes em 1 h só a partir de 100 alertas, contados do último aviso (o desenho não dizia o piso: sem ele,
+    todo caso de dez alertas avisaria duas vezes).
+  - **Resumo diário:** só sai se algo alto ou crítico pendente chegou desde o último enviado, ou uma vez por semana enquanto houver;
+    entra na fila como alerta alto, para o contato de escalonamento não o receber; conta nos cinco e-mails da hora.
+  - **Voltar para `off` ou `shadow`** devolve uma vez o que ficou no meio (`SyncState('case-notices').cursorId`); na parada do
+    worker, uma última passagem de até 5 s atribui e avisa, para a versão anterior achar o aviso na fila.
+  - **Memória de 14 dias:** a linha do aviso sai em cascata com o alerta da âncora, na retenção (o menor histórico é de 30 dias).
+  - A subida de severidade na origem de um alerta que nenhum caso avisa (num incidente, já tratado, sem caso) continua a avisar
+    alerta por alerta, com `on` também.
+  - **Sem valor novo de enum e sem coluna:** os tipos são os do alerta, e a linha leva a âncora em `findingId`.
+- **Migration** `20261202120000_notification_case_index`: um índice parcial em `Notification.caseId`. Sem ele, decidir o que já foi
+  avisado leria a tabela de avisos inteira a cada minuto. Só acrescenta; a versão anterior funciona com ele.
+- **Arquivos:** `apps/api/src/cases/case-notice-{policy,store,regime,mail,setup}.ts` e `case-notices.ts` (novos, com teste);
+  `cases/case-{assign-job,plan,tasks,watch}.ts`, `cases-mode.ts`; `notifications/{finding-notices,notification-dispatcher}.ts`;
+  `mail/templates.ts`; `alerts/finding-store.ts` (a subida diz se o alerta tem caso que avise); `worker.ts`; a migration e os
+  comentários do `schema.prisma`; testes `test/case-notices{,-delivery,-cutover,-triage,-benchmark}.test.ts`,
+  `test/support/{case-notices,own-database}.ts` e as listas de `case-assign.test.ts` e `aws-onboarding-migration.test.ts`.
+- **Dependências novas:** nenhuma. Sem mudança em `infra/`, `.github/`, `apps/web`, no módulo `auth` ou em `.claude/`.
+- **Testes:** `pnpm lint`, `pnpm typecheck` (todos os pacotes) e `format:check` limpos. Pacote `shared`: 31 arquivos, 577 testes.
+  API com Postgres descartável: 237 arquivos, 4.654 testes (sete deles, as medições de carga, só com `CASES_BENCH=1`). Novos: 164 (58
+  na decisão dos avisos, 39 na virada, 35 na entrega, 10 com a triagem pela API, 14 nas regras e 8 nos textos).
+  - Duas rodadas inteiras, com a máquina dividida com outros testes pesados. Na primeira, reprovou só a medição da primeira vez
+    ligada: a máquina ocupada estourou o prazo de um lote, e 2.005 dos 24 mil avisos de alerta saíram por alerta no resumo (o que o
+    desenho prevê; o teste passou a conferir a soma, e os e-mails). Na segunda, nenhum teste reprovado, e cinco arquivos de outros
+    assuntos caíram com o erro conhecido do worker do vitest no Windows (3221226505); os cinco passaram rodados de novo.
+  - Cada arquivo que roda o despachante tem um banco só dele (`createOwnDatabase`): a fila e a concessão são do banco inteiro.
+  - **`off` e `shadow` contra a versão anterior de verdade:** o código de `2d3f79a6` e este, no mesmo roteiro (coletores, subida na
+    origem, atribuição, quatro execuções): linhas, casos, resumos, e-mails e relatórios idênticos. O despachante da versão anterior
+    enviou as quatro formas de linha nova, e a atribuição dela seguiu com casos e avisos no banco. Foi uma conferência à parte, fora
+    da suíte; a suíte compara os modos com um worker que não sabe dos casos.
+  - O worker de verdade (`dist/worker.js`), com o banco descartável: `on` grava a virada antes das tarefas; `off`, depois de um
+    crítico sem aviso, devolve um e fecha a devolução.
+- **Mutações:** 190, uma por vez, em cópias da árvore (a de trabalho nunca foi mutada), com prazo e restauração conferida por hash.
+  Na primeira rodada (175) sobreviveram 47: 36 viraram testes e morreram, quatro mostraram código repetido, que saiu, e sete são
+  equivalentes (a segunda barreira, atrás da chave única, do lock ou da releitura, que só uma corrida alcança). Das 15 refeitas ou
+  novas, uma é equivalente, e as outras, mortas.
+- **A primeira vez ligada** (24 mil alertas em 2 mil casos de detecção, 500 deles com crítico; duas pessoas e o contato de
+  escalonamento):
+
+  | Situação ao ligar                                      | Avisos de caso | E-mails por pessoa                  | Ao contato |
+  | ------------------------------------------------------ | -------------- | ----------------------------------- | ---------- |
+  | Tudo já avisado alerta por alerta                      | 0              | 0 (2 mil casos marcados)            | 0          |
+  | Os 24 mil avisos ainda na fila                         | 2.000          | 5 na hora e 1 resumo (1.995 avisos) | 5          |
+  | 24 mil alertas novos numa hora, com os avisos por caso | 2.000          | 5 na hora e 1 resumo                | 5          |
+
+  Nas horas seguintes, mais nenhum. O segundo caso inteiro: 2.000 avisos no lugar de 24.000, e 17 e-mails (2 pessoas e o contato).
+
+- **Carga** (Postgres 18 em Docker com 1 GB e 2 CPUs, sem `fsync`, numa máquina Windows dividida com outros trabalhos): 60 mil alertas em
+  3 mil casos de detecção, 10 mil casos de vulnerabilidade, 200 mil alertas tratados e 270 mil avisos antigos, e um coletor gravando
+  sem parar (sozinho, p50 de 5 a 7 ms). Em ms:
+
+  | Execução dos avisos                                  | Total | Coletor esperando (p95, máx.) |
+  | ---------------------------------------------------- | ----- | ----------------------------- |
+  | A virada, com tudo já enviado (8 mil casos marcados) | 2.193 | 47, 157                       |
+  | Sem novidade                                         | 86    | 10, 10                        |
+  | 200 casos novos                                      | 273   | 130, 130                      |
+  | 20 mil alertas a mais num caso avisado               | 219   | 9, 55                         |
+  | Sem novidade, com esse caso                          | 144   | 7, 7                          |
+  | A virada, com 24 mil avisos na fila (2 mil casos)    | 4.070 | 11, 146                       |
+
+  A primeira medição da virada levava 30 s e passava do prazo: com as estatísticas de antes da rajada, o banco preferia o índice da
+  fila de avisos (`status`) ao do alerta. As consultas passaram a ser presas à ordem certa.
+
+- **Teste manual:** no nó piloto, depois da medição em `shadow`, `CASES_MODE=on` no worker e na API: no log, `notifications` com
+  `cases` (`marked` na primeira execução, `failedTenants`, `isolated` e `lagging` em 0); um alerta alto de teste dá um e-mail "Caso
+  de severidade alta" com o link `/?caso=`; às 09:00, o resumo diário, se há vulnerabilidade alta ou crítica nova. Depois, `off`:
+  `cases.handedBack` uma vez no log, e o alerta seguinte avisa como antes.
+- **Para ligar:** nada além do `CASES_MODE` das partes 2 e 3 (a linha no `.env.example`, e a variável no ambiente do worker e da API
+  que o `start.sh` do nó escreve). Nenhum dos dois foi tocado aqui.
+- **Riscos e dúvidas:**
+  - D4 (o resumo diário e o aviso imediato por hora) e o piso do crescimento esperam a confirmação do responsável.
+  - Uma queda sem parada (sem a última passagem), seguida da versão **anterior** do nó, deixa sem e-mail os alertas do último
+    minuto; eles estão no painel e avisam quando os casos voltam.
+  - Um crítico a mais num caso já avisado e pendente não avisa (é o desenho); o de vulnerabilidade ou postura aparece no resumo do dia.
+  - O e-mail ao administrador numa triagem em massa acima de 500 alertas continua de fora: pede um tipo novo, que só pode ser
+    emitido na versão seguinte à que o acrescenta (M3 do desenho).
+  - Um aviso pode sair segundos antes de uma triagem em massa, já pedida, chegar ao caso.
+  - O worker de verdade rodou só nesta máquina, com o banco descartável (`on` e depois `off`); não num nó, nem com SMTP, e o SIGTERM
+    não foi exercitado (Windows): a última passagem está coberta por teste.

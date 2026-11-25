@@ -47,6 +47,8 @@ const UNTRIAGED_INDEX = '20261128120000_finding_untriaged_index';
 const NOTICE_INDEX = '20261128120000_notification_escalation_index';
 /** E a do autovacuum da tabela de alertas, que a atribuição dos casos atualiza (`case-assign.test.ts`). */
 const FINDING_AUTOVACUUM = '20261129120000_finding_autovacuum';
+/** O índice dos avisos de um caso. */
+const CASE_NOTICE_INDEX = '20261202120000_notification_case_index';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -100,8 +102,18 @@ describe(`migration ${MIGRATION}`, () => {
       UNTRIAGED_INDEX,
       NOTICE_INDEX,
       FINDING_AUTOVACUUM,
+      CASE_NOTICE_INDEX,
     ]);
-    const additive = [MIGRATION, RETRY_LIMIT, OWNERSHIP, CHOSEN, APPLIED_SEQ, UNTRIAGED_INDEX, NOTICE_INDEX];
+    const additive = [
+      MIGRATION,
+      RETRY_LIMIT,
+      OWNERSHIP,
+      CHOSEN,
+      APPLIED_SEQ,
+      UNTRIAGED_INDEX,
+      NOTICE_INDEX,
+      CASE_NOTICE_INDEX,
+    ];
     for (const name of additive) {
       const sql = sqlOf(name);
       expect(sql, name).not.toMatch(/\bDROP\b|DELETE FROM|^\s*UPDATE\b|\bTRUNCATE\b|ALTER COLUMN/im);

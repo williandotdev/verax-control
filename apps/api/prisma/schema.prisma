@@ -1460,7 +1460,9 @@ model Notification {
   tenantId              String              @db.Uuid
   tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   kind                  NotificationKind
-  /// `incident:<id>:<severidade>`, `finding:<id>`, `usage:<AAAA-MM>:<80|100>` ou `aws-stalled:<início da parada>`.
+  /// `incident:<id>:<severidade>`, `finding:<id>`, `usage:<AAAA-MM>:<80|100>` ou `aws-stalled:<início da parada>`. Com os
+  /// avisos por caso, também `case:<id>:<severidade>` (e `:<instante>` na onda seguinte), `case:<id>:growth:<dia>`,
+  /// `cases-critical:<hora>` e `cases-daily:<dia>`, nos tipos `critical_finding` e `high_finding`.
   dedupeKey             String              @db.VarChar(128)
   /// Severidade que gerou o aviso (o incidente ao abrir ou ao subir, o achado crítico).
   severity              FindingSeverity?
@@ -1471,7 +1473,8 @@ model Notification {
   /// Alerta alto ou crítico que chegou. A chave estrangeira inclui o cliente.
   findingId             String?             @db.Uuid
   finding               Finding?            @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Cascade)
-  /// Caso do aviso (o alerta é o que o abriu). Sem chave estrangeira: o caso tem retenção própria.
+  /// Caso do aviso (o alerta é o que o abriu). Sem chave estrangeira: o caso tem retenção própria. O índice
+  /// (`Notification_caseId_idx`) é parcial, e só está na migration.
   caseId                String?             @db.Uuid
   /// Volume do plano: o mês (primeiro dia, calendário de Brasília) e a faixa alcançada (80 ou 100).
   usageMonth            DateTime?           @db.Date

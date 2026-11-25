@@ -102,10 +102,10 @@ export interface PlanInput {
   /** O relógio do servidor. */
   now: Date;
   /**
-   * Até quando o aviso por e-mail sai alerta por alerta (`FindingStore`): o alerta que chegou antes é do passado, e o caso
-   * nascido dele já nasce com a severidade avisada. Null: ainda sai sempre.
+   * O aviso por e-mail sai alerta por alerta (`FindingStore`): todo alerta alto ou crítico já avisou sozinho, e o caso
+   * acompanha a severidade avisada. Com os avisos por caso, quem marca é `case-notices.ts`.
    */
-  noticedBefore: Date | null;
+  noticedByAlert: boolean;
   /** Os casos abertos, por `groupKey`: os das chaves dos alertas e os das reuniões possíveis. */
   open: ReadonlyMap<string, OpenCase>;
   previous: ReadonlyMap<string, PreviousCase>;
@@ -331,7 +331,7 @@ class Planner {
       later(finding.occurredAt, finding.lastSeenAt ?? finding.occurredAt),
     );
     live.lastAlertAt = later(live.lastAlertAt, arrival);
-    if (isNoticeSeverity(finding.severity) && this.alreadyNoticed(finding, live)) {
+    if (this.input.noticedByAlert && isNoticeSeverity(finding.severity)) {
       live.noticedSeverity = worst(live.noticedSeverity, finding.severity);
     }
     addSample(live.ruleIds, finding.ruleId, SAMPLE_LIMITS.ruleIds);
@@ -345,15 +345,6 @@ class Planner {
     for (const technique of finding.mitreTechniques) {
       addSample(live.mitreTechniques, technique, SAMPLE_LIMITS.mitreTechniques);
     }
-  }
-
-  /**
-   * O aviso do alerta já saiu, alerta por alerta: ele chegou antes de os avisos por caso valerem. Só marca o caso que
-   * também é de antes: um alerta antigo que volta à fila e entra num caso novo não cala o aviso dele.
-   */
-  private alreadyNoticed(finding: PlanFinding, live: LiveCase): boolean {
-    const before = this.input.noticedBefore;
-    return before === null || (finding.createdAt < before && live.openedAt < before);
   }
 }
 

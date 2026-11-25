@@ -2080,8 +2080,8 @@ nenhum endereço sai do nó.
 
 ## Casos: agrupamento dos alertas (`apps/api/src/cases/`)
 
-_(partes 1 a 5: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API, e a tela. Os avisos por caso e os
-números da Torre vêm depois; até lá, o e-mail não muda)_
+_(partes 1 a 5 e os avisos por caso: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API, a tela e o
+e-mail. Os números da Torre vêm depois. Nada muda no painel nem no e-mail enquanto `CASES_MODE` for `off`)_
 
 Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é o worker
 (a pessoa só divide um que juntou coisas demais); a pessoa trata alertas, um por um ou em massa, e as contagens do caso são
@@ -2094,7 +2094,7 @@ de gatilhos da tabela de alertas.
   | -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
   | `off`    | Padrão. Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo só confere se há caso a apagar) | Padrão. As rotas dos casos respondem 404, iguais a uma rota que não existe, para todos os papéis |
   | `shadow` | Os alertas ganham caso (a medição no nó piloto)                                                    | Só a equipe da Verax (`admin_verax`) lê, no cliente escolhido; para os outros papéis, como `off` |
-  | `on`     | O mesmo que `shadow`, e mais a fila da triagem em massa (`triage-ops`)                             | Todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa              |
+  | `on`     | O mesmo que `shadow`, mais a fila da triagem em massa (`triage-ops`) e os avisos por caso          | Todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa              |
 
   O `start.sh` do nó ainda não escreve a variável no `worker.env` nem no ambiente da API: ligar num nó pede essas linhas
   em `infra/`. A API lê o que houver no banco: com o worker em `off` e a API em `on`, os casos ficam parados no tempo (a
@@ -2106,7 +2106,7 @@ de gatilhos da tabela de alertas.
     incidente, novo ou em análise), com o índice parcial `Finding_case_outbox_idx`: o alerta novo, o histórico e o que
     chegou com a versão anterior do nó passam pelo mesmo caminho. O esperado por exceção nasce legítimo e não entra.
   - `case-watch` (a cada minuto): a idade do alerta alto ou crítico mais antigo ainda sem caso, no log; passou de
-    10 min, é aviso no log. O aviso por e-mail desse atraso vem com os avisos por caso.
+    10 min, é aviso no log. O e-mail desse atraso sai da tarefa `notifications`, com `on` (abaixo).
   - `case-reconcile` (uma vez por semana): refaz as contagens de cada caso e corrige a que não bate. É a única escrita
     de contagem fora dos gatilhos, e qualquer correção vai para o log.
   - `triage-ops` (a cada 5 s, concessão no `SyncState`; **só com `on`**): as operações de triagem em massa que não cabem na
@@ -2140,10 +2140,9 @@ de gatilhos da tabela de alertas.
 - **Título:** sempre de um dicionário em português (`case-titles.ts`), nunca do evento. O que vem do evento fica nas
   partes da chave e nas amostras (limitadas em quantidade e tamanho), que são dado a mostrar.
 
-- **Severidade já avisada** (`noticedSeverity`): enquanto o aviso por e-mail é alerta por alerta (hoje, em qualquer
-  modo), o caso nasce com a severidade já avisada, para os avisos por caso não repetirem o passado. Quando eles valerem,
-  passado é o alerta que chegou antes da primeira passagem da tarefa com eles ligados, guardada uma vez só em
-  `SyncState('case-assign').cursorTimestamp`. Um caso aberto depois do marco nunca é calado por um alerta antigo.
+- **Severidade já avisada** (`noticedSeverity`): com `shadow`, em que o aviso por e-mail é alerta por alerta, o caso nasce
+  com a severidade já avisada e a acompanha. Com `on`, a atribuição não a toca: quem decide, avisa e marca são os avisos
+  por caso (abaixo).
 
 - **Falhas:** o erro de um cliente não para os outros nem a coleta. O lote que falha por culpa de um alerta é partido ao
   meio até isolar qual; ele fica de fora de 1 min a 1 h (dobra a cada falha), com o id e o SQLSTATE no log. Falha de
@@ -2339,6 +2338,72 @@ encaixa as peças)_
 - **Auditoria:** as ações `triage.bulk.*` e `case.split` têm nome, e as áreas "Casos" e "Triagem em massa" entram no filtro só
   quando os casos valem (um nó de antes recusa o valor com 400).
 
+### Avisos por caso
+
+_(`case-notices.ts`, `case-notice-{policy,store,regime,mail,setup}.ts`; **só com `CASES_MODE=on`**. Com `off` e `shadow`, o aviso
+é alerta por alerta, como na seção seguinte, sem diferença numa linha ou num e-mail)_
+
+Com `on`, o alerta que chega não põe nada na fila de avisos (`CaseAlertNotices`). No começo de cada execução da tarefa
+`notifications` (60 s), antes da entrega, `CaseNotices` decide os avisos a partir do que está no banco, e grava cada um e a
+severidade avisada do caso na mesma transação, sob o lock dos alertas do cliente, decididos de novo com ele na mão: duas
+réplicas, ou uma queda no meio, nunca avisam duas vezes nem deixam de avisar. É outra tarefa que não a `case-assign`, para avisar
+mesmo com ela parada. Os limites são todos constantes de `case-notice-policy.ts` (a decisão D4 ainda espera a confirmação do
+responsável pelo produto).
+
+| Aviso                                     | Quando                                                                                                                          | Chave de deduplicação                | Tipo da linha (severidade)        |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | --------------------------------- |
+| Caso de detecção                          | A pior severidade pendente (alta ou crítica) passa da avisada                                                                   | `case:<id>:<severidade>`             | `critical_finding`/`high_finding` |
+| A onda seguinte do mesmo caso             | Nada do que foi avisado está pendente, e há alerta que ninguém avisou (inclusive se o aviso de antes não chegou a ninguém)      | `case:<id>:<severidade>:<instante>`  | idem                              |
+| Crescimento (no máximo um por caso e dia) | 10 vezes mais alertas em 1 h (a partir de 100), uma tática do MITRE que ele não tinha, ou um crítico novo com o caso em análise | `case:<id>:growth:<dia de Brasília>` | idem                              |
+| Casos críticos de vulnerabilidade/postura | Há caso com crítico que ninguém avisou: todos num aviso, no máximo um por hora e cliente (os outros esperam)                    | `cases-critical:<hora cheia>`        | `critical_finding`                |
+| Resumo diário de vulnerabilidades/postura | Às 09:00 de Brasília (12:00 UTC), se algo alto ou crítico pendente chegou desde o último enviado, ou faz 7 dias que não sai     | `cases-daily:<dia>`                  | `high_finding` (`high`)           |
+| Alerta por alerta (nunca calado)          | Alto ou crítico sem caso há mais de 10 min; ou a severidade que sobe na origem num alerta que nenhum caso avisa                 | `finding:<id>`                       | o do alerta                       |
+
+- **Formato:** nenhum valor de enum novo e nenhuma coluna nova. A linha leva o alerta da âncora em `findingId` (o que abriu o caso,
+  se ainda está nele; senão, o pior pendente mais antigo) e o caso em `caseId`: cumpre as regras do banco, e uma versão anterior do
+  nó a envia como um aviso de alerta, com o link `?alerta=`. Só um índice parcial novo, `Notification_caseId_idx`.
+- **Já avisado**, alerta por alerta (`announced`, em `case-notice-store.ts`): o aviso do caso (ou o do incidente para onde ele foi
+  promovido) é de depois da chegada do alerta; ou o aviso dele, alerta por alerta, já saiu, com severidade igual ou pior; ou ele é
+  do passado (a virada, abaixo); ou voltou de um incidente por um desfazer; ou chegou há mais de 14 dias (o aviso do caso sai com
+  o alerta da âncora, na retenção: sem isso, um caso de semanas atrás avisaria de novo). O aviso pulado porque o caso foi tratado, ou trocado por
+  outro, não vale como dado; o que falhou nas cinco tentativas vale por 6 h, e o caso ainda pendente avisa de novo.
+- **Por isso:** desfazer uma triagem não avisa de novo o que já foi avisado, e avisa o que ninguém recebeu; o caso dividido herda os
+  avisos do original até a divisão; a reincidência (outro caso da chave) avisa; e um alerta a mais num caso avisado e pendente, não.
+- **O que ainda não tem caso:** a fila parada (ou o alerta isolado pela atribuição) avisa alerta por alerta depois de 10 min, em
+  lotes, os críticos primeiro, e o log diz quantos; só o alto de vulnerabilidade e de postura espera o caso e o resumo diário.
+  Quando o alerta ganha caso, o aviso ainda na fila dá lugar ao do caso, e o já enviado marca o caso.
+- **Falhas:** o erro de um cliente, de um passo ou de um trecho de casos não segura os outros nem a entrega; o que não coube no
+  tempo da execução (30 s) continua na seguinte, de onde parou. Um caso que não deixa decidir é isolado, e o alerta mais novo dele
+  avisa sozinho. Se a decisão dos casos de detecção falha para um cliente, o alerta alto ou crítico de até um dia, há mais de
+  10 min sem aviso nenhum, também avisa sozinho (`unnoticedOfCases`, uma consulta simples, sem nada da decisão), e a tarefa fica
+  com erro (`CaseNoticesFailed`). Se a leitura do caso falha na entrega, o aviso sai como o do alerta, em vez de ficar calado. O tipo do erro fica
+  em `SyncState('notifications').lastError` e no relatório da tarefa, só com contagens.
+
+**A virada.** Liga-se e volta-se sem perder nem repetir:
+
+- **Ligar:** na partida, antes dos coletores, o worker grava o começo dos avisos por caso, uma vez só, em
+  `SyncState('case-notices').cursorTimestamp` (e `cursorId = on`). Só depois de gravado o aviso por alerta para: com o banco fora do
+  ar, ele continua. Daí em diante, o alerta alto ou crítico ou tem a linha do aviso dele (`finding:<id>`), que diz o que aconteceu,
+  ou chegou depois do começo, com uma hora de folga para o que estava sendo gravado na hora. O que já saiu marca o caso sem e-mail; o
+  que não tem linha e é de antes da folga é do passado. O aviso de alerta ainda na fila, que não chegou a ninguém, só sai dela
+  (`superseded_by_case`, em lotes) depois que o alerta tem caso **e** o aviso do caso está gravado; sai também o do alerta já
+  tratado (`case_treated`) ou que foi para um incidente aberto depois (`superseded_by_incident`). Na vulnerabilidade e na postura, só
+  os críticos dão lugar ao aviso imediato; os altos da fila saem como antes.
+- **Voltar** (`off` ou `shadow`): a tarefa `notifications` vê que os avisos por caso valiam e devolve o que ficou no meio, uma vez: o
+  alerta sem caso avisa alerta por alerta, o caso ainda não avisado avisa uma vez (como um aviso de alerta, sem ler o caso), e a
+  vulnerabilidade crítica, alerta por alerta. O aviso imediato e o resumo diário que estavam na fila saem inteiros, com todos os
+  casos (`CaseNoticeMail` com `aggregatesOnly`); só a versão anterior do nó os mandaria como o de um alerta. Depois grava `cursorId = off`. No nó que nunca ligou, é uma leitura por minuto.
+- **Voltar a versão do nó:** na parada, o worker faz uma última passagem (até 5 s) que dá caso e aviso ao que acabou de chegar, e a
+  versão anterior envia o que achar na fila. Só uma queda sem parada, seguida da versão anterior, deixa sem aviso os alertas do
+  último minuto, e eles avisam quando os casos voltam.
+
+**Na entrega** (`CaseNoticeMail`): o conteúdo sai do caso na hora do envio: o título do dicionário, as contagens de alertas críticos e
+altos pendentes e o link (`/?caso=<id>`; a fila, `/?visao=vulnerabilidades` ou `/?visao=casos&fila=postura`), e nunca no assunto, que é
+fixo. O contato de escalonamento recebe os avisos de caso críticos e o imediato, sem título nem lista, e nunca o resumo diário. Os
+limites são os de sempre (5 por pessoa e hora, o resumo da hora com o título e as contagens, 5 por hora ao contato, as faixas por
+severidade). O aviso que deixou de valer é fechado antes, de uma vez (`case_treated`, `superseded_by_incident`, `case_gone`), e
+conferido de novo no envio de cada um e quando o resumo da hora sai: um caso já tratado não vai em e-mail nenhum.
+
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
 _(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado. PR-17': a
@@ -2362,6 +2427,8 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
 
   ¹ Quem não desligou os avisos de incidente em Minha conta (PR-17', abaixo).
   ² O contato de escalonamento confirmado, só nos de severidade crítica (abaixo).
+
+  Com `CASES_MODE=on`, o aviso de alerta é por caso, e não por alerta ("Avisos por caso", acima).
 
   Os três primeiros nascem no `FindingStore`, na mesma transação do achado e do incidente: todo coletor (Wazuh, agentes,
   GCP, Cloudflare) ganha o aviso sem mudança, e uma falha no meio não deixa nem o achado nem o aviso. O agrupamento
