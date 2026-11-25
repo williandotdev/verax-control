@@ -1073,7 +1073,7 @@ com no máximo 8 chamadas simultâneas e 15 s por chamada:
 | Access Analyzer       | `ListAnalyzers` (até 50 por região)                                                                      | Uma fonte `access_analyzer` por analisador                                                                                                                                        |
 | CloudWatch Logs       | `DescribeLogGroups` (até 500 por região), `ListTagsForResource`                                          | Uma fonte `cloudwatch_log_group` por grupo: o nome, o tamanho guardado, a retenção, a categoria (pelo nome) e se tem a tag de leitura. Nenhum evento                              |
 | Config                | `DescribeConfigurationRecorders`, `DescribeConfigurationRecorderStatus`, `DescribeDeliveryChannels`      | Fonte `config`, descoberta e ainda não coletada                                                                                                                                   |
-| Load balancers        | `DescribeLoadBalancers` (até 100 por região), `DescribeLoadBalancerAttributes`                           | Fonte `elb_logs` (o log de acesso), descoberta e ainda não coletada                                                                                                               |
+| Load balancers        | `DescribeLoadBalancers` (até 100 por região), `DescribeLoadBalancerAttributes`                           | Fonte `elb_logs` (o log de acesso): ver "Logs de acesso do ALB"                                                                                                                   |
 | Infraestrutura        | Os coletores do inventário (instâncias, security groups, usuários IAM, buckets), `DescribeVpcs` e o RDS  | Só o retrato em números da tela (`AwsDiscoveryRun.summary`); os detalhes ficam em Ativos                                                                                          |
 
 **Parcial é um resultado válido.** Cada leitura é isolada por serviço e região: a permissão negada, a região que
@@ -1105,7 +1105,9 @@ os tetos por região acima (o que passar deles fica de fora, com o registro `Tru
 
 Os tipos de fonte: `cloudtrail`, `vpc_flow_logs`, `waf` e `guardduty_export` (S3); `guardduty`, `security_hub`,
 `inspector` e `access_analyzer` (API); `cloudwatch_log_group` (CloudWatch Logs, sensível). Descobertos e ainda não
-coletados: `config` e `elb_logs`. Cada linha guarda se dá para ler de onde está (`availability`: disponível, serviço
+coletados: `config` e, no nó sem os ataques web (o padrão), `elb_logs`. Quem lê cada tipo é o `collector` dele
+(`AWS_SOURCE_KIND_INFO`): o Wazuh do nó ou uma tarefa do worker; o método não basta, porque o `elb_logs` também é de
+bucket. Cada linha guarda se dá para ler de onde está (`availability`: disponível, serviço
 desligado, sem destino, destino ou formato que o nó não lê), a permissão da última sondagem, as notas de custo e de
 pré-requisito, a autorização (quem, quando) e a saúde da coleta (gravada pelo coletor dela).
 
@@ -1257,6 +1259,10 @@ conhece e ainda aceita a lista simples de antes (a que uma API de versão anteri
 - **A fonte que perde a permissão ou some** (`permission_error` e `source_missing`, que a descoberta grava) sai da
   lista até voltar, e a revogada sai de vez. Uma mudança da lista só reinicia o manager quando a configuração dele
   muda.
+- **Os tipos do worker não existem para o Wazuh:** a busca da lista e o plano só conhecem os tipos dele
+  (`AWS_WAZUH_SOURCE_KINDS`). Com qualquer número de balanceadores autorizados, a lista é, byte a byte, a de sem nenhum (e
+  a lista é a única entrada do gerador), a conta que só tem deles não entra, e a saúde, a conferência de fonte parada e o
+  aviso das contas nunca tocam nas linhas deles (`wazuh-isolation.test.ts` e `wazuh-web-logs-isolation.test.ts`).
 
 ### Marcadores da leitura (sinal `progress`)
 
@@ -1652,7 +1658,8 @@ e `cloudwatch-alert-ownership.test.ts`.
   GuardDuty com os do Security Hub; o fechamento automático no painel do que foi resolvido na origem; e as
   contas-membro de um administrador delegado que não estão cadastradas para o cliente (os achados delas vão para a
   fila sem dono).
-- **Tipos descobertos e ainda não coletados:** o AWS Config e os logs de acesso dos load balancers. Os flow logs em
+- **Tipos descobertos e ainda não coletados:** o AWS Config e, sem `AWS_WEB_LOGS_ENABLED`, os logs de acesso dos load
+  balancers. Os flow logs em
   Parquet, com partições do Hive ou com formato próprio, o WAF no Firehose e o prefixo antes de `AWSLogs/` fora de um
   bucket do cadastro aparecem com o motivo, e não são lidos.
 - **Tráfego aceito dos flow logs:** a lista e o gerador aceitam `"traffic": "all"` por fonte; a escolha no painel não
@@ -2081,8 +2088,8 @@ nenhum endereço sai do nó.
 
 ## Ataques web pelos logs do ALB: o que fica guardado (`apps/api/src/weblogs/`)
 
-_(PR-1, o motor; PR-2, o banco, migration `20261130120000_web_logs`. Nada chama o motor nem grava nestas tabelas ainda: a
-tarefa é da PR-4, a tela, da PR-5.)_
+_(PR-1, o motor; PR-2, o banco, migration `20261130120000_web_logs`; PR-3, os contratos, na seção seguinte. Nada chama o
+motor nem grava o que sai da leitura ainda: a tarefa é da PR-4, a tela, da PR-5.)_
 
 O worker lê cada linha do log de acesso do ALB do bucket do cliente, conta e **não guarda linha nenhuma** (decisão D2). O
 original fica no S3 do cliente, pela retenção dele; a evidência aponta o objeto e o minuto.
@@ -2094,7 +2101,8 @@ original fica no S3 do cliente, pela retenção dele; a evidência aponta o obje
 | `WebEngineState`                                    | O resumo do dia de cada balanceador, entre reinícios do worker: contagens por endereço (IP ou /64), de até dois dias. Até 4 MiB                                                                              | Até a fonte deixar de ser coletada, ou 3 dias parado                                                       | Só o sistema (PR-4)                                                 |
 | `WebTrafficSlot`                                    | Requisições por país e classe de cliente em intervalos de 5 minutos (o mapa): total, barradas, 4xx, 5xx e as que contaram como sonda, ferramenta ou falha de login. Nunca IP, caminho nem host               | 48 h (em horas cheias); depois, passam para as horas                                                       | Só o sistema (`weblogs/store/web-traffic-store.ts`)                 |
 | `WebTrafficHour`                                    | O mesmo, por hora                                                                                                                                                                                            | 35 dias                                                                                                    | Só o sistema                                                        |
-| `WebSourceSettings`, `WebTrustedSource`, `WebRoute` | A configuração do cliente, por balanceador: o modo (`observe` no começo, depois `alert`) e o multiplicador; as fontes confiáveis; as rotas declaradas                                                        | Enquanto a fonte existir                                                                                   | O cliente, pelo painel (PR-5 e PR-8), com trilha                    |
+| `WebSourceSettings`, `WebTrustedSource`, `WebRoute` | A configuração do cliente, por balanceador: o modo (`observe` no começo, depois `alert`) e o multiplicador; as fontes confiáveis; as rotas declaradas                                                        | Enquanto a fonte existir                                                                                   | O cliente, pela API (`/v1/web-logs`), com trilha                    |
+| `WebSourceEstimate`                                 | A estimativa de volume antes da autorização: o pedido pendente e o último resultado (arquivos e bytes por dia). Só contagens                                                                                 | Enquanto a fonte existir                                                                                   | O pedido, o cliente; o resultado, o worker (PR-4)                   |
 
 - **Isolamento:** todas têm `tenantId`, e as chaves estrangeiras de fonte, conta e achado são compostas com ele e não se
   propagam na troca do cliente: nada cruza, venha a escrita de onde vier. As do sistema são só leitura no escopo do cliente
@@ -2118,6 +2126,95 @@ original fica no S3 do cliente, pela retenção dele; a evidência aponta o obje
   linhas, o pior caso): os últimos 15 minutos, 4 ms; as últimas 24 h, de 55 a 75 ms, com o índice `(tenantId, slotStart)`;
   somar um objeto (360 linhas), 43 ms; passar uma hora (4.320 linhas), 56 ms. Com um cliente só no nó, as 24 h são metade
   da tabela, e o banco a lê inteira, no mesmo tempo.
+
+## Logs de acesso do ALB: autorização, configuração e diferença de versão
+
+_(PR-3: os contratos e o isolamento do Wazuh, migration `20261201120000_web_logs_contracts`. Desligado por padrão. Nenhuma
+tarefa lê um balanceador ainda: PR-4.)_
+
+Três portões, todos fechados no começo: a linha `AWS_WEB_LOGS_ENABLED` do nó (a API e o worker, o mesmo valor; na célula ela
+não liga nada), a autorização de cada balanceador e o modo `observe`.
+
+**Desligado (o padrão).** O balanceador é o de sempre: só o que tem o log ligado aparece, de qualquer tipo, como "ainda não
+coletado" e sem sondagem; nenhuma rota o autoriza (409 `SOURCE_NOT_COLLECTABLE`); tudo em `/v1/web-logs` é 404
+(`WEB_LOGS_DISABLED`, depois de 401 e 403 e antes de olhar o corpo). Desligar vale na hora, sem esperar a descoberta: o que
+ficou gravado de quando estava ligado é mostrado como um nó que nunca os teve mostraria (`gatedSource`), sem mudar nada no
+banco. A fonte autorizada continua à vista, como "aguardando" e nunca "coletando", e tirar a autorização segue possível.
+
+**Ligado: a descoberta.** As mesmas chamadas de sempre (`DescribeLoadBalancers` e os atributos), mais a sondagem de bucket das
+outras fontes (uma listagem da pasta `AWSLogs/<conta>/elasticloadbalancing/<região>/` e 1 byte de um objeto), que o papel de
+leitura já cobre: nenhuma mudança no template.
+
+| Balanceador                                    | Como aparece                                                                       |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------- |
+| ALB com o log ligado                           | Disponível (nota `high_volume`) ou com a permissão que falta (`bucket_denied`...)  |
+| ALB com prefixo antes de `AWSLogs/`            | Precisa de permissão: `additional_bucket_required`, `outside_awslogs_prefix`       |
+| ALB com o log desligado                        | Sem destino, com `aws_cost_alb_logs`: ligar tem custo na AWS, e a Verax nunca liga |
+| NLB e GWLB, com ou sem log                     | Formato não lido: o log do NLB é só de TLS e sem URL; o GWLB não tem log           |
+| Atributos não lidos (recusados, estrangulados) | Como estava: não entra, não some                                                   |
+
+Os que aceitam conexão da internet (`details.internetFacing`) vêm primeiro. A fonte é a conta, a região e o nome do
+balanceador; o `app/<nome>/<id>` sai do ARN. Apagado e recriado com o mesmo nome, é a mesma fonte (com a autorização); como
+NLB, vira `source_missing`.
+
+**Autorizar** é a rota das outras fontes (`POST …/aws/sources/authorize`), com a ciência da estimativa em `webLogs` (D1: os
+bytes descompactados contam no plano):
+
+- A estimativa é pedida antes (`POST /v1/web-logs/sources/:id/estimate`, 202, uma a cada 5 min) e calculada pelo worker, que
+  é quem fala com a AWS. Vale 7 dias.
+- O pedido cita qual estimativa o cliente viu e os dois números dela (GB por dia e a porcentagem do plano). A API confere
+  com o gravado e com o plano de agora, com a mesma função do painel (`projectWebLogs`: 30 dias contra o volume do mês, ou o
+  dia contra a franquia): número diferente, 409 `WEB_LOGS_ESTIMATE_CHANGED`; sem estimativa que valha, 409
+  `WEB_LOGS_ESTIMATE_REQUIRED`.
+- Acima de 20% do plano (pelo valor exato), sem amostra ou com a listagem cortada, só com `acknowledged` (409
+  `WEB_LOGS_ACKNOWLEDGEMENT_REQUIRED`). O plano nunca bloqueia.
+- Até 20 balanceadores por conta, dentro das 200 fontes de bucket, que continuam contando com eles.
+- Autorizado, nasce a `WebSourceSettings` em `observe`, com `observeUntil` 72 h à frente, na mesma transação e na trilha,
+  com o que o cliente viu.
+
+**Retirar e remover.** Retirar a autorização não apaga nada na hora: a configuração, as rotas e as fontes confiáveis ficam e
+voltam a valer na próxima autorização (que recomeça a observação e guarda o multiplicador); o tráfego, os objetos tratados e
+a evidência saem pela retenção deles; o resumo do dia (o único com IP) sai no expurgo seguinte, em até um dia. Apagada a
+fonte (a descoberta esquece a que nunca foi autorizada), a conta ou o cliente, tudo o que é do balanceador sai em cascata; a
+fonte confiável de todos os balanceadores só sai com o cliente.
+
+**Configuração (`/v1/web-logs`, `apps/api/src/weblogs/settings/`).** Todos leem (`cloud_accounts:read`); administradores
+mudam (`cloud_accounts:write`); tudo na trilha, com antes e depois, na área da conta (ou do cliente, na fonte confiável de
+todos os balanceadores). A projeção contra o plano só vai para quem lê o plano (`plan:read`): a porcentagem diria o tamanho
+dele.
+
+| Rota                                                    | O quê                                                                                                      |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `GET sources`, `GET sources/:id`                        | Os balanceadores de todas as contas, com a configuração e a estimativa                                     |
+| `PATCH sources/:id/settings`                            | Modo e multiplicador (0,5 a 10). `alert` só depois de `observeUntil` (409 `WEB_OBSERVATION_PENDING`)       |
+| `POST sources/:id/estimate`                             | O pedido da estimativa                                                                                     |
+| `GET`/`POST trusted-sources`, `PATCH`/`DELETE …/:id`    | Até 200 por cliente (as de todos e as de cada um, vencidas inclusive); /16 a /32 e /32 a /64; até 365 dias |
+| `GET`/`POST sources/:id/routes`, `PATCH`/`DELETE …/:id` | Até 50 por balanceador; caminho literal em minúsculas, até 8 segmentos, `*` por segmento inteiro           |
+
+O que a API aceita, o motor aceita, com o mesmo significado (`web-logs-contract.test.ts`): a faixa é guardada na forma
+canônica (a mesma escrita de dois jeitos é uma só), e o cadastro é mais estrito onde o motor calaria (`.` e `..` no caminho,
+o mesmo código como falha e sucesso).
+
+**O achado.** A fonte é `alb` (`FINDING_SOURCES`), no setor da AWS do radar. Não é fonte de "Saúde da coleta" nem sinal de
+vida da conta: o tráfego do ALB não pode esconder uma trilha parada.
+
+**Diferença de versão** (a aba aberta desde antes; o painel da Verax e a VM do cliente em versões diferentes). Nenhuma
+resposta ganhou campo e nenhuma permissão nova existe (a lista dela vai no `GET /v1/me`, que um painel de antes recusaria
+inteiro). Com os ataques web desligados, o nó responde o que sempre respondeu. O que muda com eles ligados:
+
+| Quem é de antes            | O que chega                                                       | O que acontece                                                                                                                                                                             |
+| -------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| O painel                   | Achado `alb` numa página da lista, no detalhe ou nos relacionados | Aquela chamada mostra "O servidor respondeu algo inesperado"; as páginas sem ele abrem. Recarregar a aba resolve                                                                           |
+| O painel                   | Achado `alb` nas últimas 24 h, entre os 100 do radar              | O resumo da Torre não abre (o radar vai dentro dele)                                                                                                                                       |
+| O painel                   | Nota `aws_cost_alb_logs` ou `internetFacing` numa fonte           | A tela das fontes daquela conta não abre                                                                                                                                                   |
+| O painel                   | Balanceador disponível                                            | A caixa aparece; autorizar volta 409 com o texto da API (sem a estimativa), o pedido inteiro                                                                                               |
+| O painel                   | Relatórios                                                        | Abrem: o resumo e a cobertura não usam lista fechada (a fonte aparece como `alb`)                                                                                                          |
+| O nó                       | Filtro `fonte=alb`, `webLogs` na autorização, `/v1/web-logs`      | 400 no filtro escolhido; o painel só manda `webLogs` com um balanceador, que aquele nó não oferece; 404 sem código, tratado como desligado                                                 |
+| A imagem (volta de versão) | Achados `alb` no banco                                            | Listas, detalhe e incidentes que os contenham dão 500 (`logSourceOf`); a Torre abre. A fonte autorizada ganha `ingestion_error` (`invalid_details`) do Wazuh, sem mudar a lista do manager |
+
+Por isso a ordem: **esta versão sai, no painel e no nó, uma versão inteira antes de a linha ser ligada** (e de qualquer achado
+`alb` ser gravado); ligar só depois de o painel do cliente estar nela. Com achados `alb` gravados, não se volta para antes
+desta versão; para parar, desliga-se a linha.
 
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 

@@ -152,6 +152,7 @@ model Tenant {
   awsSources               AwsSource[]
   /// Ataques web pelos logs do ALB: a configuração do cliente, os objetos lidos, a evidência, o estado e o tráfego.
   webSourceSettings        WebSourceSettings[]
+  webSourceEstimates       WebSourceEstimate[]
   webTrustedSources        WebTrustedSource[]
   webRoutes                WebRoute[]
   webLogObjects            WebLogObject[]
@@ -509,6 +510,7 @@ model AwsSource {
 
   /// Ataques web pelos logs do ALB: o que só existe por este balanceador (`elb_logs`).
   webSettings     WebSourceSettings?
+  webEstimate     WebSourceEstimate?
   webTrusted      WebTrustedSource[]
   webRoutes       WebRoute[]
   webLogObjects   WebLogObject[]
@@ -1578,6 +1580,40 @@ model WebSourceSettings {
 
   @@id([sourceId, tenantId])
   @@index([tenantId])
+}
+
+/// A estimativa de volume de um balanceador, antes da autorização: o pedido do painel (`requestedAt`, que o worker desfaz ao
+/// responder) e o último resultado. Só contagens. Sai com a fonte.
+model WebSourceEstimate {
+  sourceId       String    @db.Uuid
+  tenantId       String    @db.Uuid
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source         AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// Pedida e ainda não respondida; null sem pedido pendente.
+  requestedAt    DateTime? @db.Timestamptz(3)
+  requestedBy    String?   @db.VarChar(64)
+  /// O último pedido, respondido ou não: é o limite de um a cada 5 min.
+  lastRequestAt  DateTime  @db.Timestamptz(3)
+  /// `ready`, `no_sample` ou `failed` (CHECK); null antes do primeiro resultado.
+  status         String?   @db.VarChar(16)
+  computedAt     DateTime? @db.Timestamptz(3)
+  /// O dia (UTC) medido.
+  day            DateTime? @db.Date
+  objects        Int?
+  /// Quantos tiveram o tamanho descompactado lido.
+  sampledObjects Int?
+  /// Bytes descompactados por dia (o que conta no plano); só no `ready`.
+  bytesPerDay    BigInt?
+  /// A listagem foi cortada: o volume é um piso.
+  truncated      Boolean   @default(false)
+  errorCode      String?   @db.VarChar(64)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([sourceId, tenantId])
+  @@index([tenantId])
+  /// Os pedidos pendentes, do mais antigo.
+  @@index([requestedAt])
 }
 
 /// Fonte confiável declarada pelo cliente (monitor, escritório, parceiro, pentest ou proxy; `weblogs/trusted-sources.ts`):

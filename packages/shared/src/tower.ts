@@ -142,6 +142,7 @@ const RADAR_SECTOR_OF: Readonly<Record<FindingSource, RadarSector>> = {
   inspector: 'aws',
   access_analyzer: 'aws',
   vpc_flow: 'aws',
+  alb: 'aws',
   cloudwatch_logs: 'aws',
   gcp_audit: 'gcp',
   cloudflare_audit: 'cloudflare',

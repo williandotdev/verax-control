@@ -1,4 +1,4 @@
-import { AWS_ONBOARDING_STATES, type AwsOnboardingState } from '@verax/shared';
+import { AWS_ONBOARDING_STATES, type AwsOnboardingState, type AwsSource } from '@verax/shared';
 import { describe, expect, it } from 'vitest';
 import {
   authorizedSourceFixture,
@@ -68,6 +68,31 @@ describe('fontes da conta AWS: em que grupo cada uma aparece', () => {
     });
     expect(isAuthorizableSource(revoked)).toBe(true);
     expect(isAuthorizableSource(authorizedSourceFixture('guardduty', 'source_missing'))).toBe(true);
+  });
+
+  it('o balanceador num nó que o coleta: cada um no seu grupo, os da internet primeiro, e nenhum na autorização ainda', () => {
+    const alb = (name: string, overrides: Partial<AwsSource> = {}) =>
+      sourceFixture('elb_logs', { name, collectable: true, notes: ['high_volume'], ...overrides });
+    const facing = { details: { internetFacing: true } };
+    expect(awsSourceGroup(alb('loja'))).toBe('available');
+    expect(awsSourceGroup(alb('loja', { permission: 'missing' }))).toBe('needs_permission');
+    expect(awsSourceGroup(alb('loja', { availability: 'no_destination' }))).toBe('not_enabled');
+    expect(awsSourceGroup(alb('rede', { availability: 'unsupported_format' }))).toBe('unsupported');
+    // O pedido desta tela não leva a ciência da estimativa, e a API o recusaria inteiro.
+    expect(isAuthorizableSource(alb('loja'))).toBe(false);
+    expect(isHighVolumeSource(alb('loja'))).toBe(true);
+    const { groups } = groupAwsSources([
+      alb('a-interno', { details: { internetFacing: false } }),
+      alb('z-loja', facing),
+      alb('b-loja', facing),
+      sourceFixture('guardduty', { region: 'us-east-1' }),
+    ]);
+    expect(groups.available.map((source) => source.name)).toEqual([
+      'fonte-guardduty',
+      'b-loja',
+      'z-loja',
+      'a-interno',
+    ]);
   });
 
   it('as autorizadas vão para o acompanhamento; os grupos de logs, para a lista deles; o resto, por grupo e em ordem', () => {

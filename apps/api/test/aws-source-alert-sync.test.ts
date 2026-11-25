@@ -150,6 +150,23 @@ describe('sync dos alertas das fontes autorizadas: flow logs da VPC e CloudWatch
   });
 
   describe('flow logs da VPC e buckets das fontes descobertas (sync da AWS)', () => {
+    it('o balanceador autorizado não dá dono a alerta do Wazuh: nem o bucket dele vira origem, nem disputa o de outro', async () => {
+      const [cloudA, cloudB] = [await cloudAccount(tenantA), await cloudAccount(tenantB)];
+      const [own, shared] = [bucket('acessos'), bucket('central')];
+      for (const name of [own, shared]) {
+        await source(cloudA, { kind: 'elb_logs', details: { bucket: name } });
+      }
+      await source(cloudB, { kind: 'cloudtrail', details: { bucket: shared } });
+      const unknown = at(cloudTrailAlert({ account: cloudA.accountId, bucket: own }));
+      const trail = at(cloudTrailAlert({ account: cloudB.accountId, bucket: shared }), 4);
+      const report = await awsSync(new FakeIndexer([unknown, trail])).runOnce();
+      expect(report).toMatchObject({ read: 2, created: 1, unowned: 1 });
+      expect(await findingsOf([unknown.id, trail.id])).toMatchObject([
+        { rawEventId: trail.id, tenantId: tenantB, logSource: 'cloudtrail' },
+      ]);
+      expect((await unownedOf([unknown.id])).map((row) => row.sourceEventId)).toEqual([unknown.id]);
+    });
+
     it('a correlação dos flow logs no bucket de uma fonte autorizada vira achado do cliente dela; a mesma rajada duas vezes, um achado só', async () => {
       const cloud = await cloudAccount(tenantA);
       const flowBucket = bucket('fluxo');

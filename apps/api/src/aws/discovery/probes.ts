@@ -9,6 +9,7 @@ import {
   AWS_SOURCE_KIND_INFO,
   type AwsSourceDetails,
   type AwsSourcePermission,
+  isAwsSourceCollectable,
 } from '@verax/shared';
 import { REFUSED_CODES } from '../../inventory/collectors.js';
 import { AwsConnectionError, awsErrorName } from '../web-identity.js';
@@ -26,7 +27,8 @@ import { ReadOnlyViolation } from './read-only.js';
  * As sondagens de permissão de cada fonte (onboarding self-service): a prova, barata e só de leitura, de que o papel lê
  * a fonte antes de o cliente autorizá-la. Nenhum conteúdo é guardado: do S3, só o nome de um objeto e 1 byte dele.
  *
- * - **S3** (trilha, flow logs, WAF, export do GuardDuty): `ListObjectsV2` no prefixo exato da fonte (`MaxKeys=1`, no dia
+ * - **S3** (trilha, flow logs, WAF, export do GuardDuty e, com os ataques web ligados no nó, o log de acesso do ALB, pela
+ *   pasta dos balanceadores da região): `ListObjectsV2` no prefixo exato da fonte (`MaxKeys=1`, no dia
  *   de hoje, no de ontem e, sem objeto neles, no prefixo inteiro) e `GetObject` de 1 byte (`Range: bytes=0-0`) do objeto
  *   achado, que prova a chave KMS num bucket cifrado. Na trilha de organização, antes, uma listagem de
  *   `AWSLogs/` com delimitador para achar o ID da organização (só os nomes do primeiro nível). As listagens são as que a
@@ -308,7 +310,7 @@ export async function probeSource(
   options: ProbeOptions,
 ): Promise<ProbeResult> {
   const info = AWS_SOURCE_KIND_INFO[source.kind];
-  if (source.availability !== 'available' || !info.collectable)
+  if (source.availability !== 'available' || !isAwsSourceCollectable(source.kind, context.features))
     return { permission: 'unknown', permissionDetail: null };
   // A capacidade desligada nas tags do papel: a política não tem as ações do tipo. O bucket do cadastro anterior
   // continua lido (a pilha o cita em `LogBucketArns`), então é sondado assim mesmo.
@@ -353,7 +355,7 @@ export async function probeInto(
     (templateOutdated && probe.permission !== 'granted' && source.availability === 'available');
   if (
     needsStack &&
-    AWS_SOURCE_KIND_INFO[source.kind].collectable &&
+    isAwsSourceCollectable(source.kind, context.features) &&
     !source.notes.includes('stack_update_required')
   ) {
     source.notes.push('stack_update_required');

@@ -36,3 +36,4 @@ export * from './tower.js';
 export * from './unowned-alerts.js';
 export * from './usage-day.js';
 export * from './users.js';
+export * from './web-logs.js';

@@ -49,6 +49,7 @@ import {
   controlPlaneSyncEnvShape,
 } from './control-plane-sync.js';
 import { checkSsoEnv, ssoConfigOf, ssoEnvShape } from './sso.js';
+import { webLogsEnvShape } from './web-logs.js';
 
 const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
 
@@ -585,6 +586,7 @@ const apiEnvSchema = z
       .optional(),
     ...planEnvShape,
     ...awsReaderEnvShape,
+    ...webLogsEnvShape,
     ...nodePlatformEnvShape,
     // Cofre de credenciais (fase 2): só a chave pública corrente, para cifrar o que o admin cola.
     CREDENTIALS_PUBLIC_KEY: z.string().optional(),
@@ -780,6 +782,7 @@ const workerEnvObjectSchema = z
     // Conexão da AWS pelo papel de leitura sem chave (PR-V5'): com o ID da conta de serviço do nó, a tarefa aws-check
     // confere de verdade (token do Google, STS e S3); sem ele, responde `check_unavailable`.
     ...awsReaderEnvShape,
+    ...webLogsEnvShape,
     ...nodePlatformEnvShape,
     // Cofre de credenciais (fase 2): o arquivo com as chaves privadas de todas as versões ativas (uma por linha,
     // `<versão>:<PEM em base64>`), montado só leitura no worker, e a versão corrente. Só o worker decifra.

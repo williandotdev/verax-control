@@ -160,8 +160,7 @@ describe('evidência de um achado', () => {
       ruleId: '990405',
       ruleLevel: 7,
       title: 'Força bruta numa rota de login',
-      // A fonte `alb` entra no contrato na PR-3.
-      logSource: 'waf',
+      logSource: 'alb',
       eventName: 'falhas de login',
       region: REGION,
       resource: `alb:${LB}`,
@@ -633,8 +632,8 @@ describe('evidência de um achado', () => {
       path: '/login?usuario=ana&senha=segredo',
       status,
     });
-    /** A fonte `alb` entra no contrato na PR-3; até lá, o achado do teste usa uma que existe. */
-    const asDraft = (draft: WebFindingDraft): FindingDraft => ({ ...draft, logSource: 'waf' });
+    /** O achado do motor é um `FindingDraft` como os outros. */
+    const asDraft = (draft: WebFindingDraft): FindingDraft => draft;
 
     it('gravados, lidos pela rota e iguais ao que o motor selou; a escalada é outro achado; nenhum byte de query', async () => {
       const tenantId = await createTenant(app, 'Cliente Demo (motor)');

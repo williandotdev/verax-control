@@ -24,8 +24,9 @@ export interface FindingDraft {
   accountId: string;
   /**
    * Sistema de origem: o Wazuh (contas AWS e agentes nas instâncias do cliente), a própria leitura dos logs da GCP e do
-   * Cloudflare, ou a leitura dos achados da AWS pela API de cada serviço (`aws`: Security Hub, Inspector e Access
-   * Analyzer; o GuardDuty lido pela API sai como `wazuh`, com a mesma chave do que chega pelo bucket).
+   * Cloudflare, ou a leitura da AWS pelo worker (`aws`: os achados do Security Hub, do Inspector e do Access Analyzer,
+   * pela API de cada serviço, e os ataques web vistos nos logs do ALB; o GuardDuty lido pela API sai como `wazuh`, com a
+   * mesma chave do que chega pelo bucket).
    */
   source: 'wazuh' | 'gcp' | 'cloudflare' | 'aws';
   /** Chave do achado na origem: a mesma a cada releitura do mesmo evento (`wazuhFindingKey`, `gcpEventIdFor`). */
@@ -42,8 +43,8 @@ export interface FindingDraft {
    */
   title: string;
   /**
-   * Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `vpc_flow`, `cloudwatch_logs`, `security_hub`,
-   * `inspector`, `access_analyzer`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`.
+   * Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `vpc_flow`, `alb`, `cloudwatch_logs`,
+   * `security_hub`, `inspector`, `access_analyzer`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`.
    */
   logSource: FindingSource;
   eventName: string | null;
