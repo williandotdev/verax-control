@@ -7689,6 +7689,12 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
   mudam. Vale 48 horas antes de qualquer decisão sobre o `on` (portão em `docs/runbooks/casos.md`).
 - Nó com a linha no `node.conf` continua com o valor dela; `off` desliga.
 
+## Ataques web pelos logs do ALB: disponíveis por padrão na versão (pedido do responsável de 25/11/2026)
+
+- Sem a linha `AWS_WEB_LOGS_ENABLED`, o nó dedicado oferece os balanceadores no painel. **Nada é lido até alguém do cliente autorizar cada
+  um**, com a estimativa de volume; todo balanceador começa só observando, por 72 horas. `false` desliga; a célula continua sem.
+- A versão 1.4.0 já saiu com os contratos. Depois de existir achado `alb`, não se volta para antes dela.
+
 ## Cobertura de detecção, UC-1: contratos, catálogo inicial e validação (25/11/2026)
 
 - **O que foi feito:** os contratos da Cobertura de detecção em `packages/shared` (schemas zod estritos do cenário e da

@@ -2609,12 +2609,13 @@ original fica no S3 do cliente, pela retenção dele; a evidência aponta o obje
 _(PR-3: os contratos e o isolamento do Wazuh, migration `20261201120000_web_logs_contracts`. Desligado por padrão. A leitura
 está na seção seguinte.)_
 
-Três portões, todos fechados no começo: a linha `AWS_WEB_LOGS_ENABLED` do nó (a API e o worker, o mesmo valor; na célula ela
-não liga nada), a autorização de cada balanceador e o modo `observe`. O `start.sh` passa a linha do `node.conf` à API e ao
+Três portões: a linha `AWS_WEB_LOGS_ENABLED` do nó (a API e o worker, o mesmo valor; na célula ela não liga nada), que desde a
+1.5.0 vem aberta e sozinha não lê nada, a autorização de cada balanceador e o modo `observe`, estes dois fechados no começo.
+O `start.sh` passa a linha do `node.conf` à API e ao
 worker; sem ela, vale o padrão da versão. O nó gerenciado já instalado não recebe linha nova no `node.conf` (a atualização da
 frota não o reescreve): nele, quem liga é o padrão da versão (`docs/runbooks/ataques-web.md`).
 
-**Desligado (o padrão).** O balanceador é o de sempre: só o que tem o log ligado aparece, de qualquer tipo, como "ainda não
+**Desligado.** O balanceador é o de sempre: só o que tem o log ligado aparece, de qualquer tipo, como "ainda não
 coletado" e sem sondagem; nenhuma rota o autoriza (409 `SOURCE_NOT_COLLECTABLE`); tudo em `/v1/web-logs` é 404
 (`WEB_LOGS_DISABLED`, depois de 401 e 403 e antes de olhar o corpo). Desligar vale na hora, sem esperar a descoberta: o que
 ficou gravado de quando estava ligado é mostrado como um nó que nunca os teve mostraria (`gatedSource`), sem mudar nada no
