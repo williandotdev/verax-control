@@ -93,10 +93,11 @@ function Notice({ children }: { children: ReactNode }) {
 }
 
 /** A seleção de casos, com o teto da API. Só o caso com pendência pode ser marcado. */
-function useCaseSelection(resetKey: string) {
+function useCaseSelection(resetKey: string, stale: boolean) {
   return useListSelection<CaseSummary>({
     limit: MAX_TRIAGE_CASES,
     resetKey,
+    stale,
     blocked: (row) => (sumPending(row.pending) === 0 ? 'nada pendente' : null),
   });
 }
@@ -135,7 +136,7 @@ function ListView({
   const { page: _page, pageSize: _pageSize, sort: _sort, ...filter } = query;
   const list = useCases(query, ready);
   useRecheckMode(list.error);
-  const selected = useCaseSelection(JSON.stringify(filter));
+  const selected = useCaseSelection(JSON.stringify(filter), list.isPlaceholderData);
   const rows = ready ? list.data?.items : undefined;
   const total = list.data?.total ?? 0;
 
@@ -166,7 +167,14 @@ function ListView({
     ...emptyTexts(view, cases, hasFilters),
   };
   const selectAll = canTriage && target !== null && total > 0 && !selected.filter && (
-    <Button variant="secondary" size="sm" className="max-md:h-11" onClick={selected.selectFilter}>
+    <Button
+      variant="secondary"
+      size="sm"
+      className="max-md:h-11"
+      // O número da lista anterior não é o deste filtro.
+      disabled={list.isPlaceholderData}
+      onClick={selected.selectFilter}
+    >
       {total === 1 ? 'Selecionar o caso do filtro' : `Selecionar os ${caseCount(total)} do filtro`}
     </Button>
   );
@@ -233,7 +241,7 @@ function GroupedView({ filters, cases, page, ready, selection, onOpen, onPageCha
     ready,
   );
   useRecheckMode(groups.error);
-  const selected = useCaseSelection(JSON.stringify([by, own, filters.q]));
+  const selected = useCaseSelection(JSON.stringify([by, own, filters.q]), groups.isPlaceholderData);
   const items = selected.items([]);
   const hasFilters = [filters.severity, filters.accountId, filters.q].some((value) => value !== undefined);
   return (
@@ -260,6 +268,7 @@ function GroupedView({ filters, cases, page, ready, selection, onOpen, onPageCha
         }}
         by={by}
         filters={own}
+        stale={groups.isPlaceholderData}
         selection={selection}
         onOpen={onOpen}
         select={canTriage ? selected.select : undefined}

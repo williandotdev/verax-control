@@ -16,13 +16,15 @@ interface AlertsProps {
   onOpen: OpenItem;
   /** Os filtros da lista: mudaram, a seleção recomeça. */
   resetKey: string;
+  /** As linhas ainda são dos filtros anteriores. */
+  stale: boolean;
 }
 
 /** A lista de alertas, com a triagem em massa dos que forem marcados para quem pode fazê-la. Sem os casos, é a de sempre. */
-export function BulkAlertsList({ resetKey, ...props }: AlertsProps) {
+export function BulkAlertsList({ resetKey, stale, ...props }: AlertsProps) {
   const { canTriage } = useCasesContext();
   if (!canTriage) return <AlertsList {...props} />;
-  return <SelectableAlerts resetKey={resetKey} {...props} />;
+  return <SelectableAlerts resetKey={resetKey} stale={stale} {...props} />;
 }
 
 const blocked = (finding: Finding): string | null => {
@@ -30,9 +32,9 @@ const blocked = (finding: Finding): string | null => {
   return isActionable(finding) ? null : 'já tratado';
 };
 
-function SelectableAlerts({ page, selection, onOpen, resetKey }: AlertsProps) {
+function SelectableAlerts({ page, selection, onOpen, resetKey, stale }: AlertsProps) {
   const { openBulk } = useCasesContext();
-  const selected = useListSelection<Finding>({ limit: MAX_TRIAGE_FINDINGS, resetKey, blocked });
+  const selected = useListSelection<Finding>({ limit: MAX_TRIAGE_FINDINGS, resetKey, blocked, stale });
   // Um alerta que deixou de poder ser tratado (alguém tratou) sai da conta, e a API o pula de qualquer forma.
   const items = selected.items(page.rows ?? []).filter(isActionable);
   return (

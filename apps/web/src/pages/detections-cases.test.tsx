@@ -429,6 +429,70 @@ describe('a fila de vulnerabilidades', () => {
   );
 });
 
+describe('as linhas da busca anterior, enquanto a nova não vem', () => {
+  /** Segura a próxima resposta de um caminho; a resposta é a de sempre. */
+  function hold(path: string): () => void {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get(`${API_URL}${path}`, async () => {
+        await gate;
+      }),
+    );
+    return release;
+  }
+
+  it('a lista de casos: nada pode ser marcado, nem o filtro inteiro', LONG, async () => {
+    renderAt('/');
+    await casesTable();
+    const page = () => screen.getByRole('checkbox', { name: 'Selecionar os casos desta página' });
+    expect(page()).toBeEnabled();
+    const release = hold('/v1/cases');
+    await userEvent.selectOptions(screen.getByLabelText('Severidade'), 'high');
+    const all = await screen.findByRole('button', { name: /^Selecionar (o|os) .*do filtro$/ });
+    expect(all).toBeDisabled();
+    expect(page()).toBeDisabled();
+    for (const box of screen.getAllByRole('checkbox', { name: /^Selecionar: / })) expect(box).toBeDisabled();
+    release();
+    await waitFor(() => expect(page()).toBeEnabled(), SLOW);
+    expect(all).toBeEnabled();
+  });
+
+  it('a lista de alertas: nada pode ser marcado', LONG, async () => {
+    renderAt('/?visao=alertas');
+    await screen.findByRole('table', { name: 'Alertas do cliente' }, SLOW);
+    const page = () => screen.getByRole('checkbox', { name: 'Selecionar os alertas desta página' });
+    expect(page()).toBeEnabled();
+    const release = hold('/v1/findings');
+    await userEvent.selectOptions(screen.getByLabelText('Severidade'), 'high');
+    await waitFor(() => expect(page()).toBeDisabled());
+    for (const box of screen.getAllByRole('checkbox', { name: /^Selecionar: / })) expect(box).toBeDisabled();
+    release();
+    await waitFor(() => expect(page()).toBeEnabled(), SLOW);
+  });
+
+  it('os grupos de vulnerabilidades: o grupo de antes não é tratado nem aberto', LONG, async () => {
+    renderAt('/?visao=vulnerabilidades');
+    await groupsTable();
+    expect(await screen.findByRole('button', { name: /^Tratar ?o grupo openssl$/ })).toBeEnabled();
+    const release = hold('/v1/cases/groups');
+    await userEvent.selectOptions(screen.getByLabelText('Agrupar por'), 'Recurso');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^Tratar ?o grupo openssl$/ })).toBeDisabled(),
+    );
+    expect(screen.getByRole('button', { name: 'Abrir os casos do grupo: openssl' })).toBeDisabled();
+    release();
+    await waitFor(
+      () => expect(screen.queryByRole('button', { name: /^Tratar ?o grupo openssl$/ })).toBeNull(),
+      SLOW,
+    );
+    for (const button of screen.getAllByRole('button', { name: /^Tratar ?o grupo / }))
+      expect(button).toBeEnabled();
+  });
+});
+
 describe('a triagem em massa dos casos', () => {
   it('a caixa do cabeçalho marca só esta página, o Shift marca o trecho, e a barra conta', async () => {
     renderAt('/');

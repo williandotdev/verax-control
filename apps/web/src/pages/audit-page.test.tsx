@@ -1,11 +1,13 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { http } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { actionLabel, resourceLabel } from '@/features/audit/labels';
 import { api } from '@/lib/api';
+import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
 import { DEMO_TENANTS, demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
@@ -104,6 +106,24 @@ describe('Auditoria', () => {
     expect(areas()).not.toContain('Triagem em massa');
     expect(areas()).toContain('Alertas');
   });
+
+  it.each(['alert_case', 'triage_operation'])(
+    'o link guardado para a área %s, num nó sem os casos, mostra a auditoria inteira',
+    async (area) => {
+      for (const cases of ['off', 'on'] as const) {
+        renderAt(`/auditoria?area=${area}`, { me: demoMe('admin_cliente'), cases });
+        const asked: (string | null)[] = [];
+        server.use(
+          http.get(`${API_URL}/v1/audit`, ({ request }) => {
+            asked.push(new URL(request.url).searchParams.get('resourceType'));
+          }),
+        );
+        await waitFor(() => expect(asked).toEqual([cases === 'on' ? area : null]));
+        if (cases === 'off') expect((await rows()).length).toBeGreaterThan(0);
+        cleanup();
+      }
+    },
+  );
 
   it('as ações da triagem em massa têm nome em português', () => {
     for (const action of ['request', 'finish', 'undo', 'undo_all', 'cancel', 'continue', 'replay']) {

@@ -36,10 +36,13 @@ export function useListSelection<T extends { id: string }>({
   limit,
   resetKey,
   blocked,
+  stale = false,
 }: {
   limit: number;
   resetKey: string;
   blocked: (row: T) => string | null;
+  /** As linhas na tela ainda são da busca anterior. */
+  stale?: boolean;
 }): ListSelection<T> {
   const empty = (selecting: boolean): SelectionState<T> => ({
     key: resetKey,
@@ -74,6 +77,7 @@ export function useListSelection<T extends { id: string }>({
     clear: () => setState((before) => empty(before.selecting)),
     select: {
       selecting: current.selecting,
+      stale,
       isSelected: (id) => current.filter || current.selected.has(id),
       blocked,
       toggle: (rows, row, checked, range) => {

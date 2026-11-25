@@ -13,6 +13,8 @@ export interface RowSelect<T extends { id: string }> {
   togglePage: (rows: readonly T[], checked: boolean) => void;
   /** No celular, as caixas só aparecem no modo de seleção. */
   selecting: boolean;
+  /** As linhas na tela são de outra busca (a nova ainda não veio): nada pode ser marcado. */
+  stale: boolean;
 }
 
 /** No celular, sem o modo de seleção, a coluna não existe na tela. */
@@ -48,7 +50,7 @@ export function SelectHeader<T extends { id: string }>({
           className={CHECKBOX}
           aria-label={`Selecionar os ${noun} desta página`}
           checked={state === 'all'}
-          disabled={selectable.length === 0}
+          disabled={select.stale || selectable.length === 0}
           onChange={(event) => select.togglePage(selectable, event.target.checked)}
         />
       </label>
@@ -98,7 +100,7 @@ export function SelectBox<T extends { id: string }>({
         className={cn(CHECKBOX, 'scroll-mb-32')}
         aria-label={blocked ? `Selecionar: ${label} (${blocked})` : `Selecionar: ${label}`}
         checked={selected}
-        disabled={blocked !== null && !selected}
+        disabled={select.stale || (blocked !== null && !selected)}
         onClick={(event) => {
           shift.current = event.shiftKey;
         }}

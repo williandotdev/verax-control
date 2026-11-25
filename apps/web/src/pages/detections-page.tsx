@@ -356,6 +356,7 @@ function DetectionsContent({
     ) : (
       <BulkAlertsList
         resetKey={JSON.stringify(findingFilters)}
+        stale={findings.isPlaceholderData}
         page={{
           // Sem saber se há casos, a tabela não aparece: com eles, ela ganha a coluna da seleção.
           rows: periods.waiting || cases.loading ? undefined : findings.data?.items,
@@ -532,6 +533,7 @@ function DetectionsContent({
                 analysis: ANALYSIS_SLUGS[value as DetectionAnalysis],
                 incident: null,
                 finding: null,
+                case: null,
               })
             }
             className="space-y-4"
