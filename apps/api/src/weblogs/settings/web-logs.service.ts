@@ -143,7 +143,7 @@ const isDuplicate = (error: unknown): boolean =>
 /**
  * A configuração dos ataques web pelos logs do ALB (`/v1/web-logs`), pelo escopo da sessão: os balanceadores de todas as
  * contas do cliente, o modo e o multiplicador de cada um, o pedido da estimativa, as fontes confiáveis e as rotas declaradas.
- * Só o cadastro: quem lê o S3 e roda o motor é o worker (PR-4). Nada aqui fala com a AWS.
+ * Só o cadastro: quem lê o S3 e roda o motor é o worker (`collect/`). Nada aqui fala com a AWS.
  *
  * - Todos leem (`cloud_accounts:read`); administradores mudam (`cloud_accounts:write`). A projeção da estimativa contra o
  *   plano só vai para quem lê o plano (`plan:read`).

@@ -8,7 +8,8 @@ import { SLOT_MS, type WebLimits } from './limits.js';
 import { DEFAULT_FAILURE_CODES, isDefaultSuccess, LOGIN_METHODS, loginRouteLength } from './login-paths.js';
 import { maskPath, type NormalPath, normalizePath } from './path.js';
 import { matchProbe, type ProbeMatch } from './probes.js';
-import type { RouteTable, WebRouteKind } from './routes.js';
+import type { CompiledRoute, RouteTable, WebRouteKind } from './routes.js';
+import { countryIndex, type CountryLookup, type ObjectTraffic } from './traffic.js';
 import {
   classifyUserAgent,
   sampleUserAgent,
@@ -85,6 +86,8 @@ export interface ClientRef {
   cls: ClientClass;
   /** Hash com chave do cliente (`tagOf`); null até alguém precisar. */
   tag: number | null;
+  /** O índice do país do endereço visto primeiro (`traffic.ts`). */
+  country: number;
 }
 
 /** Um cliente num slot. */
@@ -292,6 +295,13 @@ interface AgentInfo {
   bit: number;
 }
 
+/** O que a linha diz do login: a falha, o sucesso e a rota declarada que casou (null nas do dicionário). */
+interface LoginAttempt {
+  declared: CompiledRoute | null;
+  failure: boolean;
+  success: boolean;
+}
+
 export type LineOutcome = 'counted' | 'malformed' | 'foreign';
 
 /** Respostas sem o conteúdo do caminho. */
@@ -312,6 +322,7 @@ export class WebTally {
   private readonly loadBalancer: string;
   private readonly hash: KeyedHash;
   private readonly limits: WebLimits;
+  private readonly countries: CountryLookup | null;
   private routes: RouteTable;
   private classifier: ClientClassifier;
   private readonly paths = new Map<string, PathInfo>();
@@ -333,12 +344,15 @@ export class WebTally {
     limits: WebLimits;
     routes: RouteTable;
     classifier: ClientClassifier;
+    /** A tabela de países do tráfego; sem ela, todo país é desconhecido. */
+    countries?: CountryLookup | null;
   }) {
     this.loadBalancer = options.loadBalancer;
     this.hash = options.hash;
     this.limits = options.limits;
     this.routes = options.routes;
     this.classifier = options.classifier;
+    this.countries = options.countries ?? null;
   }
 
   /**
@@ -446,21 +460,44 @@ export class WebTally {
     return slot;
   }
 
-  ingest(slot: Slot, objectKey: string, text: string): LineOutcome {
+  /**
+   * Uma linha. `traffic` é a conta por país do objeto: toda linha do balanceador entra nela, antes de qualquer teto de
+   * memória. Com `countOnly`, só ela: a linha que este motor já contou, de um objeto cuja leitura foi interrompida.
+   */
+  ingest(
+    slot: Slot,
+    objectKey: string,
+    text: string,
+    traffic: ObjectTraffic | null = null,
+    countOnly = false,
+  ): LineOutcome {
     const line = parseAlbLine(text);
     if (line === null) {
-      this.counters.malformed += 1;
+      if (!countOnly) this.counters.malformed += 1;
       return 'malformed';
     }
     if (line.loadBalancer !== this.loadBalancer) {
-      this.counters.foreign += 1;
+      if (!countOnly) this.counters.foreign += 1;
       return 'foreign';
     }
-    const entry = this.clientOf(slot, line.clientIp);
-    if (entry === 'malformed') {
-      this.counters.malformed += 1;
+    const held = slot.clients.get(line.clientIp);
+    const ref = held === undefined ? this.refOf(line.clientIp) : held.ref;
+    if (ref === null) {
+      if (!countOnly) this.counters.malformed += 1;
       return 'malformed';
     }
+    const info = line.path === null ? null : this.pathOf(line.path);
+    const agent = this.agentOf(line.userAgent);
+    const attempt = info === null ? null : this.attemptOf(line, info);
+    const probe = info?.probe ?? null;
+    const isProbe = probe !== null && countsAsProbe(probe, line.elbStatus);
+    if (traffic !== null) {
+      const flagged = isProbe || agent.info.tool !== null || attempt?.failure === true;
+      traffic.count(ref.country, ref.cls, line.elbStatus, line.blocked, flagged, line.timeMs);
+    }
+    if (countOnly) return 'counted';
+
+    const entry = held ?? this.entryOf(slot, ref);
     this.counters.lines += 1;
     slot.lines += 1;
     if (line.ambiguous) this.counters.ambiguous += 1;
@@ -473,8 +510,6 @@ export class WebTally {
 
     const offset = this.offsetOf(slot, line.timeMs);
     const host = line.domainName === null ? null : this.hostOf(slot, line.domainName);
-    const info = line.path === null ? null : this.pathOf(line.path);
-    const agent = this.agentOf(line.userAgent);
     this.countRequest(entry, line, offset, host, agent);
     if (info !== null) {
       this.countPath(entry, info);
@@ -482,10 +517,11 @@ export class WebTally {
       // A página inicial é o `/` cru: um caminho que a normalização reduz a ela pode ser outro no servidor.
       if (line.path === '/') this.recordRoot(slot, entry, line, host);
     }
-    const login = info === null ? null : this.countLogin(slot, entry, line, info, host, offset);
+    const login =
+      info === null || attempt === null
+        ? null
+        : this.countLogin(slot, entry, line, info, attempt, host, offset);
     const error = isRouteError(line.elbStatus);
-    const probe = info?.probe ?? null;
-    const isProbe = probe !== null && countsAsProbe(probe, line.elbStatus);
     if (agent.info.tool !== null || isProbe || error || login === 'failure') {
       entry.notables += 1;
       this.keepDetail(slot, entry, line, info, offset, objectKey);
@@ -502,24 +538,28 @@ export class WebTally {
     return Math.min(SLOT_MS - 1, Math.max(0, offset));
   }
 
-  private clientOf(slot: Slot, rawIp: string): ClientEntry | null | 'malformed' {
-    const direct = slot.clients.get(rawIp);
-    if (direct !== undefined) return direct;
-    let identity = this.identities.get(rawIp);
-    if (identity === undefined) {
-      const ip = parseIp(rawIp);
-      if (ip === null) return 'malformed';
-      const text = detach(rawIp);
-      const key = clientKeyOf(ip);
-      identity = {
-        key,
-        ip: ip.version === 4 ? key : text.toLowerCase(),
-        cls: this.classifier.classify(ip),
-        tag: null,
-      };
-      if (this.identities.size >= IDENTITY_ENTRIES) this.identities.clear();
-      this.identities.set(text, identity);
-    }
+  /** Quem é o endereço; null se não é um endereço. O país é o dele mesmo, e não o do primeiro visto do /64. */
+  private refOf(rawIp: string): ClientRef | null {
+    const known = this.identities.get(rawIp);
+    if (known !== undefined) return known;
+    const ip = parseIp(rawIp);
+    if (ip === null) return null;
+    const text = detach(rawIp);
+    const key = clientKeyOf(ip);
+    const identity: ClientRef = {
+      key,
+      ip: ip.version === 4 ? key : text.toLowerCase(),
+      cls: this.classifier.classify(ip),
+      tag: null,
+      country: countryIndex(this.countries, ip.version, ip.words),
+    };
+    if (this.identities.size >= IDENTITY_ENTRIES) this.identities.clear();
+    this.identities.set(text, identity);
+    return identity;
+  }
+
+  /** O registro do cliente no slot; null se não há lugar para ele. */
+  private entryOf(slot: Slot, identity: ClientRef): ClientEntry | null {
     const known = slot.clients.get(identity.key);
     if (known !== undefined) return known;
     if (this.clients >= this.limits.maxClients) {
@@ -790,26 +830,39 @@ export class WebTally {
     if (slot.answered.size < this.limits.maxAnswered / 2) slot.answeredFull = false;
   }
 
-  private countLogin(
-    slot: Slot,
-    entry: ClientEntry,
-    line: AlbLine,
-    info: PathInfo,
-    host: string | null,
-    offset: number,
-  ): 'failure' | 'success' | null {
+  /** A linha é uma tentativa de login? Só da linha e da configuração: não depende do que está na memória. */
+  private attemptOf(line: AlbLine, info: PathInfo): LoginAttempt | null {
     const method = line.method ?? '';
     // O host da linha, e não o do teto do slot: encher o teto com subdomínios não desliga a rota declarada por host.
     const declared = this.routes.empty
       ? null
       : this.routes.match(line.domainName, method, info.path.segments);
-    let failure: boolean;
-    let success: boolean;
-    let route: LoginRoute;
     if (declared !== null) {
       if (declared.route.kind === 'ignore') return null;
-      failure = declared.failures.has(line.elbStatus);
-      success = declared.successes.has(line.elbStatus);
+      return {
+        declared,
+        failure: declared.failures.has(line.elbStatus),
+        success: declared.successes.has(line.elbStatus),
+      };
+    }
+    if (info.loginLength === 0 || !LOGIN_METHODS.has(method)) return null;
+    const failure = DEFAULT_FAILURE_CODES.includes(line.elbStatus);
+    const success = isDefaultSuccess(line.elbStatus);
+    // 404 e 405 não são resposta de login: sem isto, caminhos inventados gastariam o teto de rotas.
+    return failure || success ? { declared: null, failure, success } : null;
+  }
+
+  private countLogin(
+    slot: Slot,
+    entry: ClientEntry,
+    line: AlbLine,
+    info: PathInfo,
+    { declared, failure, success }: LoginAttempt,
+    host: string | null,
+    offset: number,
+  ): 'failure' | 'success' | null {
+    let route: LoginRoute;
+    if (declared !== null) {
       route = this.loginRoute(slot, `d:${declared.route.id}`, host, true, {
         label: declared.route.path,
         kind: declared.route.kind,
@@ -817,11 +870,6 @@ export class WebTally {
         multiplier: declared.route.multiplier,
       });
     } else {
-      if (info.loginLength === 0 || !LOGIN_METHODS.has(method)) return null;
-      failure = DEFAULT_FAILURE_CODES.includes(line.elbStatus);
-      success = isDefaultSuccess(line.elbStatus);
-      // 404 e 405 não são resposta de login: sem isto, caminhos inventados gastariam o teto de rotas.
-      if (!failure && !success) return null;
       info.loginLabel ??= maskPath({
         segments: info.path.segments.slice(0, info.loginLength),
         cased: info.path.cased.slice(0, info.loginLength),

@@ -552,7 +552,7 @@ describe('990407 com clientes que saem da memória', () => {
       expect(new Set(shifts).size).toBeGreaterThan(1);
       const shift = Math.max(...shifts);
       const tags = Array.from({ length: 340 }, (_, i) =>
-        tally.tagOf({ key: clientKey(visitor(i)), ip: '', cls: 'direct', tag: null }),
+        tally.tagOf({ key: clientKey(visitor(i)), ip: '', cls: 'direct', tag: null, country: 0 }),
       );
       const sampled = tags
         .map((tag, i) => [tag, i < 300 ? 2 : 3] as const)
@@ -617,7 +617,13 @@ describe('990407 com clientes que saem da memória', () => {
       const tally = harness.engine['tally'];
       for (const { client } of common?.cells.values() ?? []) held.add(tally.tagOf(client));
       for (let i = 0; i < 19; i += 1) {
-        const tag = tally.tagOf({ key: clientKey(visitor(i)), ip: '', cls: 'direct', tag: null });
+        const tag = tally.tagOf({
+          key: clientKey(visitor(i)),
+          ip: '',
+          cls: 'direct',
+          tag: null,
+          country: 0,
+        });
         if (isSampled(tag, ledger.shift)) expect(held).toContain(tag);
       }
     });

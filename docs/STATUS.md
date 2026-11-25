@@ -6895,3 +6895,64 @@ tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views
 - **Riscos:** a fonte é pelo nome do balanceador: apagado e recriado com o mesmo nome, herda a autorização (e o modo); a PR-4
   compara o `app/<nome>/<id>`. A API e o worker com valores diferentes da linha não autorizam nada, mas a tela mostra o
   balanceador sem permissão conferida.
+
+## Ataques web pelos logs do ALB, PR-4: a leitura, a estimativa e o tráfego por país (desligado por padrão)
+
+- **O que é:** as tarefas `web-logs` e `web-logs-estimate` do worker. A primeira lê do S3 do cliente, só leitura, os logs dos
+  balanceadores autorizados, passa as linhas pelo motor, grava os achados, mede o volume e soma o tráfego por país; a segunda
+  responde às estimativas pedidas antes da autorização. Só existem com `AWS_WEB_LOGS_ENABLED`, fora da célula. Vai para
+  `integracao/alb`, sobre a PR-3. Sem migration, sem tela e sem mudança em `infra/`.
+- **Só leitura e só do balanceador:** `ListObjectsV2` e `GetObject`, por um arquivo só (`alb-bucket.ts`), no prefixo exato até o
+  id do balanceador; a chave da listagem é conferida pela gramática antes de qualquer uso. O corpo é lido em pedaços, com teto
+  de tamanho, razão, linhas e tempo; o que passa fica de lado, contado e à vista (`quarantined`).
+- **Uma vez só:** achado antes do registro, e registro, volume e tráfego numa transação, com a autorização conferida sob o lock
+  da conta. A leitura cortada não conta nenhuma linha duas vezes no motor. A concessão não é devolvida entre execuções (o motor
+  vive na memória); quem a perde joga a memória fora e relê os últimos 70 minutos, sem cobrança.
+- **Ordem:** ao vivo, lacuna (mais de 24 h: registrada, nunca lida), atrasados (conferência de hora em hora) e atraso (motor à
+  parte, relógio virtual). O slot com objeto por ler não fecha.
+- **Motor (PR-1) mexido:** a conta por país de cada linha, antes de qualquer teto de memória; `recount`; e o multiplicador do
+  cliente (`thresholdMultiplier`) em todos os limites de contagem. O título da 990401 perdeu o "5 ou mais": com multiplicador,
+  o número não seria verdade.
+- **Decisões tomadas aqui, a conferir** (o desenho dizia outra coisa, ou não dizia):
+  - começa no primeiro intervalo **inteiro** depois da autorização (até 5 minutos ficam de fora): nada de antes dela é aberto;
+  - sem migration: a observação, o calado pelas fontes confiáveis e as notas ficam no `WebEngineState` (JSON com versão), e o
+    painel lê o pedaço dele;
+  - a concessão de 5 minutos é renovada, e não solta, entre as execuções; um worker novo depois de uma queda espera até 5
+    minutos (na parada normal, ela é devolvida);
+  - o dia do volume é o do tráfego, e o mês, o da leitura (o contrato do medidor); o arquivo recusado não é cobrado;
+  - `FindingStore.persist` ganhou um quarto parâmetro opcional (a conferência da autorização dentro da transação): sem ele, as
+    consultas são as de sempre;
+  - balanceador recriado: a observação de 72 h recomeça, pela ação de trilha que já existe (`web_logs.settings_update`, ator
+    sistema). Sem estado guardado (parado há mais de 3 dias), a troca não é percebida;
+  - a lacuna deixa a fonte em `ingestion_error` (`web_gap`) por 24 h; com mais de 9 dias, o pedaço mais antigo vai para a trilha
+    sem a contagem de arquivos;
+  - depois de uma parada de mais de 70 minutos, o resumo do dia (990400) de hoje só conta o que o motor ao vivo viu;
+  - a estimativa é uma tarefa à parte (30 s): a leitura pode levar minutos, e quem pediu está esperando;
+  - o motor do atraso usa uma fração da memória, até dois ao mesmo tempo;
+  - o WAF só rebaixa se a Web ACL regional da mesma região (ou o bucket do cadastro anterior) está coletando.
+- **Ficou para depois:** a tela, os textos dos códigos novos e a rota do mapa (PR-5 e a PR do mapa); `start.sh`, `node.conf`,
+  runbook e DPA (PR-6); 408 a 413 (PR-9).
+- **Arquivos:** `apps/api/src/weblogs/collect/**` (novo), `weblogs/traffic.ts` e `store/web-engine-state.ts` (novos);
+  `weblogs/{tally,engine,rules,routes,digest,draft}.ts`, `weblogs/store/{web-object-ledger,web-traffic-store}.ts`;
+  `alerts/finding-store.ts`; `worker.ts`; `packages/shared/src/web-logs.ts` (os códigos de estado); testes
+  (`test/web-logs-{task,recovery,faults,edges,estimate}.test.ts`, `test/support/{fake-alb-s3,web-logs-harness}.ts` e os unitários);
+  `scripts/bench-weblogs.mjs`; `docs/{ARQUITETURA,retencao-de-dados}.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/`, `.claude/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 219 arquivos e 4237 testes: na rodada inteira, 215 arquivos; em quatro
+  (`tower-posture-assets`, `detections`, `aws-volume` e `sso-staff-password-off`) o worker do vitest caiu no Windows
+  (3221226505), e passaram rodados de novo. Shared, 32 arquivos e 548 testes. `pnpm lint` e `pnpm typecheck` (todos os
+  pacotes), limpos. Novos na API: 277 em nove arquivos (o S3 falso em processo, com corpo em pedaços e falhas programadas).
+  - **O que eles provam:** cada linha conta uma vez no plano e no mapa com a queda antes do achado, entre o achado e o
+    registro, entre o registro e o commit, no meio de um lote e com o corpo cortado; duas réplicas; a retirada em cada ponto; o
+    tráfego igual a uma contagem independente com os tetos de memória no chão; a lista do Wazuh byte a byte igual; desligado,
+    nenhuma tarefa e nenhuma chamada.
+  - **Mutações** (em série, com volta conferida por hash): 225. 190 mortas de primeira e 24 depois de testes novos; duas mostraram
+    código redundante (removido) e uma mudou a condição da lacuna; 8 equivalentes (a fonte revogada já sai pelo estado, que o
+    banco amarra; a releitura e a lacuna repetidas já não gravam pela chave do registro; as demais só mudam custo ou uma corrida
+    que o passo anterior já fecha).
+- **Medido** (Windows, Node 24.15, com outros processos na máquina): a conta por país no motor, 400 mil linhas, antes e depois
+  alternados três vezes: comum, 5,4 a 6,6 s antes e 5,8 a 9,8 s depois (a terceira, com a máquina ocupada); enchente, 14,9 a
+  18,8 s e 15,5 a 18,5 s; heap e blocos iguais. Um arquivo de 536 MB abertos (804 mil linhas): 9 a 11 s de CPU, 16 MB de memória
+  a mais (depois da coleta, medida durante a leitura) e 13 ms no maior bloqueio do laço de eventos.
+- **Riscos:** nenhum dado real de ALB nem S3 de verdade foi usado. A frase do DPA precisa existir antes de ligar. Desligar a
+  linha com a fonte autorizada para a leitura: religada depois de mais de 24 h, o intervalo vira lacuna.

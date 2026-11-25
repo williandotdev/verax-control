@@ -48,7 +48,7 @@ type Track = z.infer<typeof trackSchema>;
 
 const clientKeySchema = z.string().min(1).max(49);
 
-/** O que a tarefa guarda entre reinícios (PR-4). Só contagens e chaves de cliente. */
+/** O que a tarefa guarda entre reinícios (`collect/engine-state.ts`). Só contagens e chaves de cliente. */
 export const digestStateSchema = z.strictObject({
   version: z.literal(1),
   /** O último slot assentado; null se nenhum. */

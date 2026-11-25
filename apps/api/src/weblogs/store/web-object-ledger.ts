@@ -27,6 +27,8 @@ export interface WebLogObjectRecord {
   malformed: number;
   oversize: number;
   foreign: number;
+  /** Quando foi tratado; sem ele, a hora do banco. */
+  readAt?: Date;
 }
 
 /**
@@ -57,4 +59,27 @@ export async function settleWebLogObject(
   if (count === 0) return false;
   await traffic.add(tx, deltas);
   return true;
+}
+
+/**
+ * Registra objetos que ficaram sem leitura (`gap`): não são analisados, medidos nem somados, e não voltam a ser vistos como
+ * novos. Devolve quantos ainda não estavam no registro.
+ */
+export async function settleWebLogGaps(
+  tx: Prisma.TransactionClient,
+  objects: readonly Omit<
+    WebLogObjectRecord,
+    'status' | 'lines' | 'bytes' | 'malformed' | 'oversize' | 'foreign'
+  >[],
+): Promise<number> {
+  if (objects.length === 0) return 0;
+  const { count } = await tx.webLogObject.createMany({
+    data: objects.map(({ bucket, key, ...row }) => ({
+      ...row,
+      status: 'gap',
+      objectHash: objectHash(bucket, key),
+    })),
+    skipDuplicates: true,
+  });
+  return count;
 }

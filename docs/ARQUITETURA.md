@@ -1610,6 +1610,7 @@ descartado e nenhuma fonte deixa de poder ser autorizada. O que contém o volume
 | Descoberta                       | Uma execução por vez por conta; a manual, uma a cada 5 min; 500 flow logs, 500 grupos, 200 Web ACLs e 100 load balancers por região                                     | A rota e a tarefa `aws-discovery`                                                        |
 | "Tentar de novo" numa fonte      | Um pedido a cada 30 s por fonte                                                                                                                                         | 429 `SOURCE_RETRY_RATE_LIMITED`                                                          |
 | Coletores de achados             | A cada 5 min; 2 contas ao mesmo tempo; 4 chamadas por conta; 10 páginas por fonte por execução; 200 detalhes do Access Analyzer; um registro acima de 512 KB é recusado | A tarefa `aws-findings`                                                                  |
+| Logs de acesso do ALB            | A cada 5 min por balanceador, 2 ao mesmo tempo, 20 por conta; por execução, 4 min, 500 arquivos, 2 milhões de linhas e 1,5 GB abertos                                   | A tarefa `web-logs`                                                                      |
 | Recuo                            | Limite de requisições: 5 min, dobrando, até 1 h; recusa: 15 min, dobrando, até 6 h                                                                                      | Idem (cada tentativa recusada é uma linha de acesso negado no CloudTrail do cliente)     |
 | Janela do "Conectar"             | 60 min, com tentativas a 20 s, 40 s e depois a cada 60 s                                                                                                                | A tarefa `aws-check`                                                                     |
 
@@ -2088,8 +2089,8 @@ nenhum endereço sai do nó.
 
 ## Ataques web pelos logs do ALB: o que fica guardado (`apps/api/src/weblogs/`)
 
-_(PR-1, o motor; PR-2, o banco, migration `20261130120000_web_logs`; PR-3, os contratos, na seção seguinte. Nada chama o
-motor nem grava o que sai da leitura ainda: a tarefa é da PR-4, a tela, da PR-5.)_
+_(PR-1, o motor; PR-2, o banco, migration `20261130120000_web_logs`; PR-3, os contratos, e PR-4, a leitura, nas seções
+seguintes. Desligado por padrão; a tela é da PR-5.)_
 
 O worker lê cada linha do log de acesso do ALB do bucket do cliente, conta e **não guarda linha nenhuma** (decisão D2). O
 original fica no S3 do cliente, pela retenção dele; a evidência aponta o objeto e o minuto.
@@ -2098,11 +2099,11 @@ original fica no S3 do cliente, pela retenção dele; a evidência aponta o obje
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | `FindingEvidence`                                   | A evidência de um achado: contagens, caminhos mascarados, endereços dos atacantes, até 10 amostras mascaradas e 5 ponteiros para o bucket do cliente. JSON estrito (zod na gravação e na leitura), até 16 KB | Os agregados, com o achado (o histórico do plano); as amostras e os ponteiros, 30 dias da última atividade | Só o sistema (`alerts/finding-evidence.ts`, na transação do achado) |
 | `WebLogObject`                                      | Os objetos já tratados: o hash do bucket e da chave (nunca a chave), o intervalo, as contagens e o estado (`read`, `late`, `quarantined`, `gap`)                                                             | 10 dias                                                                                                    | Só o sistema (`weblogs/store/web-object-ledger.ts`)                 |
-| `WebEngineState`                                    | O resumo do dia de cada balanceador, entre reinícios do worker: contagens por endereço (IP ou /64), de até dois dias. Até 4 MiB                                                                              | Até a fonte deixar de ser coletada, ou 3 dias parado                                                       | Só o sistema (PR-4)                                                 |
+| `WebEngineState`                                    | O resumo do dia de cada balanceador, entre reinícios do worker: contagens por endereço (IP ou /64), de até dois dias. Até 4 MiB                                                                              | Até a fonte deixar de ser coletada, ou 3 dias parado                                                       | Só o sistema (`weblogs/collect/web-logs-job.ts`)                    |
 | `WebTrafficSlot`                                    | Requisições por país e classe de cliente em intervalos de 5 minutos (o mapa): total, barradas, 4xx, 5xx e as que contaram como sonda, ferramenta ou falha de login. Nunca IP, caminho nem host               | 48 h (em horas cheias); depois, passam para as horas                                                       | Só o sistema (`weblogs/store/web-traffic-store.ts`)                 |
 | `WebTrafficHour`                                    | O mesmo, por hora                                                                                                                                                                                            | 35 dias                                                                                                    | Só o sistema                                                        |
 | `WebSourceSettings`, `WebTrustedSource`, `WebRoute` | A configuração do cliente, por balanceador: o modo (`observe` no começo, depois `alert`) e o multiplicador; as fontes confiáveis; as rotas declaradas                                                        | Enquanto a fonte existir                                                                                   | O cliente, pela API (`/v1/web-logs`), com trilha                    |
-| `WebSourceEstimate`                                 | A estimativa de volume antes da autorização: o pedido pendente e o último resultado (arquivos e bytes por dia). Só contagens                                                                                 | Enquanto a fonte existir                                                                                   | O pedido, o cliente; o resultado, o worker (PR-4)                   |
+| `WebSourceEstimate`                                 | A estimativa de volume antes da autorização: o pedido pendente e o último resultado (arquivos e bytes por dia). Só contagens                                                                                 | Enquanto a fonte existir                                                                                   | O pedido, o cliente; o resultado, o worker                          |
 
 - **Isolamento:** todas têm `tenantId`, e as chaves estrangeiras de fonte, conta e achado são compostas com ele e não se
   propagam na troca do cliente: nada cruza, venha a escrita de onde vier. As do sistema são só leitura no escopo do cliente
@@ -2129,8 +2130,8 @@ original fica no S3 do cliente, pela retenção dele; a evidência aponta o obje
 
 ## Logs de acesso do ALB: autorização, configuração e diferença de versão
 
-_(PR-3: os contratos e o isolamento do Wazuh, migration `20261201120000_web_logs_contracts`. Desligado por padrão. Nenhuma
-tarefa lê um balanceador ainda: PR-4.)_
+_(PR-3: os contratos e o isolamento do Wazuh, migration `20261201120000_web_logs_contracts`. Desligado por padrão. A leitura
+está na seção seguinte.)_
 
 Três portões, todos fechados no começo: a linha `AWS_WEB_LOGS_ENABLED` do nó (a API e o worker, o mesmo valor; na célula ela
 não liga nada), a autorização de cada balanceador e o modo `observe`.
@@ -2215,6 +2216,91 @@ inteiro). Com os ataques web desligados, o nó responde o que sempre respondeu. 
 Por isso a ordem: **esta versão sai, no painel e no nó, uma versão inteira antes de a linha ser ligada** (e de qualquer achado
 `alb` ser gravado); ligar só depois de o painel do cliente estar nela. Com achados `alb` gravados, não se volta para antes
 desta versão; para parar, desliga-se a linha.
+
+## Leitura dos logs do ALB: as tarefas `web-logs` e `web-logs-estimate` (`apps/api/src/weblogs/collect/`)
+
+_(PR-4. Só existem no worker com `AWS_WEB_LOGS_ENABLED` ligado, fora da célula e com identidade na AWS: desligadas, nenhum
+módulo é carregado e nenhuma chamada sai. Sem migration.)_
+
+**Quem é lido.** A fonte `elb_logs` autorizada e não retirada, num estado de coleta, de conta ativa já verificada que entra
+no papel, de cliente coletado; até 20 por conta. A permissão gravada não decide: quem prova é a leitura. O motor, o limite e
+a configuração (modo, multiplicador, fontes confiáveis, rotas) são lidos do banco a cada passagem: a mudança no painel vale
+na seguinte.
+
+**O S3.** Só `ListObjectsV2` e `GetObject`, por um lugar só (`alb-bucket.ts`), com os clientes da descoberta (a trava de só
+leitura) e a sessão de leitura da conta; o bucket fica na região do balanceador. O prefixo é o do balanceador até o id
+(`[<prefixo>/]AWSLogs/<conta>/elasticloadbalancing/<região>/<dia>/<conta>_elasticloadbalancing_<região>_app.<nome>.<id>_`),
+e a chave que volta da listagem só vira objeto se seguir a gramática (`alb/alb-key.ts`) e for dele: logs de conexão, de
+health check, de NLB, de outro balanceador e objetos plantados nunca são abertos. Nada é gravado, marcado ou apagado na conta
+do cliente, e nenhum log é sobrescrito.
+
+| Chamada                                         | Quando                                                              | Teto                                                        |
+| ----------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Listagem ao vivo (a partir de 70 minutos atrás) | a cada passagem (5 min por balanceador)                             | 30 páginas de 1.000                                         |
+| Conferência das pastas de ontem e de hoje       | de hora em hora, contra o registro; o que não cabe segue depois     | 40 páginas por passagem                                     |
+| Atraso e lacuna                                 | só com atraso                                                       | 20 páginas por janela de 3 h; 100 por dia de lacuna         |
+| Leitura de um arquivo                           | uma vez por arquivo (e a releitura das janelas, depois de reinício) | 64 MB compactados, 512 MB abertos, razão 200, 2 M de linhas |
+| Estimativa                                      | só a pedido do cliente                                              | 10 páginas e 20 leituras de 4 bytes                         |
+
+Tempo por chamada de 15 s; por objeto, 150 s no total e 20 s sem pedaço novo. Por execução (a cada 2 min, dois balanceadores
+ao mesmo tempo), 4 minutos, 500 objetos, 2 milhões de linhas e 1,5 GB abertos, conferidos antes de abrir cada objeto; na
+primeira vez, cada balanceador fica com no máximo um quarto disso. Linha maior que 64 KB é pulada e contada. O corpo vem em
+pedaços, do S3 ao gunzip e às linhas, e quem dita o ritmo é a contagem: medido com 512 MB abertos, 15 MB de memória a mais e
+13 ms no maior bloqueio do laço de eventos.
+
+**Cada coisa uma vez só.** A ordem é: as linhas de um lote de objetos entram no motor; ele é avaliado e os achados são
+gravados (a chave é sempre a mesma); só então cada objeto entra no registro (`WebLogObject`), com o volume medido e o tráfego
+por país, numa transação. Parar antes do registro relê o objeto, e os achados caem nas mesmas chaves; parar no meio da
+transação desfaz tudo; depois dela, o objeto nunca mais conta. A autorização (com a conta ativa e o cliente coletado) é
+conferida antes de abrir cada objeto e, sob o lock da conta, dentro de cada transação, inclusive a do achado: depois de
+confirmada a retirada, nada mais é aberto nem gravado. Um objeto cuja leitura foi cortada recomeça do zero na conta dele, e o
+motor sabe quantas linhas já viu: nenhuma entra duas vezes. O mês do volume é o da leitura; o dia, o do tráfego.
+
+**A memória e a concessão.** O motor vive na memória do processo. Por isso a concessão (`SyncState`, 5 min) não é devolvida
+entre as execuções: duas réplicas que se revezassem veriam metade dos objetos cada uma. O processo que a perde, mesmo por um
+instante, joga fora a memória. Num reinício, o resumo do dia volta do `WebEngineState` (gravado no máximo uma vez por slot
+fechado) e os objetos dos últimos 70 minutos são relidos, sem cobrança, sem tráfego e sem achado novo. Os endereços que saíram
+da memória entre a última gravação e a volta podem faltar no resumo do dia (990400).
+
+**Ao vivo primeiro.** Os objetos dos últimos 70 minutos, em ordem; com objeto à espera, a avaliação usa o relógio dele, e o
+slot que falta ler não fecha. O objeto que chega depois de o slot fechar é avaliado sozinho (`late`, contagem de piso). O que
+ficou para trás, até 24 h, é lido do mais antigo para o mais novo num motor à parte com relógio virtual (até dois ao mesmo
+tempo, com uma fração da memória), com a janela de 60 minutos de antes e de depois relida; o resumo do dia de hoje conta só o
+que o motor ao vivo viu. Com mais de 24 h, nada é lido: cada arquivo vira uma linha `gap` no registro, na trilha (quantos e o
+intervalo) e no estado.
+
+**Início.** O primeiro intervalo inteiro depois da autorização: nada anterior é aberto (até 5 minutos depois dela também
+não). Retirada e refeita, o intervalo sem autorização não é lido nem vira lacuna.
+
+**Balanceador recriado.** A fonte é pelo nome. Com outro `app/<nome>/<id>`, o estado guardado sai, o modo volta a `observe`
+por 72 h e a troca entra na trilha (`web_logs.settings_update`, ator sistema). A autorização continua. Sem estado guardado (a
+fonte parada por mais de 3 dias), a troca não é percebida.
+
+**Observar e alertar.** Em `observe`, nenhum achado, evidência ou aviso é gravado. O que abriria fica contado por regra e
+nível, uma vez por achado, em `WebEngineState.state -> 'observation'` (`since`, `rules`, `truncated`), junto do que as fontes
+confiáveis calaram nas últimas 24 h (`'suppressed'`) e das notas do motor (`'notes'`). Nada vira `alert` sozinho.
+
+**Tráfego por país.** Toda linha do balanceador conta, antes de qualquer teto de memória, num vetor por objeto: requisições,
+barradas, 4xx, 5xx e `flagged` (a linha que contou como sonda a caminho sensível, como ferramenta de ataque ou como falha de
+login, uma vez). O país é o do endereço (`geo/`), `ZZ` sem ele; se a tabela não abrir, tudo sai `ZZ` e a detecção segue. De
+hora em hora, as contagens com mais de 48 h passam para as horas.
+
+**Saúde da fonte.** `authorized` → `waiting_events` (listou, nada lido desde a autorização) → `collecting`. `stalled`
+(`web_unread`) só com arquivo à espera e nada lido há 2 h; `ingestion_error`: `web_gap` por 24 h depois de uma lacuna, o
+código do erro na terceira falha seguida, ou `invalid_details` e `web_prefix_unsupported` já na primeira (nada é pedido à
+AWS); `permission_error` com o motivo. `collecting` com `web_quarantined`: nas últimas 24 h, algum arquivo foi recusado
+(quebrado, grande demais, arquivado, data absurda, ou que falha em cinco passagens em que outros foram lidos): fica no registro
+(`quarantined`), sem análise nem cobrança. O atraso é de agora ao fim do último intervalo lido. Nas últimas 24 h, linhas e
+bytes saem do registro, com as tortas, as grandes demais e as alheias à parte. Um site quieto não para. O tráfego do ALB nunca
+conta como sinal de vida da conta (`LastEvents`).
+
+**A estimativa** (`web-logs-estimate`, a cada 30 s, até 5 pedidos por execução) é a única chamada à AWS por um balanceador
+ainda não autorizado, e só porque o cliente a pediu: os nomes e os tamanhos dos arquivos de ontem e os 4 últimos bytes de até
+20 (o tamanho descompactado do gzip), o que a sondagem da descoberta já alcança. Nenhum conteúdo é lido. Responde `ready`,
+`no_sample` ou `failed` com o motivo (`bucket_denied`, `account_not_connected`, `source_not_available`...).
+
+**O que não faz:** chamar o Wazuh, gravar em `AwsSource` de outro tipo, avisar por conta própria (só o achado alto ou crítico,
+como sempre), ou guardar linha, chave, caminho ou endereço no log do worker (só contagens e códigos).
 
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 

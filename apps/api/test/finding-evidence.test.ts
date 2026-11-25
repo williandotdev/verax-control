@@ -996,7 +996,7 @@ describe('evidência de um achado', () => {
       }).toEqual({
         findingEvidence: ['alerts/finding-evidence.ts', 'retention/retention-job.ts'],
         webLogObject: ['retention/retention-job.ts', 'weblogs/store/web-object-ledger.ts'],
-        webEngineState: ['retention/retention-job.ts'],
+        webEngineState: ['retention/retention-job.ts', 'weblogs/store/web-engine-state.ts'],
         webTrafficSlot: ['weblogs/store/web-traffic-store.ts'],
         webTrafficHour: ['weblogs/store/web-traffic-store.ts'],
       });
