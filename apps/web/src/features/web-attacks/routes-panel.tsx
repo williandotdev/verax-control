@@ -17,6 +17,7 @@ import { fieldErrors } from '@/features/admin/forms';
 import { Tag } from '@/features/admin/aws-ui';
 import { plural } from '@/lib/format';
 import { formatMultiplier, MULTIPLIER_ERROR, parseCodes, parseMultiplier, routeName } from './web-forms';
+import { useReturnFocus } from './use-return-focus';
 import { useCreateRoute, useRemoveRoute, useUpdateRoute, useWebRoutes } from './web-logs-api';
 import { WEB_ROUTE_KIND_TEXTS, WEB_ROUTE_METHOD_LABELS, webLogsErrorText } from './web-logs-labels';
 
@@ -254,20 +255,8 @@ export function RoutesPanel({
   // O que está aberto: a rota nova, a alteração de uma, ou nada.
   const [editing, setEditing] = useState<string | null>(null);
   const [removing, setRemoving] = useState<WebRoute | null>(null);
-  const list = useRef<HTMLDivElement>(null);
-
-  const close = () => {
-    const opener = editing;
-    setEditing(null);
-    // O botão que abriu o formulário volta a existir no próximo quadro: o foco volta para ele ou, se ele saiu, para a lista.
-    requestAnimationFrame(() => {
-      const button = [...(list.current?.querySelectorAll('button') ?? [])].find(
-        (candidate) => candidate.dataset['abre'] === opener,
-      );
-      if (button !== undefined && !button.disabled) button.focus();
-      else list.current?.focus();
-    });
-  };
+  const list = useReturnFocus(editing);
+  const close = () => setEditing(null);
 
   if (query.error && query.data === undefined) {
     return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;

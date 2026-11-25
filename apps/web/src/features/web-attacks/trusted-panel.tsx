@@ -18,6 +18,7 @@ import { fieldErrors } from '@/features/admin/forms';
 import { Notice, Tag } from '@/features/admin/aws-ui';
 import { formatDate, formatList, plural } from '@/lib/format';
 import { dateInput, endOfDay } from './web-forms';
+import { useReturnFocus } from './use-return-focus';
 import {
   useCreateTrusted,
   useRemoveTrusted,
@@ -257,20 +258,8 @@ export function TrustedPanel({
   const remove = useRemoveTrusted();
   const [editing, setEditing] = useState<string | null>(null);
   const [removing, setRemoving] = useState<WebTrustedSource | null>(null);
-  const list = useRef<HTMLDivElement>(null);
-
-  const close = () => {
-    const opener = editing;
-    setEditing(null);
-    // O botão que abriu o formulário volta a existir no próximo quadro: o foco volta para ele ou, se ele saiu, para a lista.
-    requestAnimationFrame(() => {
-      const button = [...(list.current?.querySelectorAll('button') ?? [])].find(
-        (candidate) => candidate.dataset['abre'] === opener,
-      );
-      if (button !== undefined && !button.disabled) button.focus();
-      else list.current?.focus();
-    });
-  };
+  const list = useReturnFocus(editing);
+  const close = () => setEditing(null);
 
   if (query.error && query.data === undefined) {
     return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
