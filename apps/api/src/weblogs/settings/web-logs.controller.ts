@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -15,6 +16,8 @@ import {
   awsSourceIdSchema,
   type WebLogSource,
   type WebLogSourceList,
+  type WebLogSourceListQuery,
+  webLogSourceListQuerySchema,
   type WebRoute,
   type WebRouteCreate,
   webRouteCreateSchema,
@@ -50,8 +53,11 @@ export class WebLogsController {
 
   @Get('sources')
   @RequirePermission('cloud_accounts:read')
-  sources(@Req() request: Request): Promise<WebLogSourceList> {
-    return this.webLogs.sources(request.auth as RequestAuth);
+  sources(
+    @Req() request: Request,
+    @Query({ schema: webLogSourceListQuerySchema }) query: WebLogSourceListQuery,
+  ): Promise<WebLogSourceList> {
+    return this.webLogs.sources(request.auth as RequestAuth, query);
   }
 
   @Get('sources/:sourceId')

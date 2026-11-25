@@ -1,6 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import {
-  AWS_MAX_SOURCES_PER_ACCOUNT,
   type AwsSourceState,
   hasCodeOverlap,
   hasPermission,
@@ -13,6 +12,7 @@ import {
   type WebLogsErrorCode,
   type WebLogSource,
   type WebLogSourceList,
+  type WebLogSourceListQuery,
   type WebRoute,
   type WebRouteCreate,
   type WebRouteKind,
@@ -35,6 +35,7 @@ import { isAuthorizedRow, sourceDetails } from '../../aws/onboarding/onboarding-
 import { AuditContext } from '../../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../../common/auth/request-auth.js';
 import { ApiError } from '../../common/http/api-error.js';
+import { toPaginated, toPrismaPage } from '../../common/http/pagination.js';
 import { PrismaService } from '../../common/prisma/prisma.service.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { PlanService } from '../../plan/plan.service.js';
@@ -161,17 +162,21 @@ export class WebLogsService {
 
   // --- Balanceadores ---
 
-  /** Os balanceadores do cliente: os que aceitam conexão da internet primeiro, depois por região e nome. */
-  async sources(auth: RequestAuth): Promise<WebLogSourceList> {
-    const rows = await this.prisma.scoped().awsSource.findMany({
-      where: BALANCER,
+  /**
+   * Os balanceadores do cliente, de todas as contas ou de uma, por região e nome. Em páginas: o teto das fontes é por conta, e
+   * com muitas contas uma lista só deixaria alguns de fora sem avisar.
+   */
+  async sources(auth: RequestAuth, query: WebLogSourceListQuery): Promise<WebLogSourceList> {
+    const db = this.prisma.scoped();
+    const where = { ...BALANCER, ...(query.cloudAccountId && { cloudAccountId: query.cloudAccountId }) };
+    const rows = await db.awsSource.findMany({
+      where,
       select: SOURCE_SELECT,
       orderBy: [{ region: 'asc' }, { name: 'asc' }, { id: 'asc' }],
-      take: AWS_MAX_SOURCES_PER_ACCOUNT,
+      ...toPrismaPage(query),
     });
-    const items = await this.toSources(auth, rows);
-    const rank = (item: WebLogSource): number => (item.internetFacing === true ? 0 : 1);
-    return { items: items.sort((a, b) => rank(a) - rank(b)) };
+    const total = await db.awsSource.count({ where });
+    return toPaginated(await this.toSources(auth, rows), total, query);
   }
 
   async source(auth: RequestAuth, sourceId: string): Promise<WebLogSource> {

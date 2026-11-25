@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AWS_SOURCE_STATES, awsSourceIdSchema } from './aws-onboarding.js';
 import { cloudAccountRefSchema } from './cloud-accounts.js';
+import { paginatedSchema, withPagination } from './pagination.js';
 import { GIB_BYTES } from './plan-usage.js';
 
 /**
@@ -217,8 +218,10 @@ export const webLogSourceSchema = z.strictObject({
 });
 export type WebLogSource = z.infer<typeof webLogSourceSchema>;
 
-/** `GET /v1/web-logs/sources`: os de todas as contas do cliente. */
-export const webLogSourceListSchema = z.strictObject({ items: z.array(webLogSourceSchema).max(2000) });
+/** `GET /v1/web-logs/sources`: os de todas as contas do cliente, ou os de uma, em páginas (nenhum fica de fora). */
+export const webLogSourceListQuerySchema = withPagination({ cloudAccountId: z.uuid().optional() });
+export type WebLogSourceListQuery = z.infer<typeof webLogSourceListQuerySchema>;
+export const webLogSourceListSchema = paginatedSchema(webLogSourceSchema);
 export type WebLogSourceList = z.infer<typeof webLogSourceListSchema>;
 
 // --- Fontes confiáveis ---

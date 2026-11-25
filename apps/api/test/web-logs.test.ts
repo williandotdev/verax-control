@@ -599,12 +599,17 @@ describe('ataques web pelos logs do ALB: configuração (ligados)', () => {
   });
 
   describe('os balanceadores e o modo', () => {
-    it('a lista: os da internet primeiro, o identificador do ALB, e a projeção só para quem lê o plano', async () => {
+    it('a lista: por região e nome, em páginas, o identificador do ALB, e a projeção só para quem lê o plano', async () => {
       const tenant = await createTenant(app, 'Cliente Demo (lista de balanceadores)');
       const admin = await sessionFor(tenant, 'admin_cliente');
       const analyst = await sessionFor(tenant, 'analista_cliente');
       const reader = await sessionFor(tenant, 'leitura');
-      expect((await get(admin, '/v1/web-logs/sources').expect(200)).body).toEqual({ items: [] });
+      expect((await get(admin, '/v1/web-logs/sources').expect(200)).body).toEqual({
+        items: [],
+        page: 1,
+        pageSize: 25,
+        total: 0,
+      });
       const cloud = await account(tenant);
       const other = await account(tenant);
       const arn = (path: string) =>
@@ -631,15 +636,29 @@ describe('ataques web pelos logs do ALB: configuração (ligados)', () => {
 
       const list = webLogSourceListSchema.parse((await get(admin, '/v1/web-logs/sources').expect(200)).body);
       expect(list.items.map((item) => [item.name, item.loadBalancer, item.internetFacing])).toEqual([
+        ['a-interno', 'app/a-interno/0123456789abcdef', false],
         ['b-rede', null, true],
         ['z-loja', 'app/z-loja/0123456789abcdef', true],
-        ['a-interno', 'app/a-interno/0123456789abcdef', false],
       ]);
       expect(list.items.map((item) => item.accountId)).toEqual([
         cloud.accountId,
-        other.accountId,
         cloud.accountId,
+        other.accountId,
       ]);
+      expect([list.page, list.pageSize, list.total]).toEqual([1, 25, 3]);
+      // Em páginas, todos aparecem, uma vez cada; por conta, só os dela.
+      const namesOf = async (query: string) => {
+        const page = webLogSourceListSchema.parse(
+          (await get(admin, `/v1/web-logs/sources?${query}`).expect(200)).body,
+        );
+        return [page.items.map((found) => found.name), page.total];
+      };
+      expect(await namesOf('page=1&pageSize=2')).toEqual([['a-interno', 'b-rede'], 3]);
+      expect(await namesOf('page=2&pageSize=2')).toEqual([['z-loja'], 3]);
+      expect(await namesOf('page=3&pageSize=2')).toEqual([[], 3]);
+      expect(await namesOf(`cloudAccountId=${cloud.id}`)).toEqual([['a-interno', 'b-rede'], 2]);
+      expect(await namesOf(`cloudAccountId=${other.id}`)).toEqual([['z-loja'], 1]);
+      expect(await namesOf(`cloudAccountId=${randomUUID()}`)).toEqual([[], 0]);
       const item = list.items.find((candidate) => candidate.id === facing.id);
       expect(item).toMatchObject({ authorized: false, settings: null, state: 'available' });
       expect(item?.estimate).toEqual({
@@ -1298,6 +1317,8 @@ describe('ataques web pelos logs do ALB: configuração (ligados)', () => {
     it('identificador fora do formato e parâmetro a mais: 400', async () => {
       await get(adminA, '/v1/web-logs/sources/loja').expect(400);
       await get(adminA, '/v1/web-logs/sources?tenantId=x').expect(400);
+      await get(adminA, '/v1/web-logs/sources?pageSize=101').expect(400);
+      await get(adminA, '/v1/web-logs/sources?cloudAccountId=loja').expect(400);
       await write(adminA, 'delete', '/v1/web-logs/trusted-sources/1').expect(400);
       await post(adminA, `/v1/web-logs/sources/${randomUUID()}/estimate`)
         .send({ bytesPerDay: 1 })
