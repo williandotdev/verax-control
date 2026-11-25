@@ -7682,3 +7682,9 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
   - A decisão de uma pessoa sobre o alerta solta a exceção ampla (`scopedExceptionId` nulo): a severidade que sobe depois não a
     desfaz.
   - Não rodou num nó de verdade nem o e2e `fullstack`.
+
+## Ataques web pelos logs do ALB: disponíveis por padrão na versão (pedido do responsável de 25/11/2026)
+
+- Sem a linha `AWS_WEB_LOGS_ENABLED`, o nó dedicado oferece os balanceadores no painel. **Nada é lido até alguém do cliente autorizar cada
+  um**, com a estimativa de volume; todo balanceador começa só observando, por 72 horas. `false` desliga; a célula continua sem.
+- A versão 1.4.0 já saiu com os contratos. Depois de existir achado `alb`, não se volta para antes dela.

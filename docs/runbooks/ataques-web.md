@@ -21,7 +21,8 @@ acesso depois de muitas falhas. Como funciona: `docs/ARQUITETURA.md`, "Logs de a
 
 - **Nó com acesso (o da Verax, homologação, VM própria do cliente):** `AWS_WEB_LOGS_ENABLED=true` em `/etc/verax/node.conf` e
   `sudo systemctl restart verax-node`. Só ponha a linha com o nó já numa versão que a conhece.
-- **Nó gerenciado:** ninguém edita o `node.conf` dele, e a atualização da frota não o reescreve. Quem liga é o padrão da versão.
+- **Nó gerenciado:** ninguém edita o `node.conf` dele, e a atualização da frota não o reescreve. Quem liga é o padrão da versão:
+  disponível desde a 1.5.0, sem ler nada até alguém do cliente autorizar um balanceador.
 
 Depois, no painel: Contas cloud, a conta AWS, "Fontes de log", pedir a estimativa do balanceador, conferir e autorizar.
 

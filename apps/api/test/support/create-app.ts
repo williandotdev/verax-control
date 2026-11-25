@@ -74,7 +74,7 @@ export interface CreateAppOptions {
   casesMode?: AppConfig['CASES_MODE'];
   /** Onde o nó roda (`NODE_PLATFORM`): `vm`, a VM própria do cliente; sem informar, `gcp` (como sem a linha). */
   nodePlatform?: 'gcp' | 'vm';
-  /** Ataques web pelos logs do ALB (`AWS_WEB_LOGS_ENABLED`); sem informar, a linha não existe (desligados). */
+  /** Ataques web pelos logs do ALB (`AWS_WEB_LOGS_ENABLED`); sem informar, desligados (o padrão da versão é ligado). */
   awsWebLogs?: boolean;
 }
 
@@ -108,7 +108,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
     ...(options.nodeEgressIps !== undefined && { NODE_EGRESS_IPS: options.nodeEgressIps }),
     ...(options.nodePlatform !== undefined && { NODE_PLATFORM: options.nodePlatform }),
     ...(options.casesMode !== undefined && { CASES_MODE: options.casesMode }),
-    ...(options.awsWebLogs !== undefined && { AWS_WEB_LOGS_ENABLED: String(options.awsWebLogs) }),
+    AWS_WEB_LOGS_ENABLED: String(options.awsWebLogs ?? false),
     ...(options.awsReader?.serviceAccountId !== undefined && {
       NODE_SA_UNIQUE_ID: options.awsReader.serviceAccountId,
     }),

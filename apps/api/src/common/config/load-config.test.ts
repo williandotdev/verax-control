@@ -160,9 +160,9 @@ describe('loadConfig', () => {
     }
   });
 
-  it('ataques web pelos logs do ALB (AWS_WEB_LOGS_ENABLED): desligados sem a linha, e nunca na célula', () => {
-    expect(loadConfig(validEnv).AWS_WEB_LOGS_ENABLED).toBe(false);
-    expect(loadConfig(validProductionEnv).AWS_WEB_LOGS_ENABLED).toBe(false);
+  it('ataques web pelos logs do ALB (AWS_WEB_LOGS_ENABLED): disponíveis sem a linha, e nunca na célula', () => {
+    expect(loadConfig(validEnv).AWS_WEB_LOGS_ENABLED).toBe(true);
+    expect(loadConfig(validProductionEnv).AWS_WEB_LOGS_ENABLED).toBe(true);
     expect(loadConfig({ ...validEnv, AWS_WEB_LOGS_ENABLED: 'false' }).AWS_WEB_LOGS_ENABLED).toBe(false);
     expect(loadConfig({ ...validEnv, AWS_WEB_LOGS_ENABLED: 'true' }).AWS_WEB_LOGS_ENABLED).toBe(true);
     for (const value of ['1', 'TRUE', 'sim', '']) {
@@ -170,7 +170,10 @@ describe('loadConfig', () => {
         'AWS_WEB_LOGS_ENABLED: use true ou false',
       ]);
     }
-    expect(awsSourceFeatures(loadConfig(validEnv))).toEqual({ webLogs: false });
+    expect(awsSourceFeatures(loadConfig(validEnv))).toEqual({ webLogs: true });
+    expect(awsSourceFeatures(loadConfig({ ...validEnv, AWS_WEB_LOGS_ENABLED: 'false' }))).toEqual({
+      webLogs: false,
+    });
     expect(awsSourceFeatures(loadConfig({ ...validEnv, AWS_WEB_LOGS_ENABLED: 'true' }))).toEqual({
       webLogs: true,
     });
@@ -760,8 +763,11 @@ describe('configuração do worker do sync (T5.3)', () => {
     }
   });
 
-  it('ataques web pelos logs do ALB (AWS_WEB_LOGS_ENABLED): a mesma linha da API, desligada por padrão', () => {
-    expect(loadWorkerConfig(workerEnv).AWS_WEB_LOGS_ENABLED).toBe(false);
+  it('ataques web pelos logs do ALB (AWS_WEB_LOGS_ENABLED): a mesma linha da API, disponível por padrão', () => {
+    expect(loadWorkerConfig(workerEnv).AWS_WEB_LOGS_ENABLED).toBe(true);
+    expect(loadWorkerConfig({ ...workerEnv, AWS_WEB_LOGS_ENABLED: 'false' }).AWS_WEB_LOGS_ENABLED).toBe(
+      false,
+    );
     const on = loadWorkerConfig({ ...workerEnv, AWS_WEB_LOGS_ENABLED: 'true' });
     expect(awsSourceFeatures(on)).toEqual({ webLogs: true });
     expect(() => loadWorkerConfig({ ...workerEnv, AWS_WEB_LOGS_ENABLED: 'on' })).toThrow(

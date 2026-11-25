@@ -2572,7 +2572,7 @@ original fica no S3 do cliente, pela retenção dele; a evidência aponta o obje
 _(PR-3: os contratos e o isolamento do Wazuh, migration `20261201120000_web_logs_contracts`. Desligado por padrão. A leitura
 está na seção seguinte.)_
 
-Três portões, todos fechados no começo: a linha `AWS_WEB_LOGS_ENABLED` do nó (a API e o worker, o mesmo valor; na célula ela
+Três portões. O nó vem com o primeiro aberto, sem ler nada (`AWS_WEB_LOGS_ENABLED`, desde a 1.5.0); os outros dois, fechados: a linha do nó (a API e o worker, o mesmo valor; na célula ela
 não liga nada), a autorização de cada balanceador e o modo `observe`. O `start.sh` passa a linha do `node.conf` à API e ao
 worker; sem ela, vale o padrão da versão. O nó gerenciado já instalado não recebe linha nova no `node.conf` (a atualização da
 frota não o reescreve): nele, quem liga é o padrão da versão (`docs/runbooks/ataques-web.md`).
