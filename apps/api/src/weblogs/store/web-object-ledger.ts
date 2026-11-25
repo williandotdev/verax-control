@@ -8,7 +8,10 @@ import type { TrafficDelta, WebTrafficStore } from './web-traffic-store.js';
  * (`retention/retention-policy.ts`), bem além do atraso que a leitura alcança (24 h).
  */
 
-/** `read` e `late` foram analisados (o `late` depois de a janela fechar); `quarantined` e `gap`, não. */
+/**
+ * `read` e `late` foram analisados inteiros (o `late` depois de a janela fechar). O `gap` não foi aberto. O `quarantined` foi
+ * recusado: o que se leu dele antes da recusa entra na detecção como piso, e nunca no volume nem no tráfego.
+ */
 export const WEB_LOG_OBJECT_STATUSES = ['read', 'late', 'quarantined', 'gap'] as const;
 export type WebLogObjectStatus = (typeof WEB_LOG_OBJECT_STATUSES)[number];
 

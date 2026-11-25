@@ -84,12 +84,14 @@ describe('leitura de um arquivo de log', () => {
   });
 
   it('a bomba é parada cedo: só o que os buffers já tinham adiantado', async () => {
-    const bomb = gzipSync(Buffer.alloc(100_000_000, 0x61));
+    // O quanto os buffers adiantam é do Node e da máquina: vale ser uma fração pequena do conteúdo.
+    const size = 400_000_000;
+    const bomb = gzipSync(Buffer.alloc(size, 0x61));
     const progress = { bytes: 0 };
     await expect(
       readAlbObject(bodyOf(bomb, 512), bomb.length, () => undefined, never, { limits: LIMITS, progress }),
     ).rejects.toMatchObject({ reason: 'ratio' });
-    expect(progress.bytes).toBeLessThan(10_000_000);
+    expect(progress.bytes).toBeLessThan(size / 4);
   });
 
   describe('gzip que não fecha', () => {

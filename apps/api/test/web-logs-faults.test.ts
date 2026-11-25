@@ -304,6 +304,33 @@ describe('tarefa web-logs: falhas do S3, arquivos hostis e limites', () => {
       expect(s3.gets).toHaveLength(before);
     });
 
+    it('recusado no meio: o que foi lido segue na detecção, como piso, sem cobrança nem tráfego', async () => {
+      const site = await h.newSite('recusado no meio');
+      const { task, s3, clock } = h.newTask([site.tenantId], {
+        readLimits: { ...READ_LIMITS, lines: 60 },
+      });
+      deliver(s3, site.balancer, NOON, [...failures(NOON, 25), ...visits(NOON, 60)]);
+      expect(await task.runOnce()).toMatchObject({ objects: 0, quarantined: 1, lines: 0, bytes: 0 });
+      expect((await h.ledger(site)).map((row) => [row.status, row.lines, row.bytes])).toEqual([
+        ['quarantined', 0, 0n],
+      ]);
+      expect(await billed(site)).toBe(0);
+      expect(await h.requests(site)).toBe(0);
+      const found = await h.findings(site);
+      expect(found.map((row) => row.ruleId)).toEqual(['990405']);
+      const evidence = await prisma.findingEvidence.findFirstOrThrow({
+        where: { tenantId: site.tenantId, findingId: found[0]?.id ?? '' },
+      });
+      expect((evidence.data as { notes: string[]; truncated: boolean }).truncated).toBe(true);
+      expect((evidence.data as { notes: string[] }).notes).toContain('counts_are_floor');
+      // Não é aberto de novo, e o achado não se repete.
+      const before = s3.gets.length;
+      at(clock, NOON + 7 * MINUTE);
+      expect(await task.runOnce()).toMatchObject({ quarantined: 0, objects: 0 });
+      expect(s3.gets).toHaveLength(before);
+      expect(await h.findings(site)).toHaveLength(1);
+    });
+
     it('a bomba para cedo: pouco é lido e nada fica aberto', async () => {
       const site = await h.newSite('bomba');
       const { task, s3 } = h.newTask([site.tenantId]);

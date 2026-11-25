@@ -352,8 +352,11 @@ export class SourceReader {
           context.partial.set(object.hash, Math.max(skip, index));
         }
         budget.spend({ objects: 1, lines: index, bytes: progress.bytes });
-        if (error instanceof ObjectRejected || isArchived(error)) await this.quarantine(object);
-        else if (isGone(error)) this.counts.gone += 1;
+        if (error instanceof ObjectRejected || isArchived(error)) {
+          // As linhas lidas até a recusa seguem na detecção, como piso (veja `quarantine`).
+          if (index > 0) opened.slot.truncated = true;
+          await this.quarantine(object);
+        } else if (isGone(error)) this.counts.gone += 1;
         else this.objectFailed(object, error);
         return 'taken';
       }
@@ -406,7 +409,11 @@ export class SourceReader {
     return null;
   }
 
-  /** O objeto que não serve: registrado, contado e à vista, nunca analisado nem cobrado. */
+  /**
+   * O objeto que não serve: registrado, contado e à vista. Não é cobrado nem entra no tráfego, e nunca é lido de novo. As
+   * linhas lidas antes da recusa **ficam** na detecção, com as contagens do slot marcadas como piso (`counts_are_floor`):
+   * descartá-las deixaria um ataque que estoura o limite do arquivo sumir dos achados.
+   */
   async quarantine(object: Candidate, slotStart: Date | null = slotStartOf(object.index)): Promise<void> {
     // O relido que deixou de servir continua com o que já foi contado dele.
     if (object.status !== null) return;

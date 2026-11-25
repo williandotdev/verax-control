@@ -2290,7 +2290,8 @@ hora em hora, as contagens com mais de 48 h passam para as horas.
 código do erro na terceira falha seguida, ou `invalid_details` e `web_prefix_unsupported` já na primeira (nada é pedido à
 AWS); `permission_error` com o motivo. `collecting` com `web_quarantined`: nas últimas 24 h, algum arquivo foi recusado
 (quebrado, grande demais, arquivado, data absurda, ou que falha em cinco passagens em que outros foram lidos): fica no registro
-(`quarantined`), sem análise nem cobrança. O atraso é de agora ao fim do último intervalo lido. Nas últimas 24 h, linhas e
+(`quarantined`), sem cobrança nem tráfego; as linhas lidas antes da recusa seguem na detecção, com as contagens marcadas como
+piso, para um ataque que estoura o limite do arquivo não sumir dos achados. O atraso é de agora ao fim do último intervalo lido. Nas últimas 24 h, linhas e
 bytes saem do registro, com as tortas, as grandes demais e as alheias à parte. Um site quieto não para. O tráfego do ALB nunca
 conta como sinal de vida da conta (`LastEvents`).
 
