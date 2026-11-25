@@ -1,4 +1,4 @@
-import type { RadarDetection, TowerRadar } from '@verax/shared';
+import type { RadarCase, RadarDetection, TowerRadar } from '@verax/shared';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
@@ -48,6 +48,7 @@ const SECTOR_OF = {
   inspector: 'aws',
   access_analyzer: 'aws',
   vpc_flow: 'aws',
+  alb: 'aws',
   cloudwatch_logs: 'aws',
   gcp_audit: 'gcp',
   cloudflare_audit: 'cloudflare',
@@ -320,6 +321,8 @@ describe('radar de detecções', () => {
           finding: (finding) => ({ search: `?periodo=7d&achado=${finding}` }),
           incident: (incident) => ({ search: `?periodo=7d&incidente=${incident}` }),
           all: '/?periodo=24h',
+          case: (item) => ({ search: `?periodo=7d&caso=${item}` }),
+          allCases: '/?estado=todos',
         }}
       />,
     );
@@ -339,5 +342,309 @@ describe('radar de detecções', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('Nenhuma detecção nas últimas 24 horas.')).toBeInTheDocument();
     expect(screen.queryByText(/Ver em tabela/)).not.toBeInTheDocument();
+  });
+});
+
+describe('radar de casos', () => {
+  const caseItem = (index: number, overrides: Partial<RadarCase> = {}): RadarCase => ({
+    id: id(500 + index),
+    title: `Caso ${index}`,
+    severity: 'high',
+    sources: ['cloudtrail'],
+    sector: 'aws',
+    total: 1,
+    pending: 1,
+    recent: 1,
+    lastActivityAt: minutesAgo(60 * index),
+    incident: null,
+    ...overrides,
+  });
+  const CASES: RadarCase[] = [
+    caseItem(1, {
+      title: 'Permissão de administrador concedida',
+      severity: 'critical',
+      total: 20_000,
+      pending: 12,
+      recent: 4,
+      lastActivityAt: minutesAgo(5),
+      incident: { id: id(901), open: true, severity: 'critical' },
+    }),
+    caseItem(2, {
+      title: 'Ataques web acusados pelo WAF',
+      severity: 'low',
+      sources: ['waf', 'cloudflare_waf'],
+      total: 40,
+      pending: 40,
+      recent: 38,
+    }),
+    caseItem(3, {
+      title: 'Atividade suspeita de uma fonte nova',
+      severity: null,
+      sources: [],
+      sector: 'agents',
+      total: 3,
+      pending: 0,
+      recent: 0,
+      incident: { id: id(902), open: false, severity: 'high' },
+    }),
+  ];
+  /** 100 alertas na janela, 42 deles nos casos. */
+  const casesRadar = (items: RadarCase[] = CASES, total = items.length, alerts = 42): TowerRadar => ({
+    ...radarOf(DETECTIONS, {
+      bySeverity: { critical: 2, high: 8, medium: 30, low: 60 },
+      bySector: { aws: 90, gcp: 4, cloudflare: 1, agents: 5 },
+    }),
+    cases: { total, alerts, limit: 100, items },
+  });
+  const casesGroup = () => screen.getByRole('group', { name: /^Radar de casos das últimas 24 horas/ });
+  const point = (title: string) =>
+    within(casesGroup()).getByRole('link', { name: (name) => name.includes(title) });
+
+  it('cada ponto é um caso, com severidade, origem, atividade, alertas e incidente; as contagens são de alertas', () => {
+    renderRadar(<DetectionRadar radar={casesRadar()} generatedAt={NOW} compact />);
+    expect(casesGroup()).toHaveAccessibleName(
+      'Radar de casos das últimas 24 horas: 3 casos de detecção, com 42 alertas nesse tempo. Alertas por origem: AWS 90, GCP 4, Cloudflare 1, Agentes 5. ' +
+        'O centro é agora e o anel de fora, 24 horas atrás. Use as setas para percorrer os casos e Enter para abrir.',
+    );
+    expect(within(casesGroup()).getAllByRole('link')).toHaveLength(3);
+    expect(point('Permissão de administrador')).toHaveAccessibleName(
+      /^Crítico: Permissão de administrador concedida\. CloudTrail, última atividade há 5 minutos \(\d{2}:\d{2}\)\. 20\.000 alertas, 12 pendentes, 4 nas últimas 24 horas\. Em incidente aberto$/,
+    );
+    // Sem nada pendente: sem severidade, e sem "pendentes"; a fonte que não se conhece é o setor.
+    expect(point('fonte nova')).toHaveAccessibleName(
+      /^Nada pendente: Atividade suspeita de uma fonte nova\. Agentes, última atividade há 3 horas \(\d{2}:\d{2}\)\. 3 alertas, 0 nas últimas 24 horas\. Em incidente resolvido$/,
+    );
+    expect(point('WAF')).toHaveAccessibleName(/WAF.* e /);
+    // Os alertas continuam contados como sempre, e a frase liga os dois.
+    expect(screen.getByText('100 detecções').closest('p')).toHaveTextContent(
+      '100 detecções nas últimas 24 horas: 2 crítico, 8 alto, 30 médio, 60 baixo.',
+    );
+    expect(screen.getByText('42 alertas em 3 casos').closest('p')).toHaveTextContent(
+      /^42 alertas em 3 casos de detecção\. Os outros 58 são de vulnerabilidade e de postura, ou não têm caso\.$/,
+    );
+    expect(within(casesGroup()).getByText('90 detecções')).toBeInTheDocument();
+    expect(screen.queryByText(/O radar mostra/)).toBeNull();
+  });
+
+  it('sem nada pendente, num incidente aberto: a gravidade é a do incidente, com o anel', async () => {
+    const user = userEvent.setup();
+    renderRadar(
+      <DetectionRadar
+        radar={casesRadar([
+          caseItem(1, {
+            title: 'Trilha desligada',
+            severity: null,
+            pending: 0,
+            incident: { id: id(903), open: true, severity: 'critical' },
+          }),
+        ])}
+        generatedAt={NOW}
+        compact
+      />,
+    );
+    expect(point('Trilha desligada')).toHaveAccessibleName(
+      /^Crítico: Trilha desligada\. CloudTrail, .*\. 1 alerta, 1 nas últimas 24 horas\. Em incidente aberto$/,
+    );
+    expect(point('Trilha desligada')).toHaveAttribute('data-severity', 'critical');
+    expect(point('Trilha desligada').querySelector('[data-incident-ring]')).not.toBeNull();
+    expect(screen.queryByText('Nada pendente')).toBeNull();
+    await user.click(screen.getByText('Ver em tabela (1)'));
+    expect(
+      within(screen.getByRole('table', { name: 'Casos do radar' })).getByText('Crítico'),
+    ).toBeInTheDocument();
+    // A dica também.
+    await user.hover(point('Trilha desligada'));
+    expect(document.querySelector('[data-radar-tip]')).toHaveTextContent(
+      /Crítico· CloudTrail.*Em incidente aberto$/,
+    );
+  });
+
+  it('a forma é a severidade, o tamanho são os alertas, e o anel, o incidente aberto', () => {
+    const { container } = renderRadar(<DetectionRadar radar={casesRadar()} generatedAt={NOW} compact />);
+    const mark = (title: string) => point(title).querySelector('polygon');
+    expect(mark('Permissão')?.getAttribute('points')?.split(' ')).toHaveLength(8);
+    expect(mark('WAF')?.getAttribute('points')?.split(' ')).toHaveLength(4);
+    const extent = (title: string) => {
+      const xs = (mark(title)?.getAttribute('points') ?? '')
+        .split(' ')
+        .map((pair) => Number(pair.split(',')[0]));
+      return Math.max(...xs) - Math.min(...xs);
+    };
+    // O crítico de 20 mil alertas está no teto do tamanho.
+    expect(extent('Permissão')).toBeGreaterThan(2 * 7 * 1.9);
+    expect(extent('WAF')).toBeGreaterThan(2 * 4.5 * 1.3);
+    // O de nada pendente é um círculo vazado.
+    expect(mark('fonte nova')).toBeNull();
+    expect(point('fonte nova')).toHaveAttribute('data-severity', 'none');
+    expect(point('Permissão').querySelector('[data-incident-ring]')).not.toBeNull();
+    expect(point('fonte nova').querySelector('[data-incident-ring]')).toBeNull();
+    // O maior fica embaixo, para não esconder os pequenos.
+    const order = [...container.querySelectorAll('[data-blip]')].map((element) =>
+      element.getAttribute('data-blip'),
+    );
+    expect(order).toEqual([id(501), id(502), id(503)]);
+    // A área de toque nunca é menor que a marca.
+    for (const element of container.querySelectorAll('[data-blip]')) {
+      expect(Number(element.querySelector('circle')?.getAttribute('r'))).toBeGreaterThanOrEqual(16);
+    }
+    // A legenda explica o tamanho e o círculo vazado.
+    expect(
+      within(screen.getByRole('list', { name: 'Legenda do radar' })).getByText('Nada pendente'),
+    ).toBeVisible();
+    expect(screen.getByText(/o tamanho é quantos alertas ele reúne/)).toBeInTheDocument();
+  });
+
+  it('teclado: uma parada (o mais grave), as setas seguem a ordem da API, e o Enter abre o caso', async () => {
+    const user = userEvent.setup();
+    const { container } = renderRadar(<DetectionRadar radar={casesRadar()} generatedAt={NOW} compact />);
+    await user.tab();
+    expect(point('Permissão')).toHaveFocus();
+    expect(container.querySelector('[data-radar-tip]')).toHaveTextContent(
+      /Permissão de administrador concedidaCrítico· CloudTrail20\.000 alertas, 12 pendentes, 4 nas últimas 24 horasÚltima atividade há 5 minutos/,
+    );
+    await user.keyboard('{ArrowRight}');
+    expect(point('WAF')).toHaveFocus();
+    await user.keyboard('{End}');
+    expect(point('fonte nova')).toHaveFocus();
+    expect(container.querySelector('[data-radar-tip]')).toHaveTextContent('Nada pendente');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByTestId('where')).toHaveTextContent(`/?caso=${id(503)}`);
+  });
+
+  it('a tabela tem os mesmos casos e os mesmos números, com link para o caso e o incidente', async () => {
+    const user = userEvent.setup();
+    renderRadar(<DetectionRadar radar={casesRadar()} generatedAt={NOW} compact />);
+    await user.click(screen.getByText('Ver em tabela (3)'));
+    const table = screen.getByRole('table', { name: 'Casos do radar' });
+    expect(
+      within(table)
+        .getAllByRole('columnheader')
+        .map((cell) => cell.textContent),
+    ).toEqual([
+      'Caso',
+      'Severidade',
+      'Alertas',
+      'Pendentes',
+      'Em 24 h',
+      'Origem',
+      'Última atividade',
+      'Incidente',
+    ]);
+    const cells = within(table)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => [...row.querySelectorAll('td')].slice(0, 5).map((cell) => cell.textContent));
+    expect(cells).toEqual([
+      ['Crítico', '20.000', '12', '4', 'CloudTrail'],
+      ['Baixo', '40', '40', '38', expect.stringContaining('WAF')],
+      ['Nada pendente', '3', '0', '0', 'Agentes'],
+    ]);
+    expect(within(table).getByRole('link', { name: 'Ataques web acusados pelo WAF' })).toHaveAttribute(
+      'href',
+      `/?caso=${id(502)}`,
+    );
+    expect(within(table).getByRole('link', { name: 'Aberto' })).toHaveAttribute(
+      'href',
+      `/?incidente=${id(901)}`,
+    );
+    expect(screen.queryByRole('table', { name: 'Detecções do radar' })).toBeNull();
+  });
+
+  it('mais casos que o radar desenha: diz quantos, e leva à lista', () => {
+    renderRadar(<DetectionRadar radar={casesRadar(CASES, 134)} generatedAt={NOW} compact />);
+    expect(screen.getByText('42 alertas em 134 casos').closest('p')).toHaveTextContent(
+      /O radar mostra os 3 mais graves\. Ver todos os casos$/,
+    );
+    expect(screen.getByRole('link', { name: 'Ver todos os casos' })).toHaveAttribute(
+      'href',
+      '/?estado=todos&periodo=24h',
+    );
+    expect(casesGroup()).toHaveAccessibleName(
+      /134 casos de detecção, com 42 alertas nesse tempo, 3 mais graves no radar\./,
+    );
+  });
+
+  it.each([
+    [
+      0,
+      0,
+      100,
+      /^Nenhum caso de detecção ativo\. Os alertas são de vulnerabilidade e de postura, ou não têm caso\.$/,
+    ],
+    [3, 100, 100, /^100 alertas em 3 casos de detecção\.$/],
+    [1, 1, 100, /^1 alerta em 1 caso de detecção\. Os outros 99 são/],
+    [
+      3,
+      99,
+      100,
+      /^99 alertas em 3 casos de detecção\. O outro é de vulnerabilidade ou de postura, ou não tem caso\.$/,
+    ],
+  ])('%i casos com %i dos %i alertas', (cases, alerts, _total, text) => {
+    const { container } = renderRadar(
+      <DetectionRadar radar={casesRadar(CASES.slice(0, cases), cases, alerts)} generatedAt={NOW} compact />,
+    );
+    const sentences = [...container.querySelectorAll('p')].map((element) => element.textContent);
+    expect(sentences.filter((sentence) => text.test(sentence))).toHaveLength(1);
+  });
+
+  it('nenhum caso: o radar diz que não há', () => {
+    renderRadar(<DetectionRadar radar={casesRadar([], 0, 0)} generatedAt={NOW} compact />);
+    expect(
+      screen.getByRole('group', { name: 'Radar de casos: nenhum ativo nas últimas 24 horas.' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Ver em tabela/)).toBeNull();
+  });
+
+  it('a mesma animação de sempre: um brilho por ponto e o pulso só do que chegou; sem movimento, nada', () => {
+    mockReducedMotion(false);
+    const { container, rerender } = render(
+      <MemoryRouter>
+        <DetectionRadar radar={casesRadar()} generatedAt={NOW} compact />
+      </MemoryRouter>,
+    );
+    const pulsing = () =>
+      [...container.querySelectorAll('[data-pulse]')].map((pulse) =>
+        pulse.closest('[data-blip]')?.getAttribute('data-blip'),
+      );
+    expect(container.querySelectorAll('.radar-echo')).toHaveLength(3);
+    expect(pulsing()).toEqual([id(501)]);
+    // Os mesmos casos na leitura seguinte não pulsam; um caso novo, sim.
+    rerender(
+      <MemoryRouter>
+        <DetectionRadar radar={casesRadar()} generatedAt="2026-11-15T12:01:00.000Z" compact />
+      </MemoryRouter>,
+    );
+    expect(pulsing()).toEqual([]);
+    rerender(
+      <MemoryRouter>
+        <DetectionRadar
+          radar={casesRadar([...CASES, caseItem(4)], 4)}
+          generatedAt="2026-11-15T12:02:00.000Z"
+          compact
+        />
+      </MemoryRouter>,
+    );
+    expect(pulsing()).toEqual([id(504)]);
+    mockReducedMotion(true);
+    const quiet = renderRadar(<DetectionRadar radar={casesRadar()} generatedAt={NOW} compact />);
+    expect(quiet.container.querySelector('[data-radar-sweep], .radar-echo, [data-pulse]')).toBeNull();
+  });
+
+  it('a varredura não redesenha nada: os pontos só mudam quando a leitura muda', async () => {
+    const user = userEvent.setup();
+    const { container } = renderRadar(<DetectionRadar radar={casesRadar()} generatedAt={NOW} compact />);
+    const changed: string[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const { target } of records) {
+        const owner = (target as Element).closest('[data-blip]')?.getAttribute('data-blip');
+        if (owner) changed.push(owner);
+      }
+    });
+    observer.observe(container, { subtree: true, attributes: true, childList: true });
+    await user.hover(point('WAF'));
+    await user.unhover(point('WAF'));
+    observer.disconnect();
+    // Só o ponto sob o mouse mudou (o destaque dele); os outros não foram tocados.
+    expect(new Set(changed)).toEqual(new Set([id(502)]));
   });
 });

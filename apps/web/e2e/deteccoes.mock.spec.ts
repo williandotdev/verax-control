@@ -39,7 +39,11 @@ const noHorizontalScroll = async (page: Page) =>
 
 test.describe('tela Detecções (modo mock)', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'analista_cliente'));
+    await page.addInitScript(() => {
+      window.localStorage.setItem('verax.mock.role', 'analista_cliente');
+      // Com os casos desligados (o padrão de um nó), a tela de sempre. Com eles, `casos.mock.spec.ts`.
+      window.localStorage.setItem('verax.mock.cases', 'off');
+    });
     await skipDemoTour(page);
   });
 
@@ -66,7 +70,12 @@ test.describe('tela Detecções (modo mock)', () => {
           expect(await violations(page)).toEqual([]);
           await strip.getByRole('button', { name: /^Mostrar/ }).click();
         }
-        await expect(strip.getByRole('status', { name: /coleta parada \(GCP\)\.$/ })).toBeVisible();
+        // Os motivos e, depois deles, quantos alertas altos ou críticos esperam validação.
+        await expect(
+          strip.getByRole('status', {
+            name: /coleta parada \(GCP\)\. \d+ alertas altos ou críticos para validar\.$/,
+          }),
+        ).toBeVisible();
         await expect(strip.getByRole('region', { name: 'Decisões pendentes' })).toBeVisible();
         await expect(strip.getByRole('region', { name: 'Radar das últimas 24 horas' })).toBeVisible();
         expect(await violations(page)).toEqual([]);
@@ -147,6 +156,7 @@ test.describe('tela Detecções (modo mock)', () => {
           'aria-selected',
           'true',
         );
+        await expect(page.getByRole('group', { name: /^Gráfico de radar das táticas/ })).toBeVisible();
         await expect(page.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' })).toBeVisible();
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
@@ -256,7 +266,7 @@ test.describe('tela Detecções (modo mock)', () => {
     await expect(page.getByRole('complementary', { name: INCIDENT_TITLE })).toBeVisible();
 
     await page.goto(`/achados?achado=${FINDING}`);
-    await expect(page).toHaveURL(new RegExp(`/\\?alerta=${FINDING}$`));
+    await expect(page).toHaveURL(`/?visao=alertas&alerta=${FINDING}`);
     await expect(
       page.getByRole('complementary', { name: 'Tentativa de desligar a trilha do CloudTrail' }),
     ).toBeVisible();

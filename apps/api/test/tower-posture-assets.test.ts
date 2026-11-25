@@ -295,6 +295,49 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
       });
     });
 
+    it('sem incidente nenhum, com alertas altos ou críticos para validar: amarelo, com a contagem; validados, verde', async () => {
+      const { tenantId, accountId, get } = await setup();
+      const other = await setup();
+      const at = new Date(Date.now() - HOUR);
+      const insert = (
+        owner: typeof other,
+        severity: 'critical' | 'high' | 'medium',
+        status: 'new' | 'legitimate',
+      ) =>
+        prisma.finding.create({
+          data: {
+            tenantId: owner.tenantId,
+            accountId: owner.accountId,
+            source: 'aws',
+            sourceEventId: randomUUID(),
+            logSource: 'inspector',
+            occurredAt: at,
+            severity,
+            status,
+            ruleId: '990511',
+            ruleLevel: 12,
+            title: 'Vulnerabilidade em pacote',
+            mitreTactics: [],
+            mitreTechniques: [],
+          },
+        });
+      const mine = { ...other, tenantId, accountId };
+      for (const severity of ['critical', 'critical', 'high'] as const) await insert(mine, severity, 'new');
+      // O médio a validar e o crítico já validado não contam; os do outro cliente, nunca.
+      await insert(mine, 'medium', 'new');
+      await insert(mine, 'critical', 'legitimate');
+      await insert(other, 'critical', 'new');
+      const read = async () => towerSummarySchema.parse((await get('/v1/tower').expect(200)).body);
+      expect(await read()).toMatchObject({
+        light: 'yellow',
+        reasons: [],
+        pendingDecisions: [{ kind: 'untriaged_finding', count: 3 }],
+        openIncidents: { critical: 0, high: 0, medium: 0, low: 0 },
+      });
+      await prisma.finding.updateMany({ where: { tenantId }, data: { status: 'investigating' } });
+      expect(await read()).toMatchObject({ light: 'green', reasons: [], pendingDecisions: [] });
+    });
+
     it('postura abaixo de 70: amarelo', async () => {
       const { tenantId, accountId, get } = await setup();
       await insertScan(tenantId, accountId, new Date(Date.now() - HOUR), { passed: 5, total: 10 });

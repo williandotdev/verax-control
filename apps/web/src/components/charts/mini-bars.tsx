@@ -9,9 +9,13 @@ const TOP = 4;
 const MAX_BAR = 24;
 const GAP = 2;
 const FALLBACK_WIDTH = 200;
+const INTERVALS = {
+  hour: { one: 'hora', header: 'Hora', peak: 'a hora com mais foi a das' },
+  day: { one: 'dia', header: 'Dia', peak: 'o dia com mais foi' },
+} as const;
 
 /**
- * Minigráfico de colunas por hora, de uma série só (o "Pulso da operação"): uma coluna por hora, da mais antiga à
+ * Minigráfico de colunas por hora (ou por dia), de uma série só (o "Pulso da operação" e os casos): uma coluna por hora, da mais antiga à
  * atual, na tinta discreta, com a hora atual (ou a escolhida) na tinta principal. Sem eixo nem legenda: o título do
  * cartão diz o que é. O mouse, o toque e as setas com o gráfico em foco mostram o valor de cada hora; os números estão
  * na tabela de "Ver tabela". As tintas são passos da rampa neutra validada dos gráficos (`INK_RAMP`: a de 50% fica a
@@ -22,6 +26,7 @@ export function MiniBars({
   values,
   labels,
   unit,
+  granularity = 'hour',
   className,
 }: {
   /** Nome do gráfico: vai no nome acessível e na tabela. */
@@ -31,8 +36,11 @@ export function MiniBars({
   /** O rótulo de cada intervalo (a hora), na mesma ordem. */
   labels: readonly string[];
   unit: ChartUnit;
+  /** Cada coluna é uma hora (o padrão) ou um dia. */
+  granularity?: 'hour' | 'day';
   className?: string;
 }) {
+  const words = INTERVALS[granularity];
   const [frameRef, width, frame] = useElementWidth<HTMLDivElement>(FALLBACK_WIDTH);
   const svgRef = useRef<SVGSVGElement>(null);
   const [selected, setSelected] = useState<number | null>(null);
@@ -51,7 +59,7 @@ export function MiniBars({
   const summary =
     total === 0
       ? `${title}: nenhum ${unit.one}.`
-      : `${title}: ${countOf(total, unit)} no total; a hora com mais foi a das ${label(peak)}, com ${formatCount(values[peak] ?? 0)}. Use as setas para ver cada hora.`;
+      : `${title}: ${countOf(total, unit)} no total; ${words.peak} ${label(peak)}, com ${formatCount(values[peak] ?? 0)}. Use as setas para ver cada ${words.one}.`;
 
   const active = selected !== null && selected <= lastIndex ? selected : null;
   const fromPointer = (event: PointerEvent<SVGSVGElement>) => {
@@ -134,7 +142,7 @@ export function MiniBars({
       </p>
       <ChartTable
         title={title}
-        headers={['Hora', unit.many.charAt(0).toUpperCase() + unit.many.slice(1)]}
+        headers={[words.header, unit.many.charAt(0).toUpperCase() + unit.many.slice(1)]}
         rows={values
           .map((value, index) => ({ key: String(index), cells: [label(index), formatCount(value)] }))
           .reverse()}

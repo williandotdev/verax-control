@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import type { PendingCases } from '../../src/cases/case-summary-store.js';
 import {
   type AccountActivity,
   awsLogsStalledSince,
+  caseValidation,
   type CollectionSignals,
   collectionHealth,
   coverage,
@@ -12,6 +14,7 @@ import {
   pendingDecisions,
   pulseSince,
   stalledSources,
+  towerCases,
   trafficLight,
 } from '../../src/tower/tower-rules.js';
 
@@ -46,6 +49,24 @@ describe('semáforo da Torre (T5.10, pendência 9)', () => {
       reasons: [],
     });
     expect(trafficLight({ openIncidents: none, postureScore: null })).toEqual({
+      light: 'green',
+      reasons: [],
+    });
+  });
+
+  it('alerta alto ou crítico para validar: nunca verde, sem motivo novo e sem passar por cima do vermelho', () => {
+    // Um motivo novo derrubaria o painel de uma versão anterior, que recusa o resumo inteiro: a lista segue vazia.
+    expect(trafficLight({ openIncidents: none, postureScore: 95, untriagedFindings: 24_321 })).toEqual({
+      light: 'yellow',
+      reasons: [],
+    });
+    expect(trafficLight({ openIncidents: none, postureScore: null, untriagedFindings: 1 }).light).toBe(
+      'yellow',
+    );
+    expect(
+      trafficLight({ openIncidents: { ...none, critical: 1 }, postureScore: 95, untriagedFindings: 1 }),
+    ).toEqual({ light: 'red', reasons: ['critical_incident'] });
+    expect(trafficLight({ openIncidents: none, postureScore: 95, untriagedFindings: 0 })).toEqual({
       light: 'green',
       reasons: [],
     });
@@ -542,5 +563,90 @@ describe('pulso da operação (OP-02)', () => {
         finding('2026-11-05T10:00:05Z', '2026-11-05T10:00:00Z'),
       ]),
     ).toBe(30);
+  });
+});
+
+describe('decisões pelos casos', () => {
+  const row = (
+    queue: 'detection' | 'vulnerability' | 'posture',
+    values: Partial<PendingCases['queues'][number]> = {},
+  ) => ({
+    queue,
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    oldestAt: Date.parse('2026-11-20T10:00:00.000Z'),
+    untriaged: 0,
+    ...values,
+  });
+  const pending = (
+    queues: PendingCases['queues'],
+    untriagedFindings: number,
+    uncovered = 0,
+  ): PendingCases => ({ queues, untriagedFindings, uncovered });
+
+  it('detecção e postura juntas, vulnerabilidades à parte, e o que nenhum caso cobre', () => {
+    expect(
+      caseValidation(
+        pending(
+          [
+            row('detection', { untriaged: 4 }),
+            row('posture', { untriaged: 2 }),
+            row('vulnerability', { untriaged: 9 }),
+          ],
+          24_321,
+          7,
+        ),
+      ),
+    ).toEqual({ cases: 6, vulnerabilityCases: 9, uncovered: 7 });
+    expect(caseValidation(pending([], 0))).toEqual({ cases: 0, vulnerabilityCases: 0, uncovered: 0 });
+  });
+
+  it('se nada explicasse o amarelo (uma contagem de caso errada), valem os alertas', () => {
+    expect(caseValidation(pending([row('detection')], 3))).toEqual({
+      cases: 0,
+      vulnerabilityCases: 0,
+      uncovered: 3,
+    });
+    expect(caseValidation(pending([row('detection', { untriaged: 1 })], 3)).uncovered).toBe(0);
+    expect(caseValidation(pending([row('vulnerability', { untriaged: 1 })], 3)).uncovered).toBe(0);
+  });
+
+  it('a decisão: cada caso uma vez, nessa ordem; sem os casos, a conta de alertas de sempre', () => {
+    const counts = { unassignedIncidents: 1, untriagedFindings: 20_000, unownedAlerts: 5 };
+    const validation = { cases: 3, vulnerabilityCases: 2, uncovered: 1 };
+    expect(pendingDecisions({ ...counts, validation }, { includeUnowned: true })).toEqual([
+      { kind: 'unassigned_incident', count: 1 },
+      { kind: 'untriaged_case', count: 3 },
+      { kind: 'untriaged_vulnerability_case', count: 2 },
+      { kind: 'untriaged_finding', count: 1 },
+      { kind: 'unowned_alert', count: 5 },
+    ]);
+    expect(
+      pendingDecisions(
+        { ...counts, validation: { cases: 0, vulnerabilityCases: 2, uncovered: 0 } },
+        { includeUnowned: false },
+      ),
+    ).toEqual([
+      { kind: 'unassigned_incident', count: 1 },
+      { kind: 'untriaged_vulnerability_case', count: 2 },
+    ]);
+    expect(pendingDecisions(counts, { includeUnowned: false })).toEqual([
+      { kind: 'unassigned_incident', count: 1 },
+      { kind: 'untriaged_finding', count: 20_000 },
+    ]);
+  });
+
+  it('os casos pendentes por fila, com a abertura do mais antigo; a fila sem caso é zero', () => {
+    const zero = { critical: 0, high: 0, medium: 0, low: 0 };
+    expect(
+      towerCases(pending([row('vulnerability', { critical: 1, high: 2, medium: 3, low: 4 })], 1)),
+    ).toEqual({
+      detection: zero,
+      vulnerability: { critical: 1, high: 2, medium: 3, low: 4 },
+      posture: zero,
+      oldestPendingAt: { detection: null, vulnerability: '2026-11-20T10:00:00.000Z', posture: null },
+    });
   });
 });
