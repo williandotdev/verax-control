@@ -1152,6 +1152,65 @@ describe('avisos por caso', () => {
       expect(await made.check()).toMatchObject({ opened: 1, failedTenants: 0 });
     });
 
+    it('a decisão que falha não cala nada: depois de 10 min, o alerta de que ninguém avisou avisa sozinho', async () => {
+      const { tenantId, alert, assign, check, clock, regime } = await world();
+      const told = await alert({ ruleId: '100311' });
+      await assign();
+      await check();
+      const fresh = await alert({ ruleId: '100312', severity: 'critical' });
+      await alert({ ruleId: '100313', severity: 'medium' });
+      const treated = await alert({ ruleId: '100314' });
+      await insertVulnerability(prisma, tenantId, { createdAt: clock.now, severity: 'critical' });
+      await assign();
+      await resolve([treated], clock.now);
+      const errors: object[] = [];
+      // Toda leitura da decisão falha; as gravações do cliente, não.
+      const broken = new Proxy(prisma, {
+        get(target, property) {
+          if (property === '$transaction') return () => Promise.reject(new Error('a decisão falha'));
+          return Reflect.get(target, property) as unknown;
+        },
+      });
+      const failing = new CaseNotices(broken, {
+        regime,
+        tenantIds: [tenantId],
+        now: () => clock.now,
+        logger: { warn: () => undefined, error: (fields) => void errors.push(fields) },
+      });
+      // Uma execução só falhando não chega a avisar alerta por alerta.
+      clock.now = at(9 * MINUTE_MS);
+      expect(await failing.check(clock.now)).toMatchObject({ failedTenants: 1, lagging: 0 });
+      clock.now = at(11 * MINUTE_MS);
+      expect(await failing.check(clock.now)).toMatchObject({ failedTenants: 1, lagging: 1 });
+      expect(errors).toContainEqual({ tenantId, alerts: 1 });
+      const keys = async () => (await keysOf(prisma, tenantId)).filter((key) => key.startsWith('finding:'));
+      expect(await keys()).toEqual([`finding:${fresh}`]);
+      expect(told).not.toBe(fresh);
+      // De novo, não repete; e, com a decisão de volta, o aviso do caso troca o do alerta, que ainda está na fila.
+      expect(await failing.check(clock.now)).toMatchObject({ lagging: 0 });
+      expect(await check()).toMatchObject({ opened: 1, superseded: 1 });
+      const [row] = await prisma.notification.findMany({
+        where: { tenantId, dedupeKey: `finding:${fresh}` },
+      });
+      expect(row).toMatchObject({ status: 'skipped', lastError: 'superseded_by_case' });
+    });
+
+    it('o alerta de mais de um dia atrás, ou de antes da virada, não avisa sozinho com a decisão falhando', async () => {
+      const { tenantId, alert, assign, clock, regime } = await world();
+      await alert({ ruleId: '100321', createdAt: at(-DAY_MS - MINUTE_MS) });
+      const recent = await alert({ ruleId: '100322', createdAt: at(-DAY_MS + HOUR_MS) });
+      await assign();
+      const broken = new Proxy(prisma, {
+        get(target, property) {
+          if (property === '$transaction') return () => Promise.reject(new Error('a decisão falha'));
+          return Reflect.get(target, property) as unknown;
+        },
+      });
+      const failing = new CaseNotices(broken, { regime, tenantIds: [tenantId], now: () => clock.now });
+      await failing.check(clock.now);
+      expect(await keysOf(prisma, tenantId)).toEqual([`finding:${recent}`]);
+    });
+
     it('o caso que não deixa gravar é isolado: os outros avisam, e o alerta mais novo dele avisa sozinho', async () => {
       const { tenantId, alert, assign, check, clock } = await world();
       for (let i = 0; i < 4; i += 1) await alert({ ruleId: `1003${10 + i}` });

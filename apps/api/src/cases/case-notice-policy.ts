@@ -36,6 +36,8 @@ export const CASE_GROWTH_LOOKBACK_MS = 2 * HOUR_MS;
 
 /** O alerta alto ou crítico ainda sem caso depois disto avisa sozinho: a atribuição está atrasada, e nada fica calado. */
 export const CASE_LAG_NOTICE_MS = 10 * MINUTE_MS;
+/** Com a decisão dos casos falhando, até quando para trás um alerta sem aviso ainda avisa sozinho. */
+export const CASE_FALLBACK_WINDOW_MS = DAY_MS;
 /** O aviso que falhou em todas as tentativas é refeito depois disto, se o caso continua pendente. */
 export const CASE_NOTICE_REARM_MS = 6 * HOUR_MS;
 

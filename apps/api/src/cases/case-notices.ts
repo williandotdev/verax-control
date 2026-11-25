@@ -49,6 +49,7 @@ import {
   stillWaiting,
   unannouncedCriticals,
   unassignedUnnoticed,
+  unnoticedOfCases,
   waitingCases,
 } from './case-notice-store.js';
 import { lockFindingsBriefly, setTriageTimeouts } from './triage-store.js';
@@ -101,7 +102,10 @@ export interface CaseNoticesReport {
   marked: number;
   /** Avisos de alerta tirados da fila, porque o caso avisa (a virada). */
   superseded: number;
-  /** Avisos alerta por alerta: sem caso há tempo demais (a atribuição atrasada), ou um caso que não deixa decidir. */
+  /**
+   * Avisos alerta por alerta: sem caso há tempo demais (a atribuição atrasada), um caso que não deixa decidir, ou a decisão
+   * falhando.
+   */
   lagging: number;
   isolated: number;
 }
@@ -152,7 +156,8 @@ interface Decision {
  *   já avisado cresceu (`growthDue`).
  * - **Vulnerabilidade e postura:** no máximo um aviso imediato por hora e cliente, com todos os casos críticos novos, e um
  *   resumo por dia, às 09:00 de Brasília.
- * - **Nunca calado:** o alerta alto ou crítico sem caso há mais de 10 min avisa sozinho, alerta por alerta (`finding:<id>`).
+ * - **Nunca calado:** o alerta alto ou crítico sem caso há mais de 10 min avisa sozinho, alerta por alerta (`finding:<id>`); e,
+ *   se a decisão dos casos de detecção falha, também o de um caso que ninguém avisou.
  * - **A virada:** o que já foi avisado alerta por alerta marca o caso sem e-mail, e o aviso de alerta que ainda está na fila
  *   só sai dela depois que o aviso do caso dele existe.
  *
@@ -278,7 +283,7 @@ export class CaseNotices {
         waiting = await this.read((tx) => waitingCases(tx, context(), criticalAt, WAITING_LIMIT));
         return true;
       },
-      () => this.detection(context, idsOf(waiting, true), run),
+      () => this.detectionOrAlerts(context, idsOf(waiting, true), run),
       async () => {
         // De novo: se a leitura de antes falhou, o intervalo entre dois avisos não é esquecido.
         const last = await this.lastCriticalAt(tenantId);
@@ -377,6 +382,39 @@ export class CaseNotices {
   // -------------------------------------------------------------------------------------------------
   // Detecção
   // -------------------------------------------------------------------------------------------------
+
+  /**
+   * A detecção que falha (um defeito, o banco) não cala nada: o alerta alto ou crítico de que ninguém avisou há mais de 10 min
+   * avisa sozinho, e o erro sobe do mesmo jeito. A falha de uma execução só não chega a isso.
+   */
+  private async detectionOrAlerts(
+    context: () => NoticeContext,
+    waiting: readonly string[],
+    run: Run,
+  ): Promise<boolean> {
+    try {
+      return await this.detection(context, waiting, run);
+    } catch (error) {
+      if (run.signal?.aborted) throw error;
+      const { tenantId } = context();
+      const until = new Date(this.now().getTime() - CASE_LAG_NOTICE_MS);
+      const before = run.report.lagging;
+      try {
+        await this.alertByAlert(tenantId, run, () =>
+          unnoticedOfCases(this.prisma, context(), until, this.batch),
+        );
+      } finally {
+        const alerts = run.report.lagging - before;
+        if (alerts > 0) {
+          this.options.logger?.error(
+            { tenantId, alerts },
+            'os avisos por caso falham: alertas sem aviso há mais de 10 min avisados um a um',
+          );
+        }
+      }
+      throw error;
+    }
+  }
 
   private async detection(
     context: () => NoticeContext,

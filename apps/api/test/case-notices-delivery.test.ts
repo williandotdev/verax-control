@@ -686,6 +686,33 @@ describe('entrega dos avisos por caso', () => {
       expect(tenantId).not.toBe('');
     });
 
+    it('a falha de só um cliente também deixa a tarefa com erro, e some quando ele volta', async () => {
+      const { mail, clock } = await world();
+      let failedTenants = 1;
+      const dispatcher = new NotificationDispatcher(
+        prisma,
+        { transport: mail, webOrigin: TEST_WEB_ORIGIN },
+        { now: () => clock.now, cases: { check: () => Promise.resolve({ failedTenants }) } },
+      );
+      expect(await dispatcher.runOnce()).toMatchObject({
+        status: 'done',
+        cases: { failedTenants: 1 },
+        casesError: 'CaseNoticesFailed',
+      });
+      const state = () =>
+        prisma.syncState.findUniqueOrThrow({
+          where: { name: NOTIFICATIONS_TASK },
+          select: { lastError: true, lastSuccessAt: true },
+        });
+      const failed = await state();
+      expect(failed.lastError).toBe('CaseNoticesFailed');
+      failedTenants = 0;
+      clock.now = at(MINUTE_MS);
+      expect((await dispatcher.runOnce()).casesError).toBeUndefined();
+      expect(await state()).toEqual({ lastError: null, lastSuccessAt: clock.now });
+      expect(failed.lastSuccessAt).not.toEqual(clock.now);
+    });
+
     it('uma falha ao ler os casos não cala o aviso: ele sai como o do alerta, avulso e no resumo, e o erro aparece', async () => {
       const { tenantId, person, mail, alert, step, notices, clock } = await world();
       for (let i = 0; i < 7; i += 1) await alert({ ruleId: `1003${10 + i}`, severity: 'critical' });

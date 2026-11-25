@@ -2374,7 +2374,9 @@ responsável pelo produto).
   Quando o alerta ganha caso, o aviso ainda na fila dá lugar ao do caso, e o já enviado marca o caso.
 - **Falhas:** o erro de um cliente, de um passo ou de um trecho de casos não segura os outros nem a entrega; o que não coube no
   tempo da execução (30 s) continua na seguinte, de onde parou. Um caso que não deixa decidir é isolado, e o alerta mais novo dele
-  avisa sozinho. Se a leitura do caso falha na entrega, o aviso sai como o do alerta, em vez de ficar calado. O tipo do erro fica
+  avisa sozinho. Se a decisão dos casos de detecção falha para um cliente, o alerta alto ou crítico de até um dia, há mais de
+  10 min sem aviso nenhum, também avisa sozinho (`unnoticedOfCases`, uma consulta simples, sem nada da decisão), e a tarefa fica
+  com erro (`CaseNoticesFailed`). Se a leitura do caso falha na entrega, o aviso sai como o do alerta, em vez de ficar calado. O tipo do erro fica
   em `SyncState('notifications').lastError` e no relatório da tarefa, só com contagens.
 
 **A virada.** Liga-se e volta-se sem perder nem repetir:

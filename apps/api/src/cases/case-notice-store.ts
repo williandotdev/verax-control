@@ -2,6 +2,7 @@ import { AWS_FINDING_RULES } from '../aws/findings/finding-rules.js';
 import { type CaseQueue, type FindingSeverity, Prisma } from '../generated/prisma/client.js';
 import type { NoticeSeverity } from '../notifications/finding-notices.js';
 import {
+  CASE_FALLBACK_WINDOW_MS,
   CASE_GROWTH_FACTOR,
   CASE_GROWTH_LOOKBACK_MS,
   CASE_GROWTH_WINDOW_MS,
@@ -540,6 +541,35 @@ export function unassignedUnnoticed(
       AND f."createdAt" >= ${at(epoch.mark)} AND f."createdAt" <= ${at(until)}
       AND (f."severity" = 'critical' OR (f."severity" = 'high' AND (${quiet}::boolean OR NOT ${QUIET_QUEUES})))
       AND NOT EXISTS (SELECT 1 FROM "Notification" AS n WHERE ${OF_ALERT})
+    ORDER BY f."severity", f."createdAt", f."id"
+    LIMIT ${limit}::integer`;
+}
+
+/**
+ * A rede de segurança: com a decisão dos casos falhando, os alertas altos e críticos de casos de detecção que chegaram até
+ * `until` (e há no máximo um dia) e de que ninguém avisou, nem alerta por alerta, nem por um aviso do caso. De propósito uma
+ * consulta simples, sem nada da decisão que pode ter falhado: na dúvida, avisa de novo.
+ */
+export function unnoticedOfCases(
+  db: Db,
+  { tenantId, epoch, now }: Pick<NoticeContext, 'tenantId' | 'epoch' | 'now'>,
+  until: Date,
+  limit: number,
+): Promise<{ id: string; severity: FindingSeverity }[]> {
+  return db.$queryRaw<{ id: string; severity: FindingSeverity }[]>`
+    SELECT f."id"::text AS "id", f."severity"::text AS "severity"
+    FROM "Finding" AS f
+    JOIN "AlertCase" AS c ON c."id" = f."caseId" AND c."tenantId" = f."tenantId"
+    WHERE f."tenantId" = ${tenantId}::uuid AND ${PENDING} AND f."severity" IN ('critical', 'high')
+      AND c."queue" = 'detection'
+      AND f."createdAt" >= greatest(${at(epoch.mark)}, ${before(now, CASE_FALLBACK_WINDOW_MS)})
+      AND f."createdAt" <= ${at(until)}
+      AND NOT EXISTS (SELECT 1 FROM "Notification" AS n WHERE ${OF_ALERT})
+      AND NOT EXISTS (
+        SELECT 1 FROM "Notification" AS n
+        WHERE n."caseId" = c."id" AND n."tenantId" = c."tenantId" AND n."severity" <= f."severity"
+          AND NOT (${UNSAID})
+      )
     ORDER BY f."severity", f."createdAt", f."id"
     LIMIT ${limit}::integer`;
 }

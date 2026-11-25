@@ -229,8 +229,17 @@ export interface NotificationReport {
 
 /** O que os casos fazem no começo de cada execução: os avisos por caso, ou a devolução deles ao aviso por alerta. */
 export interface CaseNoticeSource {
-  check(now: Date, signal?: AbortSignal): Promise<object | null>;
+  check(now: Date, signal?: AbortSignal): Promise<CaseNoticeOutcome | null>;
 }
+
+/** As contagens de uma execução dos avisos por caso. */
+export interface CaseNoticeOutcome {
+  /** Clientes cujos avisos falharam (os outros seguem): a tarefa não conta como bem-sucedida. */
+  failedTenants: number;
+}
+
+/** O erro da tarefa quando os avisos por caso falham só para alguns clientes (o detalhe vai para o log). */
+export const CASE_NOTICES_FAILED = 'CaseNoticesFailed';
 
 /** O e-mail ligado: o transporte (`mailTransport`, a mesma fábrica da API) e a origem do painel para os links. */
 export interface NoticeMailer {
@@ -589,6 +598,7 @@ export class NotificationDispatcher {
       try {
         const cases = (await this.cases?.check(startedAt, signal)) ?? null;
         if (cases !== null) report.cases = cases;
+        if (cases !== null && cases.failedTenants > 0) this.casesError = CASE_NOTICES_FAILED;
       } catch (error) {
         signal?.throwIfAborted();
         this.casesError = errorKind(error);
