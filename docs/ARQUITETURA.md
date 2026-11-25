@@ -506,7 +506,7 @@ cliente (UC-3), a tela (UC-5) e o artefato do catálogo na versão do nó (UC-6)
   do CI nessa fingerprint falhou. Senão, `em_teste` com o motivo por regra (`rule_changed`, `rule_missing`,
   `missing_evidence`, `evidence_failed`). A evidência de laboratório é opcional, citada só pelo hash do evento, e não
   homologa.
-- **Fingerprint** (`apps/api/src/detection-coverage/rule-fingerprints.ts`, funções puras, sem disco; a API em execução
+- **Fingerprint** (`apps/api/test/detection-coverage/rule-fingerprints.ts`, funções puras, sem disco; a API em execução
   não carrega o módulo): XML da Verax pelo elemento `<rule>` canonizado (sem comentários, espaços normalizados,
   atributos em ordem) mais as mães (`if_sid`, `if_matched_sid`) em fecho; a de fábrica pelo ID e pela imagem do manager
   com o digest do `infra/wazuh/docker-compose.yml`; a do worker pelos metadados mais o texto do módulo e do fecho dos

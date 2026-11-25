@@ -13,7 +13,7 @@ import {
   workerRuleFingerprint,
   xmlRuleFingerprints,
   xmlRules,
-} from '../../src/detection-coverage/rule-fingerprints.js';
+} from './rule-fingerprints.js';
 import {
   managerImage,
   REPO_ROOT,

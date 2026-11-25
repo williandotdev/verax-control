@@ -17,7 +17,7 @@ import {
   xmlRuleFingerprints,
   xmlRules,
   type WorkerRuleMetadata,
-} from '../../src/detection-coverage/rule-fingerprints.js';
+} from './rule-fingerprints.js';
 import { GCP_RULES } from '../../src/gcp/gcp-rules.js';
 import { WEB_RULES } from '../../src/weblogs/rules.js';
 
