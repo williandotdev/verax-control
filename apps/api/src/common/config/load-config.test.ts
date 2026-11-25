@@ -743,9 +743,9 @@ describe('configuração do worker do sync (T5.3)', () => {
   });
 
   it('CASES_MODE: off é o padrão; só off, shadow e on valem, na API e no worker', () => {
-    expect(loadWorkerConfig(workerEnv).CASES_MODE).toBe('off');
-    expect(loadConfig(validEnv).CASES_MODE).toBe('off');
-    expect(loadConfig(validProductionEnv).CASES_MODE).toBe('off');
+    expect(loadWorkerConfig(workerEnv).CASES_MODE).toBe('shadow');
+    expect(loadConfig(validEnv).CASES_MODE).toBe('shadow');
+    expect(loadConfig(validProductionEnv).CASES_MODE).toBe('shadow');
     for (const mode of ['off', 'shadow', 'on']) {
       expect(loadWorkerConfig({ ...workerEnv, CASES_MODE: mode }).CASES_MODE).toBe(mode);
       expect(loadConfig({ ...validEnv, CASES_MODE: mode }).CASES_MODE).toBe(mode);

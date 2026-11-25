@@ -15,7 +15,8 @@ Um caso reúne os alertas com a mesma origem e o mesmo alvo, para a equipe trata
 
 - **Nó com acesso (o da Verax, homologação, VM própria do cliente):** `CASES_MODE` em `/etc/verax/node.conf` e
   `sudo systemctl restart verax-node`. Só ponha a linha com o nó já numa versão que a conhece.
-- **Nó gerenciado:** ninguém edita o `node.conf` dele, e a atualização da frota não o reescreve. Quem liga é o padrão da versão.
+- **Nó gerenciado:** ninguém edita o `node.conf` dele, e a atualização da frota não o reescreve. Quem liga é o padrão da versão: `shadow`
+  desde a 1.5.0.
 
 ## O caminho
 
