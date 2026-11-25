@@ -39,12 +39,12 @@ import type { MockState } from './handlers';
 export const CLOUDFLARE_OAUTH_SCENARIOS = ['one', 'multi', 'manual'] as const;
 export type CloudflareOauthScenario = (typeof CLOUDFLARE_OAUTH_SCENARIOS)[number];
 
-const STORAGE_KEY = 'verax.mock.cloudflare-oauth.store';
+const STORAGE_KEY = 'verax.mock.cloudflare-demo';
 /** O "worker" troca o código neste tempo depois do retorno. */
 const WORK_DELAY_MS = 600;
 const ATTEMPT_TTL_MS = 10 * 60_000;
 const DEMO_SLUG = 'alfa';
-const DEMO_SCOPES = ['account-settings.read', 'zone.read', 'analytics.read', 'offline_access'];
+const DEMO_SCOPES = ['audit-logs.read', 'zone.read', 'analytics.read', 'offline_access'];
 /** A conta nova que o cenário `one` autoriza (ID fictício). */
 export const DEMO_OAUTH_NEW_ACCOUNT = 'c0ffee00000000000000000000000a01';
 /** As contas do cenário `multi`. O segundo nome tem marcação de propósito: a tela o mostra como texto. */
