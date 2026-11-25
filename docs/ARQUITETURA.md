@@ -426,6 +426,7 @@ cofre sai primeiro, com o registro `cloud_credential.wipe` (só metadados), e de
 | `CloudAccount`                                                                                           | Apagada                                                                                                                                                                                                                                         |
 | `CloudCredential`                                                                                        | Apagada antes da conta, com a trilha (`wipeCredential`); a chave estrangeira também a levaria                                                                                                                                                   |
 | `AwsDiscoveryRun`, `AwsSource`, `CollectorCursor`, `AwsVolumeObject`                                     | Apagadas pela chave estrangeira (`ON DELETE CASCADE`): só existem pela conta. A autorização das fontes não volta numa conta cadastrada de novo: o cliente autoriza outra vez                                                                    |
+| As tabelas `Web*` (logs do ALB: configuração, objetos lidos, resumo do dia e tráfego por país)           | Apagadas com as fontes, pela chave estrangeira. A evidência (`FindingEvidence`) fica: é do achado                                                                                                                                               |
 | `Finding` (e comentários, notificações), `Incident`, `PostureScan`/`PostureFailure`, `InventorySnapshot` | Ficam: guardam o ID da conta como texto, sem chave estrangeira. O histórico das telas e o expurgo seguem as regras de sempre                                                                                                                    |
 | `IngestUsage`, `IngestUsageDay`, `IngestHealth`, `NodeUsageDay`                                          | Ficam: são por cliente e fonte, não por conta. O volume já medido continua contando no mês e no dia                                                                                                                                             |
 | `AuditLog`                                                                                               | Fica, inteira (a trilha é só de acréscimo)                                                                                                                                                                                                      |
@@ -1072,7 +1073,7 @@ com no máximo 8 chamadas simultâneas e 15 s por chamada:
 | Access Analyzer       | `ListAnalyzers` (até 50 por região)                                                                      | Uma fonte `access_analyzer` por analisador                                                                                                                                        |
 | CloudWatch Logs       | `DescribeLogGroups` (até 500 por região), `ListTagsForResource`                                          | Uma fonte `cloudwatch_log_group` por grupo: o nome, o tamanho guardado, a retenção, a categoria (pelo nome) e se tem a tag de leitura. Nenhum evento                              |
 | Config                | `DescribeConfigurationRecorders`, `DescribeConfigurationRecorderStatus`, `DescribeDeliveryChannels`      | Fonte `config`, descoberta e ainda não coletada                                                                                                                                   |
-| Load balancers        | `DescribeLoadBalancers` (até 100 por região), `DescribeLoadBalancerAttributes`                           | Fonte `elb_logs` (o log de acesso), descoberta e ainda não coletada                                                                                                               |
+| Load balancers        | `DescribeLoadBalancers` (até 100 por região), `DescribeLoadBalancerAttributes`                           | Fonte `elb_logs` (o log de acesso): ver "Logs de acesso do ALB"                                                                                                                   |
 | Infraestrutura        | Os coletores do inventário (instâncias, security groups, usuários IAM, buckets), `DescribeVpcs` e o RDS  | Só o retrato em números da tela (`AwsDiscoveryRun.summary`); os detalhes ficam em Ativos                                                                                          |
 
 **Parcial é um resultado válido.** Cada leitura é isolada por serviço e região: a permissão negada, a região que
@@ -1104,7 +1105,9 @@ os tetos por região acima (o que passar deles fica de fora, com o registro `Tru
 
 Os tipos de fonte: `cloudtrail`, `vpc_flow_logs`, `waf` e `guardduty_export` (S3); `guardduty`, `security_hub`,
 `inspector` e `access_analyzer` (API); `cloudwatch_log_group` (CloudWatch Logs, sensível). Descobertos e ainda não
-coletados: `config` e `elb_logs`. Cada linha guarda se dá para ler de onde está (`availability`: disponível, serviço
+coletados: `config` e, no nó sem os ataques web (o padrão), `elb_logs`. Quem lê cada tipo é o `collector` dele
+(`AWS_SOURCE_KIND_INFO`): o Wazuh do nó ou uma tarefa do worker; o método não basta, porque o `elb_logs` também é de
+bucket. Cada linha guarda se dá para ler de onde está (`availability`: disponível, serviço
 desligado, sem destino, destino ou formato que o nó não lê), a permissão da última sondagem, as notas de custo e de
 pré-requisito, a autorização (quem, quando) e a saúde da coleta (gravada pelo coletor dela).
 
@@ -1256,6 +1259,10 @@ conhece e ainda aceita a lista simples de antes (a que uma API de versão anteri
 - **A fonte que perde a permissão ou some** (`permission_error` e `source_missing`, que a descoberta grava) sai da
   lista até voltar, e a revogada sai de vez. Uma mudança da lista só reinicia o manager quando a configuração dele
   muda.
+- **Os tipos do worker não existem para o Wazuh:** a busca da lista e o plano só conhecem os tipos dele
+  (`AWS_WAZUH_SOURCE_KINDS`). Com qualquer número de balanceadores autorizados, a lista é, byte a byte, a de sem nenhum (e
+  a lista é a única entrada do gerador), a conta que só tem deles não entra, e a saúde, a conferência de fonte parada e o
+  aviso das contas nunca tocam nas linhas deles (`wazuh-isolation.test.ts` e `wazuh-web-logs-isolation.test.ts`).
 
 ### Marcadores da leitura (sinal `progress`)
 
@@ -1558,6 +1565,13 @@ revogada sai na execução seguinte. Uma fonte com falha nunca para as outras.
   táticas do MITRE dos tipos do Security Hub), cada um conferido e cortado no tamanho da coluna. O registro inteiro
   nunca é gravado, e um registro acima de 512 KB é recusado sem ser lido. Nada do achado vai para o log: o relatório da
   tarefa só tem contagens e códigos.
+- **MITRE ATT&CK** (`alerts/aws-mitre.ts`): só o que a origem documenta. No GuardDuty, pelo tipo do achado (a finalidade
+  da ameaça, e a família quando ela diz mais), igual pela API e pelo bucket; no Security Hub, pelos tipos `TTPs/`; na
+  rajada de bloqueios do WAF (80443), varredura ativa (T1595), como a do Cloudflare; nas outras regras do Wazuh, o da
+  regra. O Inspector, o controle reprovado e o Access Analyzer ficam **sem tática**, de propósito: são fraquezas, e o
+  ATT&CK classifica ações de um atacante. A aba MITRE mostra as 14 táticas num gráfico de radar (`SpiderChart`): a
+  participação de cada uma na soma das marcações do período, em escala de raiz quadrada; sem nenhuma, explica a matriz
+  vazia e diz quantos alertas não têm tática. O achado já gravado fica com a classificação de quando chegou.
 - **Volume:** os bytes do JSON de cada achado novo ou com versão nova entram no medidor da AWS (`IngestUsage` e
   `IngestUsageDay`, fonte `aws`), depois de a página ficar gravada, e somam nos avisos de 80% e 100% do plano. O achado
   de outro cliente, o pulado e a releitura não contam. Nenhum achado é descartado por plano.
@@ -1596,6 +1610,7 @@ descartado e nenhuma fonte deixa de poder ser autorizada. O que contém o volume
 | Descoberta                       | Uma execução por vez por conta; a manual, uma a cada 5 min; 500 flow logs, 500 grupos, 200 Web ACLs e 100 load balancers por região                                     | A rota e a tarefa `aws-discovery`                                                        |
 | "Tentar de novo" numa fonte      | Um pedido a cada 30 s por fonte                                                                                                                                         | 429 `SOURCE_RETRY_RATE_LIMITED`                                                          |
 | Coletores de achados             | A cada 5 min; 2 contas ao mesmo tempo; 4 chamadas por conta; 10 páginas por fonte por execução; 200 detalhes do Access Analyzer; um registro acima de 512 KB é recusado | A tarefa `aws-findings`                                                                  |
+| Logs de acesso do ALB            | A cada 5 min por balanceador, 2 ao mesmo tempo, 20 por conta; por execução, 4 min, 500 arquivos, 2 milhões de linhas e 1,5 GB abertos                                   | A tarefa `web-logs`                                                                      |
 | Recuo                            | Limite de requisições: 5 min, dobrando, até 1 h; recusa: 15 min, dobrando, até 6 h                                                                                      | Idem (cada tentativa recusada é uma linha de acesso negado no CloudTrail do cliente)     |
 | Janela do "Conectar"             | 60 min, com tentativas a 20 s, 40 s e depois a cada 60 s                                                                                                                | A tarefa `aws-check`                                                                     |
 
@@ -1644,7 +1659,8 @@ e `cloudwatch-alert-ownership.test.ts`.
   GuardDuty com os do Security Hub; o fechamento automático no painel do que foi resolvido na origem; e as
   contas-membro de um administrador delegado que não estão cadastradas para o cliente (os achados delas vão para a
   fila sem dono).
-- **Tipos descobertos e ainda não coletados:** o AWS Config e os logs de acesso dos load balancers. Os flow logs em
+- **Tipos descobertos e ainda não coletados:** o AWS Config e, sem `AWS_WEB_LOGS_ENABLED`, os logs de acesso dos load
+  balancers. Os flow logs em
   Parquet, com partições do Hive ou com formato próprio, o WAF no Firehose e o prefixo antes de `AWSLogs/` fora de um
   bucket do cadastro aparecem com o motivo, e não são lidos.
 - **Tráfego aceito dos flow logs:** a lista e o gerador aceitam `"traffic": "all"` por fonte; a escolha no painel não
@@ -2019,6 +2035,727 @@ Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `adm
   (2902) são nível 7 no Wazuh 4.14 e continuam virando achado médio: o primeiro SCA de cada instância ainda gera um
   achado por checagem com falha, juntos no incidente da instância.
 
+## Evento bruto no detalhe do achado (`apps/api/src/alerts/raw-alert.ts` e `raw-url-mask.ts`)
+
+O detalhe relê o alerta no indexer (30 dias) e o devolve saneado. Nada disto muda o que o indexer guarda.
+
+- **Sai inteiro:** `full_log`, `previous_output`, as chaves de protótipo e o que passa da profundidade.
+- **Cabeçalhos:** o valor dos de credencial (`authorization`, `cookie`, `x-api-key`...) e dos com nome de segredo ou de
+  dado pessoal (`x-auth-token`, `x-forwarded-email`), no objeto do WAF lido do bucket e na lista `{ name, value }` do
+  WAF lido do CloudWatch Logs.
+- **URL e query:** em `httpRequest.uri` e `args`, `Referer`, `Location`, nos logs de acesso e em qualquer campo que cite
+  uma URL com query, só o **valor** que é, ou parece, segredo ou dado pessoal vira `[removido]`: parâmetro com nome de
+  segredo ou de dado pessoal (em qualquer codificação), e-mail, CPF, CNPJ, cartão, JWT, UUID, valor longo e aleatório e
+  `usuario:senha@`. Os nomes, a estrutura e o ataque (SQL injection, XSS, travessia) ficam legíveis; num parâmetro de
+  segredo, o marcador diz que ataque parece (`[removido: parece SQL injection]`). O que não decodifica sai mascarado
+  (`[removido: codificação inválida]`).
+- **Como:** varredura de caracteres em tempo linear, até três camadas de codificação, 16 mil caracteres por texto, sem
+  expressão regular sobre o texto do atacante.
+- **Limites:** é redução de exposição, e não prova de que nada pessoal sobra. Nome de pessoa, endereço ou segredo curto
+  num parâmetro de nome neutro não tem como ser visto; um id aleatório que não é segredo e um número de 11 ou 14 dígitos
+  saem mascarados. A lista completa está no começo de `raw-url-mask.ts`.
+
+## País de um endereço IP (`apps/api/src/geo/`)
+
+_(decisão de 24/11/2026: embutir a base pública; no código, ainda sem uso. Vai alimentar o mapa de origem das requisições,
+com os endereços dos logs de acesso do ALB.)_
+
+Uma tabela embutida diz o país de um endereço, sem rede: a consulta é uma busca binária síncrona em arrays na memória, e
+nenhum endereço sai do nó.
+
+- **Fonte:** a base `user-country` do projeto sapics/ip-location-db, em domínio público (PDDL). O registro fica ao lado do
+  dado, em `apps/api/src/geo/data/README.md`.
+- **O que entra na imagem:** `ip-country.bin.gz` (0,57 MB) e `ip-country-meta.ts` (data, SHA-256 dos CSV e do arquivo). O
+  `nest build` copia o primeiro para `dist` (`assets` do `nest-cli.json`); na imagem ele é só leitura, como o resto. No
+  git, `*.gz` é binário.
+- **Carga:** `loadIpCountry()`, só por quem usa e uma vez por processo. Confere o SHA-256 e a estrutura inteira e lança se
+  algo não bate; quem chama decide seguir sem o país. Cerca de 30 ms com a CPU livre (até
+  0,5 s com ela disputada: descompressão e conferência são síncronas) e 4,5 MB, fora do heap do V8.
+- **Consulta:** `countryOf(texto)` nunca lança. O caminho quente é numérico (`countryOfV4`, `countryOfV6`,
+  `countryOfWords`): não aloca, não cria texto e devolve um índice; `code(indice)` dá o código. O IPv4 mapeado e o NAT64
+  (64:ff9b::/96) valem pelo IPv4 embutido.
+- **Sem país (null):** texto que não é endereço (octeto com zero à esquerda incluído), faixa que a base não conhece e
+  endereço reservado (privado, CGNAT, loopback, link-local, multicast, documentação, 6to4, Teredo e tudo que está fora de
+  2000::/3). Os reservados são gravados na tabela como "sem país", qualquer que seja a fonte.
+- **IPv6 por /64:** a tabela guarda o prefixo /64, a mesma chave do motor de ataques web. Um /64 dividido entre países (732
+  na versão de 24/11/2026) fica com o que tem mais endereços dentro dele; no empate, com o primeiro.
+- **Códigos:** ISO 3166-1 alpha-2, mais `XK` (Kosovo). `AC` e `TA` viram `SH`, de que fazem parte; `AN` (retirado em 2010)
+  fica sem país. Um código desconhecido para o gerador (`country-codes.ts`).
+- **Precisão:** é o país do **endereço**, e não da pessoa: VPN, proxy, operadora móvel e nuvem aparecem no país de onde o
+  endereço é anunciado. Segundo o próprio projeto, a base concorda com o GeoLite2 em 97,5% dos endereços. Serve para um
+  mapa; não serve para acusar nem para bloquear.
+- **Atualização:** a cada versão do nó, com `scripts/update-ip-country.mjs` (offline, lê os CSV já baixados; os mesmos CSV
+  dão os mesmos bytes). `generatedAt`, `ageDays` e `isStale` (mais de 180 dias) são para o aviso honesto na tela.
+
+## Casos: agrupamento dos alertas (`apps/api/src/cases/`)
+
+_(partes 1 a 8: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API, a tela, o e-mail, e os números na
+Torre, no radar e nos relatórios. Nada muda no painel nem no e-mail enquanto `CASES_MODE` for `off`)_
+
+Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é o worker
+(a pessoa só divide um que juntou coisas demais); a pessoa trata alertas, um por um ou em massa, e as contagens do caso são
+de gatilhos da tabela de alertas.
+
+- **Interruptor:** `CASES_MODE`, o mesmo valor no ambiente do worker e no da API, conferido na partida (valor fora da
+  lista não sobe).
+
+  | Valor    | No worker                                                                                          | Na API                                                                                           |
+  | -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+  | `off`    | Padrão. Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo só confere se há caso a apagar) | Padrão. As rotas dos casos respondem 404, iguais a uma rota que não existe, para todos os papéis |
+  | `shadow` | Os alertas ganham caso (a medição no nó piloto)                                                    | Só a equipe da Verax (`admin_verax`) lê, no cliente escolhido; para os outros papéis, como `off` |
+  | `on`     | O mesmo que `shadow`, mais a fila da triagem em massa (`triage-ops`) e os avisos por caso          | Todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa              |
+
+  O `start.sh` passa a linha do `node.conf` à API e ao worker; sem ela, vale o padrão da versão. O nó gerenciado já instalado
+  não recebe linha nova: nele, quem liga é o padrão da versão (`docs/runbooks/casos.md`). A API lê o que houver no banco: com o worker em `off` e a API em `on`, os casos ficam parados no tempo (a
+  situação mostra a última passagem).
+
+- **Tarefas do worker** (só com `shadow` ou `on`):
+  - `case-assign` (a cada 10 s, concessão no `SyncState`): lotes de 200 alertas por cliente, na ordem de chegada, no
+    máximo 2 s de trabalho por cliente em cada passagem. A fila é o próprio predicado (`caseId` vazio, fora de
+    incidente, novo ou em análise), com o índice parcial `Finding_case_outbox_idx`: o alerta novo, o histórico e o que
+    chegou com a versão anterior do nó passam pelo mesmo caminho. O esperado por exceção nasce legítimo e não entra.
+  - `case-watch` (a cada minuto): a idade do alerta alto ou crítico mais antigo ainda sem caso, no log; passou de
+    10 min, é aviso no log. O e-mail desse atraso sai da tarefa `notifications`, com `on` (abaixo).
+  - `case-reconcile` (uma vez por semana): refaz as contagens de cada caso e corrige a que não bate. É a única escrita
+    de contagem fora dos gatilhos, e qualquer correção vai para o log.
+  - `triage-ops` (a cada 5 s, concessão no `SyncState`; **só com `on`**): as operações de triagem em massa que não cabem na
+    requisição (abaixo).
+
+- **Um lote é uma transação**, com a ordem de travas do projeto: o lock dos alertas do cliente (o dos coletores), as
+  linhas dos alertas (`FOR UPDATE SKIP LOCKED`, todas de uma vez) e só então os casos. O alerta preso por uma triagem em
+  curso fica para a passagem seguinte; o lote espera no máximo 1 s por um caso preso, e o coletor espera no máximo um
+  lote. O UPDATE não mexe no `updatedAt` do alerta, que a retenção lê como atividade.
+
+- **Ciclo do caso, pelo horário de chegada no servidor** (`Finding.createdAt`), nunca pelo do log. Como a chegada fica
+  gravada, o agrupamento é o mesmo com o alerta atribuído na hora, no histórico ou depois de uma volta de versão.
+
+  | Situação do caso aberto da chave                         | O alerta que chega                                        |
+  | -------------------------------------------------------- | --------------------------------------------------------- |
+  | Detecção, até 24 h de silêncio e 7 dias de idade         | Entra nele                                                |
+  | Detecção, além disso (mesmo em análise ou promovido)     | Sela (`window`, continua pendente e listado) e abre outro |
+  | Vulnerabilidade ou postura, com pendência                | Entra nele, sem prazo                                     |
+  | Sem pendência, com um incidente dele ainda não resolvido | Entra nele, como novo (o incidente não é alimentado)      |
+  | Sem pendência, tratado (ou com o incidente resolvido)    | Sela (`treated`) e abre outro                             |
+  | Sem alerta nenhum (saíram na retenção)                   | Sela (`idle`) e abre outro                                |
+
+  O caso novo leva o anterior da chave (`previousCaseId`) e quantas vezes ela já voltou (`recurrence`).
+
+- **Limites, só na hora de abrir** (nas 24 h anteriores à chegada): passados 8 casos da mesma família, conta e alvo com
+  rede da internet, o seguinte vai para um caso distribuído (não vale para origem privada, item da lista de proteção
+  nem crítico; este, a partir do 101º, vai para um caso próprio). Com 40 casos na fila de detecção ou de postura, a
+  chave média ou baixa nova vai para um caso por fonte; a alta, a crítica e a de item protegido, nunca. A fila de
+  vulnerabilidade não tem teto (decisão D1).
+
+- **Título:** sempre de um dicionário em português (`case-titles.ts`), nunca do evento. O que vem do evento fica nas
+  partes da chave e nas amostras (limitadas em quantidade e tamanho), que são dado a mostrar.
+
+- **Severidade já avisada** (`noticedSeverity`): com `shadow`, em que o aviso por e-mail é alerta por alerta, o caso nasce
+  com a severidade já avisada e a acompanha. Com `on`, a atribuição não a toca: quem decide, avisa e marca são os avisos
+  por caso (abaixo).
+
+- **Falhas:** o erro de um cliente não para os outros nem a coleta. O lote que falha por culpa de um alerta é partido ao
+  meio até isolar qual; ele fica de fora de 1 min a 1 h (dobra a cada falha), com o id e o SQLSTATE no log. Falha de
+  banco ou espera longa só adiam o cliente; a passagem seguinte continua depois do trecho que falhou e volta ao começo.
+
+### Leitura dos casos pela API
+
+_(`cases.controller.ts`, `cases.service.ts` e `case-read-store.ts`; contrato em `packages/shared/src/cases.ts`)_
+
+Só leitura, com a permissão `findings:read` (todos os papéis) e o cliente da sessão. Caso ou alerta de outro cliente é 404,
+igual a um que não existe. Parâmetro desconhecido é 400. O `CASES_MODE` é conferido num guard, antes da query e do id.
+
+| Rota                          | O que devolve                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET /v1/cases/status`        | `mode`, a última passagem da tarefa (`asOf`) e há quantos minutos espera o alerta mais antigo sem caso |
+| `GET /v1/cases`               | Os casos, com filtros, ordem e página (até 100 por página e 10.000 páginas)                            |
+| `GET /v1/cases/groups`        | A fila de vulnerabilidades agrupada por pacote, recurso ou conta                                       |
+| `GET /v1/cases/:id`           | O caso inteiro, o que sai dos alertas dele, os casos anteriores, os incidentes e as operações          |
+| `GET /v1/cases/:id/findings`  | Os alertas do caso, por cursor                                                                         |
+| `GET /v1/cases/:id/timeline`  | Os alertas por hora ou por dia                                                                         |
+| `GET /v1/findings/:id/triage` | As operações de triagem em massa que mexeram num alerta                                                |
+
+- **Situação:** é a única rota que responde com os casos desligados (`off`, sem ler o banco). É por ela que o painel sabe
+  se os casos valem: o `/v1/me` é do módulo `auth` e não mudou.
+- **Estados da lista:** `pending` (o padrão: há alerta fora de incidente, novo ou em análise), `investigating`, `treated`
+  (nada pendente) e `all`. O caso sem nenhum alerta guardado não entra em lista; abre pelo id.
+- **Prioridade** (a ordem padrão), sempre total: a pior severidade pendente; nela, quem toca um item da lista de proteção;
+  dentro disso, a chegada do último alerta (relógio do servidor), a mais recente primeiro; no empate, o id. O item
+  protegido sai das amostras de recurso, usuário e IP (até 20 valores de cada; a chave de acesso não é amostra). As outras
+  ordens são `recent` e `volume` (alertas pendentes). As contagens não têm índice de propósito: a ordem é feita em memória,
+  sobre os casos do cliente que saem do índice `(tenantId, queue, pending)`.
+- **Severidade:** há alerta pendente dela. Só com `pending` e `investigating`: o caso não guarda a severidade do que já foi
+  tratado, e a combinação com `treated` e `all` é 400, em vez de uma lista que esconde casos.
+- **Período:** o caso ativo em algum momento da janela, pelo horário do evento **ou** pelo da chegada no servidor. Um caso
+  que acabou de receber alertas com data antiga (ou forjada) não some das últimas 24 h. O começo não passa do histórico do
+  plano, como nos alertas.
+- **Fonte:** sai da família da chave e, nas famílias de mais de uma fonte, das regras (`case-sources.ts`). A família que não
+  se conhece aparece em todo filtro de fonte.
+- **Conta, tática e técnica:** pelas amostras do caso (até 50 contas, 20 táticas e 50 técnicas).
+- **Busca:** no título, nas partes da chave e nas amostras, nunca nos alertas, com os curingas do `ILIKE` escapados.
+- **Grupos (decisão D1):** o pacote e o recurso saem das partes da chave, e a conta, da amostra (na fila de vulnerabilidades
+  cada caso é de um pacote, um recurso e uma conta): nenhum alerta é lido. O valor nulo reúne os casos sem ele (a
+  vulnerabilidade no código não tem pacote). A lista aceita o grupo: `groupBy` com `group` (o valor exato), ou `groupBy`
+  sozinho para os sem valor. Um recurso com mais de 256 caracteres está cortado na chave: dois iguais até ali ficam no
+  mesmo grupo.
+- **Detalhe:** os 50 mil alertas mais recentes do caso são lidos uma vez, com prazo de 1,5 s no banco (`statement_timeout`,
+  transação só de leitura): os 10 IPs e os 10 usuários menos frequentes, os 50 subgrupos mais graves, os resolvidos que a
+  origem voltou a ver (`lastSeenAt` depois de `triagedAt`), os incidentes e as operações em vigor. Passou do prazo, sai
+  `analysis: null`, e o resto do detalhe vale. Passou dos 50 mil, sai `complete: false`.
+- **Casos anteriores:** a corrente de `previousCaseId`, até 10, dentro do cliente; para no que já saiu pela retenção.
+- **Alertas do caso:** do mais recente para trás, pelo índice `(tenantId, caseId, occurredAt, id)`, sem limite de
+  profundidade. O horário e o id de um alerta não mudam: um alerta novo não empurra os outros. O cursor é opaco e conferido
+  (formato, faixa, escrita única e a marca do caso com os filtros); montado à mão, só muda o ponto de partida dentro do
+  caso que a pessoa já pode ler, porque a consulta filtra sempre pelo cliente e pelo caso.
+- **Linha do tempo:** por hora cheia até 7 dias; além disso, por dia de Brasília (UTC-3 o ano todo, vira às 03:00 UTC), no
+  máximo 366 dias até o alerta mais recente. Sem buracos. Horário no futuro e alerta antigo demais ficam fora, avisados em
+  `truncated`. Prazo de 3 s no banco; passou, 503.
+- **Operações:** as em vigor nos alertas do caso (`Finding.triageOpId`) e as que elas desfizeram, até 20, cada uma com o que
+  quem vê pode fazer (`can`, a mesma conta de `GET /v1/triage-operations`: `operationCan`). O `can` do caso e o das operações
+  seguem o modo: com `shadow`, nada, nem para a equipe da Verax.
+- **Voltas depois de tratado** (`recurrenceTreated`, na lista e no detalhe): das vezes que a chave voltou, quantas foram depois
+  de o caso anterior ter sido selado por `treated`. Sai do motivo do selo dos anteriores da mesma chave (índice
+  `(tenantId, groupKey)`), numa consulta só por página; conta os anteriores ainda guardados, e nunca mais que `recurrence`.
+- **Texto do evento** (amostras, partes da chave, subgrupos, títulos dos alertas) sai só como dado, limitado em quantidade e
+  tamanho; o título do caso é do dicionário.
+
+### Triagem em massa
+
+_(`triage-operations.{controller,service}.ts`, `triage-{engine,store,view}.ts`, `triage-ops-job.ts`, `case-split*.ts`;
+contrato em `packages/shared/src/triage-operations.ts`)_
+
+Uma pessoa trata muitos alertas de uma vez, com desfazer. Uma operação é um `TriageOperation` (o pedido e o andamento) e um
+`TriageOperationItem` por alerta mudado (o que ele era antes).
+
+| Rota                                      | O que faz                                                                                           | Quem                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `POST /v1/triage-operations`              | `status`, `promote`, `attach` ou `undo_all_of`. 201 feita, 202 na fila, 200 repetida                | `findings:triage`; incidente, também `incidents:write` |
+| `GET /v1/triage-operations[/:id]`         | Lista (por página, com autor) e detalhe, com andamento e o que quem vê pode fazer                   | `findings:read`                                        |
+| `GET /v1/triage-operations/preview`       | Quantos casos e alertas um filtro da lista alcança agora                                            | `findings:triage`                                      |
+| `GET /v1/triage-operations/authors`       | Quem pediu operações nos últimos 30 dias (até 100, só o id e o nome), para o filtro do histórico    | `findings:read`                                        |
+| `POST /v1/triage-operations/:id/undo`     | Desfaz. A resposta é a operação que desfaz (201, 202 ou 200)                                        | quem pediu, ou quem administra                         |
+| `POST /v1/triage-operations/:id/cancel`   | Para uma na fila ou em curso, ou desiste de uma parada; o que já foi feito fica e pode ser desfeito | quem pediu, ou quem administra                         |
+| `POST /v1/triage-operations/:id/continue` | Retoma uma que parou antes do fim (o que faltou e o que falhou)                                     | quem pediu, ou quem administra                         |
+| `POST /v1/cases/:id/split`                | Divide um caso                                                                                      | `findings:triage`                                      |
+
+- **Modos:** com `off`, 404 em todas; com `shadow`, a equipe da Verax só lê, e as escritas são 404 para todos; com `on`, tudo.
+  A escrita recusada pelo modo, de quem tem sessão, fica na trilha (`denied`, 404). Na medição ninguém opera: a fila não roda.
+- **Alvo:** até 50 casos (ou um subgrupo deles, o valor inteiro de `caseGroup`), até 500 alertas, ou um filtro da lista de
+  casos. O filtro é o **mesmo `WHERE`** da lista (`caseSetWhere`), sem a página: escolhe casos, e a operação alcança os
+  alertas pendentes deles (a severidade do filtro não estreita os alertas). Só os estados `pending` e `investigating`, e com
+  um campo que estreite além da fila, do estado e do período. Um id de outro cliente recusa o pedido inteiro com 404.
+- **Conjunto congelado:** os alertas do alvo que chegaram até a hora do pedido (`cutoffAt`) e estão pendentes (novos ou em
+  análise, fora de incidente, ainda sem o status pedido), num comando só, os piores primeiro. Os ids ficam em
+  `TriageOperation.target.ids` até a operação terminar: só o corte não bastaria, porque a atribuição pode pôr no caso, no meio,
+  um alerta mais antigo que ninguém viu ao confirmar, e o filtro deixa de achar um caso que a própria operação já mudou.
+  Teto de 50 mil alertas (2 MB de ids).
+- **Confirmação:** se o conjunto passa do que a pessoa confirmou em mais de 10% e 20 alertas, 409 `TRIAGE_SCOPE_CHANGED` com a
+  contagem nova (`details.count`). Crítico só entra com `includeCritical`; sem ele fica de fora, e a resposta e a trilha dizem
+  quantos (`excludedCritical`). O motivo é obrigatório para marcar mais de um como legítimo ou resolvido.
+- **Prévia de um filtro:** além dos casos e dos alertas por severidade, quantos casos tocam a lista de proteção (pelas amostras,
+  a mesma marca da lista) e os novos e os em análise por severidade (`byStatus`), para a conta de "em análise" ser exata. As
+  contagens dos casos bastam, menos nos que têm alertas novos e em análise ao mesmo tempo: neles, os alertas são lidos, com
+  prazo de 1,5 s no banco; passou, a prévia vem sem `byStatus`.
+- **Idempotência:** `requestId` único por cliente. O mesmo pedido devolve a operação que ele criou; o mesmo id num pedido
+  diferente (ou de outra pessoa) é 409. Os pedidos de um cliente são conferidos um por vez (um lock próprio, que os coletores
+  não esperam).
+- **Cotas de quem não administra** (o analista): 2.000 alertas por operação e 5.000 em 24 h, somados no banco. São por
+  **papel** (`isMassTriageRole`), sem permissão nova: o `/v1/me` devolve as permissões como um enum fechado, e um painel aberto
+  de antes recusaria a resposta inteira. Na fila, até 10 operações por cliente.
+- **O que muda num alerta:** `status`, com a mesma regra de `triagedAt` da triagem de um só (a primeira saída de "novo" marca);
+  ou `incidentId` (o status não muda, como ao promover à mão); `triageOpId`; e o `updatedAt`, de propósito: é atividade de uma
+  pessoa, que a retenção lê. `PATCH /v1/findings/:id/status` tira o `triageOpId`: a decisão mais nova vale. Tirar o alerta do
+  incidente à mão também, se foi a operação que o pôs lá: posto de volta por alguém, desfazer não o tira de novo.
+- **Um lote é uma transação** (até 500 alertas): o lock dos alertas do cliente, a linha da operação, a do incidente, as dos
+  alertas (`FOR UPDATE`, todas, por id) e só então, pelos gatilhos, as dos casos. O item e a mudança de cada alerta são o mesmo
+  comando. Até 200 alertas, o lote roda na requisição; além disso, no worker, com 100 ms entre dois lotes, um lote por cliente
+  de cada vez e uma operação por cliente (na ordem do pedido).
+- **Exatamente uma vez:** o cursor avança na mesma transação em que os alertas mudam, sob a linha da operação travada. Uma
+  queda desfaz os dois, e a retomada recomeça do mesmo lugar; duas réplicas se serializam no lock, e a segunda vê o cursor
+  adiante. Por baixo, um alerta só muda se o item dele acabou de nascer (chave primária). Não depende da concessão.
+- **O que muda no meio** (alguém tratou, promoveu, a origem deixou crítico, saiu na retenção) conta como `skipped` e não é
+  tocado. Uma triagem em curso num alerta segura só aquele lote, por no máximo 1 s, e ele volta na passagem seguinte.
+- **Falhas:** o lote que falha por culpa de um alerta é cortado ao meio até sobrar ele, que conta como pulado e fica anotado;
+  com 50 assim, a operação para. O que falha por culpa do banco é tentado em dez passagens seguidas. Parada antes do fim, a
+  operação fica `partial` (ou `failed`, se não mudou nada), com o motivo em `stop`, e aceita "continuar" por 24 h; a seguinte
+  da fila roda. Uma que nem encerrar deixa sai da vez por 10 min.
+- **Promover:** o incidente abre na requisição, pelo mesmo caminho de promover à mão (`IncidentsService.open`), com o alerta que
+  abriu o caso (num caso só) ou o pior, e até 49 dos piores; os outros entram nos lotes. Um aviso por e-mail só, o da abertura:
+  os piores já estão nele. O caso promovido inteiro aponta para o incidente (`AlertCase.incidentId`). **Anexar:** a um incidente
+  não resolvido; se a severidade sobe, um aviso.
+- **Resumo do incidente:** acima de 500 alertas é feito no banco (`aggregateIncidentSummary`), com o mesmo resultado do feito em
+  memória (os textos são comparados byte a byte nos dois), também ao anexar e tirar à mão. Nos lotes de um incidente grande,
+  o resumo dele é juntado com o dos alertas do lote (`mergeIncidentSummary`, exato ao anexar); ao desfazer, só a contagem
+  acompanha. No fim da operação (ou quando ela para, ou um desfazer é cancelado), refaz-se tudo.
+- **Desfazer**, até 24 h depois do fim: volta só o alerta em que a operação ainda é a última (`triageOpId`) e que está como ela
+  deixou; o resto conta como pulado, e o que saiu na retenção nem entra na conta. O alerta volta ao status e ao `triagedAt` de
+  antes (ou sai do incidente) e passa a apontar para o desfazer: o histórico mostra os dois. Desfazer não se desfaz; para
+  refazer, um pedido novo. Duas operações sobre o mesmo alerta se desfazem da última para a primeira, e só um nível: o
+  desfazer da primeira, depois do da segunda, já não é dono do alerta.
+  - **Promover desfeito:** saem todos menos o alerta que abriu o incidente, que é encerrado (registro `incident.update` do
+    sistema, com o motivo). Com outro alerta nele (posto por alguém), o incidente fica aberto. O aviso que saiu não volta
+    (`warnings` na resposta). Incidente resolvido não perde alerta: reabre-se antes.
+  - **Caso selado:** o caso tratado é selado só quando chega o alerta seguinte da chave. Desfeita a operação, os alertas voltam
+    a ele como pendentes; se ele estava selado por `treated` e ninguém está aberto com a chave, reabre (o selado por último);
+    com um sucessor aberto, continua selado e listado, e os alertas seguintes são do sucessor. O selado por janela ou divisão
+    não reabre.
+  - **`undo_all_of`** (só quem administra): cancela o que a pessoa tem na fila e põe um desfazer para cada operação dela no
+    prazo (até 100), da mais recente para a mais antiga.
+- **Dividir um caso:** os alertas escolhidos (até 500, ou um subgrupo de até 2.000) vão para um caso novo, com a mesma chave, que
+  nasce selado (`split`), com o original como anterior: a chave só tem um caso aberto, e os alertas seguintes continuam no
+  original. As amostras e os horários dos dois se refazem; o `updatedAt` dos alertas não muda. O caso nunca fica sem alerta.
+- **Trilha (decisão D7):** `triage.bulk.request` (o alvo, o corte, as contagens de antes por status e severidade, o motivo) e um
+  `triage.bulk.finish` do sistema; mais `triage.bulk.{undo,undo_all,cancel,continue,replay}`, `case.split` e, ao promover,
+  `incident.create`. O alerta não ganha registro próprio: a trilha dele é o item, que vive enquanto ele viver. O alvo de muitos
+  alertas vai com a contagem e os 100 primeiros ids, para caber nos 16 KB de um estado.
+- **Banco ocupado:** na requisição, a espera pelo lock do cliente tem 3 s; com ele na mão (os coletores esperam por ele), a de uma
+  linha presa, 1 s; e cada comando, 6 s. Passou, 503 sem mudar nada (o limite da requisição de escrita é de 15 s).
+
+### A tela dos casos (`apps/web/src/features/cases/`)
+
+_(a visão na tela Detecções, o detalhe no painel ao lado, a triagem em massa e o histórico; `pages/detections-page.tsx` só
+encaixa as peças)_
+
+- **Quem decide é a API:** o painel pergunta `GET /v1/cases/status` uma vez por visita (vale por 5 min). `off`, 404 (nó de
+  antes), erro ou resposta que não se entende: a tela é a de sempre, com esse pedido a mais e nada mais. `shadow`: a equipe da
+  Verax ganha as visões, só de leitura, e o padrão continua nos alertas. `on`: os casos são a visão padrão.
+- **Endereço:** `visao=casos|alertas|incidentes|vulnerabilidades` e `caso=<id>`. Com `on`, sem `visao`, são os casos, menos no
+  endereço com `status`, que só a lista de alertas tem (os atalhos da Torre e os favoritos de antes). `/achados` e
+  `visao=achados` são os alertas. `alerta`, `achado` e `incidente` abrem o painel sobre qualquer lista; com `caso` junto, o
+  painel ganha "Voltar ao caso". Enquanto a situação não chega, a lista padrão espera: pedir os alertas para trocar em seguida
+  seria à toa.
+- **Filas:** "Casos" tem a fila de detecção (o padrão) e a de postura. "Vulnerabilidades" tem a dela, agrupada por pacote (o
+  padrão), recurso ou conta, que a API agrupa, ou sem agrupar (a lista corrida, com todas as situações). Cada grupo abre os
+  casos dele e se trata inteiro, por um filtro com `groupBy` e `group`. A severidade some nos tratados e em todos: a API a
+  recusa.
+- **"Voltou depois de tratado":** a API diz quantas das voltas foram depois de tratado (`recurrenceTreated`); as outras são
+  "Voltou (N×)". De um nó que não manda o campo, o caso só diz quantas vezes a chave voltou, e na fila de detecção ela também
+  volta quando a janela de 24 h ou de 7 dias passa: a detecção diz "Voltou (N×)"; as outras filas, que não têm janela, "depois de
+  tratado"; o detalhe confere nos casos anteriores.
+- **Seleção:** até 50 casos ou 500 alertas (os tetos da API), de uma página para outra; some quando o filtro muda. A caixa do
+  cabeçalho marca só a página. "Selecionar os N casos do filtro" é outro botão, que só existe com um filtro que estreite (o
+  contrato é quem diz: `triageFilterSchema`). Só o que tem pendência se marca.
+- **Confirmação:** casos, alertas e a conta por severidade; os críticos só com a caixa que diz quantos são; os casos que tocam a
+  lista de proteção (num filtro, quantos são); o motivo, quando a API o exige; a quantidade digitada acima de 1.000; o limite do
+  analista antes de pedir. O `expectedCount` é o que o botão diz. Para "em análise", sai da conta quem já está (quando não dá para
+  saber quantos, é um teto, e o botão diz "até"). O diálogo não é um formulário: um Enter perdido não confirma nada.
+- **Recusas:** `TRIAGE_SCOPE_CHANGED` mostra a contagem nova e pede outra confirmação (pedido novo); 503, 5xx e falta de
+  conexão dizem que repetir é seguro, e repetem com o **mesmo** `requestId` (um por conteúdo do pedido); cota, fila cheia,
+  incidente resolvido e item que sumiu dizem o que fazer. O `ApiRequestError` passa a levar os números de `details`.
+- **Andamento:** o diálogo mostra o resultado na hora ou acompanha a fila; fechar não para nada. "Operações recentes" fica acima
+  da lista, recolhida numa linha (some se não há operação): o andamento, cancelar, continuar, desfazer com o prazo, o filtro por
+  pessoa (quem pediu algo nos últimos 30 dias, lido ao abrir) e, para quem administra, desfazer tudo de uma pessoa (nome digitado e motivo). Só se relê sozinha enquanto há operação
+  andando (3 s; 1,5 s no diálogo). Quando uma termina, as listas, o detalhe e a Torre são relidos.
+- **Detalhe:** resumo, o que os alertas têm em comum em português, o que foge do padrão, linha do tempo, subgrupos, alertas por
+  cursor (um que não vale mais recomeça e avisa), casos anteriores, incidentes e operações. O alerta abre no mesmo painel e
+  volta com o filtro e o foco. `analysis: null`, `complete: false` e o 503 da linha do tempo não derrubam o resto. No alerta, a
+  trilha das operações em massa (`GET /v1/findings/:id/triage`).
+- **Texto do evento** (amostras, partes da chave, subgrupos, nomes, motivos) é sempre texto do React: quebrado ou cortado na
+  largura, nunca HTML nem link. No CSV (`exportCases`, até 2.000 linhas), as mesmas proteções das outras listas.
+- **Demonstração** (`src/mocks/{case-fixtures,case-store,triage-engine,cases-handlers}.ts`): casos ligados, montados dos mesmos
+  alertas das outras telas, com as contagens calculadas na hora. `localStorage['verax.mock.cases']` (`off`, `shadow`, `on`),
+  `verax.mock.triage` (`lenta`, `parcial`, `falha`, `ocupada`, `mudou`, `cheia`) e `verax.mock.cases.volume` trocam o cenário.
+  Com `off`, os alertas a mais não existem.
+- **Auditoria:** as ações `triage.bulk.*` e `case.split` têm nome, e as áreas "Casos" e "Triagem em massa" entram no filtro só
+  quando os casos valem (um nó de antes recusa o valor com 400).
+
+### Casos na Torre, no radar e nos relatórios
+
+_(`case-summary-store.ts`, `case-radar.ts`, `tower/`, `reports/`; contrato em `packages/shared/src/{tower,reports}.ts`)_
+
+- **Só para quem pede e pode ver.** `GET /v1/tower?cases=true` e `GET /v1/reports/{summary,mitre}?cases=true`, com a mesma regra de
+  `GET /v1/cases/status` (`casesVisibleTo`): `on`, todos os papéis; `shadow`, a equipe da Verax; `off`, ninguém. Sem o pedido, ou
+  sem poder ver, a resposta é a de sempre, byte a byte.
+- **Versões diferentes.** As respostas são estritas, e um painel recusa a resposta inteira por um campo (ou um valor de enum) que
+  não conhece:
+
+  | Painel               | Nó                                      | O que acontece                                                                      |
+  | -------------------- | --------------------------------------- | ----------------------------------------------------------------------------------- |
+  | De antes (ou aberto) | Novo, com casos                         | Não pede, e recebe a resposta de sempre                                             |
+  | Novo                 | De antes dos casos                      | `GET /v1/cases/status` é 404: o painel não pede                                     |
+  | Novo                 | Com casos, sem este pedido              | 400 (parâmetro desconhecido): o painel pede de novo sem ele, e a tela é a de sempre |
+  | Novo                 | Mais novo, com algo que ele não conhece | A resposta não é entendida: pede de novo sem os casos                               |
+
+  Nas rotas dos casos, os campos novos (`recurrenceTreated`, o `can` das operações, `protectedCases`, `byStatus`) são opcionais, e o
+  painel sem eles faz o de antes. Nenhuma versão com as rotas dos casos tinha saído: não há painel antigo delas.
+
+- **Semáforo: a regra não muda, nem a conta dela.** Vermelho com incidente crítico aberto; amarelo com incidente alto aberto, postura
+  abaixo do limite, coleta parada ou **alerta alto ou crítico em "novo"**; verde nos demais. O último continua contado por alerta,
+  todos, em caso ou não, dentro ou fora de incidente, do mesmo jeito em qualquer modo: a cor e os motivos são iguais com e sem os
+  casos (o teste compara). O caso pesa pelo pior alerta pendente dele: um crítico e mil baixos são um caso crítico.
+- **Decisões, com os casos ligados (`on`) e pedidos.** Cada alerta que o semáforo olha está numa decisão só, então o amarelo sem
+  motivo sempre tem uma que o explica:
+  - `untriaged_case`: os casos de detecção e de postura com algum alerta alto ou crítico em "novo", fora de incidente;
+  - `untriaged_vulnerability_case`: os da fila de vulnerabilidades;
+  - `untriaged_finding`: só os alertas que nenhum desses casos cobre: à espera da atribuição (segundos) ou dentro de um incidente
+    (promover não muda o status do alerta). Um caso só com altos em análise não é decisão, como hoje um alerta em análise não é.
+  - Na medição (`shadow`), a equipe da Verax vê os casos, e as decisões continuam contando alertas: ninguém decide por caso ainda.
+- **`cases`:** os casos pendentes por fila, cada um pela pior severidade pendente, e a abertura do mais antigo de cada fila.
+- **Custo:** as decisões e os casos pendentes saem das contagens dos casos, num comando só, e **não são guardados**: depois de tratar
+  um caso, a Torre relida já diz o novo. Só o caso em que os altos podem estar todos em análise tem os alertas procurados. O MITRE com
+  casos passa pela memória de 30 s por cliente, numa memória à parte da do MITRE de sempre (quem não pede nunca recebe).
+- **Radar** (`radar.cases`): os casos de detecção ativos nas últimas 24 horas, pelo mesmo `WHERE` da lista (o evento ou a chegada: o
+  total bate com o da lista no período, e um alerta com data antiga não esconde o caso), até 100, os mais graves primeiro.
+  `detections`, `total`, `bySeverity` e `bySector` continuam contando alertas; `alerts` é quantos dos alertas da janela estão nesses
+  casos, contados pelo índice `(tenantId, caseId, occurredAt, id)`, sem ler as linhas. O setor vem da primeira fonte do caso (na
+  família que não diz a fonte, do formato da conta), e a distância é a da atividade mais recente, nunca depois de agora.
+  - O caso com alerta num incidente aberto traz o incidente (o mais grave): sem nada pendente, a gravidade dele no radar, e na ordem,
+    é a do incidente. Um crítico confirmado não some para trás dos médios.
+  - No painel, o ponto é o caso: a forma é a gravidade (um círculo vazado, sem nada pendente), o tamanho são os alertas
+    guardados (logarítmico, com teto) e o clique ou o Enter abre `?caso=`. A frase diz "N alertas em M casos de detecção" e onde estão
+    os outros. A tabela tem os mesmos números. A animação é a de antes: uma varredura, um brilho por ponto e o pulso do que chegou,
+    só com `transform` e `opacity`.
+- **Relatórios:** `summary.cases {opened, treated, pending, medianMinutesToTreat}` são os casos abertos no período e em que pé estão
+  agora (`treated` mais `pending` dá `opened`; o caso sem alerta guardado não entra). A mediana vai da abertura até o último alerta do
+  caso sair de "novo" (`triagedAt`) ou entrar num incidente: é por caso, porque tratar 20 mil alertas de uma vez distorce o
+  `meanTimeToTriageMinutes`, que é por alerta. O banco não guarda quando um alerta em análise foi encerrado: vale a primeira triagem.
+  No MITRE, cada tática ganha `cases` (os casos com alerta dela no período); o alerta sem caso conta só nos alertas.
+  - No painel, o gráfico do MITRE passa a mostrar a participação por casos (a mesma escala), com os alertas na dica, na lista e na
+    tabela; se nenhum alerta do período tem caso (o histórico de antes), conta alertas. O CSV do MITRE ganha a coluna "Casos", e o dos
+    casos do período sai do Resumo.
+- **Atalhos:** com os casos, as decisões levam à lista de casos (detecção e postura, uma fila por vez) e às vulnerabilidades; desligados,
+  os de sempre.
+
+### Avisos por caso
+
+_(`case-notices.ts`, `case-notice-{policy,store,regime,mail,setup}.ts`; **só com `CASES_MODE=on`**. Com `off` e `shadow`, o aviso
+é alerta por alerta, como na seção seguinte, sem diferença numa linha ou num e-mail)_
+
+Com `on`, o alerta que chega não põe nada na fila de avisos (`CaseAlertNotices`). No começo de cada execução da tarefa
+`notifications` (60 s), antes da entrega, `CaseNotices` decide os avisos a partir do que está no banco, e grava cada um e a
+severidade avisada do caso na mesma transação, sob o lock dos alertas do cliente, decididos de novo com ele na mão: duas
+réplicas, ou uma queda no meio, nunca avisam duas vezes nem deixam de avisar. É outra tarefa que não a `case-assign`, para avisar
+mesmo com ela parada. Os limites são todos constantes de `case-notice-policy.ts` (a decisão D4 ainda espera a confirmação do
+responsável pelo produto).
+
+| Aviso                                     | Quando                                                                                                                          | Chave de deduplicação                | Tipo da linha (severidade)        |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | --------------------------------- |
+| Caso de detecção                          | A pior severidade pendente (alta ou crítica) passa da avisada                                                                   | `case:<id>:<severidade>`             | `critical_finding`/`high_finding` |
+| A onda seguinte do mesmo caso             | Nada do que foi avisado está pendente, e há alerta que ninguém avisou (inclusive se o aviso de antes não chegou a ninguém)      | `case:<id>:<severidade>:<instante>`  | idem                              |
+| Crescimento (no máximo um por caso e dia) | 10 vezes mais alertas em 1 h (a partir de 100), uma tática do MITRE que ele não tinha, ou um crítico novo com o caso em análise | `case:<id>:growth:<dia de Brasília>` | idem                              |
+| Casos críticos de vulnerabilidade/postura | Há caso com crítico que ninguém avisou: todos num aviso, no máximo um por hora e cliente (os outros esperam)                    | `cases-critical:<hora cheia>`        | `critical_finding`                |
+| Resumo diário de vulnerabilidades/postura | Às 09:00 de Brasília (12:00 UTC), se algo alto ou crítico pendente chegou desde o último enviado, ou faz 7 dias que não sai     | `cases-daily:<dia>`                  | `high_finding` (`high`)           |
+| Alerta por alerta (nunca calado)          | Alto ou crítico sem caso há mais de 10 min; ou a severidade que sobe na origem num alerta que nenhum caso avisa                 | `finding:<id>`                       | o do alerta                       |
+
+- **Formato:** nenhum valor de enum novo e nenhuma coluna nova. A linha leva o alerta da âncora em `findingId` (o que abriu o caso,
+  se ainda está nele; senão, o pior pendente mais antigo) e o caso em `caseId`: cumpre as regras do banco, e uma versão anterior do
+  nó a envia como um aviso de alerta, com o link `?alerta=`. Só um índice parcial novo, `Notification_caseId_idx`.
+- **Já avisado**, alerta por alerta (`announced`, em `case-notice-store.ts`): o aviso do caso (ou o do incidente para onde ele foi
+  promovido) é de depois da chegada do alerta; ou o aviso dele, alerta por alerta, já saiu, com severidade igual ou pior; ou ele é
+  do passado (a virada, abaixo); ou voltou de um incidente por um desfazer; ou chegou há mais de 14 dias (o aviso do caso sai com
+  o alerta da âncora, na retenção: sem isso, um caso de semanas atrás avisaria de novo). O aviso pulado porque o caso foi tratado, ou trocado por
+  outro, não vale como dado; o que falhou nas cinco tentativas vale por 6 h, e o caso ainda pendente avisa de novo.
+- **Por isso:** desfazer uma triagem não avisa de novo o que já foi avisado, e avisa o que ninguém recebeu; o caso dividido herda os
+  avisos do original até a divisão; a reincidência (outro caso da chave) avisa; e um alerta a mais num caso avisado e pendente, não.
+- **O que ainda não tem caso:** a fila parada (ou o alerta isolado pela atribuição) avisa alerta por alerta depois de 10 min, em
+  lotes, os críticos primeiro, e o log diz quantos; só o alto de vulnerabilidade e de postura espera o caso e o resumo diário.
+  Quando o alerta ganha caso, o aviso ainda na fila dá lugar ao do caso, e o já enviado marca o caso.
+- **Falhas:** o erro de um cliente, de um passo ou de um trecho de casos não segura os outros nem a entrega; o que não coube no
+  tempo da execução (30 s) continua na seguinte, de onde parou. Um caso que não deixa decidir é isolado, e o alerta mais novo dele
+  avisa sozinho. Se a decisão dos casos de detecção falha para um cliente, o alerta alto ou crítico de até um dia, há mais de
+  10 min sem aviso nenhum, também avisa sozinho (`unnoticedOfCases`, uma consulta simples, sem nada da decisão), e a tarefa fica
+  com erro (`CaseNoticesFailed`). Se a leitura do caso falha na entrega, o aviso sai como o do alerta, em vez de ficar calado. O tipo do erro fica
+  em `SyncState('notifications').lastError` e no relatório da tarefa, só com contagens.
+
+**A virada.** Liga-se e volta-se sem perder nem repetir:
+
+- **Ligar:** na partida, antes dos coletores, o worker grava o começo dos avisos por caso, uma vez só, em
+  `SyncState('case-notices').cursorTimestamp` (e `cursorId = on`). Só depois de gravado o aviso por alerta para: com o banco fora do
+  ar, ele continua. Daí em diante, o alerta alto ou crítico ou tem a linha do aviso dele (`finding:<id>`), que diz o que aconteceu,
+  ou chegou depois do começo, com uma hora de folga para o que estava sendo gravado na hora. O que já saiu marca o caso sem e-mail; o
+  que não tem linha e é de antes da folga é do passado. O aviso de alerta ainda na fila, que não chegou a ninguém, só sai dela
+  (`superseded_by_case`, em lotes) depois que o alerta tem caso **e** o aviso do caso está gravado; sai também o do alerta já
+  tratado (`case_treated`) ou que foi para um incidente aberto depois (`superseded_by_incident`). Na vulnerabilidade e na postura, só
+  os críticos dão lugar ao aviso imediato; os altos da fila saem como antes.
+- **Voltar** (`off` ou `shadow`): a tarefa `notifications` vê que os avisos por caso valiam e devolve o que ficou no meio, uma vez: o
+  alerta sem caso avisa alerta por alerta, o caso ainda não avisado avisa uma vez (como um aviso de alerta, sem ler o caso), e a
+  vulnerabilidade crítica, alerta por alerta. O aviso imediato e o resumo diário que estavam na fila saem inteiros, com todos os
+  casos (`CaseNoticeMail` com `aggregatesOnly`); só a versão anterior do nó os mandaria como o de um alerta. Depois grava `cursorId = off`. No nó que nunca ligou, é uma leitura por minuto.
+- **Voltar a versão do nó:** na parada, o worker faz uma última passagem (até 5 s) que dá caso e aviso ao que acabou de chegar, e a
+  versão anterior envia o que achar na fila. Só uma queda sem parada, seguida da versão anterior, deixa sem aviso os alertas do
+  último minuto, e eles avisam quando os casos voltam.
+
+**Na entrega** (`CaseNoticeMail`): o conteúdo sai do caso na hora do envio: o título do dicionário, as contagens de alertas críticos e
+altos pendentes e o link (`/?caso=<id>`; a fila, `/?visao=vulnerabilidades` ou `/?visao=casos&fila=postura`), e nunca no assunto, que é
+fixo. O contato de escalonamento recebe os avisos de caso críticos e o imediato, sem título nem lista, e nunca o resumo diário. Os
+limites são os de sempre (5 por pessoa e hora, o resumo da hora com o título e as contagens, 5 por hora ao contato, as faixas por
+severidade). O aviso que deixou de valer é fechado antes, de uma vez (`case_treated`, `superseded_by_incident`, `case_gone`), e
+conferido de novo no envio de cada um e quando o resumo da hora sai: um caso já tratado não vai em e-mail nenhum.
+
+## Ataques web pelos logs do ALB: o que fica guardado (`apps/api/src/weblogs/`)
+
+_(PR-1, o motor; PR-2, o banco, migration `20261130120000_web_logs`; PR-3, os contratos, e PR-4, a leitura, nas seções
+seguintes; as telas, PR-5, na última delas. Desligado por padrão.)_
+
+O worker lê cada linha do log de acesso do ALB do bucket do cliente, conta e **não guarda linha nenhuma** (decisão D2). O
+original fica no S3 do cliente, pela retenção dele; a evidência aponta o objeto e o minuto.
+
+| Tabela                                              | O que guarda                                                                                                                                                                                                 | Por quanto tempo                                                                                           | Quem grava                                                          |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `FindingEvidence`                                   | A evidência de um achado: contagens, caminhos mascarados, endereços dos atacantes, até 10 amostras mascaradas e 5 ponteiros para o bucket do cliente. JSON estrito (zod na gravação e na leitura), até 16 KB | Os agregados, com o achado (o histórico do plano); as amostras e os ponteiros, 30 dias da última atividade | Só o sistema (`alerts/finding-evidence.ts`, na transação do achado) |
+| `WebLogObject`                                      | Os objetos já tratados: o hash do bucket e da chave (nunca a chave), o intervalo, as contagens e o estado (`read`, `late`, `quarantined`, `gap`)                                                             | 10 dias                                                                                                    | Só o sistema (`weblogs/store/web-object-ledger.ts`)                 |
+| `WebEngineState`                                    | O resumo do dia de cada balanceador, entre reinícios do worker: contagens por endereço (IP ou /64), de até dois dias. Até 4 MiB                                                                              | Até a fonte deixar de ser coletada, ou 3 dias parado                                                       | Só o sistema (`weblogs/collect/web-logs-job.ts`)                    |
+| `WebTrafficSlot`                                    | Requisições por país e classe de cliente em intervalos de 5 minutos (o mapa): total, barradas, 4xx, 5xx e as que contaram como sonda, ferramenta ou falha de login. Nunca IP, caminho nem host               | 48 h (em horas cheias); depois, passam para as horas                                                       | Só o sistema (`weblogs/store/web-traffic-store.ts`)                 |
+| `WebTrafficHour`                                    | O mesmo, por hora                                                                                                                                                                                            | 35 dias                                                                                                    | Só o sistema                                                        |
+| `WebSourceSettings`, `WebTrustedSource`, `WebRoute` | A configuração do cliente, por balanceador: o modo (`observe` no começo, depois `alert`) e o multiplicador; as fontes confiáveis; as rotas declaradas                                                        | Enquanto a fonte existir                                                                                   | O cliente, pela API (`/v1/web-logs`), com trilha                    |
+| `WebSourceEstimate`                                 | A estimativa de volume antes da autorização: o pedido pendente e o último resultado (arquivos e bytes por dia). Só contagens                                                                                 | Enquanto a fonte existir                                                                                   | O pedido, o cliente; o resultado, o worker                          |
+
+- **Isolamento:** todas têm `tenantId`, e as chaves estrangeiras de fonte, conta e achado são compostas com ele e não se
+  propagam na troca do cliente: nada cruza, venha a escrita de onde vier. As do sistema são só leitura no escopo do cliente
+  (`SYSTEM_WRITTEN_MODELS`).
+- **Volta de versão:** a migration só acrescenta, e toda chave nova é em cascata. A imagem anterior lê, grava, expurga e
+  exclui como sempre; o que é das tabelas novas sai junto.
+- **Evidência:** gravada com o achado e trocada inteira, só por uma mais nova (a atividade mais recente ou, no mesmo
+  instante, a contagem maior): reavaliar, o objeto atrasado e a releitura de um reinício não a encolhem nem a fazem oscilar.
+  A do achado ainda não triado acompanha a atividade; a do triado fica como a pessoa a viu, e a atividade nova é outro
+  achado. O resumo do dia (990400) também troca o texto, que traz as contagens. Evidência fora do schema ou do teto é
+  recusada, e o achado entra sem ela. O achado sem evidência (todas as outras fontes) é gravado com as mesmas consultas de
+  antes. Um nível maior é outro achado: o nível está na chave (`weblogs/draft.ts`).
+- **Leitura:** `GET /v1/findings/:id/evidence` (`findings:read`), à parte do detalhe: o contrato do detalhe é estrito, e um
+  painel de antes perderia a tela com um campo novo. Sem evidência, `{"evidence": null}`; num nó de antes, 404. O que está
+  no banco passa pelo schema estrito antes de sair; o que não passa não é mostrado.
+- **Cada requisição conta uma vez:** o tráfego de um objeto é somado na transação da linha dele no `WebLogObject` (e do
+  volume medido): o objeto relido, ou lido por duas réplicas, acha a linha e não soma. A passagem para as horas apaga as
+  linhas de 5 minutos e soma na hora na mesma instrução: parar no meio não perde nem dobra, e o objeto que chega depois
+  passa na vez seguinte. Cada contagem está numa tabela só, e a leitura soma as duas numa instrução, sem marca d'água.
+- **Custo medido** (2 clientes, cada um com 2 dias, 2 balanceadores, 120 países e 3 classes em todo intervalo, 829 mil
+  linhas, o pior caso): os últimos 15 minutos, 4 ms; as últimas 24 h, de 55 a 75 ms, com o índice `(tenantId, slotStart)`;
+  somar um objeto (360 linhas), 43 ms; passar uma hora (4.320 linhas), 56 ms. Com um cliente só no nó, as 24 h são metade
+  da tabela, e o banco a lê inteira, no mesmo tempo.
+
+## Logs de acesso do ALB: autorização, configuração e diferença de versão
+
+_(PR-3: os contratos e o isolamento do Wazuh, migration `20261201120000_web_logs_contracts`. Desligado por padrão. A leitura
+está na seção seguinte.)_
+
+Três portões, todos fechados no começo: a linha `AWS_WEB_LOGS_ENABLED` do nó (a API e o worker, o mesmo valor; na célula ela
+não liga nada), a autorização de cada balanceador e o modo `observe`. O `start.sh` passa a linha do `node.conf` à API e ao
+worker; sem ela, vale o padrão da versão. O nó gerenciado já instalado não recebe linha nova no `node.conf` (a atualização da
+frota não o reescreve): nele, quem liga é o padrão da versão (`docs/runbooks/ataques-web.md`).
+
+**Desligado (o padrão).** O balanceador é o de sempre: só o que tem o log ligado aparece, de qualquer tipo, como "ainda não
+coletado" e sem sondagem; nenhuma rota o autoriza (409 `SOURCE_NOT_COLLECTABLE`); tudo em `/v1/web-logs` é 404
+(`WEB_LOGS_DISABLED`, depois de 401 e 403 e antes de olhar o corpo). Desligar vale na hora, sem esperar a descoberta: o que
+ficou gravado de quando estava ligado é mostrado como um nó que nunca os teve mostraria (`gatedSource`), sem mudar nada no
+banco. A fonte autorizada continua à vista, como "aguardando" e nunca "coletando", e tirar a autorização segue possível.
+
+**Ligado: a descoberta.** As mesmas chamadas de sempre (`DescribeLoadBalancers` e os atributos), mais a sondagem de bucket das
+outras fontes (uma listagem da pasta `AWSLogs/<conta>/elasticloadbalancing/<região>/` e 1 byte de um objeto), que o papel de
+leitura já cobre: nenhuma mudança no template.
+
+| Balanceador                                    | Como aparece                                                                       |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------- |
+| ALB com o log ligado                           | Disponível (nota `high_volume`) ou com a permissão que falta (`bucket_denied`...)  |
+| ALB com prefixo antes de `AWSLogs/`            | Precisa de permissão: `additional_bucket_required`, `outside_awslogs_prefix`       |
+| ALB com o log desligado                        | Sem destino, com `aws_cost_alb_logs`: ligar tem custo na AWS, e a Verax nunca liga |
+| NLB e GWLB, com ou sem log                     | Formato não lido: o log do NLB é só de TLS e sem URL; o GWLB não tem log           |
+| Atributos não lidos (recusados, estrangulados) | Como estava: não entra, não some                                                   |
+
+Os que aceitam conexão da internet (`details.internetFacing`) vêm primeiro. A fonte é a conta, a região e o nome do
+balanceador; o `app/<nome>/<id>` sai do ARN. Apagado e recriado com o mesmo nome, é a mesma fonte (com a autorização); como
+NLB, vira `source_missing`.
+
+**Autorizar** é a rota das outras fontes (`POST …/aws/sources/authorize`), com a ciência da estimativa em `webLogs` (D1: os
+bytes descompactados contam no plano):
+
+- A estimativa é pedida antes (`POST /v1/web-logs/sources/:id/estimate`, 202, uma a cada 5 min) e calculada pelo worker, que
+  é quem fala com a AWS. Vale 7 dias.
+- O pedido cita qual estimativa o cliente viu e os dois números dela (GB por dia e a porcentagem do plano). A API confere
+  com o gravado e com o plano de agora, com a mesma função do painel (`projectWebLogs`: 30 dias contra o volume do mês, ou o
+  dia contra a franquia): número diferente, 409 `WEB_LOGS_ESTIMATE_CHANGED`; sem estimativa que valha, 409
+  `WEB_LOGS_ESTIMATE_REQUIRED`.
+- Acima de 20% do plano (pelo valor exato), sem amostra ou com a listagem cortada, só com `acknowledged` (409
+  `WEB_LOGS_ACKNOWLEDGEMENT_REQUIRED`). O plano nunca bloqueia.
+- Até 20 balanceadores por conta, dentro das 200 fontes de bucket, que continuam contando com eles.
+- Autorizado, nasce a `WebSourceSettings` em `observe`, com `observeUntil` 72 h à frente, na mesma transação e na trilha,
+  com o que o cliente viu.
+
+**Retirar e remover.** Retirar a autorização não apaga nada na hora: a configuração, as rotas e as fontes confiáveis ficam e
+voltam a valer na próxima autorização (que recomeça a observação e guarda o multiplicador); o tráfego, os objetos tratados e
+a evidência saem pela retenção deles; o resumo do dia (o único com IP) sai no expurgo seguinte, em até um dia. Apagada a
+fonte (a descoberta esquece a que nunca foi autorizada), a conta ou o cliente, tudo o que é do balanceador sai em cascata; a
+fonte confiável de todos os balanceadores só sai com o cliente.
+
+**Configuração (`/v1/web-logs`, `apps/api/src/weblogs/settings/`).** Todos leem (`cloud_accounts:read`); administradores
+mudam (`cloud_accounts:write`); tudo na trilha, com antes e depois, na área da conta (ou do cliente, na fonte confiável de
+todos os balanceadores). A projeção contra o plano só vai para quem lê o plano (`plan:read`): a porcentagem diria o tamanho
+dele.
+
+| Rota                                                    | O quê                                                                                                      |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `GET sources`, `GET sources/:id`                        | Os balanceadores de todas as contas, com a configuração e a estimativa                                     |
+| `GET sources/:id/health`                                | A leitura das últimas 24 h e o resumo da observação: só contagens e códigos (PR-5)                         |
+| `PATCH sources/:id/settings`                            | Modo e multiplicador (0,5 a 10). `alert` só depois de `observeUntil` (409 `WEB_OBSERVATION_PENDING`)       |
+| `POST sources/:id/estimate`                             | O pedido da estimativa                                                                                     |
+| `GET`/`POST trusted-sources`, `PATCH`/`DELETE …/:id`    | Até 200 por cliente (as de todos e as de cada um, vencidas inclusive); /16 a /32 e /32 a /64; até 365 dias |
+| `GET`/`POST sources/:id/routes`, `PATCH`/`DELETE …/:id` | Até 50 por balanceador; caminho literal em minúsculas, até 8 segmentos, `*` por segmento inteiro           |
+
+A rota do mapa (`GET traffic`) está em "Mapa de origens": é da tela Detecções, com a permissão do resumo dela.
+
+O que a API aceita, o motor aceita, com o mesmo significado (`web-logs-contract.test.ts`): a faixa é guardada na forma
+canônica (a mesma escrita de dois jeitos é uma só), e o cadastro é mais estrito onde o motor calaria (`.` e `..` no caminho,
+o mesmo código como falha e sucesso).
+
+**O achado.** A fonte é `alb` (`FINDING_SOURCES`), no setor da AWS do radar. Não é fonte de "Saúde da coleta" nem sinal de
+vida da conta: o tráfego do ALB não pode esconder uma trilha parada.
+
+**Diferença de versão** (a aba aberta desde antes; o painel da Verax e a VM do cliente em versões diferentes). Nenhuma
+resposta ganhou campo e nenhuma permissão nova existe (a lista dela vai no `GET /v1/me`, que um painel de antes recusaria
+inteiro). Com os ataques web desligados, o nó responde o que sempre respondeu. O que muda com eles ligados:
+
+| Quem é de antes            | O que chega                                                       | O que acontece                                                                                                                                                                             |
+| -------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| O painel                   | Achado `alb` numa página da lista, no detalhe ou nos relacionados | Aquela chamada mostra "O servidor respondeu algo inesperado"; as páginas sem ele abrem. Recarregar a aba resolve                                                                           |
+| O painel                   | Achado `alb` nas últimas 24 h, entre os 100 do radar              | O resumo da Torre não abre (o radar vai dentro dele)                                                                                                                                       |
+| O painel                   | Nota `aws_cost_alb_logs` ou `internetFacing` numa fonte           | A tela das fontes daquela conta não abre                                                                                                                                                   |
+| O painel                   | Balanceador disponível                                            | A caixa aparece; autorizar volta 409 com o texto da API (sem a estimativa), o pedido inteiro                                                                                               |
+| O painel                   | Relatórios                                                        | Abrem: o resumo e a cobertura não usam lista fechada (a fonte aparece como `alb`)                                                                                                          |
+| O nó                       | Filtro `fonte=alb`, `webLogs` na autorização, `/v1/web-logs`      | 400 no filtro escolhido; o painel só manda `webLogs` com um balanceador, que aquele nó não oferece; 404 sem código, tratado como desligado (o mapa de origens não aparece)                 |
+| A imagem (volta de versão) | Achados `alb` no banco                                            | Listas, detalhe e incidentes que os contenham dão 500 (`logSourceOf`); a Torre abre. A fonte autorizada ganha `ingestion_error` (`invalid_details`) do Wazuh, sem mudar a lista do manager |
+
+Por isso a ordem: **esta versão sai, no painel e no nó, uma versão inteira antes de a linha ser ligada** (e de qualquer achado
+`alb` ser gravado); ligar só depois de o painel do cliente estar nela. Com achados `alb` gravados, não se volta para antes
+desta versão; para parar, desliga-se a linha.
+
+## Leitura dos logs do ALB: as tarefas `web-logs` e `web-logs-estimate` (`apps/api/src/weblogs/collect/`)
+
+_(PR-4. Só existem no worker com `AWS_WEB_LOGS_ENABLED` ligado, fora da célula e com identidade na AWS: desligadas, nenhum
+módulo é carregado e nenhuma chamada sai. Sem migration.)_
+
+**Quem é lido.** A fonte `elb_logs` autorizada e não retirada, num estado de coleta, de conta ativa já verificada que entra
+no papel, de cliente coletado; até 20 por conta. A permissão gravada não decide: quem prova é a leitura. O motor, o limite e
+a configuração (modo, multiplicador, fontes confiáveis, rotas) são lidos do banco a cada passagem: a mudança no painel vale
+na seguinte.
+
+**O S3.** Só `ListObjectsV2` e `GetObject`, por um lugar só (`alb-bucket.ts`), com os clientes da descoberta (a trava de só
+leitura) e a sessão de leitura da conta; o bucket fica na região do balanceador. O prefixo é o do balanceador até o id
+(`[<prefixo>/]AWSLogs/<conta>/elasticloadbalancing/<região>/<dia>/<conta>_elasticloadbalancing_<região>_app.<nome>.<id>_`),
+e a chave que volta da listagem só vira objeto se seguir a gramática (`alb/alb-key.ts`) e for dele: logs de conexão, de
+health check, de NLB, de outro balanceador e objetos plantados nunca são abertos. Nada é gravado, marcado ou apagado na conta
+do cliente, e nenhum log é sobrescrito.
+
+| Chamada                                         | Quando                                                              | Teto                                                        |
+| ----------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Listagem ao vivo (a partir de 70 minutos atrás) | a cada passagem (5 min por balanceador)                             | 30 páginas de 1.000                                         |
+| Conferência das pastas de ontem e de hoje       | de hora em hora, contra o registro; o que não cabe segue depois     | 40 páginas por passagem                                     |
+| Atraso e lacuna                                 | só com atraso                                                       | 20 páginas por janela de 3 h; 100 por dia de lacuna         |
+| Leitura de um arquivo                           | uma vez por arquivo (e a releitura das janelas, depois de reinício) | 64 MB compactados, 512 MB abertos, razão 200, 2 M de linhas |
+| Estimativa                                      | só a pedido do cliente                                              | 10 páginas e 20 leituras de 4 bytes                         |
+
+Tempo por chamada de 15 s; por objeto, 150 s no total e 20 s sem pedaço novo. Por execução (a cada 2 min, dois balanceadores
+ao mesmo tempo), 4 minutos, 500 objetos, 2 milhões de linhas e 1,5 GB abertos, conferidos antes de abrir cada objeto; na
+primeira vez, cada balanceador fica com no máximo um quarto disso. Linha maior que 64 KB é pulada e contada. O corpo vem em
+pedaços, do S3 ao gunzip e às linhas, e quem dita o ritmo é a contagem: medido com 512 MB abertos, 15 MB de memória a mais e
+13 ms no maior bloqueio do laço de eventos.
+
+**Cada coisa uma vez só.** A ordem é: as linhas de um lote de objetos entram no motor; ele é avaliado e os achados são
+gravados (a chave é sempre a mesma); só então cada objeto entra no registro (`WebLogObject`), com o volume medido e o tráfego
+por país, numa transação. Parar antes do registro relê o objeto, e os achados caem nas mesmas chaves; parar no meio da
+transação desfaz tudo; depois dela, o objeto nunca mais conta. A autorização (com a conta ativa e o cliente coletado) é
+conferida antes de abrir cada objeto e, sob o lock da conta, dentro de cada transação, inclusive a do achado: depois de
+confirmada a retirada, nada mais é aberto nem gravado. Um objeto cuja leitura foi cortada recomeça do zero na conta dele, e o
+motor sabe quantas linhas já viu: nenhuma entra duas vezes. O mês do volume é o da leitura; o dia, o do tráfego.
+
+**A memória e a concessão.** O motor vive na memória do processo. Por isso a concessão (`SyncState`, 5 min) não é devolvida
+entre as execuções: duas réplicas que se revezassem veriam metade dos objetos cada uma. O processo que a perde, mesmo por um
+instante, joga fora a memória. Num reinício, o resumo do dia volta do `WebEngineState` (gravado no máximo uma vez por slot
+fechado) e os objetos dos últimos 70 minutos são relidos, sem cobrança, sem tráfego e sem achado novo. Os endereços que saíram
+da memória entre a última gravação e a volta podem faltar no resumo do dia (990400).
+
+**Ao vivo primeiro.** Os objetos dos últimos 70 minutos, em ordem; com objeto à espera, a avaliação usa o relógio dele, e o
+slot que falta ler não fecha. O objeto que chega depois de o slot fechar é avaliado sozinho (`late`, contagem de piso). O que
+ficou para trás, até 24 h, é lido do mais antigo para o mais novo num motor à parte com relógio virtual (até dois ao mesmo
+tempo, com uma fração da memória), com a janela de 60 minutos de antes e de depois relida; o resumo do dia de hoje conta só o
+que o motor ao vivo viu. Com mais de 24 h, nada é lido: cada arquivo vira uma linha `gap` no registro, na trilha (quantos e o
+intervalo) e no estado.
+
+**Início.** O primeiro intervalo inteiro depois da autorização: nada anterior é aberto (até 5 minutos depois dela também
+não). Retirada e refeita, o intervalo sem autorização não é lido nem vira lacuna.
+
+**Balanceador recriado.** A fonte é pelo nome. Com outro `app/<nome>/<id>`, o estado guardado sai, o modo volta a `observe`
+por 72 h e a troca entra na trilha (`web_logs.settings_update`, ator sistema). A autorização continua. Sem estado guardado (a
+fonte parada por mais de 3 dias), a troca não é percebida.
+
+**Observar e alertar.** Em `observe`, nenhum achado, evidência ou aviso é gravado. O que abriria fica contado por regra e
+nível, uma vez por achado, em `WebEngineState.state -> 'observation'` (`since`, `rules`, `truncated`), junto do que as fontes
+confiáveis calaram nas últimas 24 h (`'suppressed'`) e das notas do motor (`'notes'`). Nada vira `alert` sozinho.
+
+**Tráfego por país.** Toda linha do balanceador conta, antes de qualquer teto de memória, num vetor por objeto: requisições,
+barradas, 4xx, 5xx e `flagged` (a linha que contou como sonda a caminho sensível, como ferramenta de ataque ou como falha de
+login, uma vez). O país é o do endereço (`geo/`), `ZZ` sem ele; se a tabela não abrir, tudo sai `ZZ` e a detecção segue. De
+hora em hora, as contagens com mais de 48 h passam para as horas.
+
+**Saúde da fonte.** `authorized` → `waiting_events` (listou, nada lido desde a autorização) → `collecting`. `stalled`
+(`web_unread`) só com arquivo à espera e nada lido há 2 h; `ingestion_error`: `web_gap` por 24 h depois de uma lacuna, o
+código do erro na terceira falha seguida, ou `invalid_details` e `web_prefix_unsupported` já na primeira (nada é pedido à
+AWS); `permission_error` com o motivo. `collecting` com `web_quarantined`: nas últimas 24 h, algum arquivo foi recusado
+(quebrado, grande demais, arquivado, data absurda, ou que falha em cinco passagens em que outros foram lidos): fica no registro
+(`quarantined`), sem cobrança nem tráfego; as linhas lidas antes da recusa seguem na detecção, com as contagens marcadas como
+piso, para um ataque que estoura o limite do arquivo não sumir dos achados. O atraso é de agora ao fim do último intervalo lido. Nas últimas 24 h, linhas e
+bytes saem do registro, com as tortas, as grandes demais e as alheias à parte. Um site quieto não para. O tráfego do ALB nunca
+conta como sinal de vida da conta (`LastEvents`).
+
+**A estimativa** (`web-logs-estimate`, a cada 30 s, até 5 pedidos por execução) é a única chamada à AWS por um balanceador
+ainda não autorizado, e só porque o cliente a pediu: os nomes e os tamanhos dos arquivos de ontem e os 4 últimos bytes de até
+20 (o tamanho descompactado do gzip), o que a sondagem da descoberta já alcança. Nenhum conteúdo é lido. Responde `ready`,
+`no_sample` ou `failed` com o motivo (`bucket_denied`, `account_not_connected`, `source_not_available`...).
+
+**O que não faz:** chamar o Wazuh, gravar em `AwsSource` de outro tipo, avisar por conta própria (só o achado alto ou crítico,
+como sempre), ou guardar linha, chave, caminho ou endereço no log do worker (só contagens e códigos).
+
+## Ataques web no painel (`apps/web/src/features/web-attacks/`)
+
+_(PR-5. Nada muda num nó com os ataques web desligados, num nó de antes deles ou na célula: `/v1/web-logs` responde 404, e o
+painel trata como inexistente, sem erro e sem pedir nada quando o onboarding diz que o tipo não é coletado.)_
+
+**A leitura nova da API.** `GET /v1/web-logs/sources/:id/health` (a de `cloud_accounts:read`, atrás do mesmo guard): as contagens
+de `WebLogObject` nas últimas 24 h (arquivos lidos, atrasados, recusados e sem leitura, com o intervalo da lacuna; linhas
+analisadas, tortas, grandes demais e alheias; bytes), pelas mesmas regras da saúde da fonte (o lido pelo horário do tráfego; o
+recusado e a lacuna por quando foram tratados). Da memória do motor (`WebEngineState`), o banco devolve só a observação sem as
+chaves, o calado pelas fontes confiáveis e as notas (`readWebEngineView`): o resumo do dia, o único lugar com endereços fora dos
+achados, nem chega à API. O que não é desta autorização, deste balanceador ou desta versão do formato não aparece
+(`observed-since.ts` é a conta que a tarefa e a tela dividem); o pedaço fora do formato fica de fora sozinho. O atraso e a última
+leitura continuam no onboarding (`AwsSource.health`).
+
+**Fontes de log.** O balanceador que o Verax lê mostra o passo da estimativa, e a caixa dele só liga com uma estimativa que vale
+(calculada, de até 7 dias, com a projeção):
+
+| Situação        | O que a tela mostra                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------------------- |
+| Nunca pedida    | O que é lido para estimar (nomes e tamanhos) e o botão                                                   |
+| Pedida          | A espera, relida a cada 4 s; depois de 3 min, o aviso de demora e a releitura a cada 30 s; e a anterior  |
+| Pronta          | O volume por dia, quanto é do plano e de quê (mês ou franquia), o dia medido e até quando vale           |
+| Sem amostra     | Que não deu para medir; dá para autorizar com a confirmação                                              |
+| Falhou          | O motivo (o catálogo da estimativa, da permissão e da conexão; o resto, pelo nome do erro) e o que fazer |
+| Mais de 7 dias  | Que não vale mais                                                                                        |
+| Sem ler o plano | Que foi calculada; o volume e a porcentagem, nunca                                                       |
+
+Na confirmação, o volume de cada um, o que é feito com o log e, acima de 20% (ou sem amostra, ou com a listagem cortada), uma caixa
+por balanceador. A ciência é da estimativa vista (`estimateKey`): refeita, ou com o plano mudado, a caixa volta desmarcada. O campo
+`webLogs` só vai no pedido que tem um balanceador. Recusado por a estimativa ter mudado, os números são relidos.
+
+O que não dá para ler diz por quê: ALB sem log, com os passos do cliente (console e linha de comando; o nome do bucket entra nos
+comandos só se seguir as regras da AWS, e o ARN só se for de um ALB desta conta e desta região); NLB e GWLB; bucket de outra
+conta; e o prefixo, que se tira (os "buckets fora do padrão" são de outras fontes). **O Verax nunca liga nada.**
+
+**"Ataques web"**, na conta AWS, com um quadro por balanceador autorizado (a leitura só é pedida com o quadro aberto):
+
+- o modo, com quanto falta das 72 h, o que teria virado alerta por regra e nível, e a janela que confirma antes de alertar;
+- a leitura: o estado, o atraso, o que foi lido, o que ficou de fora e por quê, as notas do motor e o que foi calado;
+- o multiplicador, as rotas declaradas e, do cliente inteiro, as fontes confiáveis, com o que elas nunca calam;
+- o que a detecção não vê, sempre à vista.
+
+Todos leem; os controles só aparecem para quem administra, com o monitoramento da conta ativo (quem decide é a API). As janelas
+(`components/ui/confirm-dialog.tsx`) devolvem o foco a quem abriu ou, se ele saiu da tela, à lista; sem o overlay do Radix, que
+injeta um `<style>` que a CSP recusa.
+
+**O alerta.** No detalhe de um achado `alb`, a evidência fica no lugar do evento bruto, que não existe: contagens, respostas,
+caminhos mascarados, endereços, User-Agent, amostras e a chave do arquivo no bucket do cliente (com o botão de copiar; nunca um
+link). Tudo passa pelo schema estrito e é mostrado como texto. Código desconhecido (nota, família, classe, regra) aparece pelo
+próprio nome. Com as amostras expiradas, a tela diz quando saíram e onde está o original. A exceção e a triagem são as de sempre.
+
+**Demonstração (`dev:mock`).** Ligados, com um balanceador em cada situação na conta de produção da Alfa e quatro alertas; a
+imitação da API está em `apps/web/src/mocks/web-logs.ts`. `localStorage['verax.mock.web-logs'] = 'off'` mostra o nó sem eles.
+
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
 _(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado. PR-17': a
@@ -2043,6 +2780,8 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   ¹ Quem não desligou os avisos de incidente em Minha conta (PR-17', abaixo).
   ² O contato de escalonamento confirmado, só nos de severidade crítica (abaixo).
 
+  Com `CASES_MODE=on`, o aviso de alerta é por caso, e não por alerta ("Avisos por caso", acima).
+
   Os três primeiros nascem no `FindingStore`, na mesma transação do achado e do incidente: todo coletor (Wazuh, agentes,
   GCP, Cloudflare) ganha o aviso sem mudança, e uma falha no meio não deixa nem o achado nem o aviso. O agrupamento
   (`IncidentGrouping.place`) devolve a severidade do incidente antes e depois do achado; a junção que não muda a
@@ -2055,7 +2794,15 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   achados e os incidentes continuam. O plano `interno` (nó da Verax) não tem limite, e nada é calculado; a Plataforma
   mede o volume por dia contra a franquia (CE-09), e o cliente da célula ainda sem plano fica de fora.
 - **Entrega (tarefa `notifications` do worker, a cada 60 s, com a concessão `notifications` no `SyncState`):**
-  - lê os avisos `pending` vencidos, os mais antigos primeiro (até 20 por execução);
+  - lê os avisos `pending` vencidos por faixa (`NOTICE_LANES`), a severidade primeiro: incidente crítico, alerta crítico,
+    incidente alto, os demais incidentes e os avisos de operação (poucos por natureza) e, por fim, os alertas altos; em
+    cada faixa, os mais antigos. Cada faixa com aviso vencido tem uma parte guardada da execução (um décimo, no mínimo
+    1): a rajada de uma nunca deixa as de baixo esperando para sempre;
+  - até 20 por execução **pedem e-mail**. O aviso que só entra em resumo (todos que recebem já passaram do limite da hora,
+    ou ele tem 24 h ou mais na fila, e o contato de escalonamento, se é dele, fica de fora pelas mesmas regras) não conta
+    nos 20: até mil por execução, em lotes de até 500, cada lote numa transação que só toma os avisos ainda intactos e só
+    grava em resumo aberto. 12.836 avisos pendentes saem da fila em 14 execuções (eram 643, quase 11 horas, com o crítico
+    que chegou por último na 642ª);
   - os resumos das horas que fecharam saem antes dos avisos novos (abaixo);
   - resolve os destinatários na hora do envio, pelo escopo do cliente do aviso: pessoas `active`, com MFA, sem troca de
     senha pendente, do papel que o tipo pede, com o cliente ativo e, nos três avisos de incidente, com a preferência
@@ -2093,7 +2840,9 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
     conferidas de novo no envio: quem perdeu o acesso não recebe (`no_recipients`), e quem desligou os avisos de
     incidente não recebe os que estavam reunidos (`no_items`);
   - a interrupção no meio de um aviso grava a tentativa como antes, e quem já foi para o resumo fica guardado: não é
-    reunido de novo.
+    reunido de novo;
+  - o resumo de milhares é barato: a linha é regravada uma vez por lote, o e-mail é montado lendo os avisos em lotes de
+    mil e diz o total de verdade ("12.835 avisos no total").
 - **Contato de escalonamento (D8; `apps/api/src/escalation/`):** o contato do cadastro do cliente (nome, e-mail e
   telefone) não é usuário: não tem login, MFA nem Minha conta. Por isso ele só recebe e-mail depois de confirmar que a
   caixa é dele, recebe só os críticos e sai por um link em qualquer e-mail.
@@ -2177,16 +2926,29 @@ As regras ficam em `tower-rules.ts`, e o contrato em `packages/shared/src/tower.
 o teste negativo A/B; só a fila sem dono e o medidor parado do nó, que não são de cliente nenhum, vão só para a equipe
 da Verax.
 
+- **Custo** (todo painel aberto pede a Torre a cada 60 s): o MITRE de 30 dias é contado pelo banco por combinação de
+  táticas e técnicas (`ReportsService.mitre`, SQL com parâmetros e o cliente da sessão) e passa pelo mesmo cálculo do
+  relatório; a Torre repete o resultado por até 30 s por cliente e processo (`TenantCache`, até 500 clientes, um cálculo
+  só para pedidos juntos), e o relatório nunca. A contagem dos alertas altos e críticos em "novo" usa o índice
+  `(tenantId, status, severity)`. As demais leituras usam os índices da janela de 24 h. Com 750 mil achados: a Torre vai
+  de 6,5 a 7,9 s para 0,3 s (0,1 s com o MITRE guardado), e dez painéis juntos, de 63 s para 0,7 s.
 - **Semáforo** (pendência 9, com a coleta parada aprovada em 05/11/2026):
   - **vermelho** com incidente crítico aberto;
   - **amarelo** com incidente alto aberto, nota de postura abaixo de 70 ou **coleta parada** (`collection_stalled`):
     uma fonte configurada sem dado novo há mais que o prazo de parada dela. Silêncio não é segurança: sem isso, o verde
     de um cliente cuja coleta parou mentiria. Fonte **não configurada** (o cliente sem Cloudflare, sem agentes) ou
     ainda **sem nenhum dado** (conta recém-cadastrada) nunca deixa a Torre amarela;
+  - **amarelo** também com **alerta alto ou crítico para validar** (em "novo"): desde 17/11/2026, um incidente só existe
+    depois que uma pessoa promove um alerta, e "nenhum incidente aberto" com a fila cheia não é calma. A contagem é a da
+    decisão `untriaged_finding`, e a lista de motivos não ganha um valor novo: ela é fechada, e um painel de antes
+    recusaria o resumo inteiro. O amarelo pode, então, vir sem motivo, e o painel tira a frase das decisões ("24.321
+    alertas altos ou críticos para validar"), inclusive de um nó de antes, que ainda responde verde;
+  - **com os casos**, a regra e a conta são as mesmas; só as decisões passam a contar casos ("Casos na Torre, no radar e nos
+    relatórios");
   - **verde** nos demais casos. No verde, a frase traz a prova: "Tudo calmo. (...) Coleta ativa em 4 de 4 fontes,
-    último dado há 2 minutos" só quando todas as fontes configuradas coletam; com uma atrasada ou aguardando, a mesma
-    prova, sem o "Tudo calmo". O cartão de decisões vazio faz o mesmo ("Tudo calmo: nada para decidir agora", ou o
-    estado vazio que aponta a fonte parada).
+    último dado há 2 minutos" só quando todas as fontes configuradas coletam e nada espera uma decisão do cliente (a fila
+    sem dono, da Verax, não conta); com uma atrasada ou aguardando, a mesma prova, sem o "Tudo calmo". O cartão de
+    decisões vazio faz o mesmo ("Tudo calmo: nada para decidir agora", ou o estado vazio que aponta a fonte parada).
   - Os limites ficam na configuração (`DEFAULT_TOWER_THRESHOLDS`): postura 70; conta silenciosa 24 h; e, por fonte,
     os prazos de atrasada e de parada.
 - **Saúde da coleta** (no lugar da antiga "Cobertura"): uma linha por fonte, com o estado (coletando, atrasada, parada,
@@ -2239,11 +3001,90 @@ da Verax.
 - **Contrato entre painel e nó:** os campos novos (`coverage.lastDataAt`, `coverage.sources` e `pulse`) são opcionais,
   e o painel sem eles mostra a Torre de antes (as datas da cobertura, sem a faixa). O schema é estrito, então um painel
   de antes recusa a resposta de um nó novo (o motivo `collection_stalled` e os campos novos): painel e nós sobem juntos,
-  como em toda mudança do contrato.
+  como em toda mudança do contrato. Os campos dos casos são a exceção: só vêm para quem os pede (`cases=true`).
 - **Interface:** os gráficos são SVG próprio, sem biblioteca (`components/charts/`): o cartão de número (`StatTile`) e o
   minigráfico por hora (`MiniBars`, na rampa neutra validada, com setas, mouse e toque e a mesma tabela de "Ver
   tabela"); a linha de saúde da fonte (`SourceHealthRow`) usa ícone de forma própria e rótulo, com o tom de "ok" em
   coletando, o de médio em atrasada e o de alto em parada. Todos estão no `/catalogo`.
+
+### Mapa de origens (a faixa no topo da tela Detecções)
+
+_(decisão do responsável pelo produto, 24/11/2026: um mapa-múndi com um ponto por país de onde vêm as requisições, em faixa
+larga e recolhível no topo da tela Detecções, com o volume real dos logs do load balancer. Só existe para quem tem a fonte.)_
+
+**A rota.** `GET /v1/web-logs/traffic?window=24h|7d|30d` (24 horas sem pedir outra), contrato estrito em
+`packages/shared/src/web-traffic.ts`. Só leitura, do cliente da sessão (nenhum id vem do request), com `tower:read`: a permissão
+do resumo do topo da tela, que todos os papéis têm; quem vê um vê o outro. Como tudo em `/v1/web-logs`, 404 com
+`AWS_WEB_LOGS_ENABLED` desligado. A resposta tem só contagens: nenhum nome de balanceador, conta, endereço, caminho ou host.
+
+| Grupo          | O que entra                                                                                     |
+| -------------- | ----------------------------------------------------------------------------------------------- |
+| `countries`    | Só o cliente direto (`direct`) com país na tabela, do maior volume ao menor, com o "agora"      |
+| `unknown`      | Cliente direto sem país (`ZZ`)                                                                  |
+| `throughProxy` | `proxy` (CDN e proxy do cliente): o país seria o da borda                                       |
+| `internal`     | `private`                                                                                       |
+| `unverified`   | Endereço público lido sem a lista das CDNs: no painel, conta como origem desconhecida, com nota |
+
+- **O "agora"** são os 15 minutos até `lastClosedAt`, e não até a hora do pedido: a AWS entrega o log de 5 a 10 minutos depois,
+  e contados de agora os últimos minutos estariam sempre vazios. `lastClosedAt` é a posição do leitor (`CollectorCursor`), do
+  balanceador mais em dia: o intervalo com o registro mais novo não serve, porque num site quieto ele pode ser de horas atrás.
+  (Só enquanto o leitor recupera um atraso vale o do registro mais novo: a posição fica no atraso, e os minutos de agora já
+  foram lidos, porque a leitura ao vivo vem primeiro.)
+  Na prática, a onda mostra o que aconteceu de 10 a 35 minutos atrás, e o painel diz até que hora. O intervalo já lido e ainda
+  não fechado conta no total, e não no agora.
+- **Estados:** `no_source` (nenhum balanceador com a leitura autorizada, num estado de coleta e de conta ativa: nada do tráfego
+  é lido), `waiting` (nenhum arquivo lido desde a autorização, e nada na janela), `stale` (nenhum balanceador lido há mais de 45
+  minutos: em dia, são de 10 a 20) e `ok`. `sources` diz quantos estão autorizados, em dia, só observando e com problema.
+- **Janelas:** 24 horas pelos intervalos de 5 minutos; 7 e 30 dias por hora inteira (o que passa de 48 h já está nas horas). As
+  três cabem no menor histórico de plano (30 dias) e nos 35 dias do tráfego: nenhum plano limita nada aqui.
+- **Custo:** memória por cliente e janela, de 30 s (24 horas) e 2 min (7 e 30 dias); pedidos juntos fazem um cálculo só. São
+  duas leituras do `byCountry`, o recente antes do total (o que entra no meio só pode estar a mais no total). Medido com 2
+  balanceadores: num site com cerca de 57 linhas por intervalo e balanceador (66 mil linhas de 5 minutos, 152 mil horas), o
+  recente 1 ms, 24 horas 10 a 13 ms, 7 dias 22 a 25 ms, 30 dias 52 a 55 ms; no pior caso (120 países e 3 classes em todo
+  intervalo, 2 clientes, 830 mil linhas e 1,1 milhão de horas), 5 a 8 ms, 72 a 110 ms, 240 a 320 ms e 340 a 450 ms.
+
+**A faixa** (`features/detections/origin-band.tsx`), acima do resumo e da lista:
+
+- **Quem não a tem vê a tela de sempre:** com 404 (o nó desligado, ou um nó de antes), `no_source` ou a primeira resposta
+  falhando, nada aparece e nada pula. O nó sem a rota é perguntado uma vez por visita; sem balanceador, de 5 em 5 minutos.
+- **Quem a tem:** pedida a cada 60 s com a aba à vista (em segundo plano, nada; ao voltar, na hora). A atualização que falha
+  mantém os números, com o aviso, e nada pulsa. Recolhível, com a escolha guardada neste navegador por pessoa; no celular começa
+  recolhida; por um link direto (alerta, incidente, análise) também, só daquela vez: quem chega por ele vem pelo que ele abre.
+- **A lista não pula:** o navegador guarda, por pessoa e cliente, que a faixa existia e a altura dela com aquela largura de janela
+  (`origin-place.ts`), e a visita seguinte reserva o lugar. Só na primeira visita depois de autorizar a fonte o lugar não existe
+  ainda.
+- **Pacote:** o desenho do mundo (à parte, 41 KB) só é baixado com a faixa aberta.
+- **Clicar num país não filtra a lista:** a API das listas não tem filtro por país. A dica é só informação.
+
+**A marca do país** (`isFlagged`, em `world-map-model.ts`): todo site recebe sondagem o tempo todo, de todo lugar, e com uma só
+bastando o mapa ficaria vermelho. O país é marcado com 50 suspeitas ou mais na janela (`FLAGGED_MIN`), ou com 10 ou mais
+(`FLAGGED_MIN_WITH_SHARE`) que sejam pelo menos 1% das requisições dele (`FLAGGED_MIN_SHARE`). Os dois números são de um dia e
+crescem com a janela (350 e 70 em 7 dias, 1.500 e 300 em 30). A onda só sai na cor do crítico em país marcado; o número de
+suspeitas de todos continua na dica, na lista e na tabela.
+
+**O componente** (`components/security/world-map*`), também no `/catalogo`:
+
+- **Desenho:** `WORLD_LAND_PATH`, um caminho SVG de 17 KB, sem fronteiras (nada de político é desenhado), na projeção de
+  Robinson centrada em 11° L e recortada de 83,7° N a 57° S, num quadro de 2000 por 820 (2,44 por 1). O corte cai em 169° O, no
+  estreito de Bering: a Rússia, Fiji e a Nova Zelândia ficam inteiras. A Antártida fica fora.
+- **Pontos:** 246 dos 250 códigos que a API pode produzir (ISO 3166-1 mais `XK`). `AQ`, `BV`, `GI` e `UM` não têm ponto e
+  aparecem só na lista e na tabela. O ponto é o de rótulo do Natural Earth, conferido contra o contorno do país ao gerar; o
+  rótulo de arquipélago que cai no mar vai para a maior ilha, e os territórios que o arquivo desenha dentro de outro país
+  (Guiana Francesa, Reunião, Svalbard e outros) saem do pedaço deles.
+- **Fonte e licença:** Natural Earth 5.1.2, domínio público, sem exigência de atribuição. Os dois arquivos e o SHA-256 de cada
+  um estão no cabeçalho de `apps/web/src/components/security/world-map-data.ts`.
+- **Regerar:** `node scripts/update-world-map.mjs ne_110m_land.geojson ne_50m_admin_0_countries.geojson` (o comando inteiro
+  está no cabeçalho do script). Não acessa a rede, recusa arquivo fora do formato, não copia texto do arquivo para o código e
+  dá sempre a mesma saída. Código novo na API, ou dado que mude a lista dos sem ponto, para o gerador: quem revisa decide.
+- **Dados:** `WorldTraffic` (`world-map-model.ts`). Cada requisição está em um grupo só (um país, origem desconhecida, endereço
+  interno ou CDN e proxy), e o percentual é sobre a soma de todos: o que não tem lugar no mapa fica numa linha à parte.
+- **Animação:** a onda é só CSS (`transform` e `opacity`), em no máximo 60 pontos, com 12 fases num período de 2,4 s, dez
+  períodos por volta da animação (cada volta acorda a página) e botão de pausa lembrado por pessoa. Com menos movimento
+  pedido, começa parada, com um anel fixo. Sem log novo, nada pulsa.
+- **Pacote:** a página usa `LazyWorldMap`; o desenho fica num arquivo à parte, fora do pacote principal.
+- **Demonstração:** dados fictícios que andam com o relógio e são sempre os mesmos no mesmo minuto (`mocks/web-traffic.ts`); só
+  a Alfa tem a fonte. `localStorage['verax.mock.traffic']` escolhe outra situação (`stale`, `waiting`, `no_source`, `off`,
+  `error`, `slow`).
 
 ## Plano do nó: limites e uso
 
@@ -2362,6 +3203,8 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
   | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
   | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira                                  |
   | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                                                            |
+  | Casos                                                                    | Sem nenhum achado guardado, sem achado novo desde o corte (pelo relógio do servidor) e fora de incidente; o que ficou aberto também, porque só o alerta seguinte o selaria. Vale com qualquer `CASES_MODE`                                                                                  |
+  | Operações de triagem em massa                                            | O cabeçalho, 13 meses depois do pedido, se nenhum achado que ela mudou está guardado (o item sai em cascata com o achado). Vale com qualquer plano e qualquer `CASES_MODE`                                                                                                                  |
   | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                                                            |
   | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                                                   |
   | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                                                     |
@@ -2369,6 +3212,19 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
   | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas). Os links do contato de escalonamento (D8) não passam por aqui: os vencidos saem a cada e-mail novo ao contato, e os de um endereço anterior na troca; o limite por IP dos links, na chamada seguinte, depois de um dia |
   | Auditoria                                                                | 13 meses, ou o prazo do histórico do cliente se for maior (com histórico sem limite, fica). Os registros sem cliente seguem o corte mais antigo entre os clientes                                                                                                                           |
   | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                                                         |
+
+  | Dado                                                                     | Regra                                                                                                                                                                                                                                                                                                                                                 |
+  | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira                                                                                            |
+  | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                                                                                                                      |
+  | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                                                                                                                      |
+  | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                                                                                                             |
+  | Ataques web pelos logs do ALB                                            | As amostras e os ponteiros das evidências, 30 dias depois da última atividade (os agregados ficam com o achado); os objetos já tratados, 10 dias; o tráfego por país, 48 h em intervalos de 5 minutos, que passam para as horas, e 35 dias por hora; o resumo do dia de uma fonte que não é mais coletada, ou parado há 3 dias. Não dependem do plano |
+  | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                                                                                                               |
+  | Avisos por e-mail                                                        | Enviados, com falha ou pulados, sem mudança há 90 dias (a chave de deduplicação não deixa o aviso sair de novo nesse tempo); o pendente fica, e o de um incidente ou achado que sai vai junto. As horas de avisos (o resumo resolvido e a hora só de contagem, PR-17'), pelo mesmo prazo                                                              |
+  | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas). Os links do contato de escalonamento (D8) não passam por aqui: os vencidos saem a cada e-mail novo ao contato, e os de um endereço anterior na troca; o limite por IP dos links, na chamada seguinte, depois de um dia                                                           |
+  | Auditoria                                                                | 13 meses, ou o prazo do histórico do cliente se for maior (com histórico sem limite, fica). Os registros sem cliente seguem o corte mais antigo entre os clientes                                                                                                                                                                                     |
+  | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                                                                                                                   |
 
 - **Imutabilidade (revisão linha a linha):** a trilha de auditoria e os comentários dos achados continuam só INSERT,
   com uma exceção estreita. UPDATE e TRUNCATE ficam sempre bloqueados pelos triggers. DELETE só passa no trigger com a

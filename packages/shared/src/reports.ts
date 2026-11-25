@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ALERT_EXCEPTION_FIELDS } from './alert-exceptions.js';
+import { casesRequestShape } from './cases.js';
 import { CLOUD_PROVIDERS, cloudAccountRefSchema } from './cloud-accounts.js';
 import {
   FINDING_SEVERITIES,
@@ -50,10 +51,11 @@ export const DEFAULT_REPORT_PERIOD: ReportPeriod = '30d';
 
 /**
  * Um período (`24h` a `12m`) ou, na tela Detecções, um intervalo personalizado (`from` e `to`), nunca os dois. Sem
- * nenhum, os últimos 30 dias.
+ * nenhum, os últimos 30 dias. `cases=true`: com os casos valendo para quem pede, o resumo e o MITRE trazem também os deles
+ * (nos outros relatórios não muda nada).
  */
 export const reportQuerySchema = z
-  .strictObject({ period: z.enum(REPORT_PERIODS).optional(), ...customRangeShape })
+  .strictObject({ period: z.enum(REPORT_PERIODS).optional(), ...customRangeShape, ...casesRequestShape })
   .superRefine(checkCustomRange);
 export type ReportQuery = z.infer<typeof reportQuerySchema>;
 
@@ -71,6 +73,11 @@ export const mitreTacticSchema = z.strictObject({
   name: z.string().max(100),
   findings: count,
   incidents: count,
+  /**
+   * Os casos com algum achado desta tática no período: 20 mil alertas iguais são um caso só. Só com os casos
+   * (`casesRequestShape`). O achado sem caso (tratado antes deles, esperado por exceção) conta só em `findings`.
+   */
+  cases: count.optional(),
   /**
    * Técnicas vistas nos achados desta tática, da mais frequente para a menos (até 10). O id tem o mesmo limite da
    * leitura do alerta (32): um id fora do padrão não derruba a Torre.
@@ -91,6 +98,18 @@ export const summaryReportSchema = z.strictObject({
   /** Tempo médio do achado até a primeira triagem e do incidente até a resolução, em minutos. */
   meanTimeToTriageMinutes: minutes,
   meanTimeToResolveMinutes: minutes,
+  /**
+   * Os casos abertos no período (pelo relógio do servidor, sem os que já não guardam alerta): em que pé estão agora
+   * (`treated` mais `pending` dá `opened`) e, nos tratados, a mediana do tempo da abertura até o último alerta sair de "novo"
+   * ou entrar num incidente. Mediana por caso, porque tratar milhares de alertas de uma vez distorce a média por alerta.
+   * Só com os casos (`casesRequestShape`).
+   */
+  cases: z
+    .strictObject({ opened: count, treated: count, pending: count, medianMinutesToTreat: minutes })
+    .refine((cases) => cases.treated + cases.pending === cases.opened, {
+      error: 'tratados e pendentes somam os abertos',
+    })
+    .optional(),
   /**
    * Achados por dia (UTC) e severidade, do mais antigo ao mais recente: todo dia que o período toca, com as duas
    * pontas, então 90 dias têm 91 linhas, e 12 meses, 366.
@@ -282,7 +301,8 @@ const mean = (values: readonly number[]) =>
   values.length === 0 ? null : Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
 const minutesBetween = (start: string, end: string) =>
   Math.max(0, (Date.parse(end) - Date.parse(start)) / 60_000);
-const increment = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
+const increment = (counts: Map<string, number>, key: string, times = 1) =>
+  counts.set(key, (counts.get(key) ?? 0) + times);
 const SEVERITY_RANK: Readonly<Record<FindingSeverity, number>> = { critical: 3, high: 2, medium: 1, low: 0 };
 
 /** Ranking de valores por contagem (desc), com o valor como desempate, até `limit`. */
@@ -307,10 +327,17 @@ export function foldFindings<R, F>(fold: FindingsFold<R, F>, findings: Iterable<
 
 export type MitreFinding = Pick<ReportFinding, 'mitreTactics' | 'mitreTechniques'>;
 
-/** Táticas e técnicas do MITRE ATT&CK nos achados e incidentes dados, sem olhar o período. */
-export function mitreTacticsFold(
-  incidents: readonly Pick<ReportIncident, 'mitreTactics'>[],
-): FindingsFold<MitreTactic[], MitreFinding> {
+/** Os achados com a mesma combinação de táticas e técnicas, contados pelo banco. */
+export type MitreCount = MitreFinding & { count: number };
+
+/**
+ * Táticas e técnicas do MITRE ATT&CK nos achados e incidentes dados, sem olhar o período. `times` é quantos achados
+ * iguais a este (a mesma combinação de táticas e técnicas) entram de uma vez.
+ */
+export function mitreTacticsFold(incidents: readonly Pick<ReportIncident, 'mitreTactics'>[]): {
+  add(finding: MitreFinding, times?: number): void;
+  result(): MitreTactic[];
+} {
   const tallies = MITRE_TACTICS.map(({ id, name }) => ({
     id,
     name,
@@ -319,12 +346,14 @@ export function mitreTacticsFold(
   }));
   const byName = new Map<string, (typeof tallies)[number]>(tallies.map((tally) => [tally.name, tally]));
   return {
-    add(finding) {
+    add(finding, times = 1) {
       for (const name of new Set(finding.mitreTactics)) {
         const tally = byName.get(name);
         if (!tally) continue;
-        tally.findings += 1;
-        for (const technique of new Set(finding.mitreTechniques)) increment(tally.techniques, technique);
+        tally.findings += times;
+        for (const technique of new Set(finding.mitreTechniques)) {
+          increment(tally.techniques, technique, times);
+        }
       }
     },
     result: () =>
@@ -451,6 +480,31 @@ export function mitreReport(
   window: ReportWindow,
 ): MitreReport {
   return foldFindings(mitreFold(incidents, window), findings);
+}
+
+/**
+ * O mesmo relatório, com os achados já contados pelo banco por combinação de táticas e técnicas. As contagens e os
+ * incidentes são só os começados no período. Com `cases` (os casos com achado de cada tática, pelo nome dela), cada tática
+ * leva também os dela.
+ */
+export function mitreReportFromCounts(
+  counts: Iterable<MitreCount>,
+  incidents: readonly Pick<ReportIncident, 'mitreTactics'>[],
+  window: ReportWindow,
+  cases?: ReadonlyMap<string, number>,
+): MitreReport {
+  const tactics = mitreTacticsFold(incidents);
+  for (const group of counts) tactics.add(group, group.count);
+  return { ...window, tactics: withTacticCases(tactics.result(), cases) };
+}
+
+/** As táticas com os casos de cada uma; sem `cases`, como vieram. */
+export function withTacticCases(
+  tactics: MitreTactic[],
+  cases: ReadonlyMap<string, number> | undefined,
+): MitreTactic[] {
+  if (cases === undefined) return tactics;
+  return tactics.map((tactic) => ({ ...tactic, cases: cases.get(tactic.name) ?? 0 }));
 }
 
 export function rulesFold(window: ReportWindow): FindingsFold<RulesReport> {

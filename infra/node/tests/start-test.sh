@@ -962,6 +962,49 @@ new_root "nó da Verax: CONTROL_PLANE_USERS no node.conf não liga nada" render-
   CONTROL_PLANE_USERS=false
 start render || fail "o render falhou: $(cat "$root/out")"
 ! grep -q CONTROL_PLANE_ "$root/run/verax/worker.env" || fail "o nó da Verax ganhou variável da sincronização"
+# Os ataques web pelos logs do ALB: a linha do node.conf vai igual para a API e o worker, depois do papel de leitura; sem
+# ela, nada entra (os arquivos inteiros de referência, acima); fora do formato, desliga nos dois, com o aviso.
+for value in true false; do
+  new_root "AWS_WEB_LOGS_ENABLED=$value no node.conf" "render-web-logs-$value" "AWS_WEB_LOGS_ENABLED=$value"
+  start render || fail "o render falhou: $(cat "$root/out")"
+  for file in api.env worker.env; do
+    [[ $(grep -c AWS_WEB_LOGS "$root/run/verax/$file") == 1 ]] || fail "$file sem a linha, ou com mais de uma"
+    grep -qx "AWS_WEB_LOGS_ENABLED='$value'" "$root/run/verax/$file" || fail "$file sem AWS_WEB_LOGS_ENABLED=$value"
+  done
+  ! grep -q 'AWS_WEB_LOGS_ENABLED fora do formato' "$root/out" || fail "aviso com o valor certo: $(cat "$root/out")"
+done
+for bad in TRUE sim 'true # comentário' ''; do
+  new_root "AWS_WEB_LOGS_ENABLED fora do formato ($bad)" render-web-logs-ruim "AWS_WEB_LOGS_ENABLED=\"$bad\""
+  start render || fail "o render falhou: $(cat "$root/out")"
+  grep -q 'AWS_WEB_LOGS_ENABLED fora do formato' "$root/out" || fail "sem o aviso: $(cat "$root/out")"
+  for file in api.env worker.env; do
+    grep -qx "AWS_WEB_LOGS_ENABLED='false'" "$root/run/verax/$file" || fail "o valor fora do formato não desligou ($file)"
+  done
+done
+new_root "sem AWS_WEB_LOGS_ENABLED no node.conf" render-web-logs-sem
+start render || fail "o render falhou: $(cat "$root/out")"
+! grep -rq AWS_WEB_LOGS "$root/run/verax" || fail "a variável entrou sem a linha no node.conf"
+# Os casos: a linha do node.conf vai igual para a API e o worker; sem ela, nada entra; fora do formato, desliga nos dois.
+for value in off shadow on; do
+  new_root "CASES_MODE=$value no node.conf" "render-casos-$value" "CASES_MODE=$value"
+  start render || fail "o render falhou: $(cat "$root/out")"
+  for file in api.env worker.env; do
+    [[ $(grep -c CASES_MODE "$root/run/verax/$file") == 1 ]] || fail "$file sem a linha, ou com mais de uma"
+    grep -qx "CASES_MODE='$value'" "$root/run/verax/$file" || fail "$file sem CASES_MODE=$value"
+  done
+  ! grep -q 'CASES_MODE fora do formato' "$root/out" || fail "aviso com o valor certo: $(cat "$root/out")"
+done
+for bad in ON true 'on # comentário' ''; do
+  new_root "CASES_MODE fora do formato ($bad)" render-casos-ruim "CASES_MODE=\"$bad\""
+  start render || fail "o render falhou: $(cat "$root/out")"
+  grep -q 'CASES_MODE fora do formato' "$root/out" || fail "sem o aviso: $(cat "$root/out")"
+  for file in api.env worker.env; do
+    grep -qx "CASES_MODE='off'" "$root/run/verax/$file" || fail "o valor fora do formato não desligou ($file)"
+  done
+done
+new_root "sem CASES_MODE no node.conf" render-casos-sem
+start render || fail "o render falhou: $(cat "$root/out")"
+! grep -rq CASES_MODE "$root/run/verax" || fail "a variável entrou sem a linha no node.conf"
 for bad in CUSTOMER_MODE=sim versao-fora-do-formato sem-images-env; do
   new_root "modo cliente: o render recusa ($bad)" "render-recusa-${bad%%=*}" CUSTOMER_MODE=true
   case $bad in

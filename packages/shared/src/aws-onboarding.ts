@@ -49,7 +49,8 @@ export function hasAwsLogGroupReadTag(tags: Readonly<Record<string, string>> | u
 /**
  * Os tipos de fonte. Coletados na primeira versão: a trilha do CloudTrail, os VPC Flow Logs, o WAF e o export do
  * GuardDuty (S3); o GuardDuty, o Security Hub, o Inspector e o Access Analyzer (API); os grupos do CloudWatch Logs.
- * O Config e os logs de acesso dos load balancers são descobertos e mostrados, mas ainda não coletados.
+ * O Config é descoberto e mostrado, mas ainda não coletado. Os logs de acesso dos balanceadores só são coletados no nó com
+ * os ataques web ligados (`AWS_WEB_LOGS_ENABLED`, desligado por padrão); com eles desligados, são como o Config.
  */
 export const AWS_SOURCE_KINDS = [
   'cloudtrail',
@@ -66,38 +67,135 @@ export const AWS_SOURCE_KINDS = [
 ] as const;
 export type AwsSourceKind = (typeof AWS_SOURCE_KINDS)[number];
 
-/** Como a fonte é lida: objetos de um bucket (Wazuh), a API do serviço (worker) ou o CloudWatch Logs (Wazuh). */
+/** Como a fonte é lida: objetos de um bucket, a API do serviço ou o CloudWatch Logs. Quem a lê é o `collector` do tipo. */
 export const AWS_SOURCE_METHODS = ['s3', 'api', 'cloudwatch'] as const;
 export type AwsSourceMethod = (typeof AWS_SOURCE_METHODS)[number];
 
-/** O que cada tipo é: o método, a capacidade do papel que o libera, se já é coletado e se é sensível. */
+/** Quem lê a fonte: o Wazuh do nó (a lista do manager) ou uma tarefa do worker. */
+export const AWS_SOURCE_COLLECTORS = ['wazuh', 'worker'] as const;
+export type AwsSourceCollector = (typeof AWS_SOURCE_COLLECTORS)[number];
+
+/** O que o nó tem ligado e muda o que ele coleta. Nada ligado é o padrão em todo lugar que não diz o contrário. */
+export interface AwsSourceFeatures {
+  /** Os ataques web pelos logs de acesso do ALB (`AWS_WEB_LOGS_ENABLED`). */
+  webLogs: boolean;
+}
+export const NO_AWS_SOURCE_FEATURES: Readonly<AwsSourceFeatures> = { webLogs: false };
+
+/** O que cada tipo é: o método, quem o lê, a capacidade do papel que o libera, se já é coletado e se é sensível. */
 export interface AwsSourceKindInfo {
   method: AwsSourceMethod;
+  /**
+   * Quem o lê; null no tipo que ninguém lê ainda. O método não basta: o `elb_logs` é de bucket, e quem o lê é o worker. Só
+   * o tipo do Wazuh entra na lista do manager e na saúde que a tarefa `wazuh-config` grava; o do worker, nunca.
+   */
+  collector: AwsSourceCollector | null;
   capability: AwsReaderCapability;
-  /** Coletado nesta versão. Os outros aparecem como "ainda não coletado" e não aceitam autorização. */
+  /**
+   * Coletado em todo nó. Os outros aparecem como "ainda não coletado" e não aceitam autorização, a não ser com a
+   * funcionalidade deles ligada no nó (`feature`): quem decide é `isAwsSourceCollectable`.
+   */
   collectable: boolean;
+  /** A funcionalidade do nó que torna o tipo coletado. */
+  feature?: keyof AwsSourceFeatures;
   /** Pode trazer dado de aplicação: só entra citada uma a uma na autorização. */
   sensitive: boolean;
 }
 
 export const AWS_SOURCE_KIND_INFO: Readonly<Record<AwsSourceKind, AwsSourceKindInfo>> = {
-  cloudtrail: { method: 's3', capability: 'service-logs', collectable: true, sensitive: false },
-  vpc_flow_logs: { method: 's3', capability: 'service-logs', collectable: true, sensitive: false },
-  waf: { method: 's3', capability: 'service-logs', collectable: true, sensitive: false },
-  guardduty_export: { method: 's3', capability: 'service-logs', collectable: true, sensitive: false },
-  guardduty: { method: 'api', capability: 'findings', collectable: true, sensitive: false },
-  security_hub: { method: 'api', capability: 'findings', collectable: true, sensitive: false },
-  inspector: { method: 'api', capability: 'findings', collectable: true, sensitive: false },
-  access_analyzer: { method: 'api', capability: 'findings', collectable: true, sensitive: false },
+  cloudtrail: {
+    method: 's3',
+    collector: 'wazuh',
+    capability: 'service-logs',
+    collectable: true,
+    sensitive: false,
+  },
+  vpc_flow_logs: {
+    method: 's3',
+    collector: 'wazuh',
+    capability: 'service-logs',
+    collectable: true,
+    sensitive: false,
+  },
+  waf: {
+    method: 's3',
+    collector: 'wazuh',
+    capability: 'service-logs',
+    collectable: true,
+    sensitive: false,
+  },
+  guardduty_export: {
+    method: 's3',
+    collector: 'wazuh',
+    capability: 'service-logs',
+    collectable: true,
+    sensitive: false,
+  },
+  guardduty: {
+    method: 'api',
+    collector: 'worker',
+    capability: 'findings',
+    collectable: true,
+    sensitive: false,
+  },
+  security_hub: {
+    method: 'api',
+    collector: 'worker',
+    capability: 'findings',
+    collectable: true,
+    sensitive: false,
+  },
+  inspector: {
+    method: 'api',
+    collector: 'worker',
+    capability: 'findings',
+    collectable: true,
+    sensitive: false,
+  },
+  access_analyzer: {
+    method: 'api',
+    collector: 'worker',
+    capability: 'findings',
+    collectable: true,
+    sensitive: false,
+  },
   cloudwatch_log_group: {
     method: 'cloudwatch',
+    collector: 'wazuh',
     capability: 'log-groups',
     collectable: true,
     sensitive: true,
   },
-  config: { method: 's3', capability: 'service-logs', collectable: false, sensitive: false },
-  elb_logs: { method: 's3', capability: 'service-logs', collectable: false, sensitive: false },
+  config: {
+    method: 's3',
+    collector: null,
+    capability: 'service-logs',
+    collectable: false,
+    sensitive: false,
+  },
+  elb_logs: {
+    method: 's3',
+    collector: 'worker',
+    capability: 'service-logs',
+    collectable: false,
+    feature: 'webLogs',
+    sensitive: false,
+  },
 };
+
+/** O nó coleta este tipo? Os de todo nó, e o que depende de uma funcionalidade que este nó tem ligada. */
+export function isAwsSourceCollectable(
+  kind: AwsSourceKind,
+  features: Readonly<AwsSourceFeatures> = NO_AWS_SOURCE_FEATURES,
+): boolean {
+  const { collectable, feature } = AWS_SOURCE_KIND_INFO[kind];
+  return collectable || (feature !== undefined && features[feature]);
+}
+
+/** Os tipos que o Wazuh do nó lê (a lista do manager). */
+export const AWS_WAZUH_SOURCE_KINDS: readonly AwsSourceKind[] = AWS_SOURCE_KINDS.filter(
+  (kind) => AWS_SOURCE_KIND_INFO[kind].collector === 'wazuh',
+);
 
 /**
  * A fonte existe e dá para ler de onde está? `not_enabled`: o serviço está desligado na conta; `no_destination`: ligado,
@@ -219,8 +317,9 @@ export type AwsSourceLoggingState = (typeof AWS_SOURCE_LOGGING_STATES)[number];
 /**
  * Avisos de custo e de pré-requisito de uma fonte (o painel tem o texto de cada um). A Verax nunca liga nada na conta
  * do cliente: os de custo dizem que ligar o serviço é cobrado pela AWS.
- * - `aws_cost_*`: ligar o serviço (ou criar a trilha, os flow logs, o logging do WAF) tem custo na AWS;
- * - `high_volume`: fonte de volume alto (flow logs, um grupo grande), que conta no volume contratado;
+ * - `aws_cost_*`: ligar o serviço (ou criar a trilha, os flow logs, o logging do WAF, o log de acesso do ALB) tem custo na
+ *   AWS;
+ * - `high_volume`: fonte de volume alto (flow logs, um grupo grande, o log de acesso do ALB), que conta no volume contratado;
  * - `flow_logs_read_together`: autorizar um flow log da VPC lê todos os flow logs daquela conta e região que gravam no
  *   mesmo bucket (o módulo do Wazuh lê a pasta da conta e da região, e não um flow log só);
  * - `tag_required`: o grupo de logs só é lido com a tag `verax-control = leitura`;
@@ -241,6 +340,7 @@ export const AWS_SOURCE_NOTES = [
   'aws_cost_new_trail',
   'aws_cost_flow_logs',
   'aws_cost_waf_logging',
+  'aws_cost_alb_logs',
   'high_volume',
   'flow_logs_read_together',
   'tag_required',
@@ -340,6 +440,8 @@ export const awsSourceDetailsSchema = z.strictObject({
   tagged: z.boolean().optional(),
   /** Config: o gravador está gravando. */
   recording: z.boolean().optional(),
+  /** Balanceador: aceita conexão da internet. Só no nó com os ataques web ligados. */
+  internetFacing: z.boolean().optional(),
   /** Linha "serviço desligado": as regiões em que a descoberta conferiu. */
   regionsChecked: z.array(z.string().max(32)).max(64).optional(),
   /** Linha de um bucket cadastrado antes da descoberta: a fonte do cadastro (`cloudtrail`, `guardduty` ou `waf`). */
@@ -376,7 +478,7 @@ export const awsSourceSchema = z.strictObject({
   name: z.string().max(512),
   method: z.enum(AWS_SOURCE_METHODS),
   origin: z.enum(AWS_SOURCE_ORIGINS),
-  /** O tipo já é coletado nesta versão (`AWS_SOURCE_KIND_INFO`). */
+  /** Este nó coleta o tipo (`isAwsSourceCollectable`). */
   collectable: z.boolean(),
   sensitive: z.boolean(),
   availability: z.enum(AWS_SOURCE_AVAILABILITIES),
@@ -420,9 +522,10 @@ export function awsSourceIdleState(
   kind: AwsSourceKind,
   availability: AwsSourceAvailability,
   permission: AwsSourcePermission,
+  features: Readonly<AwsSourceFeatures> = NO_AWS_SOURCE_FEATURES,
 ): { state: AwsSourceState; stateCode: string | null } {
   if (availability !== 'available') return { state: 'unavailable', stateCode: availability };
-  if (!AWS_SOURCE_KIND_INFO[kind].collectable)
+  if (!isAwsSourceCollectable(kind, features))
     return { state: 'unavailable', stateCode: 'not_collectable_yet' };
   return permission === 'granted'
     ? { state: 'available', stateCode: null }
@@ -567,6 +670,8 @@ export type AwsOnboardingState = (typeof AWS_ONBOARDING_STATES)[number];
 /** Tetos do que uma conta pode ter autorizado, e do que uma resposta carrega. */
 export const AWS_MAX_AUTHORIZED_LOG_GROUPS = 50;
 export const AWS_MAX_AUTHORIZED_S3_SOURCES = 200;
+/** Balanceadores lidos por conta, dentro dos 200 de bucket: o que o worker lê com folga (`docs/ARQUITETURA.md`). */
+export const AWS_MAX_AUTHORIZED_WEB_SOURCES = 20;
 export const AWS_MAX_SOURCES_PER_ACCOUNT = 2000;
 
 /**
@@ -735,10 +840,30 @@ function distinct(ids: readonly string[]): boolean {
 }
 
 /**
+ * A ciência da estimativa de volume de um balanceador (`elb_logs`): qual estimativa o cliente viu (o `computedAt` dela),
+ * os dois números dela e a confirmação. A API confere tudo com o que está gravado: número diferente do de agora (a
+ * estimativa foi refeita, o plano mudou) recusa o pedido. Acima de 20% do plano, sem amostra ou com a contagem cortada
+ * (`acknowledgementRequired`, `web-logs.ts`), só entra com `acknowledged`.
+ */
+export const awsWebLogsAcknowledgementSchema = z.strictObject({
+  sourceId: awsSourceIdSchema,
+  estimatedAt: z.iso.datetime(),
+  /** Null: a estimativa saiu sem amostra. */
+  estimatedGbPerDay: z.number().min(0).nullable(),
+  /** Quanto do plano (ou da franquia) isso é; null sem amostra, ou no plano sem limite de volume. */
+  projectedPercent: z.number().min(0).nullable(),
+  acknowledged: z.boolean(),
+});
+export type AwsWebLogsAcknowledgement = z.infer<typeof awsWebLogsAcknowledgementSchema>;
+
+/**
  * `POST /v1/cloud-accounts/:id/aws/sources/authorize`. As fontes sensíveis (os grupos do CloudWatch Logs, que podem
  * trazer dado de aplicação) só entram citadas de novo, uma a uma, em `sensitiveSourceIds`: um "autorizar tudo" que
  * mande só `sourceIds` é recusado inteiro se a lista tiver uma fonte sensível. Tudo ou nada: uma fonte recusada recusa
  * o pedido.
+ *
+ * Cada balanceador (`elb_logs`) leva a ciência da estimativa dele em `webLogs`. O campo só vai no pedido que tem um: o nó
+ * de antes, que não os oferece, recusaria o campo a mais.
  *
  * Das demais escritas do onboarding, só o `…/aws/connect` aceita corpo, e opcional (`awsConnectSchema`):
  * `…/aws/discovery`, `…/aws/sources/:sourceId/revoke` e `…/aws/sources/:sourceId/retry` levam só os IDs no caminho.
@@ -755,10 +880,20 @@ export const awsSourcesAuthorizeSchema = z
       .max(AWS_AUTHORIZE_MAX_SOURCES)
       .refine(distinct, { error: 'fonte repetida' })
       .optional(),
+    webLogs: z
+      .array(awsWebLogsAcknowledgementSchema)
+      .min(1)
+      .max(AWS_AUTHORIZE_MAX_SOURCES)
+      .refine((list) => distinct(list.map((item) => item.sourceId)), { error: 'fonte repetida' })
+      .optional(),
   })
   .refine((body) => (body.sensitiveSourceIds ?? []).every((id) => body.sourceIds.includes(id)), {
     error: 'a confirmação cita uma fonte fora do pedido',
     path: ['sensitiveSourceIds'],
+  })
+  .refine((body) => (body.webLogs ?? []).every((item) => body.sourceIds.includes(item.sourceId)), {
+    error: 'a estimativa cita uma fonte fora do pedido',
+    path: ['webLogs'],
   });
 export type AwsSourcesAuthorize = z.infer<typeof awsSourcesAuthorizeSchema>;
 
@@ -772,6 +907,10 @@ export type AwsSourcesAuthorize = z.infer<typeof awsSourcesAuthorizeSchema>;
  * - `SOURCE_NOT_AUTHORIZED`: revogar uma fonte que não está autorizada;
  * - `SENSITIVE_CONFIRMATION_REQUIRED`: fonte sensível fora de `sensitiveSourceIds`;
  * - `SOURCE_LIMIT_REACHED`: o teto de fontes autorizadas da conta;
+ * - `WEB_LOGS_ESTIMATE_REQUIRED`: balanceador sem uma estimativa de volume que valha (nunca pedida, que falhou ou de mais
+ *   de 7 dias), ou pedido sem a ciência dela;
+ * - `WEB_LOGS_ESTIMATE_CHANGED`: os números do pedido não são os da estimativa de agora;
+ * - `WEB_LOGS_ACKNOWLEDGEMENT_REQUIRED`: a estimativa pede a confirmação, e ela não veio;
  * - `ACCOUNT_NOT_CONNECTED`: a conta não está conectada (a descoberta e a sondagem precisam do papel);
  * - `DISCOVERY_RATE_LIMITED`: descoberta manual pedida há menos de 5 min;
  * - `SOURCE_RETRY_RATE_LIMITED`: "Tentar de novo" pedido para a mesma fonte há menos de 30 s;
@@ -786,6 +925,9 @@ export const AWS_ONBOARDING_ERROR_CODES = [
   'SOURCE_NOT_AUTHORIZED',
   'SENSITIVE_CONFIRMATION_REQUIRED',
   'SOURCE_LIMIT_REACHED',
+  'WEB_LOGS_ESTIMATE_REQUIRED',
+  'WEB_LOGS_ESTIMATE_CHANGED',
+  'WEB_LOGS_ACKNOWLEDGEMENT_REQUIRED',
   'ACCOUNT_NOT_CONNECTED',
   'DISCOVERY_RATE_LIMITED',
   'SOURCE_RETRY_RATE_LIMITED',

@@ -1,6 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { mitreReport, summaryReport } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
@@ -11,6 +12,7 @@ import { createQueryClient } from '@/lib/query-client';
 import { DEMO_TENANTS, demoMe, demoTower } from '@/mocks/fixtures';
 import { DEMO_INCIDENTS } from '@/mocks/findings-fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
+import { SIDE_PANEL_QUERY } from '@/lib/use-media-query';
 import { routes } from '@/routes/router';
 
 const server = setupServer();
@@ -35,7 +37,9 @@ const BUCKET_ALERT = '018f2c1e-0000-7000-8000-00000000100e';
  */
 const SLOW = { timeout: 12_000 };
 
+/** Com os casos desligados (o padrão de um nó): a tela de sempre. Com eles, `detections-cases.test.tsx`. */
 function renderAt(path: string, state: MockState = { me: demoMe('analista_cliente') }) {
+  state.cases ??= 'off';
   server.use(...createHandlers(state));
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   render(
@@ -62,12 +66,95 @@ function mockMedia(matches: (query: string) => boolean) {
   }));
 }
 
-const list = async () => screen.findByRole('table', { name: /^Incidentes do cliente|^Alertas do cliente/ });
+// A lista espera a situação dos casos antes de pedir os alertas.
+const list = async () =>
+  screen.findByRole('table', { name: /^Incidentes do cliente|^Alertas do cliente/ }, SLOW);
 const rows = async () =>
   within(await list())
     .getAllByRole('row')
     .slice(1);
 const search = (router: ReturnType<typeof renderAt>) => new URLSearchParams(router.state.location.search);
+
+describe('Detecções: o mapa de origens no topo', () => {
+  const band = () => screen.queryByRole('region', { name: 'Origem das requisições' });
+  const findBand = () => screen.findByRole('region', { name: 'Origem das requisições' }, SLOW);
+  const strip = () => screen.findByRole('region', { name: 'Situação agora' });
+  /** O que vem logo antes do resumo (ou da grade com ele, no computador): sem o mapa, o cabeçalho da página. */
+  const header = () => screen.getByRole('heading', { level: 1, name: 'Detecções' }).closest('header');
+
+  it('vem antes do resumo e da lista, aberto, na tela estreita e no computador', async () => {
+    renderAt('/');
+    const region = await findBand();
+    expect(header()?.nextElementSibling).toBe(region);
+    expect(region.nextElementSibling).toBe(await strip());
+    expect(within(region).getByRole('button', { name: /^Recolher/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    cleanup();
+
+    mockMedia((query) => query === SIDE_PANEL_QUERY);
+    renderAt('/');
+    const wide = await findBand();
+    expect(header()?.nextElementSibling).toBe(wide);
+    expect(wide.nextElementSibling).toContainElement(await strip());
+  });
+
+  it.each(['no_source', 'off', 'error'] as const)(
+    'sem o mapa (%s), a página é a de sempre',
+    async (traffic) => {
+      for (const wide of [false, true]) {
+        mockMedia((query) => wide && query === SIDE_PANEL_QUERY);
+        renderAt('/', { me: demoMe('analista_cliente'), traffic });
+        const situation = await strip();
+        await screen.findByRole('table', { name: 'Alertas do cliente' }, SLOW);
+        expect(band()).toBeNull();
+        const next = header()?.nextElementSibling;
+        if (wide) expect(next).toContainElement(situation);
+        else expect(next).toBe(situation);
+        cleanup();
+      }
+    },
+  );
+
+  it('o cliente sem balanceador autorizado não tem a faixa, e trocar de cliente a tira da tela', async () => {
+    const me = demoMe('admin_verax', { activeTenantId: beta, scopeTenantId: beta });
+    renderAt('/', { me });
+    await screen.findByRole('table', { name: 'Alertas do cliente' }, SLOW);
+    expect(band()).toBeNull();
+  });
+
+  it('quem não tem a permissão do resumo não tem o mapa, que nem é pedido', async () => {
+    const me = demoMe('analista_cliente');
+    let asked = 0;
+    renderAt('/', { me: { ...me, permissions: me.permissions.filter((p) => p !== 'tower:read') } });
+    server.use(
+      http.get(`${API_URL}/v1/web-logs/traffic`, () => {
+        asked += 1;
+        return new HttpResponse(null, { status: 403 });
+      }),
+    );
+    await screen.findByRole('table', { name: 'Alertas do cliente' }, SLOW);
+    expect(band()).toBeNull();
+    expect(asked).toBe(0);
+  });
+
+  it('por um link direto (alerta, incidente ou análise) começa recolhido; abrir um alerta na tela não o recolhe', async () => {
+    for (const path of [`/?alerta=${FINDING}`, `/?incidente=${INCIDENT}`, '/?analise=mitre']) {
+      mockMedia((query) => query === SIDE_PANEL_QUERY);
+      renderAt(path);
+      const region = await findBand();
+      expect(within(region).getByRole('button', { name: /^Mostrar/ }), path).toBeInTheDocument();
+      cleanup();
+    }
+    const router = renderAt('/');
+    const region = await findBand();
+    const [alert] = await screen.findAllByRole('button', { name: /^Abrir o alerta/ }, SLOW);
+    await userEvent.click(alert as HTMLElement);
+    await waitFor(() => expect(search(router).get('alerta')).not.toBeNull());
+    expect(within(region).getByRole('button', { name: /^Recolher/ })).toBeInTheDocument();
+  });
+});
 
 describe('Detecções: a lista', () => {
   it('por padrão, os alertas: os a validar e os confirmados, com a marca "Em incidente" que abre o incidente', async () => {
@@ -345,7 +432,10 @@ describe('Detecções: o detalhe e a triagem', () => {
 describe('Detecções: os endereços de antes', () => {
   it.each([
     [`/incidentes/${INCIDENT}`, (s: URLSearchParams) => s.get('incidente') === INCIDENT],
-    [`/achados?achado=${FINDING}`, (s: URLSearchParams) => s.get('alerta') === FINDING && !s.has('visao')],
+    [
+      `/achados?achado=${FINDING}`,
+      (s: URLSearchParams) => s.get('alerta') === FINDING && s.get('visao') === 'alertas',
+    ],
     [
       '/incidentes?responsavel=nenhum',
       (s: URLSearchParams) => s.get('responsavel') === 'nenhum' && s.get('visao') === 'incidentes',
@@ -396,6 +486,35 @@ describe('Detecções: o resumo da situação', () => {
     await waitFor(() => expect(search(router).get('responsavel')).toBe('nenhum'));
     expect(search(router).get('visao')).toBe('incidentes');
     expect(await screen.findByRole('table', { name: /^Incidentes do cliente/ })).toBeInTheDocument();
+  });
+
+  it('24.321 alertas para validar e nenhum incidente: nada de "Tudo calmo", aberto ou recolhido (nó novo ou de antes)', async () => {
+    for (const light of ['yellow', 'green'] as const) {
+      window.localStorage.clear();
+      const view = renderAt('/', {
+        me: demoMe('admin_verax', { activeTenantId: beta ?? null, scopeTenantId: beta ?? null }),
+      });
+      const summary = demoTower(beta ?? '', { includeUnowned: false, untriagedFindings: 24_321 });
+      server.use(http.get(`${API_URL}/v1/tower`, () => HttpResponse.json({ ...summary, light })));
+      const strip = await screen.findByRole('region', { name: 'Situação agora' });
+      expect(await within(strip).findByRole('status', { name: /^Situação: / })).toHaveTextContent(
+        /^24\.321 alertas altos ou críticos para validar\. Coleta ativa em 2 de 2 fontes/,
+      );
+      const decisions = within(strip).getByRole('region', { name: 'Decisões pendentes' });
+      expect(
+        within(decisions).getByText('24.321 alertas altos ou críticos para validar'),
+      ).toBeInTheDocument();
+      expect(strip).not.toHaveTextContent(/calmo/i);
+
+      await userEvent.click(within(strip).getByRole('button', { name: /Recolher/ }));
+      const compact = within(strip).getByRole('status', { name: /^Situação: / });
+      expect(compact).toHaveAccessibleName(/^Situação: 24\.321 alertas altos ou críticos para validar\./);
+      expect(compact).toHaveTextContent('24.321 decisões pendentes');
+      expect(compact.getAttribute('aria-label')).not.toMatch(/calmo/i);
+      cleanup();
+      view.dispose();
+    }
+    window.localStorage.clear();
   });
 
   it('recolhe e lembra a escolha por pessoa; recolhido, mostra as contagens', async () => {
@@ -581,7 +700,12 @@ describe('Detecções: análise e exportação', () => {
     expect(screen.queryByRole('table', { name: /^Alertas do cliente/ })).toBeNull();
     const tab = await screen.findByRole('tab', { name: 'MITRE ATT&CK' });
     expect(tab).toHaveAttribute('aria-selected', 'true');
-    await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' });
+    const table = await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' });
+    expect(
+      within(table)
+        .getAllByRole('columnheader')
+        .map((header) => header.textContent),
+    ).toEqual(['Tática', 'Alertas', 'Participação', 'Incidentes', 'Técnicas mais vistas']);
     const tactic = screen.getByRole('link', { name: /^Evasão de defesas \(TA0005\)/ });
     await userEvent.click(tactic);
     await waitFor(() => expect(search(router).get('tatica')).toBe('Defense Evasion'));
@@ -590,12 +714,114 @@ describe('Detecções: análise e exportação', () => {
     await list();
   });
 
+  it('MITRE: a lista ao lado do gráfico também filtra, e o CSV segue com os números crus, sem o percentual', async () => {
+    const blobs: Blob[] = [];
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      blobs.push(blob);
+      return 'blob:teste';
+    });
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    const router = renderAt('/?analise=mitre&periodo=30d');
+    const seen = await screen.findByRole('list', { name: 'Táticas com alertas' });
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Exportar Táticas e técnicas do MITRE ATT&CK em CSV' }),
+    );
+    const [header, ...lines] = (await (blobs[0] as Blob).text()).trim().split('\r\n');
+    expect(header).toContain('"Tática";"Alertas";"Incidentes";"Técnicas mais vistas"');
+    expect(lines).toHaveLength(14);
+    expect(lines.join('')).not.toContain('%');
+
+    await userEvent.click(within(seen).getByRole('link', { name: /^Acesso inicial TA0001/ }));
+    await waitFor(() => expect(search(router).get('tatica')).toBe('Initial Access'));
+  });
+
   it('MITRE sem período na URL: a tática leva a janela padrão da análise (30 dias), não todo o histórico', async () => {
     const router = renderAt('/?analise=mitre');
     await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' });
     await userEvent.click(screen.getByRole('link', { name: /^Evasão de defesas \(TA0005\)/ }));
     await waitFor(() => expect(search(router).get('tatica')).toBe('Defense Evasion'));
     expect(search(router).get('periodo')).toBe('30d');
+  });
+
+  describe('MITRE ATT&CK sem tática nenhuma', () => {
+    const window7d = {
+      period: '7d',
+      from: '2026-11-17T12:00:00.000Z',
+      to: '2026-11-24T12:00:00.000Z',
+    } as const;
+    const emptyMatrix = () =>
+      http.get(`${API_URL}/v1/reports/mitre`, () => HttpResponse.json(mitreReport([], [], window7d)));
+    const summaryOf = (total: number) => {
+      const empty = summaryReport([], [], window7d);
+      return {
+        ...empty,
+        findings: {
+          ...empty.findings,
+          total,
+          bySeverity: { ...empty.findings.bySeverity, critical: total },
+          byStatus: { ...empty.findings.byStatus, new: total },
+        },
+      };
+    };
+    const summaryHandler = (total: number) =>
+      http.get(`${API_URL}/v1/reports/summary`, () => HttpResponse.json(summaryOf(total)));
+
+    it('diz quantos alertas não têm tática, e por quê, em vez de 14 zeros sem explicação', async () => {
+      renderAt('/?analise=mitre&periodo=7d');
+      server.use(emptyMatrix(), summaryHandler(24_321));
+      expect(
+        await screen.findByText('Nenhum dos 24.321 alertas deste período tem tática do MITRE ATT&CK.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Vulnerabilidades, controles reprovados e acessos abertos são fraquezas/),
+      ).toBeInTheDocument();
+      // A explicação no lugar do gráfico: uma teia sem série pareceria quebrada.
+      expect(screen.queryByRole('group', { name: /^Gráfico de radar/ })).toBeNull();
+      expect(screen.queryByRole('heading', { name: 'Alertas por tática' })).toBeNull();
+      expect(screen.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' })).toBeInTheDocument();
+    });
+
+    it('um alerta só, no singular; sem alerta nenhum, diz isso', async () => {
+      renderAt('/?analise=mitre&periodo=7d');
+      server.use(emptyMatrix(), summaryHandler(1));
+      expect(
+        await screen.findByText('O único alerta deste período não tem tática do MITRE ATT&CK.'),
+      ).toBeInTheDocument();
+      cleanup();
+
+      renderAt('/?analise=mitre&periodo=7d');
+      server.use(emptyMatrix(), summaryHandler(0));
+      expect(await screen.findByText('Nenhum alerta neste período.')).toBeInTheDocument();
+    });
+
+    it('sem o total (o resumo falhou), a explicação segue, sem número inventado', async () => {
+      renderAt('/?analise=mitre&periodo=7d');
+      server.use(
+        emptyMatrix(),
+        http.get(`${API_URL}/v1/reports/summary`, () =>
+          HttpResponse.json({ statusCode: 503, message: 'Indisponível' }, { status: 503 }),
+        ),
+      );
+      expect(
+        await screen.findByText('Nenhum alerta deste período tem tática do MITRE ATT&CK.'),
+      ).toBeInTheDocument();
+    });
+
+    it('com alguma tática, a matriz vem com a explicação curta, e o resumo nem é pedido', async () => {
+      const asked = vi.fn();
+      renderAt('/?analise=mitre&periodo=7d');
+      server.use(
+        http.get(`${API_URL}/v1/reports/summary`, () => {
+          asked();
+          return HttpResponse.json(summaryOf(9));
+        }),
+      );
+      await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' });
+      expect(screen.getByText(/ficam sem tática, mas continuam na lista de alertas/)).toBeInTheDocument();
+      expect(screen.queryByText(/^Nenhum dos/)).toBeNull();
+      expect(asked).not.toHaveBeenCalled();
+    });
   });
 
   it('tela estreita: um ponto do radar aberto numa aba de análise volta para a lista, onde o detalhe aparece', async () => {
