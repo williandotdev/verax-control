@@ -3,6 +3,7 @@ import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE, DiscoveryModule } from '@nestjs/
 import { LoggerModule } from 'nestjs-pino';
 import { AgentsModule } from './agents/agents.module.js';
 import { AlertExceptionsModule } from './alert-exceptions/alert-exceptions.module.js';
+import { ScopedExceptionsModule } from './scoped-exceptions/scoped-exceptions.module.js';
 import { AuditTrailModule } from './audit-trail/audit-trail.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { CasesModule } from './cases/cases.module.js';
@@ -72,6 +73,7 @@ export class AppModule {
         ReportsModule,
         ProtectedResourcesModule,
         AlertExceptionsModule,
+        ScopedExceptionsModule,
         AgentsModule,
         PlanModule,
         NotificationsModule,

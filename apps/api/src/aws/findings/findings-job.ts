@@ -17,6 +17,7 @@ import type { Prisma } from '../../generated/prisma/client.js';
 import { REFUSED_CODES } from '../../inventory/collectors.js';
 import { concurrencyLimit } from '../../inventory/inventory.js';
 import type { AlertNotices } from '../../notifications/finding-notices.js';
+import type { ScopedExceptionSource } from '../../alerts/scoped-exception-match.js';
 import { COLLECTING_TENANT } from '../../tenants/tenant-status.js';
 import { UsageMeter } from '../../usage/usage-meter.js';
 import { type DiscoveryClientFactory, DiscoveryRunClients } from '../discovery/clients.js';
@@ -189,6 +190,8 @@ export interface AwsFindingsOptions {
   sleep?: Sleep;
   /** Avisos por e-mail do alerta (os testes trocam por um que falha, para provar que nada fica pela metade). */
   notices?: AlertNotices;
+  /** As exceções amplas (casos, PR-9), só com `CASES_MODE=on`. */
+  scopedExceptions?: ScopedExceptionSource;
   intervalMs?: number;
   overlapMs?: number;
   backfillMs?: number;
@@ -441,6 +444,7 @@ export class AwsFindings {
       random = Math.random,
       sleep = abortableSleep,
       notices,
+      scopedExceptions,
       intervalMs = AWS_FINDINGS_INTERVAL_MS,
       overlapMs = AWS_FINDINGS_OVERLAP_MS,
       backfillMs = AWS_FINDINGS_BACKFILL_MS,
@@ -467,7 +471,11 @@ export class AwsFindings {
     this.lease = new SyncLease(prisma, name, owner, leaseMs);
     this.renewEveryMs = Math.max(250, Math.floor(leaseMs / 3));
     this.cursors = new CollectorCursors(prisma);
-    this.store = new FindingStore(prisma, notices);
+    this.store = new FindingStore(
+      prisma,
+      notices,
+      scopedExceptions === undefined ? {} : { scopedExceptions },
+    );
     this.now = now;
     this.elapsed = elapsed;
     this.random = random;

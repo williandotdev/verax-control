@@ -4,6 +4,7 @@ import { WazuhAgentsSync } from './agents/agents-sync.js';
 import { AgentAlertSync } from './alerts/agent-alert-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
 import { CLOUDWATCH_ALERT_SYNC, CloudWatchAlertSync } from './alerts/cloudwatch-alert-sync.js';
+import { ScopedExceptionSource } from './alerts/scoped-exception-match.js';
 import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
 import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
 import type { AwsReaderCredentials } from './aws/web-identity.js';
@@ -11,6 +12,7 @@ import { WAZUH_CONFIG_INTERVAL_MS, WazuhConfig } from './aws/wazuh-config.js';
 import type { WazuhStallProbe } from './aws/wazuh-source-health.js';
 import { caseNoticeSetup, type CaseNoticeSetup } from './cases/case-notice-setup.js';
 import { caseTasks } from './cases/case-tasks.js';
+import { casesOperable } from './cases/cases-mode.js';
 import { CELL_COMMANDS_INTERVAL_MS, CELL_COMMANDS_TASK, CellCommands } from './cell/cell-commands.js';
 import { CellReportOutbox } from './cell/cell-report-outbox.js';
 import {
@@ -266,6 +268,11 @@ async function main(): Promise<void> {
     // sempre.
     caseNotices = caseNoticeSetup(config.CASES_MODE, prisma, logger);
     const { alertNotices } = caseNotices;
+    // Exceções amplas (casos, PR-9): só com os casos ligados. Com `off` e `shadow`, nenhum alerta é marcado por elas.
+    const scopedExceptions = casesOperable(config.CASES_MODE)
+      ? new ScopedExceptionSource(prisma, { logger })
+      : undefined;
+    const ingest = { notices: alertNotices, ...(scopedExceptions !== undefined && { scopedExceptions }) };
     tasks = config.SYNC_SOURCES.flatMap((source): ScheduledTask[] => {
       if (source === 'wazuh') {
         const indexerConfig = loadIndexerConfig();
@@ -275,14 +282,13 @@ async function main(): Promise<void> {
             name: 'wazuh',
             intervalMs,
             budgetMs: SYNC_BUDGET_MS,
-            run: () => new AlertSync(prisma, indexer, { notices: alertNotices }).runOnce(),
+            run: () => new AlertSync(prisma, indexer, ingest).runOnce(),
           },
           {
             name: 'wazuh-agent-alerts',
             intervalMs,
             budgetMs: SYNC_BUDGET_MS,
-            run: () =>
-              new AgentAlertSync(prisma, indexer, agentsTenantId, { notices: alertNotices }).runOnce(),
+            run: () => new AgentAlertSync(prisma, indexer, agentsTenantId, ingest).runOnce(),
           },
           // Os alertas dos grupos do CloudWatch Logs que o cliente autorizou (onboarding self-service da AWS). Fora da
           // célula: lá, vários clientes dividem o manager, e o evento não diz de quem é.
@@ -293,7 +299,7 @@ async function main(): Promise<void> {
                   name: CLOUDWATCH_ALERT_SYNC,
                   intervalMs,
                   budgetMs: SYNC_BUDGET_MS,
-                  run: () => new CloudWatchAlertSync(prisma, indexer, { notices: alertNotices }).runOnce(),
+                  run: () => new CloudWatchAlertSync(prisma, indexer, ingest).runOnce(),
                 },
               ]),
         ];
@@ -306,7 +312,7 @@ async function main(): Promise<void> {
           throw new Error('SYNC_SOURCES: a fonte cloudflare exige o cofre de credenciais');
         const cloudflare = new CloudflareAuditSync(prisma, keyring, {
           auditIntervalMs: loaded.CLOUDFLARE_AUDIT_INTERVAL_SECONDS * 1000,
-          notices: alertNotices,
+          ...ingest,
         });
         return [
           {
@@ -328,7 +334,7 @@ async function main(): Promise<void> {
       } else {
         reader = new PubsubRestReader(new MetadataTokenProvider());
       }
-      const sync = new GcpAuditSync(prisma, reader, { notices: alertNotices });
+      const sync = new GcpAuditSync(prisma, reader, ingest);
       return [{ name: 'gcp', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => sync.runOnce() }];
     });
     // Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf): a lista que o host exporta do
@@ -399,7 +405,7 @@ async function main(): Promise<void> {
         // sessão e os mesmos clientes com a trava de só leitura. Fora da célula, como a descoberta.
         const findings = await import('./aws/findings/findings-job.js');
         const collect = new findings.AwsFindings(prisma, aws.credentials, sdkDiscoveryClients, {
-          notices: alertNotices,
+          ...ingest,
         });
         tasks.push({
           name: findings.AWS_FINDINGS_SYNC,
@@ -414,7 +420,7 @@ async function main(): Promise<void> {
     webLogs = await webLogsTasks(loaded, {
       prisma,
       credentials: aws.credentials,
-      notices: alertNotices,
+      ...ingest,
       logger,
     });
     tasks.push(...webLogs.tasks);
