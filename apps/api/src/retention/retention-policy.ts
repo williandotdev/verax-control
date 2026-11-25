@@ -1,4 +1,5 @@
-import { PLAN_LIMIT_BOUNDS } from '@verax/shared';
+import { PLAN_LIMIT_BOUNDS, RAW_EVENT_RETENTION_DAYS } from '@verax/shared';
+import { trafficHourCutoff, trafficSlotCutoff } from '../weblogs/store/web-traffic-store.js';
 
 /**
  * Regras do expurgo diário (fase 2, PR-19), sem banco: os cortes de cada tabela, a janela do dia e a carência quando o
@@ -103,6 +104,36 @@ export function retentionCutoffs(now: Date, historyDays: number | null): Retenti
     unowned: daysBefore(now, UNOWNED_RETENTION_DAYS),
     notifications: daysBefore(now, NOTIFICATION_RETENTION_DAYS),
     operational: new Date(now.getTime() - OPERATIONAL_SLACK_MS),
+  };
+}
+
+/** Os objetos do log do ALB já tratados: o bastante para nenhum atraso da AWS fazer um objeto contar de novo. */
+export const WEB_LOG_OBJECT_RETENTION_DAYS = 10;
+/**
+ * O resumo do dia de um balanceador (chaves de cliente: endereços IP) só serve para o reinício do worker: o motor esquece o
+ * que passou de dois dias.
+ */
+export const WEB_ENGINE_STATE_RETENTION_DAYS = 3;
+
+/** Cortes dos ataques web pelos logs do ALB: iguais para todo plano. Sai o que é anterior a cada um. */
+export interface WebLogCutoffs {
+  /** As amostras e os ponteiros das evidências, pela última atividade: o prazo do evento bruto. */
+  evidenceSamples: Date;
+  /** Os objetos já tratados. */
+  objects: Date;
+  /** Os intervalos de 5 minutos do tráfego, que passam para as horas (só horas inteiras com mais de 48 h). */
+  trafficSlots: Date;
+  trafficHours: Date;
+  engineState: Date;
+}
+
+export function webLogCutoffs(now: Date): WebLogCutoffs {
+  return {
+    evidenceSamples: daysBefore(now, RAW_EVENT_RETENTION_DAYS),
+    objects: daysBefore(now, WEB_LOG_OBJECT_RETENTION_DAYS),
+    trafficSlots: trafficSlotCutoff(now),
+    trafficHours: trafficHourCutoff(now),
+    engineState: daysBefore(now, WEB_ENGINE_STATE_RETENTION_DAYS),
   };
 }
 

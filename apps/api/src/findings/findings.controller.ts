@@ -5,6 +5,7 @@ import {
   type FindingCommentCreate,
   findingCommentCreateSchema,
   type FindingDetail,
+  type FindingEvidence,
   type FindingListQuery,
   findingListQuerySchema,
   type FindingStatusUpdate,
@@ -52,6 +53,12 @@ export class FindingsController {
   @RequirePermission('findings:read')
   related(@Param('id', { schema: findingIdSchema }) id: string): Promise<RelatedFindings> {
     return this.findings.related(id);
+  }
+
+  @Get(':id/evidence')
+  @RequirePermission('findings:read')
+  evidence(@Param('id', { schema: findingIdSchema }) id: string): Promise<FindingEvidence> {
+    return this.findings.evidence(id);
   }
 
   @Patch(':id/status')

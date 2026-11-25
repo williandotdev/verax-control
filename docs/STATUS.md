@@ -6746,3 +6746,57 @@ tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views
   Semgrep não acusam nada nos arquivos novos. A suíte com banco não foi rodada: nenhum código existente mudou.
 - **Riscos e sugestões:** os 97,5% de concordância com o GeoLite2 são do próprio projeto, não medidos aqui. Cada atualização
   soma cerca de 0,6 MB ao histórico do git. A tela precisa dizer que o país é o do endereço (VPN, proxy e nuvem).
+
+## Ataques web pelos logs do ALB, PR-2: o banco, a evidência e o tráfego por país (não ligado)
+
+- **O que é:** as tabelas dos ataques web, a evidência gravada com o achado, a leitura dela, o expurgo e as contagens por
+  país do mapa. Vai para `integracao/alb`. Nada chama isto ainda: nenhuma tarefa, nenhuma chamada à AWS, nenhuma tela,
+  nenhuma variável de ambiente.
+- **Migration `20261130120000_web_logs`** (só acrescenta, numa transação): `WebLogObject`, `WebSourceSettings`,
+  `WebTrustedSource`, `WebRoute`, `FindingEvidence`, `WebEngineState`, `WebTrafficSlot` e `WebTrafficHour`, e um índice único
+  `(id, tenantId)` na `AwsSource` (o alvo das chaves compostas). Toda chave é em cascata; as de fonte, conta e achado levam o
+  cliente e não se propagam.
+- **Gravação:** `FindingDraft` aceita `evidence` (gravada na transação do achado) e `correlation` (aceita, ainda não
+  gravada). A evidência do achado não triado acompanha a atividade, também dentro da mesma hora; a do triado não muda; o
+  resumo do dia troca também o `eventName`. Sem evidência, as consultas são as de antes, na mesma ordem.
+- **Leitura:** `GET /v1/findings/:id/evidence`, à parte do detalhe (o contrato do detalhe é estrito).
+- **Tráfego por país:** somado na transação do objeto (o relido não soma de novo); a passagem para as horas apaga e soma
+  numa instrução só; a leitura soma as duas tabelas. Sem rota ainda.
+- **Expurgo:** amostras e ponteiros da evidência 30 dias depois da última atividade, objetos em 10 dias, tráfego em 48 h e
+  35 dias, resumo do dia parado em 3 dias. A exclusão da conta leva tudo o que é por balanceador.
+- **Decisões tomadas aqui, a conferir** (o desenho dizia outra coisa, ou não dizia):
+  - por balanceador é a fonte (`AwsSource.id`), e não a conta e o nome: a chave composta prova o cliente no banco, e a conta
+    sai da fonte. O `WebEngineState` guarda também o `app/<nome>/<id>`, porque a fonte é pelo nome;
+  - a classe do tráfego tem um quarto valor, `unverified`: sem a lista das CDNs (o caso de hoje), todo endereço público é
+    `unverified`, e chamá-lo de direto ou de proxy seria invenção;
+  - as horas recebem os intervalos por **passagem** (apaga e soma), e não por cópia: não há marca d'água a guardar, e o objeto
+    atrasado não some;
+  - a comparação da evidência é por última atividade e, no empate, pela soma das contagens; a primeira atividade do achado
+    fica numa coluna da evidência (nenhuma coluna nova no achado);
+  - a amostra do User-Agent sai junto com as outras amostras;
+  - a evidência fora do schema ou do teto é recusada com aviso a quem chama, e o achado entra sem ela;
+  - sem chave estrangeira para a pessoa (autor): `VARCHAR(64)`, como na `AwsSource`.
+- **Ficou para depois:** `FINDING_SOURCES` com `alb`, notas e estados da fonte (PR-3); a tarefa, que chama o registro, o
+  volume, a soma, a passagem de hora em hora e o estado do motor (PR-4); os tetos de rotas e fontes confiáveis por
+  balanceador e a trilha da configuração (PR-5 e PR-8); `correlationKeys` (PR-10).
+- **Arquivos:** `apps/api/prisma/schema.prisma` e a migration; `apps/api/src/alerts/finding-evidence.ts` (novo),
+  `finding-{store,draft}.ts`; `weblogs/store/{web-traffic-store,web-object-ledger}.ts` (novos), `weblogs/draft.ts`
+  (comentário); `findings/findings.{service,controller}.ts`; `retention/retention-{job,policy}.ts`;
+  `common/prisma/tenant-scope.ts`; `cloud-accounts/cloud-accounts.service.ts` (comentário);
+  `packages/shared/src/finding-evidence.ts` (novo); testes; `docs/ARQUITETURA.md` e `docs/retencao-de-dados.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 195 arquivos e 3607 testes: na rodada inteira, 193 arquivos; em dois
+  (`detections` e `aws-volume`) o worker do vitest caiu no Windows (3221226505), e passaram rodados de novo. Shared, 30
+  arquivos e 522 testes. `pnpm lint` e `pnpm typecheck` (todos os pacotes), limpos. Novos: 31 da evidência, 26 do tráfego e
+  do registro, 17 da migration, 7 do expurgo, 6 do contrato e 3 noutros arquivos.
+  - **Imagem anterior:** o código e os testes da `main` (`24037e8`) no banco já migrado, com um gatilho provisório que cria
+    linhas filhas em todas as tabelas novas a cada achado e a cada fonte: 28 arquivos e 713 testes (o `detections` caiu duas
+    vezes com 3221226505 e passou na terceira). A sequência de consultas de cada caminho da gravação sem evidência é a mesma
+    com o `FindingStore` da `main`.
+  - **Mutações** (em série, com volta conferida): 171. 158 mortas de primeira, 10 depois de testes novos, uma era código
+    redundante (removido) e duas são equivalentes (a soma da hora já é agrupada pela classe; a busca do expurgo é conferida
+    de novo na escrita). Mais uma no código que sobrou, também equivalente (a data inválida já lança na linha seguinte).
+- **Riscos:** a frase do DPA sobre os endereços IP dos visitantes do cliente (`docs/retencao-de-dados.md`) precisa existir
+  antes de ligar a fonte. No pior caso (todo país e toda classe em todo intervalo), o tráfego de 2 balanceadores ocupa cerca
+  de 265 MB; um site comum fica bem abaixo. Sem a passagem de hora em hora (PR-4), os intervalos de 5 minutos ficam até 72 h
+  (o expurgo é diário).

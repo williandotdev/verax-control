@@ -5,6 +5,7 @@ import {
   retentionCutoffs,
   retentionWindowStart,
   subtractUtcMonths,
+  webLogCutoffs,
 } from './retention-policy.js';
 
 const at = (iso: string) => new Date(iso);
@@ -135,5 +136,18 @@ describe('carência quando o plano diminui o prazo', () => {
     const decision = decideHistoryDays(30, { appliedDays: 365, pendingSince: days(20) }, now);
     expect(decision).toMatchObject({ days: 365, state: { pendingSince: days(20) } });
     expect(decision.graceUntil).toEqual(new Date(days(20).getTime() + 30 * DAY_MS));
+  });
+});
+
+describe('cortes dos ataques web pelos logs do ALB', () => {
+  it('30 dias das amostras, 10 dos objetos, 48 h (em horas inteiras) e 35 dias do tráfego, 3 do resumo do dia', () => {
+    const now = at('2027-12-15T05:23:45.678Z');
+    expect(webLogCutoffs(now)).toEqual({
+      evidenceSamples: at('2027-11-15T05:23:45.678Z'),
+      objects: at('2027-12-05T05:23:45.678Z'),
+      trafficSlots: at('2027-12-13T05:00:00.000Z'),
+      trafficHours: at('2027-11-10T05:23:45.678Z'),
+      engineState: at('2027-12-12T05:23:45.678Z'),
+    });
   });
 });

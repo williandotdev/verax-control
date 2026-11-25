@@ -44,6 +44,16 @@ export const TENANT_SCOPED_MODELS = [
   // conta).
   'awsDiscoveryRun',
   'awsSource',
+  // Ataques web pelos logs do ALB: a configuração do cliente (o painel grava, pelo escopo da sessão) e o que só o sistema
+  // grava (`SYSTEM_WRITTEN_MODELS`): os objetos já lidos, a evidência do achado, o resumo do dia e o tráfego por país.
+  'webSourceSettings',
+  'webTrustedSource',
+  'webRoute',
+  'webLogObject',
+  'findingEvidence',
+  'webEngineState',
+  'webTrafficSlot',
+  'webTrafficHour',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 
@@ -57,9 +67,11 @@ const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
  * (CE-09) também: é a base da cobrança da franquia, e só os coletores e a tarefa `aws-volume` o gravam
  * (`usage/usage-meter.ts`, `usage/aws-volume.ts`). E, no nó dedicado, o resultado de cada item da sincronização com o
  * plano de controle (`ControlPlaneSyncItem`, a tarefa `control-plane-sync` e a exclusão da conta do console pelo
- * cliente, `control-plane-sync/deleted-in-panel.ts`). No escopo do cliente, só a leitura passa; a gravação é recusada
- * mesmo que um service a tente, e quem grava usa o cliente base, fora do escopo (`tenants/tenant-host.ts`,
- * `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`, `control-plane-sync/`).
+ * cliente, `control-plane-sync/deleted-in-panel.ts`). Nos ataques web pelos logs do ALB, o que sai da leitura: os objetos
+ * já tratados e o tráfego por país (`weblogs/store/`), a evidência do achado (`alerts/finding-evidence.ts`) e o resumo do
+ * dia. No escopo do cliente, só a leitura passa; a gravação é recusada mesmo que um service a tente, e quem grava usa o
+ * cliente base, fora do escopo (`tenants/tenant-host.ts`, `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`,
+ * `control-plane-sync/`, `weblogs/store/`, `alerts/finding-evidence.ts`).
  */
 export const SYSTEM_WRITTEN_MODELS = [
   'tenantHost',
@@ -71,6 +83,11 @@ export const SYSTEM_WRITTEN_MODELS = [
   'ingestUsageDay',
   'awsVolumeObject',
   'controlPlaneSyncItem',
+  'webLogObject',
+  'findingEvidence',
+  'webEngineState',
+  'webTrafficSlot',
+  'webTrafficHour',
 ] as const;
 const SYSTEM_WRITTEN = new Set<string>(SYSTEM_WRITTEN_MODELS);
 const READ_OPERATIONS = new Set([
