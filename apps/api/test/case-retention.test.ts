@@ -212,6 +212,7 @@ describe('expurgo dos casos', () => {
     expect(Object.keys((await trail(tenantId)).deleted).sort()).toEqual([
       'auditLogs',
       'comments',
+      'evidenceSamples',
       'findings',
       'incidents',
       'inventorySnapshots',
@@ -219,6 +220,10 @@ describe('expurgo dos casos', () => {
       'notifications',
       'postureFailures',
       'postureScans',
+      'webEngineStates',
+      'webLogObjects',
+      'webTrafficHours',
+      'webTrafficSlots',
     ]);
   });
 });

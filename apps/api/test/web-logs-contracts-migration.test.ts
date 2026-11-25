@@ -119,7 +119,9 @@ async function noteList(client: pg.Client): Promise<string[]> {
 
 describe(`migration ${MIGRATION}`, () => {
   it('vem depois da dos logs web, e só troca o CHECK da descoberta pelo mesmo com a nota a mais e cria uma tabela', () => {
-    expect(migrations.slice(-2)).toEqual(['20261130120000_web_logs', MIGRATION]);
+    // Depois dela vêm outras, de outro trabalho.
+    const position = migrations.indexOf(MIGRATION);
+    expect(migrations.slice(position - 1, position + 1)).toEqual(['20261130120000_web_logs', MIGRATION]);
     const own = lines(MIGRATION);
     expect([own.at(0), own.at(-1)]).toEqual(['BEGIN;', 'COMMIT;']);
     // O CHECK de antes, linha a linha, com a nota no fim da lista.
