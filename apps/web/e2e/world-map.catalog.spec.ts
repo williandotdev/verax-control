@@ -194,9 +194,18 @@ test('a onda só anda em transform e opacity, no período certo, e o botão paus
             .filter((name) => !['offset', 'computedOffset', 'easing', 'composite'].includes(name)),
         ),
       ].sort(),
+      // Uma onda a cada 2,4 s (`PULSE_PERIOD_MS`): dez por volta, todas iguais.
+      waves: frames
+        .filter((frame) => frame['opacity'] === '0.9')
+        .map((frame) => Math.round((frame.computedOffset ?? 0) * 24_000)),
     };
   });
-  expect(animation).toEqual({ state: 'running', duration: '2.4s', properties: ['opacity', 'transform'] });
+  expect(animation).toEqual({
+    state: 'running',
+    duration: '24s',
+    properties: ['opacity', 'transform'],
+    waves: Array.from({ length: 10 }, (_, index) => 288 + index * 2_400),
+  });
   // Em fases diferentes, mas poucas: cada uma acorda a página uma vez por volta.
   const delays = await pulses.evaluateAll((items) =>
     items.map((item) => getComputedStyle(item).animationDelay),
@@ -233,7 +242,7 @@ test('com menos movimento pedido: começa parado e completo; ligar no botão usa
 
   await card.getByRole('button', { name: /^Retomar/ }).click();
   // A regra global de menos movimento encurta as animações para 0,01 ms: aqui isso viraria um pisca-pisca.
-  await expect(card.locator('[data-pulse]').first()).toHaveCSS('animation-duration', '2.4s');
+  await expect(card.locator('[data-pulse]').first()).toHaveCSS('animation-duration', '24s');
   // A escolha vale só daquela vez.
   await page.reload();
   await expect(card.getByRole('button', { name: /^Retomar/ })).toBeVisible();

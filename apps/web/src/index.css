@@ -175,7 +175,7 @@
     /* O mapa de origens começa parado para quem pediu menos movimento, e a onda nem é desenhada. Ela só existe aqui se a
        pessoa ligar a animação no botão do mapa; aí vale o período de sempre (encurtada, viraria um pisca-pisca). */
     .world-map-pulse {
-      animation-duration: 2.4s !important;
+      animation-duration: 24s !important;
     }
   }
 }
@@ -224,25 +224,54 @@
 
 /*
  * Onda do mapa de origens (`components/security/world-map.tsx`): um anel que cresce e some, só com `transform` e `opacity`
- * (a placa de vídeo anima; nada é redesenhado). O período é o `PULSE_PERIOD_MS` do componente, e cada país entra num ponto
- * próprio dele: menos de meia piscada por segundo em cada um.
+ * (a placa de vídeo anima; nada é redesenhado). O período é o `PULSE_PERIOD_MS` do componente (2,4 s), e cada país entra num
+ * ponto próprio dele: menos de meia piscada por segundo em cada um. Uma volta da animação são dez ondas (24 s): a
+ * cada volta, o navegador acorda a página, e ao lado do radar, que redesenha a cada quadro acordado, isso custava caro. Entre
+ * uma onda e a seguinte o anel volta ao tamanho inicial sem aparecer.
  */
 @layer components {
   .world-map-pulse {
     opacity: 0;
-    animation: world-map-pulse 2.4s ease-out infinite;
+    animation: world-map-pulse 24s ease-out infinite;
   }
 }
 
 @keyframes world-map-pulse {
-  0% {
+  0%,
+  10%,
+  20%,
+  30%,
+  40%,
+  50%,
+  60%,
+  70%,
+  80%,
+  90% {
     opacity: 0;
     transform: scale(0.3);
   }
-  12% {
+  1.2%,
+  11.2%,
+  21.2%,
+  31.2%,
+  41.2%,
+  51.2%,
+  61.2%,
+  71.2%,
+  81.2%,
+  91.2% {
     opacity: 0.9;
   }
-  75%,
+  7.5%,
+  17.5%,
+  27.5%,
+  37.5%,
+  47.5%,
+  57.5%,
+  67.5%,
+  77.5%,
+  87.5%,
+  97.5%,
   100% {
     opacity: 0;
     transform: scale(1);

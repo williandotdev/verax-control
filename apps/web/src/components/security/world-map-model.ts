@@ -21,7 +21,7 @@ export interface OriginCounts {
 export interface CountryTraffic extends OriginCounts {
   /** ISO 3166-1 alfa-2, mais `XK`. `ZZ` (ou o que não tem forma de código) conta como origem desconhecida. */
   code: string;
-  /** Nos últimos `recentMinutes` antes de `generatedAt`. */
+  /** Nos últimos `recentMinutes` antes de `recentUntil` (ou de `generatedAt`, sem ele). */
   recentRequests: number;
   recentFlagged: number;
 }
@@ -33,9 +33,13 @@ export interface WorldTraffic {
   windowHours: number;
   /** O tamanho do "agora": quem teve requisição nele pulsa. */
   recentMinutes: number;
+  /** O fim do "agora" (ISO 8601): o log chega com atraso, e o último intervalo completo acabou antes de `generatedAt`. */
+  recentUntil?: string | null;
   countries: readonly CountryTraffic[];
   /** Endereço público sem país na tabela. */
   unknown: OriginCounts;
+  /** Da origem desconhecida, quantas vieram de endereço público que pode ser o visitante ou uma CDN. */
+  unverified?: number;
   /** Chegaram por CDN ou proxy: o log tem o endereço da CDN, e não o de quem acessou. */
   throughProxy: OriginCounts;
   /** Endereço privado, de dentro da rede. */
@@ -54,25 +58,26 @@ export interface WorldDot {
   x: number;
   y: number;
   radius: number;
-  /** Com requisição suspeita na janela: cor do crítico, octógono e anel. */
+  /** Com muitas requisições suspeitas na janela (`isFlagged`): cor do crítico, octógono e anel. */
   flagged: boolean;
   /** Da borda da marca à borda de fora do anel do suspeito; zero no comum. */
   ring: number;
   /** Pulsa (ou mostra o anel parado): está entre os mais ativos dos últimos minutos. */
   recent: boolean;
-  /** Com requisição suspeita nos últimos minutos: a onda sai na cor do crítico. */
+  /** Marcado, e com requisição suspeita nos últimos minutos: a onda sai na cor do crítico. */
   recentFlagged: boolean;
   /** Onde a onda está no instante zero, em ms (de 0 a `PULSE_PERIOD_MS`). */
   phase: number;
 }
 
-/** Um período da onda, o mesmo do `.world-map-pulse` no `index.css`: menos de meia piscada por segundo. */
-export const PULSE_PERIOD_MS = 2_400;
 /**
- * Em quantos instantes do período as ondas começam. A cada volta de uma animação, o navegador acorda a página para o evento
- * `animationiteration` (o React escuta todos na raiz): com 60 ondas em 60 instantes seriam 25 vezes por segundo, e o ganho
- * de animar só na placa de vídeo se perderia. Com 12, são 5, e o mapa continua sem piscar em uníssono.
+ * Um período da onda: menos de meia piscada por segundo. Uma volta da animação do `index.css` são dez períodos: a cada volta,
+ * o navegador acorda a página para o evento `animationiteration` (o React escuta todos na raiz), e com uma onda por volta o
+ * ganho de animar só na placa de vídeo se perdia (medido na tela Detecções, ao lado do radar: 9% da thread principal, contra
+ * 3% com dez por volta e 2,5% sem o mapa).
  */
+export const PULSE_PERIOD_MS = 2_400;
+/** Em quantos instantes do período as ondas começam: as voltas acabam juntas, e o mapa não pisca em uníssono. */
 export const PULSE_SLOTS = 12;
 /** Quantos pontos pulsam ao mesmo tempo, no máximo. */
 export const MAX_PULSING = 60;
@@ -94,6 +99,33 @@ const DECADES = 3;
 const UNKNOWN_CODE = 'ZZ';
 const NO_REQUESTS: OriginCounts = { requests: 0, blocked: 0, flagged: 0 };
 
+/**
+ * A partir de quantas requisições suspeitas o país é marcado (cor do crítico, octógono e anel). Todo site recebe sondagem o
+ * tempo todo, de todo lugar: com uma só bastando, o mapa inteiro ficaria vermelho e não diria nada. Basta um dos dois: muitas
+ * suspeitas, ou uma parte que pesa no que o país mandou (com um piso, para uma visita suspeita em dez não virar alarme).
+ */
+export const FLAGGED_MIN = 50;
+export const FLAGGED_MIN_SHARE = 0.01;
+export const FLAGGED_MIN_WITH_SHARE = 10;
+
+/** Os números são de um dia: numa janela maior, crescem com ela (em 7 dias, 350 e 70). Numa menor, não diminuem. */
+const flaggedScale = (windowHours: number): number => Math.max(1, windowHours / 24);
+
+/** Os limites que valem na janela: os que as legendas dizem. */
+export const flaggedLimits = (windowHours: number): { min: number; minWithShare: number } => ({
+  min: Math.ceil(FLAGGED_MIN * flaggedScale(windowHours)),
+  minWithShare: Math.ceil(FLAGGED_MIN_WITH_SHARE * flaggedScale(windowHours)),
+});
+
+/** Suspeitas o bastante para marcar o país. */
+export function isFlagged(counts: Pick<OriginCounts, 'requests' | 'flagged'>, windowHours: number): boolean {
+  const { min, minWithShare } = flaggedLimits(windowHours);
+  return (
+    counts.flagged >= min ||
+    (counts.flagged >= minWithShare && counts.flagged / counts.requests >= FLAGGED_MIN_SHARE)
+  );
+}
+
 const count = (value: number): number => (Number.isFinite(value) && value > 0 ? Math.floor(value) : 0);
 
 const addCounts = (a: OriginCounts, b: OriginCounts): OriginCounts => ({
@@ -110,7 +142,8 @@ export interface TrafficSummary {
   internal: OriginCounts;
   /** Tudo o que chegou na janela, dentro e fora do mapa. */
   total: OriginCounts;
-  flaggedCountries: number;
+  /** Os países marcados (`isFlagged`). */
+  flaggedCodes: ReadonlySet<string>;
 }
 
 /**
@@ -145,7 +178,9 @@ export function summarize(traffic: WorldTraffic): TrafficSummary {
     throughProxy,
     internal,
     total: [...countries, unknown, throughProxy, internal].reduce(addCounts, NO_REQUESTS),
-    flaggedCountries: countries.filter((item) => item.flagged > 0).length,
+    flaggedCodes: new Set(
+      countries.filter((item) => isFlagged(item, traffic.windowHours)).map((item) => item.code),
+    ),
   };
 }
 
@@ -196,6 +231,7 @@ export const hasPoint = (code: string, points: MapPoints): boolean => Object.has
  */
 export function worldDots(
   countries: readonly CountryTraffic[],
+  flaggedCodes: ReadonlySet<string>,
   pulsing: ReadonlySet<string>,
   points: MapPoints,
   mapWidth: number,
@@ -206,7 +242,7 @@ export function worldDots(
   return countries.flatMap((country) => {
     const point = hasPoint(country.code, points) ? points[country.code] : undefined;
     if (!point) return [];
-    const flagged = country.flagged > 0;
+    const flagged = flaggedCodes.has(country.code);
     const radius = dotRadius(country.requests, busiest, width);
     return [
       {
@@ -217,7 +253,8 @@ export function worldDots(
         flagged,
         ring: flagged ? (width < COMPACT_WIDTH ? FLAGGED_RING_COMPACT : FLAGGED_RING) : 0,
         recent: pulsing.has(country.code),
-        recentFlagged: country.recentFlagged > 0,
+        // A onda vermelha num ponto neutro diria o contrário dele.
+        recentFlagged: flagged && country.recentFlagged > 0,
         phase: pulsePhase(country.code),
       },
     ];
