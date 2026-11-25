@@ -49,7 +49,7 @@ function plan(findings: readonly PlanFinding[], overrides: Partial<PlanInput> = 
   return planBatch({
     findings,
     now: at(365 * DAY_MS),
-    noticedBefore: at(-365 * DAY_MS),
+    noticedByAlert: false,
     open: new Map(),
     previous: new Map(),
     openings: new RecentOpenings(),
@@ -253,35 +253,30 @@ describe('o plano de um lote', () => {
     expect(created).toMatchObject({ ruleIds: ['100305'], accounts: ['111122223333'], actors: ['maria'] });
   });
 
-  it('a severidade avisada: só do alto e do crítico, só do passado, e sempre a maior', () => {
-    const noticed = (severities: PlanFinding['severity'][], noticedBefore: Date | null, createdAt = T0) =>
+  it('a severidade avisada: com o aviso por alerta, só do alto e do crítico, e sempre a maior; por caso, nada', () => {
+    const noticed = (severities: PlanFinding['severity'][], noticedByAlert: boolean) =>
       plan(
         severities.map((severity) =>
           // A mesma chave em qualquer severidade: a de vulnerabilidade não tem faixa.
-          finding({ severity, createdAt, logSource: 'inspector', ruleId: '990511', caseGroup: 'openssl' }),
+          finding({ severity, logSource: 'inspector', ruleId: '990511', caseGroup: 'openssl' }),
         ),
-        { noticedBefore },
+        { noticedByAlert },
       ).created[0]?.noticedSeverity;
-    expect(noticed(['low', 'medium'], null)).toBeNull();
-    expect(noticed(['medium', 'high', 'low'], null)).toBe('high');
-    expect(noticed(['critical', 'high'], null)).toBe('critical');
-    expect(noticed(['critical'], at(1))).toBe('critical');
-    expect(noticed(['critical'], T0)).toBeNull();
-    expect(noticed(['critical'], at(-1))).toBeNull();
+    expect(noticed(['low', 'medium'], true)).toBeNull();
+    expect(noticed(['medium', 'high', 'low'], true)).toBe('high');
+    expect(noticed(['critical', 'high'], true)).toBe('critical');
+    expect(noticed(['critical', 'high'], false)).toBeNull();
   });
 
-  it('um alerta do passado não marca um caso de agora, nem apaga o que já estava marcado', () => {
-    const past = finding({ createdAt: at(-HOUR_MS), severity: 'critical' });
-    const marked = (overrides: Partial<OpenCase>, noticedBefore: Date) =>
-      plan([past], { open: opened(past, overrides), noticedBefore }).touched[0]?.noticedSeverity;
-    expect(marked({ openedAt: T0 }, T0)).toBeNull();
-    expect(marked({ openedAt: at(-DAY_MS) }, T0)).toBe('critical');
-    expect(marked({ openedAt: at(-DAY_MS), noticedSeverity: 'high' }, at(-HOUR_MS))).toBe('high');
-    const live = finding({ createdAt: at(HOUR_MS), severity: 'critical' });
-    expect(
-      plan([live], { open: opened(live, { noticedSeverity: 'high' }), noticedBefore: T0 }).touched[0]
-        ?.noticedSeverity,
-    ).toBe('high');
+  it('um caso que já existe: com o aviso por alerta, a severidade avisada só sobe; por caso, fica como está', () => {
+    const marked = (severity: PlanFinding['severity'], noticedByAlert: boolean) => {
+      const alert = finding({ createdAt: at(HOUR_MS), severity });
+      return plan([alert], { open: opened(alert, { noticedSeverity: 'high' }), noticedByAlert }).touched[0]
+        ?.noticedSeverity;
+    };
+    expect(marked('critical', true)).toBe('critical');
+    expect(marked('high', true)).toBe('high');
+    expect(marked('critical', false)).toBe('high');
   });
 
   it('a chegada no futuro vale agora', () => {

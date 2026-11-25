@@ -26,7 +26,7 @@ export interface CaseWatchOptions {
 
 /**
  * Vigia da atribuição: numa tarefa à parte, para ver também a `case-assign` parada. Só mede e registra no log; o aviso
- * por e-mail do atraso (fail-open) vem com os avisos por caso. Só lê, então não precisa de concessão.
+ * por e-mail do que está atrasado sai da tarefa `notifications` (`case-notices.ts`). Só lê, então não precisa de concessão.
  */
 export class CaseWatch {
   constructor(

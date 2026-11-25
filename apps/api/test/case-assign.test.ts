@@ -1066,43 +1066,21 @@ describe('case-assign', () => {
       expect((await noticed()).sort()).toEqual(['critical', null].sort());
     });
 
-    it('com o aviso por caso, só o que chegou antes da primeira passagem nasce avisado, e o marco é gravado uma vez', async () => {
+    it('com o aviso por caso, a atribuição não marca nada: quem marca e avisa é a tarefa dos avisos', async () => {
       const tenantId = await customer('aviso por caso');
-      const name = `caso-on-${randomUUID().slice(0, 8)}`;
       const alert = (ruleId: string, createdAt: Date, severity: 'high' | 'critical' = 'high') =>
         insert(tenantId, { ruleId, createdAt, severity });
       await alert('100305', at(-12 * HOUR_MS));
-      await alert('100306', at(0));
-      const first = assignJob(prisma, [tenantId], { name, caseNotices: true, now: () => at(0) });
-      expect(await first.runOnce()).toMatchObject({ status: 'done', assigned: 2 });
-      const byRule = async (): Promise<Record<string, string | null>> =>
+      await assignAll(prisma, [tenantId], { now: () => at(0) });
+      await alert('100306', at(0), 'critical');
+      // O caso já marcado recebe um crítico: continua como estava.
+      await alert('100305', at(HOUR_MS), 'critical');
+      await assignAll(prisma, [tenantId], { caseNotices: true, now: () => at(2 * HOUR_MS) });
+      expect(
         Object.fromEntries(
           (await casesOf(prisma, tenantId)).map((row) => [row.ruleIds[0] ?? '', row.noticedSeverity]),
-        );
-      // O que chegou antes do marco; o do próprio instante já é dos avisos por caso.
-      expect(await byRule()).toEqual({ '100305': 'high', '100306': null });
-
-      // Uma passagem depois, com outro relógio e outro processo: o marco é o mesmo.
-      await alert('100310', at(-HOUR_MS));
-      await alert('100314', at(HOUR_MS));
-      // O caso do passado recebe um crítico novo: quem avisa é o aviso por caso.
-      await alert('100305', at(2 * HOUR_MS), 'critical');
-      // E um alerta do passado que volta à fila não cala um caso novo.
-      await alert('100306', at(-HOUR_MS), 'critical');
-      const second = assignJob(prisma, [tenantId], { name, caseNotices: true, now: () => at(3 * HOUR_MS) });
-      expect(await second.runOnce()).toMatchObject({ status: 'done', assigned: 4 });
-      const state = await prisma.syncState.findUniqueOrThrow({ where: { name } });
-      expect(state.cursorTimestamp).toEqual(at(0));
-      expect(await byRule()).toEqual({ '100305': 'high', '100306': null, '100310': 'high', '100314': null });
-    });
-
-    it('com o aviso por alerta, o marco não é gravado', async () => {
-      const tenantId = await customer('sem marco');
-      const name = `caso-sh-${randomUUID().slice(0, 8)}`;
-      await assignJob(prisma, [tenantId], { name }).runOnce();
-      const state = await prisma.syncState.findUniqueOrThrow({ where: { name } });
-      expect(state.cursorTimestamp).toBeNull();
-      expect(state.lastSuccessAt).not.toBeNull();
+        ),
+      ).toEqual({ '100305': 'high', '100306': null });
     });
   });
 

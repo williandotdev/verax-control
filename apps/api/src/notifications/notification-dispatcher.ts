@@ -9,6 +9,8 @@ import {
   NOTICE_HOURLY_LIMIT,
 } from '@verax/shared';
 import { SyncLease } from '../alerts/finding-store.js';
+import type { CaseNoticeContents, CaseNoticeMail } from '../cases/case-notice-mail.js';
+import { CASE_SKIP, caseNoticeType } from '../cases/case-notice-policy.js';
 import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
@@ -219,6 +221,15 @@ export interface NotificationReport {
   escalation: { sent: number; limited: number; stale: number };
   /** Tipo do erro do cálculo do volume do plano, quando ele falhou (a entrega seguiu). */
   usageError?: string;
+  /** Os avisos por caso desta execução, ou a devolução deles ao aviso por alerta. Sem os casos, nada. */
+  cases?: object;
+  /** Tipo do erro dos avisos por caso, quando eles falharam (a entrega seguiu). */
+  casesError?: string;
+}
+
+/** O que os casos fazem no começo de cada execução: os avisos por caso, ou a devolução deles ao aviso por alerta. */
+export interface CaseNoticeSource {
+  check(now: Date, signal?: AbortSignal): Promise<object | null>;
 }
 
 /** O e-mail ligado: o transporte (`mailTransport`, a mesma fábrica da API) e a origem do painel para os links. */
@@ -230,6 +241,13 @@ export interface NoticeMailer {
 export interface NotificationDispatcherOptions {
   /** Avisos do volume do plano, calculados no começo de cada execução. Sem ele, nada é calculado. */
   usage?: UsageNotices | null;
+  /** Os avisos por caso (`CASES_MODE=on`), ou a volta deles ao aviso por alerta nos outros modos. */
+  cases?: CaseNoticeSource | null;
+  /**
+   * O conteúdo dos avisos de caso, só com `CASES_MODE=on`. Sem ele, um aviso de caso que sobrou na fila sai como o do alerta
+   * dele (o mesmo que a versão anterior do nó faz).
+   */
+  caseMail?: CaseNoticeMail | null;
   now?: () => Date;
   owner?: string;
   leaseMs?: number;
@@ -251,10 +269,14 @@ const TARGET_SELECT = {
 /** O que o texto e o link de um aviso usam. */
 type NoticeTarget = Prisma.NotificationGetPayload<{ select: typeof TARGET_SELECT }>;
 
+/** O que diz se o aviso é de um caso (`caseNoticeType`). */
+const CASE_SELECT = { caseId: true, dedupeKey: true } as const satisfies Prisma.NotificationSelect;
+
 const DUE_SELECT = {
   id: true,
   tenantId: true,
   ...TARGET_SELECT,
+  ...CASE_SELECT,
   attempts: true,
   deliveredUserIds: true,
   digestedUserIds: true,
@@ -415,18 +437,27 @@ export function noticeOf(row: NoticeTarget, webOrigin: string): NoticeMail {
 }
 
 /** Um aviso reunido num resumo. */
-type DigestRow = NoticeTarget & { id: string; createdAt: Date };
+type DigestRow = NoticeTarget & { id: string; createdAt: Date; caseId: string | null; dedupeKey: string };
 /** O item do resumo e a linha de onde ele veio. */
 interface DigestEntry {
   row: DigestRow;
   item: DigestItem;
 }
 
-/** Os itens das linhas dadas. Um aviso sem o alvo do tipo (o CHECK já impede) fica de fora. */
-function digestEntries(rows: readonly DigestRow[], webOrigin: string): DigestEntry[] {
+/**
+ * Os itens das linhas dadas. Um aviso sem o alvo do tipo (o CHECK já impede) fica de fora, e o de caso (`contents`) que não
+ * tem mais o que dizer também.
+ */
+function digestEntries(
+  rows: readonly DigestRow[],
+  webOrigin: string,
+  contents: CaseNoticeContents = new Map(),
+): DigestEntry[] {
   return rows.flatMap((row) => {
+    const content = contents.get(row.id);
+    if (content === null) return [];
     try {
-      return [{ row, item: { notice: noticeOf(row, webOrigin), at: row.createdAt } }];
+      return [{ row, item: { notice: content ?? noticeOf(row, webOrigin), at: row.createdAt } }];
     } catch {
       return [];
     }
@@ -482,15 +513,21 @@ export function digestItems(rows: readonly DigestRow[], webOrigin: string): Dige
  *   para o fim da fila, não reenvia para ninguém e chega ao `failed` na quinta, sem segurar os avisos seguintes.
  * - Sem e-mail no nó (`MAIL_TRANSPORT=none`), ou sem ninguém para receber, o aviso fica `skipped`: ligar o e-mail
  *   depois não dispara os avisos antigos.
+ * - Com os casos ligados (`CASES_MODE=on`), a execução começa pelos avisos por caso (`CaseNotices`), e o conteúdo deles sai do
+ *   caso na hora do envio (`CaseNoticeMail`): o do caso já tratado, promovido a incidente ou que saiu na retenção não sai.
  * - Nada aqui vai para o log, além das contagens que o agendador registra.
  */
 export class NotificationDispatcher {
   private readonly usage: UsageNotices | null;
+  private readonly cases: CaseNoticeSource | null;
+  private readonly caseMail: CaseNoticeMail | null;
   private readonly now: () => Date;
   private readonly lease: SyncLease;
   private readonly batch: number;
   private readonly foldBatch: number;
   private readonly deliveryBudgetMs: number;
+  /** O tipo do primeiro erro dos avisos por caso nesta execução. */
+  private casesError: string | null = null;
   /** A hora de cada cliente nesta execução; sai depois de cada e-mail dele, que muda a contagem. */
   private readonly tenantHours = new Map<string, TenantHour>();
 
@@ -499,6 +536,8 @@ export class NotificationDispatcher {
     private readonly mailer: NoticeMailer | null,
     {
       usage = null,
+      cases = null,
+      caseMail = null,
       now = () => new Date(),
       owner = `worker-${randomUUID()}`,
       leaseMs = 5 * 60 * 1000,
@@ -511,6 +550,8 @@ export class NotificationDispatcher {
       throw new Error('o lote dos avisos precisa ser um inteiro positivo');
     if (!(deliveryBudgetMs >= 0)) throw new Error('o prazo de envio de um aviso não pode ser negativo');
     this.usage = usage;
+    this.cases = cases;
+    this.caseMail = caseMail;
     this.deliveryBudgetMs = deliveryBudgetMs;
     this.now = now;
     this.lease = new SyncLease(prisma, NOTIFICATIONS_TASK, owner, leaseMs);
@@ -534,8 +575,10 @@ export class NotificationDispatcher {
     };
     const startedAt = this.now();
     if (!(await this.lease.acquire(startedAt))) return { ...report, status: 'locked' };
-    // Uma falha no cálculo do volume não segura os avisos de incidente: vai para o estado da tarefa, e a entrega segue.
+    // Uma falha no cálculo do volume (ou dos avisos por caso) não segura os avisos de incidente: vai para o estado da
+    // tarefa, e a entrega segue.
     let usageError: string | null = null;
+    this.casesError = null;
     try {
       try {
         report.usageNotices = (await this.usage?.check(startedAt)) ?? 0;
@@ -543,19 +586,31 @@ export class NotificationDispatcher {
         signal?.throwIfAborted();
         usageError = errorKind(error);
       }
+      try {
+        const cases = (await this.cases?.check(startedAt, signal)) ?? null;
+        if (cases !== null) report.cases = cases;
+      } catch (error) {
+        signal?.throwIfAborted();
+        this.casesError = errorKind(error);
+      }
       // Os resumos das horas que fecharam vão antes dos avisos novos: o que eles reúnem é mais antigo.
       if (await this.deliverDigests(startedAt, report.digests, signal)) {
         await this.deliverNotices(startedAt, report, signal);
       }
+      const { casesError } = this;
       await this.prisma.syncState.update({
         where: { name: NOTIFICATIONS_TASK },
         data: {
           lastRunAt: startedAt,
-          ...(usageError === null && { lastSuccessAt: this.now() }),
-          lastError: usageError,
+          ...(usageError === null && casesError === null && { lastSuccessAt: this.now() }),
+          lastError: usageError ?? casesError,
         },
       });
-      return usageError === null ? report : { ...report, usageError };
+      return {
+        ...report,
+        ...(usageError !== null && { usageError }),
+        ...(casesError !== null && { casesError }),
+      };
     } catch (error) {
       await this.prisma.syncState.update({
         where: { name: NOTIFICATIONS_TASK },
@@ -577,6 +632,11 @@ export class NotificationDispatcher {
     signal?: AbortSignal,
   ): Promise<void> {
     this.tenantHours.clear();
+    // Os de caso que deixaram de valer saem antes, de uma vez: não ocupam a vez dos que vão sair.
+    const stale = await this.skipStale(signal);
+    report.due += stale.sent + stale.skipped;
+    report.sent += stale.sent;
+    report.skipped += stale.skipped;
     const lanes: DueNotice[][] = [];
     for (const lane of NOTICE_LANES) {
       const rows = await this.prisma.notification.findMany({
@@ -808,6 +868,11 @@ export class NotificationDispatcher {
     if ((row.kind === 'incident_opened' || row.kind === 'incident_escalated') && row.incidentId === null) {
       return this.skip(row, 'incident_gone');
     }
+    if (this.caseMail !== null && caseNoticeType(row) !== null) {
+      // De novo, agora: alguém pode ter tratado o caso desde o começo da execução.
+      const stale = await this.skipStale(signal, row.id);
+      if (stale.sent + stale.skipped > 0) return stale.sent > 0 ? 'sent' : 'skipped';
+    }
     const people = await db.user.findMany({
       where: { role: { in: [...NOTICE_RECIPIENT_ROLES[row.kind]] }, ...ACTIVE_PERSON },
       select: PERSON_SELECT,
@@ -828,9 +893,16 @@ export class NotificationDispatcher {
       return this.skip(row, people.length > 0 ? 'opted_out' : 'no_recipients');
     }
 
+    const content = (await this.caseContents(row.tenantId, [row], this.mailer.webOrigin, signal)).get(row.id);
+    if (content === null) {
+      // Nada mais a dizer: tudo foi tratado. Quem já recebeu numa tentativa anterior conta como avisado.
+      return handled.size > 0 || row.escalationDelivery === 'sent'
+        ? this.finishAttempt(row, null)
+        : this.close(row, 'skipped', CASE_SKIP.treated);
+    }
     let notice: NoticeMail;
     try {
-      notice = noticeOf(row, this.mailer.webOrigin);
+      notice = content ?? noticeOf(row, this.mailer.webOrigin);
     } catch {
       // Não acontece com o CHECK da migration; se acontecer, o aviso não trava a fila.
       return this.close(row, 'failed', 'invalid_notice');
@@ -903,6 +975,40 @@ export class NotificationDispatcher {
       }
     }
     return this.finishAttempt(row, firstError);
+  }
+
+  /**
+   * Fecha os avisos de caso que deixaram de valer (todos, ou só um). Uma falha aqui não segura a entrega: o aviso sai, e o
+   * erro fica no estado da tarefa.
+   */
+  private async skipStale(signal?: AbortSignal, id?: string): Promise<{ sent: number; skipped: number }> {
+    const none = { sent: 0, skipped: 0 };
+    try {
+      return (await this.caseMail?.skipStale(this.now(), id === undefined ? null : [id])) ?? none;
+    } catch (error) {
+      signal?.throwIfAborted();
+      this.casesError ??= errorKind(error);
+      return none;
+    }
+  }
+
+  /**
+   * O conteúdo dos avisos de caso entre estes. Vazio sem os casos, e também se a leitura deles falha: o aviso sai como o do
+   * alerta dele, em vez de ficar calado.
+   */
+  private async caseContents(
+    tenantId: string,
+    rows: readonly DigestRow[],
+    webOrigin: string,
+    signal?: AbortSignal,
+  ): Promise<CaseNoticeContents> {
+    try {
+      return (await this.caseMail?.contents(tenantId, rows, webOrigin)) ?? new Map();
+    } catch (error) {
+      signal?.throwIfAborted();
+      this.casesError ??= errorKind(error);
+      return new Map();
+    }
   }
 
   /**
@@ -1196,9 +1302,17 @@ export class NotificationDispatcher {
       select: PERSON_SELECT,
     });
     if (person === null) return this.closeDigest(row, 'no_recipients');
-    const { items, total } = await this.digestContent(row, asNoticePerson(person), this.mailer.webOrigin);
-    // Nada que a pessoa ainda receba: desligou os avisos de incidente, mudou de papel, ou os avisos saíram no expurgo.
-    if (total === 0) return this.closeDigest(row, 'no_items');
+    const { items, total, unsaid } = await this.digestContent(
+      row,
+      asNoticePerson(person),
+      this.mailer.webOrigin,
+    );
+    // Nada que a pessoa ainda receba: desligou os avisos de incidente, mudou de papel, ou os avisos saíram no expurgo (ou
+    // os casos deles já foram tratados).
+    if (total === 0) {
+      await this.caseMail?.dropUnsaid(row.tenantId, unsaid);
+      return this.closeDigest(row, 'no_items');
+    }
     let firstError: string | null = null;
     try {
       await this.mailer.transport.send(
@@ -1216,18 +1330,20 @@ export class NotificationDispatcher {
     }
     const { outcome, data } = attemptResult(row.attempts, firstError, this.now());
     await db.notificationDigest.update({ where: { id: row.id }, data, select: { id: true } });
+    if (outcome === 'sent') await this.caseMail?.dropUnsaid(row.tenantId, unsaid);
     return outcome;
   }
 
   /**
    * Os itens da lista do resumo (até `NOTICE_DIGEST_ITEMS`) e o total que a pessoa ainda recebe, lendo os avisos em
-   * lotes: num resumo de milhares, a memória guarda os ids, um lote, os da lista e a contagem.
+   * lotes: num resumo de milhares, a memória guarda os ids, um lote, os da lista e a contagem. O aviso de caso sem mais o que
+   * dizer (tratado) fica de fora, e o id dele volta em `unsaid`.
    */
   private async digestContent(
     row: DueDigest,
     person: NoticePerson,
     webOrigin: string,
-  ): Promise<{ items: DigestItem[]; total: number }> {
+  ): Promise<{ items: DigestItem[]; total: number; unsaid: string[] }> {
     const db = this.prisma.forTenant(row.tenantId);
     const digest = await db.notificationDigest.findUnique({
       where: { id: row.id },
@@ -1236,19 +1352,20 @@ export class NotificationDispatcher {
     const ids = [...new Set(digest?.noticeIds ?? [])];
     let total = 0;
     let top: DigestEntry[] = [];
+    const unsaid: string[] = [];
     for (let start = 0; start < ids.length; start += NOTIFICATION_DIGEST_READ_CHUNK) {
       const rows = await db.notification.findMany({
         where: { id: { in: ids.slice(start, start + NOTIFICATION_DIGEST_READ_CHUNK) } },
-        select: { id: true, createdAt: true, ...TARGET_SELECT },
+        select: { id: true, createdAt: true, ...TARGET_SELECT, ...CASE_SELECT },
       });
-      const entries = digestEntries(
-        rows.filter((notice) => receives(notice.kind, person)),
-        webOrigin,
-      );
+      const received = rows.filter((notice) => receives(notice.kind, person));
+      const contents = await this.caseContents(row.tenantId, received, webOrigin);
+      for (const [id, content] of contents) if (content === null) unsaid.push(id);
+      const entries = digestEntries(received, webOrigin, contents);
       total += entries.length;
       top = [...top, ...entries].sort(digestOrder).slice(0, NOTICE_DIGEST_ITEMS);
     }
-    return { items: top.map(({ item }) => item), total };
+    return { items: top.map(({ item }) => item), total, unsaid };
   }
 
   /** Encerra o resumo sem envio, com o motivo. */

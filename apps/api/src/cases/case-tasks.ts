@@ -14,7 +14,7 @@ import {
   CaseReconcileJob,
 } from './case-reconcile-job.js';
 import { CASE_WATCH_BUDGET_MS, CASE_WATCH_INTERVAL_MS, CASE_WATCH_TASK, CaseWatch } from './case-watch.js';
-import { casesOperable, type CasesMode } from './cases-mode.js';
+import { casesNoticed, casesOperable, type CasesMode } from './cases-mode.js';
 import {
   TRIAGE_OPS_BUDGET_MS,
   TRIAGE_OPS_INTERVAL_MS,
@@ -28,7 +28,7 @@ import {
  */
 export function caseTasks(mode: CasesMode, prisma: PrismaService, logger: CaseLogger): ScheduledTask[] {
   if (mode === 'off') return [];
-  const assign = new CaseAssignJob(prisma, { logger });
+  const assign = new CaseAssignJob(prisma, { logger, caseNotices: casesNoticed(mode) });
   const watch = new CaseWatch(prisma, { logger });
   const reconcile = new CaseReconcileJob(prisma, { logger });
   return [

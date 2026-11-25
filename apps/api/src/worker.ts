@@ -9,6 +9,7 @@ import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aw
 import type { AwsReaderCredentials } from './aws/web-identity.js';
 import { WAZUH_CONFIG_INTERVAL_MS, WazuhConfig } from './aws/wazuh-config.js';
 import type { WazuhStallProbe } from './aws/wazuh-source-health.js';
+import { caseNoticeSetup, type CaseNoticeSetup } from './cases/case-notice-setup.js';
 import { caseTasks } from './cases/case-tasks.js';
 import { CELL_COMMANDS_INTERVAL_MS, CELL_COMMANDS_TASK, CellCommands } from './cell/cell-commands.js';
 import { CellReportOutbox } from './cell/cell-report-outbox.js';
@@ -220,7 +221,8 @@ async function awsConnectionSetup(
  * Com `CASES_MODE` em `shadow` ou `on` (o padrão é `off`), entram as tarefas dos casos: `case-assign` (a cada 10 s dá um
  * caso a cada alerta pendente que ainda não tem), `case-watch` (a cada minuto mede o atraso da atribuição, no log) e
  * `case-reconcile` (uma vez por semana confere as contagens dos casos). Só com `on`, `triage-ops` (a cada 5 s executa em
- * lotes as operações de triagem em massa que não cabem na requisição).
+ * lotes as operações de triagem em massa que não cabem na requisição), e o aviso por e-mail dos alertas passa a ser por
+ * caso, calculado na própria tarefa `notifications` (`cases/case-notice-setup.ts`).
  *
  * Na célula (`NODE_MODE=cell`, com `CELL_ID`, `CELL_COMMANDS_SUBSCRIPTION` e `CELL_REPORTS_TOPIC`), o canal com o plano
  * de controle (CE-05): `cell-commands` (a cada 10 s) lê os comandos e aplica cada um numa transação, com o relatório na
@@ -242,6 +244,7 @@ async function main(): Promise<void> {
   let prisma: PrismaService;
   let logger: Logger;
   let aws: AwsConnectionSetup;
+  let caseNotices: CaseNoticeSetup;
   try {
     const loaded = loadWorkerConfig();
     config = loaded;
@@ -251,6 +254,10 @@ async function main(): Promise<void> {
     const plans = new TenantPlanResolver(prisma, config.NODE_MODE, nodePlan(config));
     const intervalMs = config.SYNC_INTERVAL_SECONDS * 1000;
     const agentsTenantId = config.wazuhAgents?.tenantId ?? null;
+    // Casos: com CASES_MODE=on, os coletores não avisam alerta por alerta (os avisos são por caso). Nos outros modos, o de
+    // sempre.
+    caseNotices = caseNoticeSetup(config.CASES_MODE, prisma, logger);
+    const { alertNotices } = caseNotices;
     tasks = config.SYNC_SOURCES.flatMap((source): ScheduledTask[] => {
       if (source === 'wazuh') {
         const indexerConfig = loadIndexerConfig();
@@ -260,13 +267,14 @@ async function main(): Promise<void> {
             name: 'wazuh',
             intervalMs,
             budgetMs: SYNC_BUDGET_MS,
-            run: () => new AlertSync(prisma, indexer).runOnce(),
+            run: () => new AlertSync(prisma, indexer, { notices: alertNotices }).runOnce(),
           },
           {
             name: 'wazuh-agent-alerts',
             intervalMs,
             budgetMs: SYNC_BUDGET_MS,
-            run: () => new AgentAlertSync(prisma, indexer, agentsTenantId).runOnce(),
+            run: () =>
+              new AgentAlertSync(prisma, indexer, agentsTenantId, { notices: alertNotices }).runOnce(),
           },
           // Os alertas dos grupos do CloudWatch Logs que o cliente autorizou (onboarding self-service da AWS). Fora da
           // célula: lá, vários clientes dividem o manager, e o evento não diz de quem é.
@@ -277,7 +285,7 @@ async function main(): Promise<void> {
                   name: CLOUDWATCH_ALERT_SYNC,
                   intervalMs,
                   budgetMs: SYNC_BUDGET_MS,
-                  run: () => new CloudWatchAlertSync(prisma, indexer).runOnce(),
+                  run: () => new CloudWatchAlertSync(prisma, indexer, { notices: alertNotices }).runOnce(),
                 },
               ]),
         ];
@@ -290,6 +298,7 @@ async function main(): Promise<void> {
           throw new Error('SYNC_SOURCES: a fonte cloudflare exige o cofre de credenciais');
         const cloudflare = new CloudflareAuditSync(prisma, keyring, {
           auditIntervalMs: loaded.CLOUDFLARE_AUDIT_INTERVAL_SECONDS * 1000,
+          notices: alertNotices,
         });
         return [
           {
@@ -311,7 +320,7 @@ async function main(): Promise<void> {
       } else {
         reader = new PubsubRestReader(new MetadataTokenProvider());
       }
-      const sync = new GcpAuditSync(prisma, reader);
+      const sync = new GcpAuditSync(prisma, reader, { notices: alertNotices });
       return [{ name: 'gcp', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => sync.runOnce() }];
     });
     // Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf): a lista que o host exporta do
@@ -344,6 +353,7 @@ async function main(): Promise<void> {
         : { transport: mailTransport(config), webOrigin: config.WEB_ORIGIN as string };
     const notifications = new NotificationDispatcher(prisma, mailer, {
       usage: new UsageNotices(prisma, plans),
+      ...caseNotices.dispatcher,
     });
     tasks.push({
       name: NOTIFICATIONS_TASK,
@@ -378,7 +388,9 @@ async function main(): Promise<void> {
         // Achados das fontes autorizadas lidas por API (GuardDuty, Security Hub, Inspector e Access Analyzer): a mesma
         // sessão e os mesmos clientes com a trava de só leitura. Fora da célula, como a descoberta.
         const findings = await import('./aws/findings/findings-job.js');
-        const collect = new findings.AwsFindings(prisma, aws.credentials, sdkDiscoveryClients);
+        const collect = new findings.AwsFindings(prisma, aws.credentials, sdkDiscoveryClients, {
+          notices: alertNotices,
+        });
         tasks.push({
           name: findings.AWS_FINDINGS_SYNC,
           intervalMs: findings.AWS_FINDINGS_TICK_MS,
@@ -592,9 +604,11 @@ async function main(): Promise<void> {
     );
   }
   await aws.start();
+  await caseNotices.start();
   scheduler.start();
   await stopRequested;
   await scheduler.stop();
+  await caseNotices.finish();
   await prisma.$disconnect();
   logger.info('worker encerrado');
 }

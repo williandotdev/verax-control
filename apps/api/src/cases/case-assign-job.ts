@@ -21,7 +21,7 @@ import {
   writePlan,
 } from './case-store.js';
 
-/** Nome da tarefa no agendador e da linha no `SyncState` (concessão e o começo dos avisos por caso). */
+/** Nome da tarefa no agendador e da linha no `SyncState` (concessão). */
 export const CASE_ASSIGN_TASK = 'case-assign';
 export const CASE_ASSIGN_INTERVAL_MS = 10_000;
 /** Orçamento no agendador: a passagem inteira, por todos os clientes do nó. */
@@ -52,8 +52,8 @@ export interface CaseLogger {
 export interface CaseAssignOptions {
   logger?: CaseLogger;
   /**
-   * Os avisos por e-mail já são por caso. Nenhum modo o liga ainda (o `FindingStore` avisa alerta por alerta): é a parte
-   * dos avisos que vai ligar. Ver `noticedBefore`.
+   * Os avisos por e-mail são por caso (`CASES_MODE=on`): a atribuição não marca nada como avisado, e quem decide é
+   * `case-notices.ts`. Sem isso, o `FindingStore` avisa alerta por alerta, e o caso acompanha a severidade já avisada.
    */
   caseNotices?: boolean;
   /** O relógio do servidor (um falso nos testes). */
@@ -177,13 +177,12 @@ export class CaseAssignJob {
     this.forgetOldQuarantine();
     let firstError: string | null = null;
     try {
-      const noticedBefore = await this.noticedBefore(startedAt);
       const tenants = await this.tenants();
       report.tenants = tenants.length;
       for (const tenantId of tenants) {
         signal.throwIfAborted();
         try {
-          await this.assignTenant(tenantId, noticedBefore, report, signal);
+          await this.assignTenant(tenantId, report, signal);
         } catch (error) {
           if (signal.aborted) throw error;
           report.failedTenants += 1;
@@ -216,29 +215,6 @@ export class CaseAssignJob {
     }
   }
 
-  /**
-   * Até quando o aviso por e-mail é alerta por alerta, o que faz de um alerta o **passado** para os avisos por caso: o
-   * caso nascido dele já nasce com a severidade avisada.
-   *
-   * Enquanto os avisos não são por caso (`caseNotices`), sempre (null): o `FindingStore` avisa de cada alerta alto ou
-   * crítico. Com eles, até a primeira passagem da tarefa assim, guardada uma vez só em `SyncState.cursorTimestamp` desta
-   * tarefa (que não usa cursor de leitura, então não falta coluna). Vale a chegada do alerta, e não a hora em que ele foi
-   * atribuído: no histórico e na volta de versão, o que chegou antes do marco já foi avisado, e o que chegou depois,
-   * não. Na dúvida (a tarefa parada depois do marco), fica sem marca: um aviso repetido é melhor que nenhum.
-   */
-  private async noticedBefore(now: Date): Promise<Date | null> {
-    if (this.options.caseNotices !== true) return null;
-    await this.prisma.syncState.updateMany({
-      where: { name: this.name, cursorTimestamp: null },
-      data: { cursorTimestamp: now },
-    });
-    const state = await this.prisma.syncState.findUniqueOrThrow({
-      where: { name: this.name },
-      select: { cursorTimestamp: true },
-    });
-    return state.cursorTimestamp;
-  }
-
   private async tenants(): Promise<string[]> {
     const rows = await this.prisma.tenant.findMany({
       where: this.options.tenantIds === undefined ? {} : { id: { in: [...this.options.tenantIds] } },
@@ -260,12 +236,7 @@ export class CaseAssignJob {
     return this.held;
   }
 
-  private async assignTenant(
-    tenantId: string,
-    noticedBefore: Date | null,
-    report: CaseAssignReport,
-    signal: AbortSignal,
-  ): Promise<void> {
+  private async assignTenant(tenantId: string, report: CaseAssignReport, signal: AbortSignal): Promise<void> {
     const deadline = this.elapsed() + this.workMs;
     let cursor = this.resume.get(tenantId) ?? OUTBOX_START;
     let fromStart = cursor === OUTBOX_START;
@@ -278,7 +249,7 @@ export class CaseAssignJob {
         // A fila é lida em roda: o trecho que falha não prende os que vêm depois dele, e volta a ser tentado na volta.
         this.resume.set(tenantId, cursor);
         const ids = page.map((row) => row.id);
-        await this.assignPage(tenantId, ids, noticedBefore, report, deadline, signal);
+        await this.assignPage(tenantId, ids, report, deadline, signal);
       }
       if (page.length < this.batch) {
         this.resume.delete(tenantId);
@@ -302,7 +273,6 @@ export class CaseAssignJob {
   private async assignPage(
     tenantId: string,
     ids: readonly string[],
-    noticedBefore: Date | null,
     report: CaseAssignReport,
     deadline: number,
     signal: AbortSignal,
@@ -311,7 +281,7 @@ export class CaseAssignJob {
     for (let part = parts.pop(); part !== undefined; part = parts.pop()) {
       signal.throwIfAborted();
       try {
-        await this.assignBatch(tenantId, part, noticedBefore, report);
+        await this.assignBatch(tenantId, part, report);
         for (const id of part) this.quarantine.delete(id);
       } catch (error) {
         if (!isAlertFault(error)) throw error;
@@ -360,7 +330,6 @@ export class CaseAssignJob {
   private async assignBatch(
     tenantId: string,
     ids: readonly string[],
-    noticedBefore: Date | null,
     report: CaseAssignReport,
   ): Promise<void> {
     const startedAt = this.elapsed();
@@ -374,7 +343,7 @@ export class CaseAssignJob {
       const findings = await lockOutboxRows(tx, tenantId, ids);
       if (findings.length === 0) return null;
       const now = this.now();
-      const planned = await this.plan(tx, tenantId, findings, now, noticedBefore);
+      const planned = await this.plan(tx, tenantId, findings, now);
       await writePlan(tx, tenantId, planned, now);
       return planned;
     }, TRANSACTION);
@@ -397,8 +366,8 @@ export class CaseAssignJob {
     tenantId: string,
     findings: readonly PlanFinding[],
     now: Date,
-    noticedBefore: Date | null,
   ): Promise<BatchPlan> {
+    const noticedByAlert = this.options.caseNotices !== true;
     const open = new Map<string, OpenCase>();
     const keyed = findings.map((finding) => ({ finding, key: caseKeyOf(finding) }));
     await loadOpenCases(tx, tenantId, unique(keyed.map(({ key }) => key.groupKey)), open);
@@ -411,7 +380,7 @@ export class CaseAssignJob {
       return planBatch({
         findings,
         now,
-        noticedBefore,
+        noticedByAlert,
         open,
         previous: new Map(),
         openings: new RecentOpenings(),
@@ -430,7 +399,7 @@ export class CaseAssignJob {
     return planBatch({
       findings,
       now,
-      noticedBefore,
+      noticedByAlert,
       open,
       previous,
       openings: limited
