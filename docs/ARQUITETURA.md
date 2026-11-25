@@ -2193,6 +2193,8 @@ dele.
 | `GET`/`POST trusted-sources`, `PATCH`/`DELETE …/:id`    | Até 200 por cliente (as de todos e as de cada um, vencidas inclusive); /16 a /32 e /32 a /64; até 365 dias |
 | `GET`/`POST sources/:id/routes`, `PATCH`/`DELETE …/:id` | Até 50 por balanceador; caminho literal em minúsculas, até 8 segmentos, `*` por segmento inteiro           |
 
+A rota do mapa (`GET traffic`) está em "Mapa de origens": é da tela Detecções, com a permissão do resumo dela.
+
 O que a API aceita, o motor aceita, com o mesmo significado (`web-logs-contract.test.ts`): a faixa é guardada na forma
 canônica (a mesma escrita de dois jeitos é uma só), e o cadastro é mais estrito onde o motor calaria (`.` e `..` no caminho,
 o mesmo código como falha e sucesso).
@@ -2211,7 +2213,7 @@ inteiro). Com os ataques web desligados, o nó responde o que sempre respondeu. 
 | O painel                   | Nota `aws_cost_alb_logs` ou `internetFacing` numa fonte           | A tela das fontes daquela conta não abre                                                                                                                                                   |
 | O painel                   | Balanceador disponível                                            | A caixa aparece; autorizar volta 409 com o texto da API (sem a estimativa), o pedido inteiro                                                                                               |
 | O painel                   | Relatórios                                                        | Abrem: o resumo e a cobertura não usam lista fechada (a fonte aparece como `alb`)                                                                                                          |
-| O nó                       | Filtro `fonte=alb`, `webLogs` na autorização, `/v1/web-logs`      | 400 no filtro escolhido; o painel só manda `webLogs` com um balanceador, que aquele nó não oferece; 404 sem código, tratado como desligado                                                 |
+| O nó                       | Filtro `fonte=alb`, `webLogs` na autorização, `/v1/web-logs`      | 400 no filtro escolhido; o painel só manda `webLogs` com um balanceador, que aquele nó não oferece; 404 sem código, tratado como desligado (o mapa de origens não aparece)                 |
 | A imagem (volta de versão) | Achados `alb` no banco                                            | Listas, detalhe e incidentes que os contenham dão 500 (`logSourceOf`); a Torre abre. A fonte autorizada ganha `ingestion_error` (`invalid_details`) do Wazuh, sem mudar a lista do manager |
 
 Por isso a ordem: **esta versão sai, no painel e no nó, uma versão inteira antes de a linha ser ligada** (e de qualquer achado
@@ -2605,11 +2607,62 @@ da Verax.
   tabela"); a linha de saúde da fonte (`SourceHealthRow`) usa ícone de forma própria e rótulo, com o tom de "ok" em
   coletando, o de médio em atrasada e o de alto em parada. Todos estão no `/catalogo`.
 
-### Mapa de origens (componente do painel)
+### Mapa de origens (a faixa no topo da tela Detecções)
 
 _(decisão do responsável pelo produto, 24/11/2026: um mapa-múndi com um ponto por país de onde vêm as requisições, em faixa
-larga e recolhível no topo da tela Detecções. O componente está pronto no `/catalogo`; ele só entra na tela quando o coletor
-dos logs do load balancer existir, porque os pontos são o volume real.)_
+larga e recolhível no topo da tela Detecções, com o volume real dos logs do load balancer. Só existe para quem tem a fonte.)_
+
+**A rota.** `GET /v1/web-logs/traffic?window=24h|7d|30d` (24 horas sem pedir outra), contrato estrito em
+`packages/shared/src/web-traffic.ts`. Só leitura, do cliente da sessão (nenhum id vem do request), com `tower:read`: a permissão
+do resumo do topo da tela, que todos os papéis têm; quem vê um vê o outro. Como tudo em `/v1/web-logs`, 404 com
+`AWS_WEB_LOGS_ENABLED` desligado. A resposta tem só contagens: nenhum nome de balanceador, conta, endereço, caminho ou host.
+
+| Grupo          | O que entra                                                                                     |
+| -------------- | ----------------------------------------------------------------------------------------------- |
+| `countries`    | Só o cliente direto (`direct`) com país na tabela, do maior volume ao menor, com o "agora"      |
+| `unknown`      | Cliente direto sem país (`ZZ`)                                                                  |
+| `throughProxy` | `proxy` (CDN e proxy do cliente): o país seria o da borda                                       |
+| `internal`     | `private`                                                                                       |
+| `unverified`   | Endereço público lido sem a lista das CDNs: no painel, conta como origem desconhecida, com nota |
+
+- **O "agora"** são os 15 minutos até `lastClosedAt`, e não até a hora do pedido: a AWS entrega o log de 5 a 10 minutos depois,
+  e contados de agora os últimos minutos estariam sempre vazios. `lastClosedAt` é a posição do leitor (`CollectorCursor`), do
+  balanceador mais em dia: o intervalo com o registro mais novo não serve, porque num site quieto ele pode ser de horas atrás.
+  (Só enquanto o leitor recupera um atraso vale o do registro mais novo: a posição fica no atraso, e os minutos de agora já
+  foram lidos, porque a leitura ao vivo vem primeiro.)
+  Na prática, a onda mostra o que aconteceu de 10 a 35 minutos atrás, e o painel diz até que hora. O intervalo já lido e ainda
+  não fechado conta no total, e não no agora.
+- **Estados:** `no_source` (nenhum balanceador com a leitura autorizada, num estado de coleta e de conta ativa: nada do tráfego
+  é lido), `waiting` (nenhum arquivo lido desde a autorização, e nada na janela), `stale` (nenhum balanceador lido há mais de 45
+  minutos: em dia, são de 10 a 20) e `ok`. `sources` diz quantos estão autorizados, em dia, só observando e com problema.
+- **Janelas:** 24 horas pelos intervalos de 5 minutos; 7 e 30 dias por hora inteira (o que passa de 48 h já está nas horas). As
+  três cabem no menor histórico de plano (30 dias) e nos 35 dias do tráfego: nenhum plano limita nada aqui.
+- **Custo:** memória por cliente e janela, de 30 s (24 horas) e 2 min (7 e 30 dias); pedidos juntos fazem um cálculo só. São
+  duas leituras do `byCountry`, o recente antes do total (o que entra no meio só pode estar a mais no total). Medido com 2
+  balanceadores: num site com cerca de 57 linhas por intervalo e balanceador (66 mil linhas de 5 minutos, 152 mil horas), o
+  recente 1 ms, 24 horas 10 a 13 ms, 7 dias 22 a 25 ms, 30 dias 52 a 55 ms; no pior caso (120 países e 3 classes em todo
+  intervalo, 2 clientes, 830 mil linhas e 1,1 milhão de horas), 5 a 8 ms, 72 a 110 ms, 240 a 320 ms e 340 a 450 ms.
+
+**A faixa** (`features/detections/origin-band.tsx`), acima do resumo e da lista:
+
+- **Quem não a tem vê a tela de sempre:** com 404 (o nó desligado, ou um nó de antes), `no_source` ou a primeira resposta
+  falhando, nada aparece e nada pula. O nó sem a rota é perguntado uma vez por visita; sem balanceador, de 5 em 5 minutos.
+- **Quem a tem:** pedida a cada 60 s com a aba à vista (em segundo plano, nada; ao voltar, na hora). A atualização que falha
+  mantém os números, com o aviso, e nada pulsa. Recolhível, com a escolha guardada neste navegador por pessoa; no celular começa
+  recolhida; por um link direto (alerta, incidente, análise) também, só daquela vez: quem chega por ele vem pelo que ele abre.
+- **A lista não pula:** o navegador guarda, por pessoa e cliente, que a faixa existia e a altura dela com aquela largura de janela
+  (`origin-place.ts`), e a visita seguinte reserva o lugar. Só na primeira visita depois de autorizar a fonte o lugar não existe
+  ainda.
+- **Pacote:** o desenho do mundo (à parte, 41 KB) só é baixado com a faixa aberta.
+- **Clicar num país não filtra a lista:** a API das listas não tem filtro por país. A dica é só informação.
+
+**A marca do país** (`isFlagged`, em `world-map-model.ts`): todo site recebe sondagem o tempo todo, de todo lugar, e com uma só
+bastando o mapa ficaria vermelho. O país é marcado com 50 suspeitas ou mais na janela (`FLAGGED_MIN`), ou com 10 ou mais
+(`FLAGGED_MIN_WITH_SHARE`) que sejam pelo menos 1% das requisições dele (`FLAGGED_MIN_SHARE`). Os dois números são de um dia e
+crescem com a janela (350 e 70 em 7 dias, 1.500 e 300 em 30). A onda só sai na cor do crítico em país marcado; o número de
+suspeitas de todos continua na dica, na lista e na tabela.
+
+**O componente** (`components/security/world-map*`), também no `/catalogo`:
 
 - **Desenho:** `WORLD_LAND_PATH`, um caminho SVG de 17 KB, sem fronteiras (nada de político é desenhado), na projeção de
   Robinson centrada em 11° L e recortada de 83,7° N a 57° S, num quadro de 2000 por 820 (2,44 por 1). O corte cai em 169° O, no
@@ -2625,9 +2678,13 @@ dos logs do load balancer existir, porque os pontos são o volume real.)_
   dá sempre a mesma saída. Código novo na API, ou dado que mude a lista dos sem ponto, para o gerador: quem revisa decide.
 - **Dados:** `WorldTraffic` (`world-map-model.ts`). Cada requisição está em um grupo só (um país, origem desconhecida, endereço
   interno ou CDN e proxy), e o percentual é sobre a soma de todos: o que não tem lugar no mapa fica numa linha à parte.
-- **Animação:** a onda é só CSS (`transform` e `opacity`), em no máximo 60 pontos, com 12 fases num período de 2,4 s e botão de
-  pausa lembrado por pessoa. Com menos movimento pedido, começa parada, com um anel fixo. Sem log novo, nada pulsa.
+- **Animação:** a onda é só CSS (`transform` e `opacity`), em no máximo 60 pontos, com 12 fases num período de 2,4 s, dez
+  períodos por volta da animação (cada volta acorda a página) e botão de pausa lembrado por pessoa. Com menos movimento
+  pedido, começa parada, com um anel fixo. Sem log novo, nada pulsa.
 - **Pacote:** a página usa `LazyWorldMap`; o desenho fica num arquivo à parte, fora do pacote principal.
+- **Demonstração:** dados fictícios que andam com o relógio e são sempre os mesmos no mesmo minuto (`mocks/web-traffic.ts`); só
+  a Alfa tem a fonte. `localStorage['verax.mock.traffic']` escolhe outra situação (`stale`, `waiting`, `no_source`, `off`,
+  `error`, `slow`).
 
 ## Plano do nó: limites e uso
 

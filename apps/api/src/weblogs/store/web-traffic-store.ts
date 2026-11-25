@@ -26,7 +26,7 @@ export {
  * soma as duas tabelas numa instrução só, sem marca d'água nem relógio: o total não muda durante a passagem.
  *
  * Quem chama escolhe o cliente: o worker, o da fonte; a API, o da sessão. Nenhum método aceita um id vindo do request.
- * Quem soma e passa para as horas é a tarefa `web-logs` (`collect/web-logs-job.ts`); a rota do mapa ainda não existe.
+ * Quem soma e passa para as horas é a tarefa `web-logs` (`collect/web-logs-job.ts`); quem lê é a rota do mapa (`map/`).
  */
 
 /** Quanto ficam os intervalos de 5 minutos, antes de passarem para as horas. */

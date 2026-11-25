@@ -56,7 +56,8 @@ function uniqueKey(key: CursorKey) {
 /**
  * Cursor de cada fluxo de cada conta, a base dos coletores nativos (AWS, Cloudflare): até onde a conta já foi lida,
  * a continuação de uma leitura cortada no teto de páginas e quando ler de novo. É dado de sistema (sem cliente), lido
- * e gravado só pelo worker, sem escopo. A concessão do coletor (`SyncLease`) garante um worker por vez em cada fluxo.
+ * e gravado só pelo worker, sem escopo; a API só lê a posição dos balanceadores, pelas contas do cliente da sessão
+ * (`weblogs/map/`). A concessão do coletor (`SyncLease`) garante um worker por vez em cada fluxo.
  *
  * - `read` devolve o cursor e o cria vazio, para rodar já, na primeira vez;
  * - `due` lista os cursores do fluxo com a hora de rodar já chegada, de contas ativas;

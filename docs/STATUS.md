@@ -7009,3 +7009,64 @@ source-monitor,source-parts,sources,onboarding-labels,onboarding-section}`; `lib
   bucket não está na evidência: o alerta manda ver em Contas cloud.
 - **Ficou para depois:** `start.sh`, `node.conf`, runbook e a frase do DPA (PR-6); o mapa das origens (outra PR); as rotas
   detectadas com "é login / ignorar" (PR-8).
+
+## Mapa de origens na tela Detecções: a rota e a faixa (só com a fonte)
+
+- **O que é:** `GET /v1/web-logs/traffic?window=24h|7d|30d` e a faixa "Origem das requisições" no topo da tela Detecções, com o
+  mapa do componente que já existia e o volume real dos logs dos balanceadores. Vai para `integracao/alb`, sobre a PR-4. Sem
+  migration, sem permissão nova e sem mudança em `infra/`.
+- **Quem não tem a fonte vê a tela de sempre:** nó desligado ou de antes (404), nenhum balanceador autorizado ou a primeira
+  resposta falhando: nada aparece e nada pula.
+- **Rota:** só leitura, do cliente da sessão, com `tower:read` (a do resumo do topo da tela; todos os papéis). Contrato estrito
+  (`packages/shared/src/web-traffic.ts`), só contagens. Estados `ok`, `stale`, `waiting` e `no_source`; memória por cliente e
+  janela (30 s; 2 min em 7 e 30 dias).
+- **O "agora" são os 15 minutos até o último intervalo fechado** (a posição do leitor), e não até a hora do pedido: a AWS entrega
+  com 5 a 10 minutos de atraso, e contado de agora nada pulsaria.
+- **Marca do país (pedido do responsável):** 50 suspeitas na janela, ou 10 que sejam pelo menos 1% das requisições dele, em
+  constantes (`FLAGGED_*`); os números são de um dia e crescem com a janela. A nota do mapa diz os números; a legenda virou
+  "Muitas requisições suspeitas"; a onda só sai vermelha em país marcado.
+- **Faixa:** recolhível (lembrada por pessoa; no celular começa recolhida), pedida a cada 60 s com a aba à vista, com o período, o
+  que só observa, o que está com problema, aguardando, parado e a atualização que falha (mantém os números). O desenho do mundo
+  só é baixado com ela aberta, e a altura da última vez fica reservada: a lista não pula.
+- **Animação:** uma volta da onda passou a ter dez períodos (24 s). Com um por volta, ao lado do radar a tela gastava 9% da thread
+  principal (cada volta acorda a página, e o radar redesenha); agora, 3%, e 2,5% sem o mapa.
+- **Decisões tomadas aqui, a conferir:**
+  - as três janelas (24 h, 7 e 30 dias): as horas guardadas por 35 dias só servem para isso, e o custo é baixo (abaixo);
+  - `unverified` é um grupo à parte no contrato; no painel soma em "origem desconhecida", com a nota de quantas são;
+  - parado é sem ler um intervalo novo há 45 minutos (em dia, são de 10 a 20); recuperando um atraso, vale o registro mais novo;
+  - o tráfego que já está na janela aparece mesmo que seja de um balanceador retirado, enquanto houver outro autorizado; sem
+    nenhum, a faixa some;
+  - por um link direto (alerta, incidente, análise) a faixa começa recolhida, só daquela vez: ela empurraria o que a pessoa veio ver;
+  - o texto da espera diz "cerca de 15 minutos depois das primeiras requisições" (o pedido dizia "até 15"): no pior caso chega a uns
+    20, e a onda só começa quando o primeiro intervalo fecha;
+  - clicar num país não filtra a lista: a API das listas não tem filtro por país (sugestão, não feita).
+- **Arquivos:** `packages/shared/src/web-traffic.ts`; `apps/api/src/weblogs/map/` (novo), `weblogs/settings/web-logs.module.ts`;
+  `apps/web/src/features/detections/{origin-band,origin-traffic,origin-place,strip-preference}`, `pages/detections-page.tsx`,
+  `components/security/world-map*`, `index.css`, `mocks/web-traffic.ts`, `features/tour/steps.ts`; testes; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/`, `.claude/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 221 arquivos e 4260 testes, numa rodada só, sem repetir nenhum; shared, 33 arquivos e
+  552; web, 69 e 953. `pnpm lint`, `pnpm typecheck` (todos os pacotes), `format:check` e o build com a varredura, limpos. Novos:
+  23 na API (12 da conta pura e 11 da rota, um deles do arquivo no S3 falso ao mapa, pela tarefa `web-logs`), 4 no shared e 56 na web.
+  - **Isolamento:** dois clientes com balanceador de mesmo nome e região, com a memória quente; todos os papéis; sem sessão 401,
+    sem cliente 409, query fora do contrato 400, desligado 404; nada que identifique balanceador, conta ou cliente na resposta.
+  - **Navegador (Playwright, mock):** 159 testes (os 24 da faixa, detecções, radar, tour, login da demonstração, estrutura, páginas
+    e o catálogo): 158 na rodada, e um (a Postura, que não carregou com a máquina cheia) passou repetido. Antes, a suíte mock
+    inteira (199), com quatro contagens de passos do tour corrigidas. Axe nos dois temas em 360, 768 e 1.280 px (em dia, com a
+    dica, a tabela e outro período; parado; aguardando; carregando) e, num tema só, com a atualização que falhou; recolhida, em
+    360 px. Sem rolagem horizontal de 320 a 1.920, teclado, menos movimento, aba em segundo plano, a lista que não pula e o
+    arquivo do mapa só com a faixa aberta.
+  - **Mutações** (em série, com volta conferida por hash): 161. 155 mortas de primeira e 2 depois de testes novos; uma mostrou código
+    redundante (removido); 3 equivalentes (a busca das fontes sem `authorizedAt` ou `revokedAt`, que o estado e o CHECK do banco já
+    amarram; a parte de 1% por multiplicação em vez de divisão).
+- **Medido** (Windows, com a CPU da máquina entre 85 e 100% por outros processos):
+  - **Banco** (2 balanceadores): num site comum (57 linhas por intervalo e balanceador), o agora em 1 ms, 24 h em 10 a 13 ms, 7
+    dias em 22 a 25 e 30 dias em 52 a 55; no pior caso (120 países e 3 classes em todo intervalo), 5 a 8, 72 a 110, 240 a 320 e 340
+    a 450. Sempre pelo índice `(tenantId, horário)`.
+  - **Pacote:** o principal, de 1.101,8 para 1.116,5 KB (331,4 para 336,4 com gzip; a rota, a faixa e o contrato); o mapa à parte,
+    40,6 KB (15,8 com gzip); CSS, mais 0,8 KB.
+  - **Thread principal, 246 pontos, 1.440 px** (três vezes, em repouso por 10 s): antes desta mudança, 3,3 a 3,9%; sem a fonte, 3,0 a
+    3,7; recolhida, 3,2 a 4,7; aberta, 5,3 a 6,6; aberta e pausada, 3,8 a 5,2. A carga da página, de 1,2 a 1,3 s para 1,6 a 1,7 com
+    ela aberta, e igual sem ela. Por rastreamento, a onda: 9% com uma por volta da animação, 3,1 a 3,7 com dez, e 2,3 a 2,5 sem o mapa.
+- **Riscos e sugestões:** nenhum dado real de ALB foi usado. A primeira visita depois de autorizar a fonte ainda desloca a lista (o
+  lugar só é guardado a partir dela). Não foi conferido em leitor de tela de verdade, no Firefox e no Safari. Sugestão: um filtro por
+  país nas listas, para o clique num país levar aos alertas dele.
