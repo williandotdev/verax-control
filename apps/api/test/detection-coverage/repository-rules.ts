@@ -190,7 +190,11 @@ export function repositoryRules(): Map<string, RepositoryRule> {
     entry: string,
     origin: RuleOrigin,
     sourceOf: (id: string) => FindingSource,
-    metas: readonly (WorkerRuleMetadata & { tactics?: readonly string[]; techniques?: readonly string[] })[],
+    metas: readonly (WorkerRuleMetadata & {
+      tactics?: readonly string[];
+      techniques?: readonly string[];
+      enabled?: boolean;
+    })[],
   ) => {
     const modules = moduleClosure([entry], readRepoFile);
     for (const meta of metas) {
@@ -199,7 +203,8 @@ export function repositoryRules(): Map<string, RepositoryRule> {
         origin,
         source: sourceOf(meta.id),
         level: meta.level ?? WEB_RULE_MAX_LEVEL[meta.id],
-        findable: true,
+        // Regra desligada no código não gera achado: não é cobertura.
+        findable: meta.enabled !== false,
         tactics: meta.tactics ?? [],
         techniques: meta.techniques ?? [],
         fingerprint: workerRuleFingerprint(meta, modules),

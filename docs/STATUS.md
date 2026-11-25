@@ -7693,7 +7693,7 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
 
 - **O que foi feito:** os contratos da Cobertura de detecção em `packages/shared` (schemas zod estritos do cenário e da
   evidência, os cinco estados, os rótulos, os estados que o cliente vê e a função pura `effectiveScenarioState`); o catálogo
-  inicial em `detections/catalog/` (24 cenários agrupados por objetivo, 168 regras, todos em `em_teste`, sem evidência); as
+  inicial em `detections/catalog/` (24 cenários agrupados por objetivo, 167 regras, todos em `em_teste`, sem evidência); as
   fingerprints das regras (`apps/api/test/detection-coverage/rule-fingerprints.ts`); e o teste que confere o catálogo contra as
   regras do repositório. Sem rota, sem tela, sem console, sem infra. Seção nova em `docs/ARQUITETURA.md`, "Cobertura de
   detecção: o catálogo de cenários (UC-1)".

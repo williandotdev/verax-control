@@ -1,9 +1,9 @@
 {
   "id": "SC-0015",
   "title": "Varredura e reconhecimento",
-  "goal": "Detectar varreduras vindas da internet: varredura de rede nos flow logs, rajadas de bloqueio do WAF da AWS e do Cloudflare, desafios resolvidos em excesso, ferramentas de ataque pelo User-Agent, sondagem de caminhos sensíveis e enumeração de rotas no balanceador.",
+  "goal": "Detectar varreduras vindas da internet: varredura de rede nos flow logs, rajadas de bloqueio do WAF da AWS e do Cloudflare, ferramentas de ataque pelo User-Agent, sondagem de caminhos sensíveis e enumeração de rotas no balanceador.",
   "logSources": ["vpc_flow", "waf", "cloudflare_waf", "alb"],
-  "rules": ["100400", "80443", "990330", "990335", "990400", "990401", "990402", "990404"],
+  "rules": ["100400", "80443", "990330", "990400", "990401", "990402", "990404"],
   "providerDetection": false,
   "mitre": {
     "tactics": ["Reconnaissance"],
