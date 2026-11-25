@@ -211,7 +211,7 @@ export function evidenceOf(hit: WebHit): WebEvidence {
   });
 }
 
-/** As chaves por onde os casos (PR-10) vão juntar achados. */
+/** As chaves do ataque. Os casos saem das colunas do achado (`cases/case-key.ts`), e não delas. */
 export function correlationOf(
   source: WebSource,
   hit: Pick<WebHit, 'rule' | 'client' | 'host' | 'firstMs' | 'lastMs'>,

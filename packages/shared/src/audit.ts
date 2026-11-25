@@ -39,6 +39,8 @@ export const AUDIT_RESOURCE_TYPES = [
   'alert_exception',
   'finding',
   'incident',
+  'alert_case',
+  'triage_operation',
   'wazuh_agents',
 ] as const;
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];

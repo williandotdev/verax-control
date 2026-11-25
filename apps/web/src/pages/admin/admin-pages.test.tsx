@@ -1295,7 +1295,7 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
 
   // Duas telas em sequência: no runner da CI, sob carga, a lista ainda carregava ao fim da espera padrão (3 s).
   it('a exceção criada ao marcar um alerta como legítimo aparece aqui', { timeout: 30_000 }, async () => {
-    const router = renderAt('/?severidade=critical');
+    const router = renderAt('/?visao=alertas&severidade=critical');
     await userEvent.click(
       await screen.findByRole('button', {
         name: 'Abrir o alerta: Tentativa de desligar a trilha do CloudTrail',

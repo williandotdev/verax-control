@@ -869,6 +869,19 @@ render() {
       web_logs=(AWS_WEB_LOGS_ENABLED=false)
       ;;
   esac
+  # Casos: o agrupamento dos alertas e a triagem em massa (CASES_MODE): a linha do node.conf é a escolha deste nó, o mesmo
+  # valor na API e no worker. Sem ela, nada entra nos arquivos, e vale o padrão da versão instalada. Fora do formato (a linha
+  # vazia também), desliga, com o aviso.
+  local cases=()
+  case ${CASES_MODE-sem linha} in
+    'sem linha') ;;
+    off | shadow | on) cases=("CASES_MODE=$CASES_MODE") ;;
+    *)
+      echo "AVISO: CASES_MODE fora do formato em /etc/verax/node.conf (off, shadow ou on): o nó sobe com os casos" \
+        "desligados." >&2
+      cases=(CASES_MODE=off)
+      ;;
+  esac
   # Sincronização com o plano de controle: no modo cliente, nas duas plataformas, nunca na célula (que tem o canal
   # dela). A origem vem do node.conf só no formato (a origem https, sem caminho); fora dele ou sem a linha, o worker usa
   # a de produção. Sem a identidade, o nó sobe sem a sincronização, com o aviso: nos nós da GCP, o NODE_SA_UNIQUE_ID
@@ -959,6 +972,7 @@ render() {
     "${egress[@]}" \
     "${aws_reader[@]}" \
     "${web_logs[@]}" \
+    "${cases[@]}" \
     "${turnstile[@]}" \
     "${agents_api[@]}" \
     "${vault_api[@]}" \
@@ -977,6 +991,7 @@ render() {
     "${egress[@]}" \
     "${aws_reader[@]}" \
     "${web_logs[@]}" \
+    "${cases[@]}" \
     "${wazuh_worker[@]}" \
     "${agents_worker[@]}" \
     "${vault_worker[@]}" \

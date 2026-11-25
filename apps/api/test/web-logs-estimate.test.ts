@@ -321,7 +321,7 @@ describe('estimativa de volume de um balanceador', () => {
   describe('o portão no worker', () => {
     const deps = () => {
       const warn = vi.fn();
-      return { prisma, credentials: new FakeCredentials(), logger: { warn }, warn };
+      return { prisma, credentials: new FakeCredentials(), notices: undefined, logger: { warn }, warn };
     };
 
     it('desligado, na célula ou sem identidade na AWS: nenhuma tarefa', async () => {

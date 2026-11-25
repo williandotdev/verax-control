@@ -6,6 +6,7 @@ import { skipDemoTour } from './demo-tour';
  * Radar de detecções no resumo da tela Detecções, no navegador, sobre a demonstração (`dev:mock`): sem violação de acessibilidade (WCAG 2.2
  * AA, inclusive contraste) com a dica aberta pelo teclado e a tabela aberta, nos dois temas, no computador e no celular
  * (sem rolagem horizontal da página); a varredura girando só pelo CSS; e, com menos movimento pedido, parado e completo.
+ * Com os casos desligados: o radar de alertas, o de sempre. O de casos está em `casos-torre.mock.spec.ts`.
  */
 
 async function openTower(page: Page) {
@@ -29,7 +30,10 @@ async function violations(page: Page): Promise<string[]> {
 
 test.describe('radar de detecções da tela Detecções (modo mock)', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'analista_cliente'));
+    await page.addInitScript(() => {
+      window.localStorage.setItem('verax.mock.role', 'analista_cliente');
+      window.localStorage.setItem('verax.mock.cases', 'off');
+    });
     await skipDemoTour(page);
   });
 

@@ -2087,6 +2087,400 @@ nenhum endereço sai do nó.
 - **Atualização:** a cada versão do nó, com `scripts/update-ip-country.mjs` (offline, lê os CSV já baixados; os mesmos CSV
   dão os mesmos bytes). `generatedAt`, `ageDays` e `isStale` (mais de 180 dias) são para o aviso honesto na tela.
 
+## Casos: agrupamento dos alertas (`apps/api/src/cases/`)
+
+_(partes 1 a 8: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API, a tela, o e-mail, e os números na
+Torre, no radar e nos relatórios. Nada muda no painel nem no e-mail enquanto `CASES_MODE` for `off`)_
+
+Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é o worker
+(a pessoa só divide um que juntou coisas demais); a pessoa trata alertas, um por um ou em massa, e as contagens do caso são
+de gatilhos da tabela de alertas.
+
+- **Interruptor:** `CASES_MODE`, o mesmo valor no ambiente do worker e no da API, conferido na partida (valor fora da
+  lista não sobe).
+
+  | Valor    | No worker                                                                                          | Na API                                                                                           |
+  | -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+  | `off`    | Padrão. Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo só confere se há caso a apagar) | Padrão. As rotas dos casos respondem 404, iguais a uma rota que não existe, para todos os papéis |
+  | `shadow` | Os alertas ganham caso (a medição no nó piloto)                                                    | Só a equipe da Verax (`admin_verax`) lê, no cliente escolhido; para os outros papéis, como `off` |
+  | `on`     | O mesmo que `shadow`, mais a fila da triagem em massa (`triage-ops`) e os avisos por caso          | Todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa              |
+
+  O `start.sh` passa a linha do `node.conf` à API e ao worker; sem ela, vale o padrão da versão. O nó gerenciado já instalado
+  não recebe linha nova: nele, quem liga é o padrão da versão (`docs/runbooks/casos.md`). A API lê o que houver no banco: com o worker em `off` e a API em `on`, os casos ficam parados no tempo (a
+  situação mostra a última passagem).
+
+- **Tarefas do worker** (só com `shadow` ou `on`):
+  - `case-assign` (a cada 10 s, concessão no `SyncState`): lotes de 200 alertas por cliente, na ordem de chegada, no
+    máximo 2 s de trabalho por cliente em cada passagem. A fila é o próprio predicado (`caseId` vazio, fora de
+    incidente, novo ou em análise), com o índice parcial `Finding_case_outbox_idx`: o alerta novo, o histórico e o que
+    chegou com a versão anterior do nó passam pelo mesmo caminho. O esperado por exceção nasce legítimo e não entra.
+  - `case-watch` (a cada minuto): a idade do alerta alto ou crítico mais antigo ainda sem caso, no log; passou de
+    10 min, é aviso no log. O e-mail desse atraso sai da tarefa `notifications`, com `on` (abaixo).
+  - `case-reconcile` (uma vez por semana): refaz as contagens de cada caso e corrige a que não bate. É a única escrita
+    de contagem fora dos gatilhos, e qualquer correção vai para o log.
+  - `triage-ops` (a cada 5 s, concessão no `SyncState`; **só com `on`**): as operações de triagem em massa que não cabem na
+    requisição (abaixo).
+
+- **Um lote é uma transação**, com a ordem de travas do projeto: o lock dos alertas do cliente (o dos coletores), as
+  linhas dos alertas (`FOR UPDATE SKIP LOCKED`, todas de uma vez) e só então os casos. O alerta preso por uma triagem em
+  curso fica para a passagem seguinte; o lote espera no máximo 1 s por um caso preso, e o coletor espera no máximo um
+  lote. O UPDATE não mexe no `updatedAt` do alerta, que a retenção lê como atividade.
+
+- **Ciclo do caso, pelo horário de chegada no servidor** (`Finding.createdAt`), nunca pelo do log. Como a chegada fica
+  gravada, o agrupamento é o mesmo com o alerta atribuído na hora, no histórico ou depois de uma volta de versão.
+
+  | Situação do caso aberto da chave                         | O alerta que chega                                        |
+  | -------------------------------------------------------- | --------------------------------------------------------- |
+  | Detecção, até 24 h de silêncio e 7 dias de idade         | Entra nele                                                |
+  | Detecção, além disso (mesmo em análise ou promovido)     | Sela (`window`, continua pendente e listado) e abre outro |
+  | Vulnerabilidade ou postura, com pendência                | Entra nele, sem prazo                                     |
+  | Sem pendência, com um incidente dele ainda não resolvido | Entra nele, como novo (o incidente não é alimentado)      |
+  | Sem pendência, tratado (ou com o incidente resolvido)    | Sela (`treated`) e abre outro                             |
+  | Sem alerta nenhum (saíram na retenção)                   | Sela (`idle`) e abre outro                                |
+
+  O caso novo leva o anterior da chave (`previousCaseId`) e quantas vezes ela já voltou (`recurrence`).
+
+- **Limites, só na hora de abrir** (nas 24 h anteriores à chegada): passados 8 casos da mesma família, conta e alvo com
+  rede da internet, o seguinte vai para um caso distribuído (não vale para origem privada, item da lista de proteção
+  nem crítico; este, a partir do 101º, vai para um caso próprio). Com 40 casos na fila de detecção ou de postura, a
+  chave média ou baixa nova vai para um caso por fonte; a alta, a crítica e a de item protegido, nunca. A fila de
+  vulnerabilidade não tem teto (decisão D1).
+
+- **Título:** sempre de um dicionário em português (`case-titles.ts`), nunca do evento. O que vem do evento fica nas
+  partes da chave e nas amostras (limitadas em quantidade e tamanho), que são dado a mostrar.
+
+- **Severidade já avisada** (`noticedSeverity`): com `shadow`, em que o aviso por e-mail é alerta por alerta, o caso nasce
+  com a severidade já avisada e a acompanha. Com `on`, a atribuição não a toca: quem decide, avisa e marca são os avisos
+  por caso (abaixo).
+
+- **Falhas:** o erro de um cliente não para os outros nem a coleta. O lote que falha por culpa de um alerta é partido ao
+  meio até isolar qual; ele fica de fora de 1 min a 1 h (dobra a cada falha), com o id e o SQLSTATE no log. Falha de
+  banco ou espera longa só adiam o cliente; a passagem seguinte continua depois do trecho que falhou e volta ao começo.
+
+### Leitura dos casos pela API
+
+_(`cases.controller.ts`, `cases.service.ts` e `case-read-store.ts`; contrato em `packages/shared/src/cases.ts`)_
+
+Só leitura, com a permissão `findings:read` (todos os papéis) e o cliente da sessão. Caso ou alerta de outro cliente é 404,
+igual a um que não existe. Parâmetro desconhecido é 400. O `CASES_MODE` é conferido num guard, antes da query e do id.
+
+| Rota                          | O que devolve                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET /v1/cases/status`        | `mode`, a última passagem da tarefa (`asOf`) e há quantos minutos espera o alerta mais antigo sem caso |
+| `GET /v1/cases`               | Os casos, com filtros, ordem e página (até 100 por página e 10.000 páginas)                            |
+| `GET /v1/cases/groups`        | A fila de vulnerabilidades agrupada por pacote, recurso ou conta                                       |
+| `GET /v1/cases/:id`           | O caso inteiro, o que sai dos alertas dele, os casos anteriores, os incidentes e as operações          |
+| `GET /v1/cases/:id/findings`  | Os alertas do caso, por cursor                                                                         |
+| `GET /v1/cases/:id/timeline`  | Os alertas por hora ou por dia                                                                         |
+| `GET /v1/findings/:id/triage` | As operações de triagem em massa que mexeram num alerta                                                |
+
+- **Situação:** é a única rota que responde com os casos desligados (`off`, sem ler o banco). É por ela que o painel sabe
+  se os casos valem: o `/v1/me` é do módulo `auth` e não mudou.
+- **Estados da lista:** `pending` (o padrão: há alerta fora de incidente, novo ou em análise), `investigating`, `treated`
+  (nada pendente) e `all`. O caso sem nenhum alerta guardado não entra em lista; abre pelo id.
+- **Prioridade** (a ordem padrão), sempre total: a pior severidade pendente; nela, quem toca um item da lista de proteção;
+  dentro disso, a chegada do último alerta (relógio do servidor), a mais recente primeiro; no empate, o id. O item
+  protegido sai das amostras de recurso, usuário e IP (até 20 valores de cada; a chave de acesso não é amostra). As outras
+  ordens são `recent` e `volume` (alertas pendentes). As contagens não têm índice de propósito: a ordem é feita em memória,
+  sobre os casos do cliente que saem do índice `(tenantId, queue, pending)`.
+- **Severidade:** há alerta pendente dela. Só com `pending` e `investigating`: o caso não guarda a severidade do que já foi
+  tratado, e a combinação com `treated` e `all` é 400, em vez de uma lista que esconde casos.
+- **Período:** o caso ativo em algum momento da janela, pelo horário do evento **ou** pelo da chegada no servidor. Um caso
+  que acabou de receber alertas com data antiga (ou forjada) não some das últimas 24 h. O começo não passa do histórico do
+  plano, como nos alertas.
+- **Fonte:** sai da família da chave e, nas famílias de mais de uma fonte, das regras (`case-sources.ts`). A família que não
+  se conhece aparece em todo filtro de fonte.
+- **Conta, tática e técnica:** pelas amostras do caso (até 50 contas, 20 táticas e 50 técnicas).
+- **Busca:** no título, nas partes da chave e nas amostras, nunca nos alertas, com os curingas do `ILIKE` escapados.
+- **Grupos (decisão D1):** o pacote e o recurso saem das partes da chave, e a conta, da amostra (na fila de vulnerabilidades
+  cada caso é de um pacote, um recurso e uma conta): nenhum alerta é lido. O valor nulo reúne os casos sem ele (a
+  vulnerabilidade no código não tem pacote). A lista aceita o grupo: `groupBy` com `group` (o valor exato), ou `groupBy`
+  sozinho para os sem valor. Um recurso com mais de 256 caracteres está cortado na chave: dois iguais até ali ficam no
+  mesmo grupo.
+- **Detalhe:** os 50 mil alertas mais recentes do caso são lidos uma vez, com prazo de 1,5 s no banco (`statement_timeout`,
+  transação só de leitura): os 10 IPs e os 10 usuários menos frequentes, os 50 subgrupos mais graves, os resolvidos que a
+  origem voltou a ver (`lastSeenAt` depois de `triagedAt`), os incidentes e as operações em vigor. Passou do prazo, sai
+  `analysis: null`, e o resto do detalhe vale. Passou dos 50 mil, sai `complete: false`.
+- **Casos anteriores:** a corrente de `previousCaseId`, até 10, dentro do cliente; para no que já saiu pela retenção.
+- **Alertas do caso:** do mais recente para trás, pelo índice `(tenantId, caseId, occurredAt, id)`, sem limite de
+  profundidade. O horário e o id de um alerta não mudam: um alerta novo não empurra os outros. O cursor é opaco e conferido
+  (formato, faixa, escrita única e a marca do caso com os filtros); montado à mão, só muda o ponto de partida dentro do
+  caso que a pessoa já pode ler, porque a consulta filtra sempre pelo cliente e pelo caso.
+- **Linha do tempo:** por hora cheia até 7 dias; além disso, por dia de Brasília (UTC-3 o ano todo, vira às 03:00 UTC), no
+  máximo 366 dias até o alerta mais recente. Sem buracos. Horário no futuro e alerta antigo demais ficam fora, avisados em
+  `truncated`. Prazo de 3 s no banco; passou, 503.
+- **Operações:** as em vigor nos alertas do caso (`Finding.triageOpId`) e as que elas desfizeram, até 20, cada uma com o que
+  quem vê pode fazer (`can`, a mesma conta de `GET /v1/triage-operations`: `operationCan`). O `can` do caso e o das operações
+  seguem o modo: com `shadow`, nada, nem para a equipe da Verax.
+- **Voltas depois de tratado** (`recurrenceTreated`, na lista e no detalhe): das vezes que a chave voltou, quantas foram depois
+  de o caso anterior ter sido selado por `treated`. Sai do motivo do selo dos anteriores da mesma chave (índice
+  `(tenantId, groupKey)`), numa consulta só por página; conta os anteriores ainda guardados, e nunca mais que `recurrence`.
+- **Texto do evento** (amostras, partes da chave, subgrupos, títulos dos alertas) sai só como dado, limitado em quantidade e
+  tamanho; o título do caso é do dicionário.
+
+### Triagem em massa
+
+_(`triage-operations.{controller,service}.ts`, `triage-{engine,store,view}.ts`, `triage-ops-job.ts`, `case-split*.ts`;
+contrato em `packages/shared/src/triage-operations.ts`)_
+
+Uma pessoa trata muitos alertas de uma vez, com desfazer. Uma operação é um `TriageOperation` (o pedido e o andamento) e um
+`TriageOperationItem` por alerta mudado (o que ele era antes).
+
+| Rota                                      | O que faz                                                                                           | Quem                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `POST /v1/triage-operations`              | `status`, `promote`, `attach` ou `undo_all_of`. 201 feita, 202 na fila, 200 repetida                | `findings:triage`; incidente, também `incidents:write` |
+| `GET /v1/triage-operations[/:id]`         | Lista (por página, com autor) e detalhe, com andamento e o que quem vê pode fazer                   | `findings:read`                                        |
+| `GET /v1/triage-operations/preview`       | Quantos casos e alertas um filtro da lista alcança agora                                            | `findings:triage`                                      |
+| `GET /v1/triage-operations/authors`       | Quem pediu operações nos últimos 30 dias (até 100, só o id e o nome), para o filtro do histórico    | `findings:read`                                        |
+| `POST /v1/triage-operations/:id/undo`     | Desfaz. A resposta é a operação que desfaz (201, 202 ou 200)                                        | quem pediu, ou quem administra                         |
+| `POST /v1/triage-operations/:id/cancel`   | Para uma na fila ou em curso, ou desiste de uma parada; o que já foi feito fica e pode ser desfeito | quem pediu, ou quem administra                         |
+| `POST /v1/triage-operations/:id/continue` | Retoma uma que parou antes do fim (o que faltou e o que falhou)                                     | quem pediu, ou quem administra                         |
+| `POST /v1/cases/:id/split`                | Divide um caso                                                                                      | `findings:triage`                                      |
+
+- **Modos:** com `off`, 404 em todas; com `shadow`, a equipe da Verax só lê, e as escritas são 404 para todos; com `on`, tudo.
+  A escrita recusada pelo modo, de quem tem sessão, fica na trilha (`denied`, 404). Na medição ninguém opera: a fila não roda.
+- **Alvo:** até 50 casos (ou um subgrupo deles, o valor inteiro de `caseGroup`), até 500 alertas, ou um filtro da lista de
+  casos. O filtro é o **mesmo `WHERE`** da lista (`caseSetWhere`), sem a página: escolhe casos, e a operação alcança os
+  alertas pendentes deles (a severidade do filtro não estreita os alertas). Só os estados `pending` e `investigating`, e com
+  um campo que estreite além da fila, do estado e do período. Um id de outro cliente recusa o pedido inteiro com 404.
+- **Conjunto congelado:** os alertas do alvo que chegaram até a hora do pedido (`cutoffAt`) e estão pendentes (novos ou em
+  análise, fora de incidente, ainda sem o status pedido), num comando só, os piores primeiro. Os ids ficam em
+  `TriageOperation.target.ids` até a operação terminar: só o corte não bastaria, porque a atribuição pode pôr no caso, no meio,
+  um alerta mais antigo que ninguém viu ao confirmar, e o filtro deixa de achar um caso que a própria operação já mudou.
+  Teto de 50 mil alertas (2 MB de ids).
+- **Confirmação:** se o conjunto passa do que a pessoa confirmou em mais de 10% e 20 alertas, 409 `TRIAGE_SCOPE_CHANGED` com a
+  contagem nova (`details.count`). Crítico só entra com `includeCritical`; sem ele fica de fora, e a resposta e a trilha dizem
+  quantos (`excludedCritical`). O motivo é obrigatório para marcar mais de um como legítimo ou resolvido.
+- **Prévia de um filtro:** além dos casos e dos alertas por severidade, quantos casos tocam a lista de proteção (pelas amostras,
+  a mesma marca da lista) e os novos e os em análise por severidade (`byStatus`), para a conta de "em análise" ser exata. As
+  contagens dos casos bastam, menos nos que têm alertas novos e em análise ao mesmo tempo: neles, os alertas são lidos, com
+  prazo de 1,5 s no banco; passou, a prévia vem sem `byStatus`.
+- **Idempotência:** `requestId` único por cliente. O mesmo pedido devolve a operação que ele criou; o mesmo id num pedido
+  diferente (ou de outra pessoa) é 409. Os pedidos de um cliente são conferidos um por vez (um lock próprio, que os coletores
+  não esperam).
+- **Cotas de quem não administra** (o analista): 2.000 alertas por operação e 5.000 em 24 h, somados no banco. São por
+  **papel** (`isMassTriageRole`), sem permissão nova: o `/v1/me` devolve as permissões como um enum fechado, e um painel aberto
+  de antes recusaria a resposta inteira. Na fila, até 10 operações por cliente.
+- **O que muda num alerta:** `status`, com a mesma regra de `triagedAt` da triagem de um só (a primeira saída de "novo" marca);
+  ou `incidentId` (o status não muda, como ao promover à mão); `triageOpId`; e o `updatedAt`, de propósito: é atividade de uma
+  pessoa, que a retenção lê. `PATCH /v1/findings/:id/status` tira o `triageOpId`: a decisão mais nova vale. Tirar o alerta do
+  incidente à mão também, se foi a operação que o pôs lá: posto de volta por alguém, desfazer não o tira de novo.
+- **Um lote é uma transação** (até 500 alertas): o lock dos alertas do cliente, a linha da operação, a do incidente, as dos
+  alertas (`FOR UPDATE`, todas, por id) e só então, pelos gatilhos, as dos casos. O item e a mudança de cada alerta são o mesmo
+  comando. Até 200 alertas, o lote roda na requisição; além disso, no worker, com 100 ms entre dois lotes, um lote por cliente
+  de cada vez e uma operação por cliente (na ordem do pedido).
+- **Exatamente uma vez:** o cursor avança na mesma transação em que os alertas mudam, sob a linha da operação travada. Uma
+  queda desfaz os dois, e a retomada recomeça do mesmo lugar; duas réplicas se serializam no lock, e a segunda vê o cursor
+  adiante. Por baixo, um alerta só muda se o item dele acabou de nascer (chave primária). Não depende da concessão.
+- **O que muda no meio** (alguém tratou, promoveu, a origem deixou crítico, saiu na retenção) conta como `skipped` e não é
+  tocado. Uma triagem em curso num alerta segura só aquele lote, por no máximo 1 s, e ele volta na passagem seguinte.
+- **Falhas:** o lote que falha por culpa de um alerta é cortado ao meio até sobrar ele, que conta como pulado e fica anotado;
+  com 50 assim, a operação para. O que falha por culpa do banco é tentado em dez passagens seguidas. Parada antes do fim, a
+  operação fica `partial` (ou `failed`, se não mudou nada), com o motivo em `stop`, e aceita "continuar" por 24 h; a seguinte
+  da fila roda. Uma que nem encerrar deixa sai da vez por 10 min.
+- **Promover:** o incidente abre na requisição, pelo mesmo caminho de promover à mão (`IncidentsService.open`), com o alerta que
+  abriu o caso (num caso só) ou o pior, e até 49 dos piores; os outros entram nos lotes. Um aviso por e-mail só, o da abertura:
+  os piores já estão nele. O caso promovido inteiro aponta para o incidente (`AlertCase.incidentId`). **Anexar:** a um incidente
+  não resolvido; se a severidade sobe, um aviso.
+- **Resumo do incidente:** acima de 500 alertas é feito no banco (`aggregateIncidentSummary`), com o mesmo resultado do feito em
+  memória (os textos são comparados byte a byte nos dois), também ao anexar e tirar à mão. Nos lotes de um incidente grande,
+  o resumo dele é juntado com o dos alertas do lote (`mergeIncidentSummary`, exato ao anexar); ao desfazer, só a contagem
+  acompanha. No fim da operação (ou quando ela para, ou um desfazer é cancelado), refaz-se tudo.
+- **Desfazer**, até 24 h depois do fim: volta só o alerta em que a operação ainda é a última (`triageOpId`) e que está como ela
+  deixou; o resto conta como pulado, e o que saiu na retenção nem entra na conta. O alerta volta ao status e ao `triagedAt` de
+  antes (ou sai do incidente) e passa a apontar para o desfazer: o histórico mostra os dois. Desfazer não se desfaz; para
+  refazer, um pedido novo. Duas operações sobre o mesmo alerta se desfazem da última para a primeira, e só um nível: o
+  desfazer da primeira, depois do da segunda, já não é dono do alerta.
+  - **Promover desfeito:** saem todos menos o alerta que abriu o incidente, que é encerrado (registro `incident.update` do
+    sistema, com o motivo). Com outro alerta nele (posto por alguém), o incidente fica aberto. O aviso que saiu não volta
+    (`warnings` na resposta). Incidente resolvido não perde alerta: reabre-se antes.
+  - **Caso selado:** o caso tratado é selado só quando chega o alerta seguinte da chave. Desfeita a operação, os alertas voltam
+    a ele como pendentes; se ele estava selado por `treated` e ninguém está aberto com a chave, reabre (o selado por último);
+    com um sucessor aberto, continua selado e listado, e os alertas seguintes são do sucessor. O selado por janela ou divisão
+    não reabre.
+  - **`undo_all_of`** (só quem administra): cancela o que a pessoa tem na fila e põe um desfazer para cada operação dela no
+    prazo (até 100), da mais recente para a mais antiga.
+- **Dividir um caso:** os alertas escolhidos (até 500, ou um subgrupo de até 2.000) vão para um caso novo, com a mesma chave, que
+  nasce selado (`split`), com o original como anterior: a chave só tem um caso aberto, e os alertas seguintes continuam no
+  original. As amostras e os horários dos dois se refazem; o `updatedAt` dos alertas não muda. O caso nunca fica sem alerta.
+- **Trilha (decisão D7):** `triage.bulk.request` (o alvo, o corte, as contagens de antes por status e severidade, o motivo) e um
+  `triage.bulk.finish` do sistema; mais `triage.bulk.{undo,undo_all,cancel,continue,replay}`, `case.split` e, ao promover,
+  `incident.create`. O alerta não ganha registro próprio: a trilha dele é o item, que vive enquanto ele viver. O alvo de muitos
+  alertas vai com a contagem e os 100 primeiros ids, para caber nos 16 KB de um estado.
+- **Banco ocupado:** na requisição, a espera pelo lock do cliente tem 3 s; com ele na mão (os coletores esperam por ele), a de uma
+  linha presa, 1 s; e cada comando, 6 s. Passou, 503 sem mudar nada (o limite da requisição de escrita é de 15 s).
+
+### A tela dos casos (`apps/web/src/features/cases/`)
+
+_(a visão na tela Detecções, o detalhe no painel ao lado, a triagem em massa e o histórico; `pages/detections-page.tsx` só
+encaixa as peças)_
+
+- **Quem decide é a API:** o painel pergunta `GET /v1/cases/status` uma vez por visita (vale por 5 min). `off`, 404 (nó de
+  antes), erro ou resposta que não se entende: a tela é a de sempre, com esse pedido a mais e nada mais. `shadow`: a equipe da
+  Verax ganha as visões, só de leitura, e o padrão continua nos alertas. `on`: os casos são a visão padrão.
+- **Endereço:** `visao=casos|alertas|incidentes|vulnerabilidades` e `caso=<id>`. Com `on`, sem `visao`, são os casos, menos no
+  endereço com `status`, que só a lista de alertas tem (os atalhos da Torre e os favoritos de antes). `/achados` e
+  `visao=achados` são os alertas. `alerta`, `achado` e `incidente` abrem o painel sobre qualquer lista; com `caso` junto, o
+  painel ganha "Voltar ao caso". Enquanto a situação não chega, a lista padrão espera: pedir os alertas para trocar em seguida
+  seria à toa.
+- **Filas:** "Casos" tem a fila de detecção (o padrão) e a de postura. "Vulnerabilidades" tem a dela, agrupada por pacote (o
+  padrão), recurso ou conta, que a API agrupa, ou sem agrupar (a lista corrida, com todas as situações). Cada grupo abre os
+  casos dele e se trata inteiro, por um filtro com `groupBy` e `group`. A severidade some nos tratados e em todos: a API a
+  recusa.
+- **"Voltou depois de tratado":** a API diz quantas das voltas foram depois de tratado (`recurrenceTreated`); as outras são
+  "Voltou (N×)". De um nó que não manda o campo, o caso só diz quantas vezes a chave voltou, e na fila de detecção ela também
+  volta quando a janela de 24 h ou de 7 dias passa: a detecção diz "Voltou (N×)"; as outras filas, que não têm janela, "depois de
+  tratado"; o detalhe confere nos casos anteriores.
+- **Seleção:** até 50 casos ou 500 alertas (os tetos da API), de uma página para outra; some quando o filtro muda. A caixa do
+  cabeçalho marca só a página. "Selecionar os N casos do filtro" é outro botão, que só existe com um filtro que estreite (o
+  contrato é quem diz: `triageFilterSchema`). Só o que tem pendência se marca.
+- **Confirmação:** casos, alertas e a conta por severidade; os críticos só com a caixa que diz quantos são; os casos que tocam a
+  lista de proteção (num filtro, quantos são); o motivo, quando a API o exige; a quantidade digitada acima de 1.000; o limite do
+  analista antes de pedir. O `expectedCount` é o que o botão diz. Para "em análise", sai da conta quem já está (quando não dá para
+  saber quantos, é um teto, e o botão diz "até"). O diálogo não é um formulário: um Enter perdido não confirma nada.
+- **Recusas:** `TRIAGE_SCOPE_CHANGED` mostra a contagem nova e pede outra confirmação (pedido novo); 503, 5xx e falta de
+  conexão dizem que repetir é seguro, e repetem com o **mesmo** `requestId` (um por conteúdo do pedido); cota, fila cheia,
+  incidente resolvido e item que sumiu dizem o que fazer. O `ApiRequestError` passa a levar os números de `details`.
+- **Andamento:** o diálogo mostra o resultado na hora ou acompanha a fila; fechar não para nada. "Operações recentes" fica acima
+  da lista, recolhida numa linha (some se não há operação): o andamento, cancelar, continuar, desfazer com o prazo, o filtro por
+  pessoa (quem pediu algo nos últimos 30 dias, lido ao abrir) e, para quem administra, desfazer tudo de uma pessoa (nome digitado e motivo). Só se relê sozinha enquanto há operação
+  andando (3 s; 1,5 s no diálogo). Quando uma termina, as listas, o detalhe e a Torre são relidos.
+- **Detalhe:** resumo, o que os alertas têm em comum em português, o que foge do padrão, linha do tempo, subgrupos, alertas por
+  cursor (um que não vale mais recomeça e avisa), casos anteriores, incidentes e operações. O alerta abre no mesmo painel e
+  volta com o filtro e o foco. `analysis: null`, `complete: false` e o 503 da linha do tempo não derrubam o resto. No alerta, a
+  trilha das operações em massa (`GET /v1/findings/:id/triage`).
+- **Texto do evento** (amostras, partes da chave, subgrupos, nomes, motivos) é sempre texto do React: quebrado ou cortado na
+  largura, nunca HTML nem link. No CSV (`exportCases`, até 2.000 linhas), as mesmas proteções das outras listas.
+- **Demonstração** (`src/mocks/{case-fixtures,case-store,triage-engine,cases-handlers}.ts`): casos ligados, montados dos mesmos
+  alertas das outras telas, com as contagens calculadas na hora. `localStorage['verax.mock.cases']` (`off`, `shadow`, `on`),
+  `verax.mock.triage` (`lenta`, `parcial`, `falha`, `ocupada`, `mudou`, `cheia`) e `verax.mock.cases.volume` trocam o cenário.
+  Com `off`, os alertas a mais não existem.
+- **Auditoria:** as ações `triage.bulk.*` e `case.split` têm nome, e as áreas "Casos" e "Triagem em massa" entram no filtro só
+  quando os casos valem (um nó de antes recusa o valor com 400).
+
+### Casos na Torre, no radar e nos relatórios
+
+_(`case-summary-store.ts`, `case-radar.ts`, `tower/`, `reports/`; contrato em `packages/shared/src/{tower,reports}.ts`)_
+
+- **Só para quem pede e pode ver.** `GET /v1/tower?cases=true` e `GET /v1/reports/{summary,mitre}?cases=true`, com a mesma regra de
+  `GET /v1/cases/status` (`casesVisibleTo`): `on`, todos os papéis; `shadow`, a equipe da Verax; `off`, ninguém. Sem o pedido, ou
+  sem poder ver, a resposta é a de sempre, byte a byte.
+- **Versões diferentes.** As respostas são estritas, e um painel recusa a resposta inteira por um campo (ou um valor de enum) que
+  não conhece:
+
+  | Painel               | Nó                                      | O que acontece                                                                      |
+  | -------------------- | --------------------------------------- | ----------------------------------------------------------------------------------- |
+  | De antes (ou aberto) | Novo, com casos                         | Não pede, e recebe a resposta de sempre                                             |
+  | Novo                 | De antes dos casos                      | `GET /v1/cases/status` é 404: o painel não pede                                     |
+  | Novo                 | Com casos, sem este pedido              | 400 (parâmetro desconhecido): o painel pede de novo sem ele, e a tela é a de sempre |
+  | Novo                 | Mais novo, com algo que ele não conhece | A resposta não é entendida: pede de novo sem os casos                               |
+
+  Nas rotas dos casos, os campos novos (`recurrenceTreated`, o `can` das operações, `protectedCases`, `byStatus`) são opcionais, e o
+  painel sem eles faz o de antes. Nenhuma versão com as rotas dos casos tinha saído: não há painel antigo delas.
+
+- **Semáforo: a regra não muda, nem a conta dela.** Vermelho com incidente crítico aberto; amarelo com incidente alto aberto, postura
+  abaixo do limite, coleta parada ou **alerta alto ou crítico em "novo"**; verde nos demais. O último continua contado por alerta,
+  todos, em caso ou não, dentro ou fora de incidente, do mesmo jeito em qualquer modo: a cor e os motivos são iguais com e sem os
+  casos (o teste compara). O caso pesa pelo pior alerta pendente dele: um crítico e mil baixos são um caso crítico.
+- **Decisões, com os casos ligados (`on`) e pedidos.** Cada alerta que o semáforo olha está numa decisão só, então o amarelo sem
+  motivo sempre tem uma que o explica:
+  - `untriaged_case`: os casos de detecção e de postura com algum alerta alto ou crítico em "novo", fora de incidente;
+  - `untriaged_vulnerability_case`: os da fila de vulnerabilidades;
+  - `untriaged_finding`: só os alertas que nenhum desses casos cobre: à espera da atribuição (segundos) ou dentro de um incidente
+    (promover não muda o status do alerta). Um caso só com altos em análise não é decisão, como hoje um alerta em análise não é.
+  - Na medição (`shadow`), a equipe da Verax vê os casos, e as decisões continuam contando alertas: ninguém decide por caso ainda.
+- **`cases`:** os casos pendentes por fila, cada um pela pior severidade pendente, e a abertura do mais antigo de cada fila.
+- **Custo:** as decisões e os casos pendentes saem das contagens dos casos, num comando só, e **não são guardados**: depois de tratar
+  um caso, a Torre relida já diz o novo. Só o caso em que os altos podem estar todos em análise tem os alertas procurados. O MITRE com
+  casos passa pela memória de 30 s por cliente, numa memória à parte da do MITRE de sempre (quem não pede nunca recebe).
+- **Radar** (`radar.cases`): os casos de detecção ativos nas últimas 24 horas, pelo mesmo `WHERE` da lista (o evento ou a chegada: o
+  total bate com o da lista no período, e um alerta com data antiga não esconde o caso), até 100, os mais graves primeiro.
+  `detections`, `total`, `bySeverity` e `bySector` continuam contando alertas; `alerts` é quantos dos alertas da janela estão nesses
+  casos, contados pelo índice `(tenantId, caseId, occurredAt, id)`, sem ler as linhas. O setor vem da primeira fonte do caso (na
+  família que não diz a fonte, do formato da conta), e a distância é a da atividade mais recente, nunca depois de agora.
+  - O caso com alerta num incidente aberto traz o incidente (o mais grave): sem nada pendente, a gravidade dele no radar, e na ordem,
+    é a do incidente. Um crítico confirmado não some para trás dos médios.
+  - No painel, o ponto é o caso: a forma é a gravidade (um círculo vazado, sem nada pendente), o tamanho são os alertas
+    guardados (logarítmico, com teto) e o clique ou o Enter abre `?caso=`. A frase diz "N alertas em M casos de detecção" e onde estão
+    os outros. A tabela tem os mesmos números. A animação é a de antes: uma varredura, um brilho por ponto e o pulso do que chegou,
+    só com `transform` e `opacity`.
+- **Relatórios:** `summary.cases {opened, treated, pending, medianMinutesToTreat}` são os casos abertos no período e em que pé estão
+  agora (`treated` mais `pending` dá `opened`; o caso sem alerta guardado não entra). A mediana vai da abertura até o último alerta do
+  caso sair de "novo" (`triagedAt`) ou entrar num incidente: é por caso, porque tratar 20 mil alertas de uma vez distorce o
+  `meanTimeToTriageMinutes`, que é por alerta. O banco não guarda quando um alerta em análise foi encerrado: vale a primeira triagem.
+  No MITRE, cada tática ganha `cases` (os casos com alerta dela no período); o alerta sem caso conta só nos alertas.
+  - No painel, o gráfico do MITRE passa a mostrar a participação por casos (a mesma escala), com os alertas na dica, na lista e na
+    tabela; se nenhum alerta do período tem caso (o histórico de antes), conta alertas. O CSV do MITRE ganha a coluna "Casos", e o dos
+    casos do período sai do Resumo.
+- **Atalhos:** com os casos, as decisões levam à lista de casos (detecção e postura, uma fila por vez) e às vulnerabilidades; desligados,
+  os de sempre.
+
+### Avisos por caso
+
+_(`case-notices.ts`, `case-notice-{policy,store,regime,mail,setup}.ts`; **só com `CASES_MODE=on`**. Com `off` e `shadow`, o aviso
+é alerta por alerta, como na seção seguinte, sem diferença numa linha ou num e-mail)_
+
+Com `on`, o alerta que chega não põe nada na fila de avisos (`CaseAlertNotices`). No começo de cada execução da tarefa
+`notifications` (60 s), antes da entrega, `CaseNotices` decide os avisos a partir do que está no banco, e grava cada um e a
+severidade avisada do caso na mesma transação, sob o lock dos alertas do cliente, decididos de novo com ele na mão: duas
+réplicas, ou uma queda no meio, nunca avisam duas vezes nem deixam de avisar. É outra tarefa que não a `case-assign`, para avisar
+mesmo com ela parada. Os limites são todos constantes de `case-notice-policy.ts` (a decisão D4 ainda espera a confirmação do
+responsável pelo produto).
+
+| Aviso                                     | Quando                                                                                                                          | Chave de deduplicação                | Tipo da linha (severidade)        |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ | --------------------------------- |
+| Caso de detecção                          | A pior severidade pendente (alta ou crítica) passa da avisada                                                                   | `case:<id>:<severidade>`             | `critical_finding`/`high_finding` |
+| A onda seguinte do mesmo caso             | Nada do que foi avisado está pendente, e há alerta que ninguém avisou (inclusive se o aviso de antes não chegou a ninguém)      | `case:<id>:<severidade>:<instante>`  | idem                              |
+| Crescimento (no máximo um por caso e dia) | 10 vezes mais alertas em 1 h (a partir de 100), uma tática do MITRE que ele não tinha, ou um crítico novo com o caso em análise | `case:<id>:growth:<dia de Brasília>` | idem                              |
+| Casos críticos de vulnerabilidade/postura | Há caso com crítico que ninguém avisou: todos num aviso, no máximo um por hora e cliente (os outros esperam)                    | `cases-critical:<hora cheia>`        | `critical_finding`                |
+| Resumo diário de vulnerabilidades/postura | Às 09:00 de Brasília (12:00 UTC), se algo alto ou crítico pendente chegou desde o último enviado, ou faz 7 dias que não sai     | `cases-daily:<dia>`                  | `high_finding` (`high`)           |
+| Alerta por alerta (nunca calado)          | Alto ou crítico sem caso há mais de 10 min; ou a severidade que sobe na origem num alerta que nenhum caso avisa                 | `finding:<id>`                       | o do alerta                       |
+
+- **Formato:** nenhum valor de enum novo e nenhuma coluna nova. A linha leva o alerta da âncora em `findingId` (o que abriu o caso,
+  se ainda está nele; senão, o pior pendente mais antigo) e o caso em `caseId`: cumpre as regras do banco, e uma versão anterior do
+  nó a envia como um aviso de alerta, com o link `?alerta=`. Só um índice parcial novo, `Notification_caseId_idx`.
+- **Já avisado**, alerta por alerta (`announced`, em `case-notice-store.ts`): o aviso do caso (ou o do incidente para onde ele foi
+  promovido) é de depois da chegada do alerta; ou o aviso dele, alerta por alerta, já saiu, com severidade igual ou pior; ou ele é
+  do passado (a virada, abaixo); ou voltou de um incidente por um desfazer; ou chegou há mais de 14 dias (o aviso do caso sai com
+  o alerta da âncora, na retenção: sem isso, um caso de semanas atrás avisaria de novo). O aviso pulado porque o caso foi tratado, ou trocado por
+  outro, não vale como dado; o que falhou nas cinco tentativas vale por 6 h, e o caso ainda pendente avisa de novo.
+- **Por isso:** desfazer uma triagem não avisa de novo o que já foi avisado, e avisa o que ninguém recebeu; o caso dividido herda os
+  avisos do original até a divisão; a reincidência (outro caso da chave) avisa; e um alerta a mais num caso avisado e pendente, não.
+- **O que ainda não tem caso:** a fila parada (ou o alerta isolado pela atribuição) avisa alerta por alerta depois de 10 min, em
+  lotes, os críticos primeiro, e o log diz quantos; só o alto de vulnerabilidade e de postura espera o caso e o resumo diário.
+  Quando o alerta ganha caso, o aviso ainda na fila dá lugar ao do caso, e o já enviado marca o caso.
+- **Falhas:** o erro de um cliente, de um passo ou de um trecho de casos não segura os outros nem a entrega; o que não coube no
+  tempo da execução (30 s) continua na seguinte, de onde parou. Um caso que não deixa decidir é isolado, e o alerta mais novo dele
+  avisa sozinho. Se a decisão dos casos de detecção falha para um cliente, o alerta alto ou crítico de até um dia, há mais de
+  10 min sem aviso nenhum, também avisa sozinho (`unnoticedOfCases`, uma consulta simples, sem nada da decisão), e a tarefa fica
+  com erro (`CaseNoticesFailed`). Se a leitura do caso falha na entrega, o aviso sai como o do alerta, em vez de ficar calado. O tipo do erro fica
+  em `SyncState('notifications').lastError` e no relatório da tarefa, só com contagens.
+
+**A virada.** Liga-se e volta-se sem perder nem repetir:
+
+- **Ligar:** na partida, antes dos coletores, o worker grava o começo dos avisos por caso, uma vez só, em
+  `SyncState('case-notices').cursorTimestamp` (e `cursorId = on`). Só depois de gravado o aviso por alerta para: com o banco fora do
+  ar, ele continua. Daí em diante, o alerta alto ou crítico ou tem a linha do aviso dele (`finding:<id>`), que diz o que aconteceu,
+  ou chegou depois do começo, com uma hora de folga para o que estava sendo gravado na hora. O que já saiu marca o caso sem e-mail; o
+  que não tem linha e é de antes da folga é do passado. O aviso de alerta ainda na fila, que não chegou a ninguém, só sai dela
+  (`superseded_by_case`, em lotes) depois que o alerta tem caso **e** o aviso do caso está gravado; sai também o do alerta já
+  tratado (`case_treated`) ou que foi para um incidente aberto depois (`superseded_by_incident`). Na vulnerabilidade e na postura, só
+  os críticos dão lugar ao aviso imediato; os altos da fila saem como antes.
+- **Voltar** (`off` ou `shadow`): a tarefa `notifications` vê que os avisos por caso valiam e devolve o que ficou no meio, uma vez: o
+  alerta sem caso avisa alerta por alerta, o caso ainda não avisado avisa uma vez (como um aviso de alerta, sem ler o caso), e a
+  vulnerabilidade crítica, alerta por alerta. O aviso imediato e o resumo diário que estavam na fila saem inteiros, com todos os
+  casos (`CaseNoticeMail` com `aggregatesOnly`); só a versão anterior do nó os mandaria como o de um alerta. Depois grava `cursorId = off`. No nó que nunca ligou, é uma leitura por minuto.
+- **Voltar a versão do nó:** na parada, o worker faz uma última passagem (até 5 s) que dá caso e aviso ao que acabou de chegar, e a
+  versão anterior envia o que achar na fila. Só uma queda sem parada, seguida da versão anterior, deixa sem aviso os alertas do
+  último minuto, e eles avisam quando os casos voltam.
+
+**Na entrega** (`CaseNoticeMail`): o conteúdo sai do caso na hora do envio: o título do dicionário, as contagens de alertas críticos e
+altos pendentes e o link (`/?caso=<id>`; a fila, `/?visao=vulnerabilidades` ou `/?visao=casos&fila=postura`), e nunca no assunto, que é
+fixo. O contato de escalonamento recebe os avisos de caso críticos e o imediato, sem título nem lista, e nunca o resumo diário. Os
+limites são os de sempre (5 por pessoa e hora, o resumo da hora com o título e as contagens, 5 por hora ao contato, as faixas por
+severidade). O aviso que deixou de valer é fechado antes, de uma vez (`case_treated`, `superseded_by_incident`, `case_gone`), e
+conferido de novo no envio de cada um e quando o resumo da hora sai: um caso já tratado não vai em e-mail nenhum.
+
 ## Ataques web pelos logs do ALB: o que fica guardado (`apps/api/src/weblogs/`)
 
 _(PR-1, o motor; PR-2, o banco, migration `20261130120000_web_logs`; PR-3, os contratos, e PR-4, a leitura, nas seções
@@ -2386,6 +2780,8 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   ¹ Quem não desligou os avisos de incidente em Minha conta (PR-17', abaixo).
   ² O contato de escalonamento confirmado, só nos de severidade crítica (abaixo).
 
+  Com `CASES_MODE=on`, o aviso de alerta é por caso, e não por alerta ("Avisos por caso", acima).
+
   Os três primeiros nascem no `FindingStore`, na mesma transação do achado e do incidente: todo coletor (Wazuh, agentes,
   GCP, Cloudflare) ganha o aviso sem mudança, e uma falha no meio não deixa nem o achado nem o aviso. O agrupamento
   (`IncidentGrouping.place`) devolve a severidade do incidente antes e depois do achado; a junção que não muda a
@@ -2547,6 +2943,8 @@ da Verax.
     decisão `untriaged_finding`, e a lista de motivos não ganha um valor novo: ela é fechada, e um painel de antes
     recusaria o resumo inteiro. O amarelo pode, então, vir sem motivo, e o painel tira a frase das decisões ("24.321
     alertas altos ou críticos para validar"), inclusive de um nó de antes, que ainda responde verde;
+  - **com os casos**, a regra e a conta são as mesmas; só as decisões passam a contar casos ("Casos na Torre, no radar e nos
+    relatórios");
   - **verde** nos demais casos. No verde, a frase traz a prova: "Tudo calmo. (...) Coleta ativa em 4 de 4 fontes,
     último dado há 2 minutos" só quando todas as fontes configuradas coletam e nada espera uma decisão do cliente (a fila
     sem dono, da Verax, não conta); com uma atrasada ou aguardando, a mesma prova, sem o "Tudo calmo". O cartão de
@@ -2603,7 +3001,7 @@ da Verax.
 - **Contrato entre painel e nó:** os campos novos (`coverage.lastDataAt`, `coverage.sources` e `pulse`) são opcionais,
   e o painel sem eles mostra a Torre de antes (as datas da cobertura, sem a faixa). O schema é estrito, então um painel
   de antes recusa a resposta de um nó novo (o motivo `collection_stalled` e os campos novos): painel e nós sobem juntos,
-  como em toda mudança do contrato.
+  como em toda mudança do contrato. Os campos dos casos são a exceção: só vêm para quem os pede (`cases=true`).
 - **Interface:** os gráficos são SVG próprio, sem biblioteca (`components/charts/`): o cartão de número (`StatTile`) e o
   minigráfico por hora (`MiniBars`, na rampa neutra validada, com setas, mouse e toque e a mesma tabela de "Ver
   tabela"); a linha de saúde da fonte (`SourceHealthRow`) usa ícone de forma própria e rótulo, com o tom de "ok" em
@@ -2800,6 +3198,20 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
   conferência; uma que chega depois espera o lote. Assim nada que a API confirmou sai junto.
 - **O que sai** (o corte é o prazo mais um dia de folga, para o relatório do período sair completo; o próprio corte
   fica):
+
+  | Dado                                                                     | Regra                                                                                                                                                                                                                                                                                       |
+  | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira                                  |
+  | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                                                            |
+  | Casos                                                                    | Sem nenhum achado guardado, sem achado novo desde o corte (pelo relógio do servidor) e fora de incidente; o que ficou aberto também, porque só o alerta seguinte o selaria. Vale com qualquer `CASES_MODE`                                                                                  |
+  | Operações de triagem em massa                                            | O cabeçalho, 13 meses depois do pedido, se nenhum achado que ela mudou está guardado (o item sai em cascata com o achado). Vale com qualquer plano e qualquer `CASES_MODE`                                                                                                                  |
+  | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                                                            |
+  | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                                                   |
+  | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                                                     |
+  | Avisos por e-mail                                                        | Enviados, com falha ou pulados, sem mudança há 90 dias (a chave de deduplicação não deixa o aviso sair de novo nesse tempo); o pendente fica, e o de um incidente ou achado que sai vai junto. As horas de avisos (o resumo resolvido e a hora só de contagem, PR-17'), pelo mesmo prazo    |
+  | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas). Os links do contato de escalonamento (D8) não passam por aqui: os vencidos saem a cada e-mail novo ao contato, e os de um endereço anterior na troca; o limite por IP dos links, na chamada seguinte, depois de um dia |
+  | Auditoria                                                                | 13 meses, ou o prazo do histórico do cliente se for maior (com histórico sem limite, fica). Os registros sem cliente seguem o corte mais antigo entre os clientes                                                                                                                           |
+  | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                                                         |
 
   | Dado                                                                     | Regra                                                                                                                                                                                                                                                                                                                                                 |
   | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

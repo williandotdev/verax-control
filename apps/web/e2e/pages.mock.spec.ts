@@ -340,7 +340,7 @@ test.describe('revisão de UX (modo mock)', () => {
   test('teclado: o detalhe abre com Enter, fecha com Esc e o foco volta para o alerta', async ({ page }) => {
     // Na tela estreita, o detalhe da tela Detecções é a gaveta (o diálogo); na larga, fica ao lado (deteccoes.mock.spec).
     await page.setViewportSize({ width: 1024, height: 800 });
-    await open(page, '/?severidade=critical', 'Detecções');
+    await open(page, '/?visao=alertas&severidade=critical', 'Detecções');
     const finding = page.getByRole('button', {
       name: 'Abrir o alerta: Tentativa de desligar a trilha do CloudTrail',
     });

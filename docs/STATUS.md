@@ -6601,6 +6601,46 @@ security-hub,access-analyzer}.ts` (só comentários), `tower/tower-{rules,servic
   do GuardDuty e pela regra 80443). Os tipos do GuardDuty que não dizem a tática (`Policy`, `Behavior`, `PenTest`,
   `AttackSequence` e parte de `Trojan` e `UnauthorizedAccess`) ficam sem ela.
 
+## Casos, parte 1: a base no banco e a chave de agrupamento (PR-1 do desenho de 24/11/2026) ⚠️ migration nova
+
+- **O que muda:** só a base, sem comportamento novo: nenhuma tarefa, rota, tela ou e-mail usa os casos ainda, e nenhum
+  alerta ganha caso nesta versão.
+  - **Banco** (`20261127120000_alert_cases`, aditiva e numa transação só): `AlertCase`, `TriageOperation` e
+    `TriageOperationItem`; no alerta, `caseId`, `caseGroup` e `triageOpId`; no aviso, `caseId` (nascem vazias). As chaves
+    estrangeiras levam o cliente e não se propagam (`ON UPDATE RESTRICT`). As contagens do caso são de gatilhos do
+    alerta (um por comando no UPDATE e no DELETE; no INSERT, só quando o alerta já nasce num caso): exatas com escritas
+    ao mesmo tempo, com a imagem anterior do nó, com o expurgo e com as cascatas.
+  - **Chave** (`apps/api/src/cases/case-key.ts`): pura, versionada, só das colunas gravadas. Decisão D1: vulnerabilidade
+    é pacote + recurso, literais (ECR sem o digest, Lambda sem a versão; sem pacote, o CVE). O que quem ataca escolhe
+    (nome da sessão, usuário federado, usuário digitado no login, endereço exato) não é parte da chave; o desconhecido
+    vai para a fila de detecção.
+  - **Inspector:** o alerta novo grava o pacote (`FindingDraft.group` → `Finding.caseGroup`).
+  - **Escopo:** os três models em `TENANT_SCOPED_MODELS`; `alertCase` também em `SYSTEM_WRITTEN_MODELS` (só leitura).
+- **O desenho conferido no código:** o Prisma 7.10 não compara índice parcial (o `migrate diff` sai vazio); o
+  `migrate deploy` não roda o arquivo numa transação (por isso o BEGIN e o COMMIT, e o `NOT VALID` não serviria de
+  nada); a chave composta padrão do Prisma (`ON UPDATE CASCADE`) levaria os alertas junto na troca do cliente do caso; a
+  fila parcial só serve a SQL com o enum escrito, e não à forma que o Prisma gera; as faixas do Wazuh foram lidas da
+  imagem 4.14.9 (23501 a 23508 e 19000 a 19015; 19111 a 19153 são logins do VMware).
+- **Arquivos:** `apps/api/prisma/schema.prisma` e a migration; `apps/api/src/cases/case-key.ts` (novo),
+  `alerts/finding-{draft,store}.ts`, `aws/findings/inspector.ts`, `common/prisma/tenant-scope.ts`; os testes
+  `src/cases/case-key.test.ts`, `test/alert-cases.test.ts` e `test/alert-cases-migration.test.ts` (novos),
+  `test/db-bootstrap.test.ts` e `test/aws/findings/finding-records.test.ts` (casos novos) e
+  `test/aws-onboarding-migration.test.ts` (a lista das migrations seguintes ganhou esta).
+- **Dependências novas:** nenhuma.
+- **Testes:** `pnpm lint`, `format:check` e `typecheck` (todos os pacotes), limpos. API com Postgres descartável, 184
+  arquivos e 2897 testes (na execução final, um arquivo caiu no erro conhecido do worker do vitest no Windows,
+  3221226505, e passou rodado de novo). Novos: 158 da chave (tabela e propriedades), 19 do banco (contagens, também
+  com 480 transações ao mesmo tempo em 8 conexões, e chaves por cliente) e 15 da migration (banco novo, banco existente
+  e a imagem anterior simulada). À parte, o código e o Prisma Client da `main` (2b94373) num banco com esta migration:
+  13 arquivos e 299 testes, inclusive gravar, triar, promover, anexar, remover e expurgar alertas já em casos. 62
+  mutações, uma por vez: todas mortas (uma só depois de um teste a mais). Não rodou: as suítes dos outros pacotes (nada
+  mudou neles) e o teste de carga (fica para a parte 2).
+- **Teste manual:** nenhum na tela (nada muda); no nó, conferir que a versão sobe com a migration e que a coleta segue.
+- **Riscos:** cada UPDATE de alerta roda o gatilho, com ou sem caso (cerca de 0,25 ms numa máquina ocupada); a
+  gravação dos coletores (INSERT) não paga nada. Quem fizer dois comandos sobre alertas na mesma transação precisa
+  travar antes todas as linhas (`FOR UPDATE`), como o expurgo: sem isso, uma triagem ao mesmo tempo cai em deadlock
+  (reproduzido; nenhum código de hoje faz isso).
+
 ## Ataques web pelos logs do ALB, PR-1: o motor puro (não ligado)
 
 - **O que é:** `apps/api/src/weblogs`, sem banco, sem AWS e sem relógio próprio: lê a linha do log de acesso do ALB, conta
@@ -6747,6 +6787,65 @@ tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views
 - **Riscos e sugestões:** os 97,5% de concordância com o GeoLite2 são do próprio projeto, não medidos aqui. Cada atualização
   soma cerca de 0,6 MB ao histórico do git. A tela precisa dizer que o país é o do endereço (VPN, proxy e nuvem).
 
+## Casos, parte 2: a atribuição dos alertas aos casos (PR-2 do desenho de 24/11/2026) ⚠️ migration nova
+
+- **O que muda:** nada enquanto `CASES_MODE` for `off`, o padrão (o expurgo diário só confere se há caso a apagar). Com
+  `shadow` ou `on`, iguais nesta parte, o worker dá um caso a cada alerta pendente. Nenhuma rota, tela, aviso ou e-mail
+  usa os casos ainda. A regra inteira está em `docs/ARQUITETURA.md`, "Casos: agrupamento dos alertas".
+  - **`case-assign`** (10 s): lotes de 200 alertas por cliente, na ordem de chegada, no máximo 2 s de trabalho por
+    cliente em cada passagem, uma transação por lote. Alerta novo, histórico e volta de versão passam pelo mesmo caminho.
+  - **`case-watch`** (1 min, só log) e **`case-reconcile`** (semanal, a única escrita de contagem fora dos gatilhos).
+  - **Expurgo:** a etapa dos casos, depois dos alertas soltos.
+- **Decisões desta parte** (no código, para revisão):
+  - A janela é pela chegada gravada (`Finding.createdAt`, nunca depois de agora): o agrupamento é o mesmo com o alerta
+    atribuído na hora ou meses depois, e o histórico vira um caso por janela da chave. A janela da detecção vale também
+    para o caso em análise ou promovido.
+  - O alerta preso por uma triagem é pulado (`FOR UPDATE SKIP LOCKED`): o lote nunca espera por um alerta com o lock do
+    cliente na mão, e espera no máximo 1 s por um caso.
+  - O caso que fica no lugar de outro nasce selado dentro da transação e abre no fim: o selo do antigo vem depois dos
+    alertas, com uma chave aberta só.
+  - Sem pendência: `treated` se o caso tem alerta tratado (ou incidente resolvido), `idle` se não tem mais alerta nenhum.
+    `recurrence` soma a cada volta da chave, inclusive pela janela.
+  - A gravação que falha por um alerta parte o lote ao meio até isolá-lo (de 1 min a 1 h fora); a fila é lida em roda, e
+    um trecho que falha não prende os seguintes.
+  - Limites: sem teto na fila de vulnerabilidade (D1); item da lista de proteção (com o IP de origem) fora dos dois; o teto
+    de 100 críticos é por grupo de fan-out, e o excedente vai para um caso só de críticos; o reunido por fonte não leva a
+    conta na chave.
+  - `noticedSeverity`: passado é o alerta que chegou enquanto o aviso é alerta por alerta (hoje, sempre). Com os avisos por
+    caso (`caseNotices`, que nenhum modo liga ainda), o que chegou antes da primeira passagem deles, num marco em
+    `SyncState.cursorTimestamp`, sem coluna nova.
+  - No expurgo sai também o caso **aberto** sem alerta e mais antigo que o prazo (o desenho dizia só o selado): o selo só
+    vem com o alerta seguinte da chave, e as amostras (usuário, IP) ficariam para sempre. Vale com qualquer `CASES_MODE`.
+- **Arquivos:** `apps/api/src/cases/` (`case-{assign-job,store,plan,lifecycle,limits,titles,errors,reconcile-job,watch,
+tasks}.ts` e `cases-mode.ts`, novos; `case-key.ts` ganhou só a chave dos casos reunidos, e nenhuma chave de alerta mudou);
+  `retention/retention-job.ts`, `common/config/env.schema.ts`, `worker.ts`; a migration
+  `20261129120000_finding_autovacuum`, só um parâmetro da tabela; testes `src/cases/case-{lifecycle,limits,titles,plan}.
+test.ts`, `test/case-{assign,assign-api,assign-concurrency,assign-benchmark,reconcile,retention}.test.ts` e
+  `test/support/cases.ts`; casos novos em `case-key.test.ts` e `load-config.test.ts`; a lista de
+  `aws-onboarding-migration.test.ts`; e, no `alert-cases-migration.test.ts`, a conferência dos índices sem ordenar (o
+  plano de uma tabela pequena dependia das estatísticas que as outras suítes deixam).
+- **Dependências novas:** nenhuma. Sem mudança em `infra/`, `.github/`, no módulo `auth` ou em `.claude/`.
+- **Testes:** `pnpm lint`, `format:check` e `typecheck` (todos os pacotes), limpos. API com Postgres descartável, 195
+  arquivos e 3107 testes (um deles, a medição de carga, só com `CASES_BENCH=1`). Três rodadas inteiras: a primeira, limpa;
+  na segunda e na terceira caíram um e três arquivos com o erro conhecido do worker do vitest no Windows (3221226505), de
+  outros assuntos, e os quatro passaram rodados de novo. A máquina dividia a CPU com outros trabalhos. Não rodou: as
+  suítes dos outros pacotes (nada mudou neles) e o worker de verdade num nó.
+- **Mutações:** 112, uma por vez, numa cópia da árvore, com prazo e restauração conferida: todas mortas. Na primeira
+  rodada sobreviveram sete: cinco viraram testes e duas mostraram código redundante, que saiu.
+- **Carga** (Postgres 18 em Docker com 512 MB e 2 CPUs, numa máquina Windows ocupada): 250 mil alertas pendentes, 2.313
+  casos, 1.261 lotes. Duas medições: 117 e 149 s de trabalho (57 e 71 passagens, 11 a 14 min com os 10 s entre elas);
+  lote, p50 68 e 92 ms, p95 206 e 213 ms, máximo 488 e 1.143 ms; com o lock do cliente na mão, p50 63 e 85 ms, p95 179 e
+  184 ms, máximo 479 e 939 ms. Um coletor gravando sem parar ao mesmo tempo: p50 de 7 para 70 ms (e de 17 para 93 ms), só
+  enquanto a fila é longa. A conferência de todos os casos: 21 e 30 s, nenhum desvio. É mais que os 40 a 80 ms do desenho
+  no p95.
+- **Teste manual:** no nó piloto, `CASES_MODE=shadow` por 48 h: `case-assign` no log (a fila acaba, `failedTenants` e
+  `quarantined` em 0, `maxLockMs`), `case-watch` sem atraso e `case-reconcile` sem desvio.
+- **Para ligar:** a linha `CASES_MODE=off` no `.env.example` e a variável no `worker.env` que o `start.sh` do nó escreve.
+  Nenhum dos dois foi tocado aqui.
+- **Riscos e dúvidas:** durante o histórico, o coletor espera um lote (máximo medido, 1,1 s); com milhares de casos altos
+  abertos em 24 h, o lote que abre um caso com limite lê todos eles; os avisos por caso precisam ligar o `caseNotices` na
+  mesma versão em que pararem os avisos por alerta.
+
 ## Ataques web pelos logs do ALB, PR-2: o banco, a evidência e o tráfego por país (não ligado)
 
 - **O que é:** as tabelas dos ataques web, a evidência gravada com o achado, a leitura dela, o expurgo e as contagens por
@@ -6840,6 +6939,328 @@ tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views
 - **Riscos e sugestões:** a lista de códigos do gerador é cópia da de `apps/api/src/geo/country-codes.ts` (outra branch): quando
   as duas estiverem na `main`, um teste pode comparar. Não foi conferido em leitor de tela de verdade, nem no Firefox e no
   Safari.
+
+## Casos, parte 3: a leitura pela API (PR-3 do desenho de 24/11/2026)
+
+- **O que muda:** nada enquanto `CASES_MODE` for `off`, o padrão (na API também, agora): as rotas novas respondem 404, como
+  uma que não existe. Com `shadow`, só a equipe da Verax lê, no cliente escolhido; com `on`, todos os papéis leem os casos
+  do próprio cliente. Nenhuma tela, aviso ou e-mail usa os casos ainda, e nenhuma rota grava. A regra inteira está em
+  `docs/ARQUITETURA.md`, "Leitura dos casos pela API".
+- **Rotas** (`findings:read`, sem permissão nova): `GET /v1/cases`, `/v1/cases/status`, `/v1/cases/groups`, `/v1/cases/:id`,
+  `/v1/cases/:id/findings`, `/v1/cases/:id/timeline` e `/v1/findings/:id/triage`. Contrato em `packages/shared/src/cases.ts`.
+- **Decisões desta parte** (no código, para revisão):
+  - O painel sabe dos casos por `GET /v1/cases/status`, a única rota que responde com eles desligados. O `/v1/me` (módulo
+    `auth`) não mudou; se preferirem o `cases: 'on'` lá, o `meSchema` ganha um campo opcional e o `MeController` lê o
+    `casesVisibleTo`.
+  - O `CASES_MODE` é conferido num guard, antes da query e do id: um pedido inválido a uma rota desligada também é 404. Com
+    `shadow`, a situação diz `off` para quem não é da Verax.
+  - Prioridade: pior severidade pendente, item protegido (pelas amostras), chegada do último alerta, id. É sempre total, e
+    usa a chegada no servidor, nunca o horário do log.
+  - O período vale pelo evento **ou** pela chegada: alerta com data antiga não tira o caso das últimas 24 h.
+  - A severidade só filtra o que está pendente; com `treated` ou `all` é 400 (o caso não guarda a do que já foi tratado, e
+    uma lista que esconde casos enganaria).
+  - A fonte não é coluna do caso: sai da família e das regras (`case-sources.ts`), com um quadro só para o filtro e a tela.
+    A família que não se conhece aparece em todo filtro de fonte.
+  - Grupos da fila de vulnerabilidades (D1): pacote e recurso da chave (`keyParts`), conta da amostra; nenhum alerta é lido.
+  - A busca olha também as partes da chave (o desenho dizia título e amostras): é onde está o pacote.
+  - O cursor é conferido, não assinado: ele não autoriza nada (a consulta filtra por cliente e caso), e assinar pediria uma
+    chave nova ou o reuso de um segredo.
+  - Sem índice novo e sem migration: as metas cabem nos índices da parte 1 (uma no limite: o filtro que não acha nenhum alerta num caso de 20 mil, p95 de 30,5 ms para 30).
+- **Arquivos:** `packages/shared/src/cases.ts` (e teste); `apps/api/src/cases/` (`cases.{controller,service,module,guard}.ts`,
+  `case-read-store.ts`, `case-{cursor,sources,timeline}.ts`, novos, com testes; `cases-mode.ts`); `case-store.ts` e
+  `findings/finding-filters.ts` só exportam uma função que já existia; `common/config/env.schema.ts`, `app.module.ts`;
+  testes `test/cases-read{,-findings,-off,-shadow,-history,-benchmark}.test.ts`, `test/support/{cases,create-app}.ts` e
+  `load-config.test.ts`; `docs/ARQUITETURA.md`.
+- **Dependências novas:** nenhuma. Sem mudança em `infra/`, `.github/`, no módulo `auth` ou em `.claude/`, e sem migration.
+- **Testes:** `pnpm lint`, `pnpm typecheck` (todos os pacotes) e `format:check` limpos. Pacote `shared`: 30 arquivos, 553
+  testes. API com Postgres descartável: 220 arquivos, 4311 testes (dois deles, as medições de carga, só com
+  `CASES_BENCH=1`). Duas rodadas inteiras, sem nenhum teste reprovado: na primeira caiu um arquivo com o erro conhecido do
+  worker do vitest no Windows (3221226505), e na segunda, cinco, todos de outros assuntos; os seis passaram rodados de novo
+  (um deles, na segunda vez). Novos: 66 na lista, grupos, detalhe, trilha e situação; 33 nos alertas e na linha do tempo; 17 com `off`, `shadow` e o histórico do plano; 54 sem banco (cursor, fontes, linha do tempo e modo) e 37 do contrato. Não rodou: as
+  suítes do painel e do console (nada mudou neles) e a API de verdade num nó.
+- **Mutações:** 150, uma por vez, com prazo e restauração conferida por hash: todas mortas no fim. Na primeira rodada
+  sobreviveram sete: seis viraram testes e uma mostrou uma conferência repetida no cursor, que saiu; nas quatro extras, uma
+  virou teste. Não entraram as que tiram só o `tenantId` das leituras presas a um caso: a chave estrangeira composta já as
+  torna iguais ao original (é a segunda barreira).
+- **Carga** (Postgres 18 em Docker com 512 MB, 2 CPUs e `work_mem` de 2 MB, numa máquina Windows dividida com outros
+  trabalhos; 60 rodadas por rota, pelo service, sem o HTTP): 250 mil alertas em 3 mil casos (1.823 pendentes), mais 50 mil
+  de outro cliente, com os alertas de cada caso espalhados pela tabela. Em ms, p50 e p95:
+
+  | Rota                                                     | p50  | p95  | Meta |
+  | -------------------------------------------------------- | ---- | ---- | ---- |
+  | Lista, por prioridade (com 60 itens protegidos)          | 20,2 | 31,1 | 60   |
+  | Lista, a mais lenta das outras (todos, página 20 de 100) | 21,5 | 32   | 60   |
+  | Lista, busca sem resultado, em todos os estados          | 22   | 30,6 | 60   |
+  | Grupos por recurso                                       | 8,6  | 12,2 | 150  |
+  | Detalhe de um caso comum                                 | 9,9  | 15   | 150  |
+  | Detalhe do caso com 20.833 alertas                       | 65,4 | 92,7 | 150  |
+  | Alertas do caso grande, primeira página                  | 6,1  | 11,2 | 30   |
+  | Alertas do caso grande, depois de 19 mil                 | 7,5  | 10,9 | 30   |
+  | Alertas do caso grande, filtro que não acha nenhum       | 23,6 | 30,5 | 30   |
+  | Linha do tempo do caso grande                            | 32,1 | 46,9 | 80   |
+  | Situação                                                 | 2,7  | 3,6  | -    |
+
+  A página de alertas lê 5 blocos do índice, no começo e no fundo; o filtro que não acha nenhum lê os 20 mil do caso (15,6
+  mil blocos). A lista lê a tabela de casos do cliente (882 blocos) e ordena em memória (30 kB). Antes de duas correções, o
+  filtro por fonte ligava o JIT do Postgres (200 ms) e a busca sem resultado levava 79 ms.
+
+- **Teste manual:** no nó piloto, com o worker em `shadow`, `CASES_MODE=shadow` na API e a sessão da Verax com o cliente
+  escolhido: `GET /v1/cases/status` (`mode: shadow`, atraso 0 ou nulo), a lista, um caso e os grupos. Com a sessão do
+  cliente, `GET /v1/cases` tem de dar 404.
+- **Para ligar:** a linha `CASES_MODE` no `.env.example` e a variável no ambiente da API que o `start.sh` do nó escreve
+  (além da do worker, da parte 2). Nenhum dos dois foi tocado aqui.
+- **Riscos e dúvidas:** o item protegido e a conta, a tática e a técnica dos filtros saem de amostras limitadas (um caso com
+  mais de 20 recursos pode tocar um item protegido fora delas); "ainda ativo na origem" compara com a primeira triagem
+  (`triagedAt`), não com a data em que foi resolvido, que o alerta não guarda; a lista de vulnerabilidades ainda não diz
+  quantos alertas de cada caso seguem ativos na origem (pediria ler os alertas da página).
+
+## Casos, parte 4: a triagem em massa com desfazer (PR-4 do desenho de 24/11/2026)
+
+- **O que muda:** nada enquanto `CASES_MODE` for `off`, o padrão: as rotas novas respondem 404, a tarefa nova não existe e
+  nenhuma tela as usa. Com `shadow`, a equipe da Verax só lê as operações e ninguém opera; com `on`, quem faz triagem opera em
+  massa. A regra inteira está em `docs/ARQUITETURA.md`, "Triagem em massa". Fora dos casos, quatro mudanças valem em qualquer
+  modo: o `PATCH /v1/findings/:id/status` tira o `triageOpId` do alerta; o resumo de um incidente com mais de 500 alertas é
+  feito no banco; as listas do resumo vão na ordem dos bytes em UTF-8 (só difere da de antes em caracteres fora do plano
+  básico); e o expurgo tira os cabeçalhos de operação com mais de 13 meses e sem alerta.
+- **Rotas:** `POST /v1/triage-operations` (`status`, `promote`, `attach`, `undo_all_of`), `GET` da lista, do detalhe e da prévia
+  de um filtro, `POST .../:id/{undo,cancel,continue}` e `POST /v1/cases/:id/split`. Contrato em
+  `packages/shared/src/triage-operations.ts`. Tarefa `triage-ops` (5 s, só com `on`).
+- **Decisões desta parte** (no código, para revisão):
+  - **Conjunto congelado por ids** (em `TriageOperation.target.ids`, fora da lista e do detalhe, até a operação terminar), e não só
+    pelo corte: a atribuição pode pôr no caso, depois do pedido, um alerta que chegou antes e ninguém viu; e um filtro deixa de
+    achar um caso que a própria operação já mudou. Sem migration.
+  - **Cotas por papel** (`isMassTriageRole`), sem a permissão `findings:triage_mass` do desenho: o `meSchema` é um enum fechado, e
+    um painel aberto de antes recusaria o `/v1/me` inteiro (conferido por teste).
+  - **O filtro precisa de mais que a fila, o estado e o período.** O desenho dizia "além do período"; a fila sozinha é quase a tela
+    inteira. A severidade do filtro escolhe casos e não estreita os alertas deles: o mesmo que marcar os casos na lista.
+  - **Rota de prévia** (`GET .../preview`), que não estava no desenho: sem ela o painel não tem de onde tirar o `expectedCount` de
+    um filtro. Sai das contagens dos casos, sem ler alerta.
+  - **`details` nos erros** (`ApiError`): só números, para o 409 levar a contagem nova.
+  - **O caso tratado não é selado na hora** (o desenho dizia que sim): continua como na parte 2, selado quando chega o alerta
+    seguinte. Desfazer antes disso não tem o que reabrir; depois, o caso selado por `treated` reabre se ninguém está aberto com a
+    chave dele.
+  - **Um nível de desfazer:** o alerta volta ao que era antes da última operação dele. Desfeita a segunda, a primeira já não é
+    dona do alerta (ele aponta para o desfazer), e conta como pulado. O `undo_all_of` segue a mesma regra.
+  - **Desfazer um `promote`:** o incidente só é encerrado se ficou só com o alerta que o abriu. Incidente resolvido não perde
+    alerta, como à mão: recusa, e o painel diz para reabrir.
+  - **Dividir:** o caso novo nasce selado, com a abertura do original (não conta nos limites de abertura), e o `updatedAt` dos
+    alertas não muda. Por subgrupo, até 2.000 alertas.
+  - **`shadow` é só leitura**, até para a equipe da Verax. A escrita recusada pelo modo fica na trilha (`denied`, 404).
+  - **Resumo do incidente nos lotes** juntado, e refeito no fim: na primeira medição, refazer tudo a cada lote segurava o lock
+    por 540 ms (p50) num incidente de 24 mil; agora, 172 ms.
+  - Um alerta que falha na operação que roda na requisição (até 200) derruba o pedido inteiro com 500, sem mudar nada; isolar o
+    alerta é só do worker.
+- **Arquivos:** `packages/shared/src/triage-operations.ts` (e teste) e `cases.ts` (o filtro da lista em peças);
+  `apps/api/src/cases/`: `triage-{engine,store,view,ops-job}.ts`, `triage-operations.{controller,service}.ts`,
+  `case-split{.service,-store}.ts`, `case-filter.ts` (novos), `case-read-store.ts` (o `WHERE` da lista numa função),
+  `cases.{service,module,guard}.ts`, `cases-mode.ts`, `case-tasks.ts`; `incidents/`: `incident-summary-store.ts` (novo),
+  `incident-summary.ts`, `correlation.ts`, `incidents.{service,module}.ts`; `findings/findings.service.ts` (uma linha);
+  `common/http/{api-error,all-exceptions.filter}.ts`; `retention/retention-job.ts`; `worker.ts` (comentário); testes
+  `test/triage-{operations,requests,undo,ops-job,incidents,concurrency,off,shadow,retention,benchmark}.test.ts`, `case-split.test.ts`,
+  `test/support/triage.ts`, `test/incidents/correlation.test.ts`; `docs/ARQUITETURA.md`.
+- **Dependências novas:** nenhuma. Sem migration, e sem mudança em `infra/`, `.github/`, no módulo `auth` ou em `.claude/`.
+- **Testes:** `pnpm lint`, `pnpm typecheck` (todos os pacotes) e `format:check` limpos. Pacote `shared`: 31 arquivos, 577
+  testes. API com Postgres descartável: 231 arquivos, 4485 testes (quatro deles, as medições de carga, só com
+  `CASES_BENCH=1`). Novos: 171 na API (55 no pedido, 33 nos incidentes, 23 na tarefa, 20 no desfazer, 11 em dividir, 9 ao mesmo
+  tempo, 6 no expurgo, 10 com `off` e `shadow`, e 4 em arquivos que já existiam) e 24 no contrato.
+  - Três rodadas inteiras, com a máquina dividida com outros testes pesados. Na primeira, reprovou só a conferência da lista de
+    tarefas do worker, que ganhou a nova, e três arquivos caíram com o erro conhecido do worker do vitest no Windows
+    (3221226505). Na segunda, reprovou a mistura nova, porque um coletor esperou mais de 5 s pelo lock do cliente (daí a espera
+    por linha de 1 s com ele na mão; o coletor do teste passou a reler, como o de verdade), e um arquivo caiu. Na terceira, a
+    mistura antiga da atribuição passou dos 30 s, um arquivo de outro assunto não subiu a tempo e dois caíram. Todos passaram
+    rodados de novo. O arquivo novo que mais caía, o maior, foi dividido em dois. Não rodou: as suítes do painel e do console
+    (nada mudou neles) e a API e o worker de verdade num nó.
+  - Isolamento A/B em toda rota e em todo id do corpo, com o cliente B conferido linha a linha; papéis e modos; idempotência
+    com envios ao mesmo tempo; queda da conexão no meio de um lote, três réplicas sem concessão, triagem presa, banco que falha,
+    alerta que não grava; desfazer em cada estado; contagens conferidas em quatro sequências aleatórias de 90 passos e com
+    coletores, atribuição, expurgo, conferência, triagem um a um, incidentes e divisões rodando juntos (nenhum deadlock).
+- **Mutações:** 184, uma por vez, com prazo e restauração conferida por hash. Na primeira rodada sobreviveram 21: 16 viraram
+  testes, duas mostraram código repetido, que saiu, e três são equivalentes (o `tenantId` a mais no congelamento e na divisão,
+  segunda barreira atrás da conferência pelo escopo; e a permissão `incidents:write`, que hoje têm os mesmos papéis da
+  triagem). As outras, mortas.
+- **Carga** (Postgres 18 em Docker com 512 MB, 2 CPUs e `work_mem` de 2 MB, numa máquina Windows dividida com outros trabalhos):
+  24 mil alertas pendentes em 1.200 casos, numa tabela com mais 200 mil, e um coletor gravando sem parar. Lotes de 500 com 100
+  ms entre eles (48 por operação). Em ms:
+
+  | Operação                   | Pedido | Total  | Lock do cliente por lote (p50, p95, máx.) | Coletor esperando (p50, p95, máx.) |
+  | -------------------------- | ------ | ------ | ----------------------------------------- | ---------------------------------- |
+  | Mudar o status             | 223    | 10.399 | 100, 150, 152                             | 6, 99, 160                         |
+  | Desfazer                   | 52     | 10.826 | 116, 144, 149                             | 6, 115, 156                        |
+  | Promover                   | 473    | 13.711 | 172, 250, 462                             | 6, 146, 467                        |
+  | Desfazer o promover        | 86     | 14.580 | 184, 267, 324                             | 8, 186, 336                        |
+  | 200 na requisição          | 98     | -      | (p95 116, máx. 126)                       | 8, 95, 107                         |
+  | Desfazer 200 na requisição | 100    | -      | (p95 115, máx. 123)                       | -                                  |
+
+  O coletor sozinho: p50 8, p95 12. O conjunto congelado de 24 mil ocupa 914 KB de JSON. Numa rodada anterior, com a máquina
+  mais ocupada, mudar o status levou 16,2 s e o lock, p50 219, p95 283 e máximo 293 ms. A requisição de 200 alertas, no pior caso
+  medido (313 ms, com o coletor gravando), fica longe dos 15 s. A conferência das contagens no fim não achou diferença.
+
+- **Teste manual:** no nó piloto, depois da medição, `CASES_MODE=on` no worker e na API; com uma sessão de analista, pela API:
+  `GET /v1/triage-operations/preview?queue=vulnerability&severity=low`, o `POST` com o `expectedCount` dela, `GET` da operação até
+  `done`, o `undo`, e a trilha (`triage.bulk.*`). No log do worker, `triage-ops` com `stalled` e `isolated` em 0.
+- **Para ligar:** nada além do `CASES_MODE` das partes 2 e 3 (a linha no `.env.example`, e a variável no ambiente do worker e da
+  API que o `start.sh` do nó escreve). Nenhum dos dois foi tocado aqui.
+- **Riscos e dúvidas:** a trilha grava 201 no pedido que respondeu 202 ou 200 (o interceptor lê o status declarado da rota); a
+  tela Auditoria mostra as ações novas pelo nome gravado até o painel ganhar os textos (`features/audit/labels.ts`), e a área
+  `triage_operation` ainda não está no filtro dela; o aviso por e-mail ao administrador acima de 500 alertas fica para a parte dos avisos.
+
+## Casos, parte 5: a tela e a triagem em massa no painel (PRs 5 e 6 do desenho de 24/11/2026)
+
+- **O que muda:** com os casos desligados (o padrão de um nó), a tela é a de sempre: o HTML de `main` e os papéis de
+  acessibilidade foram comparados antes e depois, em dois papéis, oito endereços e quatro larguras (64 telas). Os papéis são
+  iguais nas 64 e o HTML em 58; nas outras seis, o endereço tinha um `caso=` de propósito, que os links do radar agora largam. Um
+  pedido a mais por visita (`GET /v1/cases/status`), e nenhum outro. Com `on`, a tela Detecções abre nos casos, com quatro visões
+  (Casos, Alertas, Incidentes e Vulnerabilidades), o detalhe do caso no painel, a triagem em massa com desfazer e "Operações
+  recentes". Com `shadow`, só a equipe da Verax vê, e ninguém trata. Nada muda na API. A regra inteira está em
+  `docs/ARQUITETURA.md`, "A tela dos casos".
+- **Decisões desta parte** (no código, para revisão):
+  - O modo vem de `GET /v1/cases/status` (vale por 5 min, sem repetir). 404, erro ou resposta que não se entende: desligados. A
+    lista que passa a responder 404 com a tela aberta faz perguntar de novo.
+  - `on` sem `visao` é a visão de casos, menos no endereço com `status`, que só a lista de alertas tem: assim o "Ver os alertas" da
+    Torre e os favoritos de antes continuam. `/achados` passa a levar `visao=alertas` (com os casos desligados, não muda nada).
+  - "Casos" não tem a fila de vulnerabilidades: ela tem a própria visão, agrupada (D1). Por isso o seletor de fila só tem Detecção e
+    Postura.
+  - Na lista, "Voltou (N×)" na detecção: `recurrence` também conta as voltas por janela de tempo, e só o detalhe sabe se foi
+    depois de tratado. Nas outras filas, que não têm janela, "Voltou depois de tratado (N×)".
+  - Para "em análise", a conta sai sem quem já está; quando não dá para saber quantos, o botão diz "até N" (a API só recusa o
+    conjunto que veio maior).
+  - O grupo se trata por filtro, um de cada vez (a API aceita um filtro por pedido); o filtro não diz quais casos tocam a lista de
+    proteção, e o diálogo avisa.
+  - O diálogo não é um formulário: um Enter perdido não confirma. Nenhum aviso some sozinho (WCAG 2.2.1).
+  - Nos atalhos que contam alertas (o radar e o MITRE), o destino é a lista de alertas.
+  - O detalhe do alerta ganha a trilha das operações em massa, só com os casos.
+  - As áreas "Casos" e "Triagem em massa" do filtro da Auditoria só aparecem com os casos: um nó de antes recusa o valor com 400.
+  - `MiniBars` ganha a opção de colunas por dia, e o `ApiRequestError`, os números de `details`.
+- **Arquivos:** `apps/web/src/features/cases/` (novo), `features/detections/{url-state,legacy-url,detection-list,detail-panel,
+filter-bar,export,situation-strip}`, `features/{findings,incidents}` (relê os casos depois de triar), `features/audit/labels.ts`,
+  `features/tour/steps.ts` (dois passos), `components/charts/mini-bars.tsx`, `lib/api-client.ts`, `pages/{detections,audit}-page.tsx`,
+  `mocks/{case-fixtures,case-store,triage-engine,cases-handlers}.ts` (novos), `e2e/casos.mock.spec.ts` (novo) e os e2e de
+  `deteccoes`, `history`, `radar`, `pages`, `tour` e `demo-login`; `packages/shared/src/{audit,cases}.ts` (dois valores do filtro da
+  Auditoria e um tipo). Testes: `features/cases/*.test.ts`, `pages/detections-cases.test.tsx`, e acréscimos nos que existiam.
+- **Dependências novas:** nenhuma. Sem migration, sem mudança de comportamento na API, e sem mudança em `infra/`, `.github/`, no
+  módulo `auth` ou em `.claude/`.
+- **Demonstração:** casos ligados por padrão, com 328 alertas a mais no cliente Alfa (vulnerabilidades, postura, um caso grande de
+  detecção e um que voltou depois de tratado), todos com mais de 24 horas; com `verax.mock.cases=off` eles não existem. O tour passa
+  de 18 para 20 passos (16 para a analista).
+- **Testes:** `pnpm lint` (zero avisos), `pnpm typecheck` (todos os pacotes), `format:check`, `test:lint-rules`, `pnpm build` e
+  `build:demo` do painel (com a varredura do pacote) limpos. Painel: 68 arquivos, 1024 testes (133 novos). Pacote `shared`: 31
+  arquivos, 577 testes. Navegador: 219 testes (projetos `mock` e `catalogo`, em portas próprias), 25 deles novos: desligado, a lista,
+  as vulnerabilidades, o detalhe e os diálogos sem violação de acessibilidade (WCAG 2.2 AA) nos dois temas e em 360, 768 e 1280 px;
+  nenhuma rolagem horizontal de 320 a 1920; 44 px no toque; teclado; e cada fluxo em massa (críticos, conjunto que mudou, cota,
+  fila, parou no meio, cancelar, continuar, desfazer, desfazer tudo, subgrupo, dividir, banco ocupado). Nenhum arquivo caiu com o erro
+  do worker do vitest no Windows. Não rodou: as suítes da API, do console e o e2e com a API (`fullstack`), porque nada mudou
+  neles além de dois valores no filtro da Auditoria.
+- **Mutações:** 102 na lógica (seleção, quantidade confirmada, endereço, regras da confirmação, recusas, fila, permissões), uma por
+  vez, com prazo e restauração conferida por hash. Na primeira rodada sobreviveram sete: seis viraram testes e uma mostrou uma
+  limpeza repetida no motivo, que saiu. Todas mortas no fim, e nenhuma ficou no código.
+- **Teste manual:** na demonstração, a visão Casos, marcar dois casos, "Legítimo", o motivo, "Desfazer"; Vulnerabilidades, "Tratar" no
+  openssl (vai para a fila: fechar o diálogo e acompanhar em Operações recentes); no celular, "Selecionar". No nó piloto, com
+  `CASES_MODE=shadow` e a sessão da Verax: as visões novas, sem caixas; com a do cliente, a tela de sempre.
+- **Riscos e dúvidas:**
+  - Não rodou contra a API de verdade num nó (só o contrato, pelos schemas, e a demonstração, que imita as regras).
+  - `recurrence` não diz por que a chave voltou: um `recurrenceTreated` na lista daria o "depois de tratado" em todas as filas.
+  - A lista não diz quantos alertas de cada caso seguem ativos na origem (pediria ler os alertas da página); só o detalhe diz.
+  - A prévia de um filtro não diz quantos casos tocam a lista de proteção.
+  - A Torre continua contando alertas ("N alertas altos ou críticos para validar"), agora com a lista padrão de casos: muda na
+    parte da Torre.
+
+## Avisos por caso (PR-7 do desenho de 24/11/2026) ⚠️ migration nova
+
+- **O que muda:** nada enquanto `CASES_MODE` for `off` (o padrão) ou `shadow`: as linhas e os e-mails são os mesmos, conferidos
+  contra o código da versão anterior. Com `on`, o aviso por e-mail dos alertas passa a ser por caso. A regra inteira está em
+  `docs/ARQUITETURA.md`, "Avisos por caso".
+  - **Detecção:** um aviso por caso e severidade; outro, se tudo o que foi avisado já foi tratado e chegou mais; e no máximo um
+    por dia se o caso cresceu.
+  - **Vulnerabilidade e postura (D4, a confirmar):** no máximo um aviso imediato por hora e cliente, com os casos críticos novos,
+    e um resumo por dia às 09:00 de Brasília. Todos os limites são constantes de `cases/case-notice-policy.ts`.
+  - **Nunca calado:** o alerta alto ou crítico sem caso há mais de 10 min avisa sozinho.
+- **Decisões desta parte** (no código, para revisão):
+  - Os avisos são calculados do estado do banco, no começo da tarefa `notifications`, e não dentro da `case-assign`: avisam mesmo
+    com ela parada, e o que uma execução não viu a seguinte vê.
+  - **"Já avisado" é por alerta**, pelo que está gravado: a linha `finding:<id>` e o que aconteceu com ela, o aviso do caso ou do
+    incidente, o desfazer. O marco de tempo só vale para o alerta sem linha nenhuma, com uma hora de folga. Por isso ligar, voltar
+    e ligar de novo não perdem nem repetem, e o `noticedBefore` da parte 2 saiu (a atribuição com `on` não marca nada).
+  - **A onda seguinte** avisa com outra chave (`case:<id>:<severidade>:<instante>`), porque a primeira já está usada; o aviso pulado
+    por o caso estar tratado, ou que falhou nas cinco tentativas há mais de 6 h, não conta como dado.
+  - **Crescimento:** dez vezes em 1 h só a partir de 100 alertas, contados do último aviso (o desenho não dizia o piso: sem ele,
+    todo caso de dez alertas avisaria duas vezes).
+  - **Resumo diário:** só sai se algo alto ou crítico pendente chegou desde o último enviado, ou uma vez por semana enquanto houver;
+    entra na fila como alerta alto, para o contato de escalonamento não o receber; conta nos cinco e-mails da hora.
+  - **Voltar para `off` ou `shadow`** devolve uma vez o que ficou no meio (`SyncState('case-notices').cursorId`); na parada do
+    worker, uma última passagem de até 5 s atribui e avisa, para a versão anterior achar o aviso na fila.
+  - **Memória de 14 dias:** a linha do aviso sai em cascata com o alerta da âncora, na retenção (o menor histórico é de 30 dias).
+  - A subida de severidade na origem de um alerta que nenhum caso avisa (num incidente, já tratado, sem caso) continua a avisar
+    alerta por alerta, com `on` também.
+  - **Sem valor novo de enum e sem coluna:** os tipos são os do alerta, e a linha leva a âncora em `findingId`.
+- **Migration** `20261202120000_notification_case_index`: um índice parcial em `Notification.caseId`. Sem ele, decidir o que já foi
+  avisado leria a tabela de avisos inteira a cada minuto. Só acrescenta; a versão anterior funciona com ele.
+- **Arquivos:** `apps/api/src/cases/case-notice-{policy,store,regime,mail,setup}.ts` e `case-notices.ts` (novos, com teste);
+  `cases/case-{assign-job,plan,tasks,watch}.ts`, `cases-mode.ts`; `notifications/{finding-notices,notification-dispatcher}.ts`;
+  `mail/templates.ts`; `alerts/finding-store.ts` (a subida diz se o alerta tem caso que avise); `worker.ts`; a migration e os
+  comentários do `schema.prisma`; testes `test/case-notices{,-delivery,-cutover,-triage,-benchmark}.test.ts`,
+  `test/support/{case-notices,own-database}.ts` e as listas de `case-assign.test.ts` e `aws-onboarding-migration.test.ts`.
+- **Dependências novas:** nenhuma. Sem mudança em `infra/`, `.github/`, `apps/web`, no módulo `auth` ou em `.claude/`.
+- **Testes:** `pnpm lint`, `pnpm typecheck` (todos os pacotes) e `format:check` limpos. Pacote `shared`: 31 arquivos, 577 testes.
+  API com Postgres descartável: 237 arquivos, 4.654 testes (sete deles, as medições de carga, só com `CASES_BENCH=1`). Novos: 164 (58
+  na decisão dos avisos, 39 na virada, 35 na entrega, 10 com a triagem pela API, 14 nas regras e 8 nos textos).
+  - Duas rodadas inteiras, com a máquina dividida com outros testes pesados. Na primeira, reprovou só a medição da primeira vez
+    ligada: a máquina ocupada estourou o prazo de um lote, e 2.005 dos 24 mil avisos de alerta saíram por alerta no resumo (o que o
+    desenho prevê; o teste passou a conferir a soma, e os e-mails). Na segunda, nenhum teste reprovado, e cinco arquivos de outros
+    assuntos caíram com o erro conhecido do worker do vitest no Windows (3221226505); os cinco passaram rodados de novo.
+  - Cada arquivo que roda o despachante tem um banco só dele (`createOwnDatabase`): a fila e a concessão são do banco inteiro.
+  - **`off` e `shadow` contra a versão anterior de verdade:** o código de `2d3f79a6` e este, no mesmo roteiro (coletores, subida na
+    origem, atribuição, quatro execuções): linhas, casos, resumos, e-mails e relatórios idênticos. O despachante da versão anterior
+    enviou as quatro formas de linha nova, e a atribuição dela seguiu com casos e avisos no banco. Foi uma conferência à parte, fora
+    da suíte; a suíte compara os modos com um worker que não sabe dos casos.
+  - O worker de verdade (`dist/worker.js`), com o banco descartável: `on` grava a virada antes das tarefas; `off`, depois de um
+    crítico sem aviso, devolve um e fecha a devolução.
+- **Mutações:** 190, uma por vez, em cópias da árvore (a de trabalho nunca foi mutada), com prazo e restauração conferida por hash.
+  Na primeira rodada (175) sobreviveram 47: 36 viraram testes e morreram, quatro mostraram código repetido, que saiu, e sete são
+  equivalentes (a segunda barreira, atrás da chave única, do lock ou da releitura, que só uma corrida alcança). Das 15 refeitas ou
+  novas, uma é equivalente, e as outras, mortas.
+- **A primeira vez ligada** (24 mil alertas em 2 mil casos de detecção, 500 deles com crítico; duas pessoas e o contato de
+  escalonamento):
+
+  | Situação ao ligar                                      | Avisos de caso | E-mails por pessoa                  | Ao contato |
+  | ------------------------------------------------------ | -------------- | ----------------------------------- | ---------- |
+  | Tudo já avisado alerta por alerta                      | 0              | 0 (2 mil casos marcados)            | 0          |
+  | Os 24 mil avisos ainda na fila                         | 2.000          | 5 na hora e 1 resumo (1.995 avisos) | 5          |
+  | 24 mil alertas novos numa hora, com os avisos por caso | 2.000          | 5 na hora e 1 resumo                | 5          |
+
+  Nas horas seguintes, mais nenhum. O segundo caso inteiro: 2.000 avisos no lugar de 24.000, e 17 e-mails (2 pessoas e o contato).
+
+- **Carga** (Postgres 18 em Docker com 1 GB e 2 CPUs, sem `fsync`, numa máquina Windows dividida com outros trabalhos): 60 mil alertas em
+  3 mil casos de detecção, 10 mil casos de vulnerabilidade, 200 mil alertas tratados e 270 mil avisos antigos, e um coletor gravando
+  sem parar (sozinho, p50 de 5 a 7 ms). Em ms:
+
+  | Execução dos avisos                                  | Total | Coletor esperando (p95, máx.) |
+  | ---------------------------------------------------- | ----- | ----------------------------- |
+  | A virada, com tudo já enviado (8 mil casos marcados) | 2.193 | 47, 157                       |
+  | Sem novidade                                         | 86    | 10, 10                        |
+  | 200 casos novos                                      | 273   | 130, 130                      |
+  | 20 mil alertas a mais num caso avisado               | 219   | 9, 55                         |
+  | Sem novidade, com esse caso                          | 144   | 7, 7                          |
+  | A virada, com 24 mil avisos na fila (2 mil casos)    | 4.070 | 11, 146                       |
+
+  A primeira medição da virada levava 30 s e passava do prazo: com as estatísticas de antes da rajada, o banco preferia o índice da
+  fila de avisos (`status`) ao do alerta. As consultas passaram a ser presas à ordem certa.
+
+- **Teste manual:** no nó piloto, depois da medição em `shadow`, `CASES_MODE=on` no worker e na API: no log, `notifications` com
+  `cases` (`marked` na primeira execução, `failedTenants`, `isolated` e `lagging` em 0); um alerta alto de teste dá um e-mail "Caso
+  de severidade alta" com o link `/?caso=`; às 09:00, o resumo diário, se há vulnerabilidade alta ou crítica nova. Depois, `off`:
+  `cases.handedBack` uma vez no log, e o alerta seguinte avisa como antes.
+- **Para ligar:** nada além do `CASES_MODE` das partes 2 e 3 (a linha no `.env.example`, e a variável no ambiente do worker e da API
+  que o `start.sh` do nó escreve). Nenhum dos dois foi tocado aqui.
+- **Riscos e dúvidas:**
+  - D4 (o resumo diário e o aviso imediato por hora) e o piso do crescimento esperam a confirmação do responsável.
+  - Uma queda sem parada (sem a última passagem), seguida da versão **anterior** do nó, deixa sem e-mail os alertas do último
+    minuto; eles estão no painel e avisam quando os casos voltam.
+  - Um crítico a mais num caso já avisado e pendente não avisa (é o desenho); o de vulnerabilidade ou postura aparece no resumo do dia.
+  - O e-mail ao administrador numa triagem em massa acima de 500 alertas continua de fora: pede um tipo novo, que só pode ser
+    emitido na versão seguinte à que o acrescenta (M3 do desenho).
+  - Um aviso pode sair segundos antes de uma triagem em massa, já pedida, chegar ao caso.
+  - O worker de verdade rodou só nesta máquina, com o banco descartável (`on` e depois `off`); não num nó, nem com SMTP, e o SIGTERM
+    não foi exercitado (Windows): a última passagem está coberta por teste.
 
 ## Ataques web pelos logs do ALB, PR-3: contratos e isolamento do Wazuh (não ligado)
 
@@ -7084,3 +7505,139 @@ source-monitor,source-parts,sources,onboarding-labels,onboarding-section}`; `lib
   `docs/runbooks/ataques-web.md` (novo).
 - **Dependências:** nenhuma.
 - **Ficou para depois:** a frase do DPA (texto jurídico, com o responsável) e o teste com a máquina ociosa.
+
+## Casos com os ataques web pelos logs do ALB (a junção com a main)
+
+- **O que é:** a main (com os ataques web, #207) dentro de `integracao/casos`, e o que os dois juntos pedem. Sem migration, sem
+  dependência e sem mudança em `auth`, `infra/`, `.github/` ou `.claude/`. Tudo segue desligado (`CASES_MODE` e
+  `AWS_WEB_LOGS_ENABLED`).
+- **A chave dos achados `alb`** (`case-key.ts`), das colunas do achado, como a das outras fontes:
+  - `web-login`: a força bruta e o acesso depois de muitas falhas (990405 e 990406), do mesmo endereço no mesmo balanceador, são um
+    caso só; quando ele entra, a severidade sobe, e o caso avisa de novo;
+  - `web`: o resto, por regra, balanceador e, com um endereço só, rede. A força bruta distribuída (990407) não tem endereço.
+  - A média e a baixa (a sondagem de todo dia) cabem num caso por conta e regra, como nas outras fontes. A versão da chave não muda:
+    nenhum achado `alb` existe num nó.
+- **Avisos:** a leitura dos logs (`web-logs-tasks.ts`) recebe o mesmo passo de aviso dos outros coletores (a propriedade é
+  obrigatória, e o tipo cobra): com `CASES_MODE=on`, quem avisa é o caso. Um teste da tarefa inteira cobre do arquivo no S3 ao caso.
+- **O que não mudou:** a janela dos casos de detecção (24 h de silêncio, 7 dias) vale para eles; a de 6 h e 24 h do desenho (D3)
+  fica para depois de ver dado de verdade. As chaves do ataque que o motor calcula (`correlation`) não são gravadas.
+- **Migrations:** as dos casos (`20261127`, `20261129` e `20261202`) e as dos ataques web (`20261130` e `20261201`) saem na mesma versão
+  ou em qualquer ordem: nenhuma depende da outra.
+- **Testes:** API, `src/{cases,weblogs,alerts,common}`, 1.431; a tarefa `web-logs`, as migrations, os papéis do banco e o escopo por
+  cliente, 135; web, 82 arquivos e 1.196.
+
+## Casos: a linha `CASES_MODE` do `node.conf` e o runbook (desligado por padrão)
+
+- **O que é:** `CASES_MODE` no `node.conf` (opcional) vai igual para a API e o worker pelo `start.sh`, e o runbook
+  `docs/runbooks/casos.md`. Vai para `integracao/casos`. **⚠️ `infra/`: revisar linha a linha.**
+- **Nenhum nó muda:** sem a linha, o `api.env` e o `worker.env` saem byte a byte como antes. Fora do formato, o nó sobe com os casos
+  desligados, com o aviso. O nó gerenciado já instalado não recebe a linha: quem liga nele é o padrão da versão.
+- **Arquivos:** `infra/node/{bin/start.sh,node.conf.example,tests/start-test.sh}`, `docs/ARQUITETURA.md`,
+  `docs/runbooks/casos.md` (novo).
+- **Dependências:** nenhuma.
+
+## Casos, parte 8: a Torre, o radar e os relatórios (PR-8 do desenho de 24/11/2026)
+
+- **O que muda:** com os casos ligados, a Torre, o radar e os relatórios passam a contar casos, e a API ganha cinco coisas que a
+  tela dos casos tinha pedido. Com os casos desligados (o padrão de um nó), tudo é o de sempre, byte a byte. Na medição (`shadow`),
+  só a equipe da Verax vê, e ninguém decide por caso.
+  - **Torre** (`GET /v1/tower?cases=true`): `cases` (os casos pendentes por fila e pior severidade, e a abertura do mais antigo de
+    cada uma) e as decisões `untriaged_case` e `untriaged_vulnerability_case`; `untriaged_finding` fica só com os alertas que nenhum
+    caso cobre. Os botões das decisões levam à lista de casos (detecção e postura) e às vulnerabilidades.
+  - **Radar** (`radar.cases`): os casos de detecção ativos em 24 h, até 100, os mais graves primeiro; o ponto tem o tamanho do caso
+    e abre `?caso=`; a frase diz "N alertas em M casos".
+  - **Relatórios** (`GET /v1/reports/{summary,mitre}?cases=true`): `summary.cases` (abertos, tratados, pendentes e a mediana até
+    tratar) e `cases` em cada tática do MITRE. O gráfico conta casos na mesma escala, com os alertas no detalhe. Colunas novas nos
+    CSVs.
+  - **API:** o `can` do caso segue o modo; cada operação do detalhe do caso diz o que se pode fazer com ela; a prévia de um filtro
+    diz quantos casos tocam a lista de proteção e os novos e os em análise por severidade; `GET /v1/triage-operations/authors`
+    (quem pediu operações nos últimos 30 dias); e `recurrenceTreated` na lista e no detalhe, sem migration.
+  - A regra inteira está em `docs/ARQUITETURA.md`, "Casos na Torre, no radar e nos relatórios".
+- **Decisões desta parte** (no código, para revisão):
+  - **O semáforo não muda**, nem a conta dele: alerta alto ou crítico em "novo", em caso ou não, dentro ou fora de incidente. A cor
+    e os motivos são os mesmos em todo modo; só as decisões contam casos. Cada alerta que o semáforo olha está numa decisão só: o
+    amarelo sempre tem uma que o explica (se as contagens dos casos estiverem erradas, as decisões voltam a contar alertas).
+  - **Os campos só vêm para quem pede** (`cases=true`). As respostas são estritas: um painel já publicado recusaria a Torre inteira
+    por um valor novo de enum. O painel novo só pede quando `GET /v1/cases/status` diz que pode, e, se o nó recusa ou manda o que
+    ele não entende, pede de novo sem os casos.
+  - Na medição, a equipe da Verax vê os casos no radar e nas contagens, e as decisões continuam contando alertas.
+  - O caso só com altos em análise não é decisão, como hoje um alerta em análise não é. O alerta num incidente aberto segue
+    contando (promover não muda o status dele), na linha "fora dos casos".
+  - O radar usa o mesmo `WHERE` da lista de casos em 24 h: o total bate com o da lista. O caso com alerta num incidente aberto tem,
+    sem nada pendente, a gravidade do incidente.
+  - A mediana é por caso, da abertura até o último alerta dele ser triado (ou entrar num incidente): tratar 20 mil alertas de uma
+    vez distorce o tempo médio por alerta. Só entram os casos abertos no período, e `tratados + pendentes = abertos`.
+  - No MITRE, sem nenhum caso no período (o histórico de antes), o gráfico conta alertas.
+  - O CSV dos casos do período é do Resumo; o da lista de casos ganha "Voltas depois de tratado".
+  - Os números dos casos na Torre não ficam guardados (a Torre relida depois de tratar já diz o novo); o MITRE com casos tem uma
+    memória de 30 s à parte da do MITRE de sempre.
+- **Arquivos:** API: `cases/{case-summary-store,case-radar,case-bounded,case-protected}.ts` (novos),
+  `cases/{case-read-store,cases.service,triage-operations.controller,triage-operations.service,triage-store,triage-view}.ts`,
+  `tower/{tower-rules,tower.controller,tower.service}.ts`, `reports/{reports.controller,reports.service}.ts`. Contrato:
+  `packages/shared/src/{tower,cases,reports,triage-operations}.ts`. Painel: `components/security/{detection-radar,radar-geometry}`,
+  `features/cases/`, `features/detections/{export,situation-strip,tower-reason,url-state}`,
+  `features/reports/{mitre-radar,report-views,reports-api,tactic-share}`, `features/tour/steps.ts` (dois textos) e os `mocks`. Testes:
+  `apps/api/test/cases-{tower,tower-off,tower-shadow,tower-benchmark,reports,gaps}.test.ts`, `test/support/{case-world,case-bench}.ts`,
+  `pages/detections-cases-tower.test.tsx` e `e2e/casos-torre.mock.spec.ts` (novos), e acréscimos nos que existiam.
+- **Dependências novas:** nenhuma. Sem migration, e sem mudança em `infra/`, `.github/`, no módulo `auth` ou em `.claude/`.
+- **Testes:** `pnpm lint` (zero avisos), `pnpm typecheck` (todos os pacotes), `format:check`, `test:lint-rules`, `pnpm build` e
+  `build:demo` do painel (com a varredura do pacote) limpos. Painel: 69 arquivos, 1083 testes (59 novos). Pacote `shared`: 31
+  arquivos, 600 testes (23 novos). API: 238 arquivos e 4.583 testes, com PostgreSQL 18 descartável: 4.578 passam e 5 (em 4
+  arquivos opcionais, de medição) ficam de fora, como antes. Três notas da rodada: dois arquivos desta parte caíram com o erro do
+  worker do vitest no Windows (3221226505) e passaram ao repetir (o `cases-read`, de antes, também cai às vezes nesta máquina); e o
+  teste da troca de senha do `db-bootstrap` não vale num banco que confia em toda conexão: passou (15 de 15) num segundo banco, com
+  senha. Não rodaram: o console e o e2e com a API (`fullstack`).
+  - **Byte a byte:** o código de antes (da base) e o novo, no mesmo banco e no mesmo relógio: 18 clientes sorteados, três modos,
+    quatro papéis, a Torre e os sete relatórios, 618 respostas iguais sem o pedido. No painel desligado, 48 telas (dois papéis, três
+    larguras, oito endereços) com o HTML e os papéis de acessibilidade iguais, e os mesmos pedidos.
+  - **Contagens:** clientes sorteados, com casos e alertas em todo estado, conferidos contra uma conta feita alerta por alerta
+    (Torre, radar, resumo, MITRE, prévia e `recurrenceTreated`); isolamento entre dois clientes; papéis; versões diferentes nos dois
+    sentidos; a memória do MITRE (validade, cliente e quem não pede).
+  - **Navegador:** 233 de 233 testes (projetos `mock` e `catalogo`, em portas próprias): sem violação de acessibilidade (WCAG 2.2 AA) nos
+    dois temas e em 360, 768 e 1280 px; nenhuma rolagem horizontal de 320 a 1920; teclado, toque, o orçamento de animação
+    (só `transform` e `opacity`, nenhuma mudança no DOM) e movimento reduzido. Os e2e do radar e do MITRE de sempre rodam com
+    `verax.mock.cases=off`.
+- **Mutações:** 162 na lógica (77 na API, 75 no painel e 10 no contrato), uma por vez em cada pacote (as da API e as do painel ao
+  mesmo tempo, em arquivos diferentes), com prazo e restauração conferida por hash. Na primeira rodada sobreviveram seis: quatro
+  viraram testes (um deles passava sem conferir nada: o CSV tem ponto e vírgula dentro das células), e duas são equivalentes (o
+  filtro de caso nulo antes de um `count(DISTINCT)`, que já ignora nulos; e a permissão dos incidentes no desfazer, que hoje é dos
+  mesmos papéis da triagem). Nenhuma ficou no código.
+- **Carga** (PostgreSQL 18 num contêiner de 512 MB e 2 CPUs, `work_mem` de 2 MB; 250.300 alertas, 2.000 casos, 1.196 pendentes, 10
+  mil alertas num incidente aberto, e 50 mil de outro cliente), em ms, mediana e p95:
+
+  | Leitura                            | Sem casos     | Com casos     |
+  | ---------------------------------- | ------------- | ------------- |
+  | Torre, MITRE guardado              | 43,9 / 52,3   | 73,1 / 81,8   |
+  | Torre, MITRE frio                  | 180,5 / 246,1 | 320,6 / 347,7 |
+  | Relatório MITRE, 30 dias           | 123,8 / 170,2 | 204,4 / 231   |
+  | Resumo, 30 dias (lê tudo, em JS)   | 3.970 / 4.158 | 4.345 / 4.445 |
+  | Dez painéis juntos, MITRE frio     | 666           | 949           |
+  | Comando: casos pendentes           |               | 11,1 / 13,1   |
+  | Comando: casos do radar            |               | 16,1 / 18,4   |
+  | Comando: casos do período, 30 dias |               | 133,8 / 156,2 |
+  | Prévia de um filtro grande         |               | 156,7 / 175,8 |
+  | Prévia por severidade              |               | 154,5 / 172,2 |
+  | Autores das operações              |               | 1,1 / 1,2     |
+  | Lista de 100 casos, com as voltas  |               | 17,4 / 22,2   |
+
+- **Teste manual:** na demonstração, a Situação (o radar de casos, as decisões e os botões delas), o Resumo e o MITRE em Análises, e,
+  na visão Casos, um filtro por severidade e "Em análise" (a conta exata). No nó piloto, com `CASES_MODE=shadow` e a sessão da Verax:
+  o radar de casos e as contagens, com as decisões de sempre; com a do cliente, a tela de sempre. Com `on`: comparar a cor do
+  semáforo antes e depois, e as contagens das decisões com as listas a que elas levam.
+- **Riscos e dúvidas:**
+  - Não rodou num nó de verdade, nem o e2e com a API (`fullstack`): só a API contra um PostgreSQL de teste e o painel contra a
+    demonstração.
+  - O alerta em "novo" dentro de um incidente continua deixando a Torre amarela, como antes. Mudar isso é mudar o semáforo.
+  - `triagedAt` é a primeira triagem: um alerta que passou dias em análise conta, na mediana, até entrar em análise.
+  - O relatório de Resumo continua lendo todos os alertas do período em JS (4 s nesta carga); os casos somam cerca de 0,4 s.
+  - A parte dos avisos por caso mexe nos mesmos `url-state.ts`, `detections-cases.test.tsx`, `ARQUITETURA.md` e `STATUS.md`: quem
+    entrar depois resolve os conflitos, que são de linhas vizinhas.
+
+## Casos: a chave de acesso protegida (25/11/2026)
+
+Revisão do conjunto (#211): o caso que só toca a lista de proteção pela chave de acesso não aparecia como protegido na lista, na ordem por
+prioridade nem na prévia da triagem em massa, porque as amostras não guardavam a chave.
+
+- **Migration** `20261203120000_case_access_keys`: só a coluna `AlertCase.accessKeys`, com padrão vazio e teto de 20. Não sai na API.
+- **Atribuição, divisão e leitura:** as três passam a gravar e a conferir a chave.
+- **Limite conhecido, o mesmo das outras amostras:** além dos 20 primeiros valores do caso, o valor protegido não é visto.

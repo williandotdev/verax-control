@@ -9,6 +9,7 @@ import {
   MAX_PAGE_SIZE,
   paginatedSchema,
 } from '@verax/shared';
+import { invalidateCases } from '@/features/cases/cases-api';
 import { api } from '@/lib/api';
 
 export function useIncident(id: string, enabled: boolean) {
@@ -53,6 +54,7 @@ function useRefreshAfterMembership() {
     for (const key of ['incidents', 'detections', 'findings', 'finding', 'related-findings', 'tower']) {
       void queryClient.invalidateQueries({ queryKey: [key] });
     }
+    invalidateCases(queryClient);
   };
 }
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { type CaseQueueName, casesRequestShape } from './cases.js';
 import { cloudAccountRefSchema } from './cloud-accounts.js';
 import { FINDING_SEVERITIES, FINDING_SOURCES, FINDING_STATUSES, type FindingSource } from './findings.js';
 import { usageMonthSchema } from './plan-usage.js';
@@ -8,7 +9,19 @@ import { mitreTacticSchema } from './reports.js';
 /**
  * Resumo da Torre (T5.10): a resposta de `GET /v1/tower`, do cliente da sessão. A regra do semáforo está em
  * `apps/api/src/tower/tower-rules.ts`; aqui fica só o formato, validado pela API ao responder e pelo painel ao ler.
+ *
+ * **Versões diferentes.** O formato é estrito, e um painel de antes recusa a resposta inteira por um campo ou um valor que
+ * não conhece. Por isso tudo o que é dos casos só vem para quem o pede (`towerQuerySchema`), e só de um nó que os mostra
+ * a quem pede: o painel de antes não pede e recebe a resposta de sempre. O painel novo só pede a um nó que diz ter casos
+ * (`GET /v1/cases/status`); o que ainda não conhece o pedido responde 400, e o painel pede de novo sem ele.
  */
+
+/**
+ * `cases=true`: com os casos valendo para quem pede (a mesma regra de `GET /v1/cases/status`), a resposta traz os campos
+ * deles. Com os casos desligados, ou sem o pedido, é a de sempre.
+ */
+export const towerQuerySchema = z.strictObject(casesRequestShape);
+export type TowerQuery = z.infer<typeof towerQuerySchema>;
 
 export const TRAFFIC_LIGHTS = ['red', 'yellow', 'green'] as const;
 export type TrafficLight = (typeof TRAFFIC_LIGHTS)[number];
@@ -27,8 +40,19 @@ export const TRAFFIC_LIGHT_REASONS = [
 ] as const;
 export type TrafficLightReason = (typeof TRAFFIC_LIGHT_REASONS)[number];
 
-/** Incidente aberto sem responsável, achado alto ou crítico sem triagem e (só admin_verax) alerta sem dono. */
-export const PENDING_DECISION_KINDS = ['unassigned_incident', 'untriaged_finding', 'unowned_alert'] as const;
+/**
+ * Incidente aberto sem responsável, achado alto ou crítico sem triagem e (só admin_verax) alerta sem dono. Com os casos
+ * ligados e pedidos, o achado sem triagem é contado pelo caso dele: `untriaged_case` (detecção e postura) e
+ * `untriaged_vulnerability_case` são os casos com algum alerta alto ou crítico ainda em "novo", e `untriaged_finding` fica
+ * só com os que nenhum caso cobre (à espera da atribuição, ou dentro de um incidente).
+ */
+export const PENDING_DECISION_KINDS = [
+  'unassigned_incident',
+  'untriaged_case',
+  'untriaged_vulnerability_case',
+  'untriaged_finding',
+  'unowned_alert',
+] as const;
 export type PendingDecisionKind = (typeof PENDING_DECISION_KINDS)[number];
 
 /**
@@ -172,6 +196,53 @@ const severityCounts = z.strictObject({ critical: count, high: count, medium: co
 const sectorCounts = z.strictObject({ aws: count, gcp: count, cloudflare: count, agents: count });
 const sum = (counts: Record<string, number>): number => Object.values(counts).reduce((a, b) => a + b, 0);
 
+/** Teto de casos que o radar desenha: os mais graves. O total vem à parte. */
+export const RADAR_CASES_LIMIT = 100;
+
+/** Um caso de detecção no radar. */
+export const radarCaseSchema = z.strictObject({
+  /** O caso; o painel abre o detalhe dele na tela Detecções (`/?caso=<id>`). */
+  id: z.uuid(),
+  /** Do dicionário da API: nunca leva texto do evento. */
+  title: z.string().max(200),
+  /** A pior severidade entre os alertas pendentes; null sem nada pendente. */
+  severity: z.enum(FINDING_SEVERITIES).nullable(),
+  /** As fontes de log do caso; vazio se a fonte não é reconhecida. O setor vem pronto. */
+  sources: z.array(z.enum(FINDING_SOURCES)).max(FINDING_SOURCES.length),
+  sector: z.enum(RADAR_SECTORS),
+  /** Os alertas guardados (o tamanho do ponto), os pendentes e os que aconteceram na janela do radar. */
+  total: count,
+  pending: count,
+  recent: count,
+  /**
+   * A atividade mais recente, que é a distância do centro: o horário do evento do último alerta ou, se ele é de antes da
+   * janela, o da chegada. Nunca depois de `generatedAt`.
+   */
+  lastActivityAt: z.iso.datetime(),
+  /**
+   * O incidente aberto em que há alerta do caso (o mais grave) ou, sem nenhum, o incidente para onde o caso foi promovido. O
+   * caso sem nada pendente e num incidente aberto continua no radar com a gravidade dele.
+   */
+  incident: z
+    .strictObject({ id: z.uuid(), open: z.boolean(), severity: z.enum(FINDING_SEVERITIES) })
+    .nullable(),
+});
+export type RadarCase = z.infer<typeof radarCaseSchema>;
+
+/**
+ * Os casos de detecção ativos na janela do radar, com a mesma regra da lista de casos no período (o horário do evento ou o
+ * da chegada): `total` bate com o da lista. `alerts` é quantos dos alertas da janela (o `total` do radar) estão neles.
+ */
+export const towerRadarCasesSchema = z
+  .strictObject({
+    total: count,
+    alerts: count,
+    limit: z.literal(RADAR_CASES_LIMIT),
+    items: z.array(radarCaseSchema).max(RADAR_CASES_LIMIT),
+  })
+  .refine((cases) => cases.items.length <= cases.total, { error: 'mais casos que o total' });
+export type TowerRadarCases = z.infer<typeof towerRadarCasesSchema>;
+
 /**
  * Radar de detecções da Torre: os achados que aconteceram nas últimas `RADAR_WINDOW_HOURS` horas, os mais recentes
  * primeiro, até `limit`. `total` e as contagens por severidade e por setor contam todos os da janela: com o total maior
@@ -188,6 +259,8 @@ export const towerRadarSchema = z
     bySeverity: severityCounts,
     bySector: sectorCounts,
     detections: z.array(radarDetectionSchema).max(RADAR_DETECTIONS_LIMIT),
+    /** Só com os casos (`towerQuerySchema`): o radar desenha os casos, e o resto continua contando alertas. */
+    cases: towerRadarCasesSchema.optional(),
   })
   .refine((radar) => radar.detections.length <= radar.total, { error: 'mais detecções que o total' })
   .refine((radar) => sum(radar.bySeverity) === radar.total && sum(radar.bySector) === radar.total, {
@@ -195,9 +268,23 @@ export const towerRadarSchema = z
   });
 export type TowerRadar = z.infer<typeof towerRadarSchema>;
 
+const oldest = z.iso.datetime().nullable();
+
+/**
+ * Os casos pendentes: quantos em cada fila, cada caso pela pior severidade pendente dele (o caso com um alerta crítico e mil
+ * baixos é um caso crítico), e desde quando espera o mais antigo de cada uma (a abertura, pelo relógio do servidor).
+ */
+export const towerCasesSchema = z.strictObject({
+  detection: severityCounts,
+  vulnerability: severityCounts,
+  posture: severityCounts,
+  oldestPendingAt: z.strictObject({ detection: oldest, vulnerability: oldest, posture: oldest }),
+} satisfies Record<CaseQueueName | 'oldestPendingAt', z.ZodType>);
+export type TowerCases = z.infer<typeof towerCasesSchema>;
+
 export const towerSummarySchema = z.strictObject({
   light: z.enum(TRAFFIC_LIGHTS),
-  /** Pode vir vazio no amarelo: só há alertas altos ou críticos para validar (`pendingDecisions`). */
+  /** Pode vir vazio no amarelo: só há alertas altos ou críticos para validar (`pendingDecisions`, em casos ou não). */
   reasons: z.array(z.enum(TRAFFIC_LIGHT_REASONS)).max(TRAFFIC_LIGHT_REASONS.length),
   /** Só as decisões que existem (contagem maior que zero), em ordem de prioridade. */
   pendingDecisions: z
@@ -261,6 +348,8 @@ export const towerSummarySchema = z.strictObject({
   pulse: towerPulseSchema.optional(),
   /** Radar de detecções: os achados recentes, para a Torre desenhar. Opcional: um nó de antes do radar não manda. */
   radar: towerRadarSchema.optional(),
+  /** Os casos pendentes. Só com os casos (`towerQuerySchema`). */
+  cases: towerCasesSchema.optional(),
   /** Táticas do MITRE ATT&CK nos achados e incidentes dos últimos `periodDays` dias, na ordem da cadeia de ataque. */
   mitre: z.strictObject({
     periodDays: z.number().int().positive(),

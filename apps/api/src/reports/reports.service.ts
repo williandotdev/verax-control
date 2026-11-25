@@ -14,7 +14,9 @@ import {
   type ReportWindow,
   rulesFold,
   summaryFold,
+  type SummaryReport,
 } from '@verax/shared';
+import { caseOutcomes, mitreWithCases } from '../cases/case-summary-store.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 
@@ -126,24 +128,40 @@ export class ReportsService {
   /**
    * Resumo MITRE ATT&CK do período (o relatório, e a Torre em toda tela aberta): o banco conta os achados por combinação
    * de táticas e técnicas (algumas dezenas, e não centenas de milhares de linhas), e o cálculo é o mesmo de sempre, com
-   * a contagem no lugar do achado. O cliente é o da sessão.
+   * a contagem no lugar do achado. O cliente é o da sessão. Com `cases`, a mesma leitura conta também os casos por tática.
    */
-  async mitre(window: ReportWindow): Promise<MitreReport> {
+  async mitre(window: ReportWindow, { cases = false }: { cases?: boolean } = {}): Promise<MitreReport> {
     const tenantId = this.prisma.scopeTenantId();
     const from = new Date(window.from);
     const to = new Date(window.to);
-    const counts = await this.prisma.db().$queryRaw<MitreCount[]>`
+    const read = cases ? await mitreWithCases(this.prisma.db(), tenantId, { from, to }) : null;
+    const counts =
+      read?.counts ??
+      (await this.prisma.db().$queryRaw<MitreCount[]>`
       SELECT "mitreTactics", COALESCE("mitreTechniques", '{}') AS "mitreTechniques", count(*)::int AS count
       FROM "Finding"
       WHERE "tenantId" = ${tenantId}::uuid
         AND "occurredAt" BETWEEN ${from} AND ${to}
         AND cardinality("mitreTactics") > 0
-      GROUP BY 1, 2`;
+      GROUP BY 1, 2`);
     const incidents = await this.prisma.scoped().incident.findMany({
       where: { firstSeenAt: { gte: from, lte: to } },
       select: { mitreTactics: true },
     });
-    return mitreReportFromCounts(counts, incidents, window);
+    const byTactic = read === null ? undefined : new Map(read.cases.map((row) => [row.tactic, row.cases]));
+    return mitreReportFromCounts(counts, incidents, window, byTactic);
+  }
+
+  /** O resumo do período. Com `cases`, leva também os casos abertos nele. */
+  private async summary(window: ReportWindow, cases: boolean): Promise<SummaryReport> {
+    const from = new Date(window.from);
+    const summary = await this.foldFindings(window, summaryFold(await this.incidentsSince(from), window));
+    if (!cases) return summary;
+    const outcomes = await caseOutcomes(this.prisma.db(), this.prisma.scopeTenantId(), {
+      from,
+      to: new Date(window.to),
+    });
+    return { ...summary, cases: outcomes };
   }
 
   /** Incidentes que importam no período: os que começaram ou foram resolvidos nele, e todos os abertos. */
@@ -159,13 +177,13 @@ export class ReportsService {
   }
 
   /** O relatório pedido, na janela do pedido (um período até agora ou um intervalo personalizado). */
-  async report(kind: ReportKind, window: ReportWindow) {
+  async report(kind: ReportKind, window: ReportWindow, { cases = false }: { cases?: boolean } = {}) {
     const from = new Date(window.from);
     switch (kind) {
       case 'summary':
-        return this.foldFindings(window, summaryFold(await this.incidentsSince(from), window));
+        return this.summary(window, cases);
       case 'mitre':
-        return this.mitre(window);
+        return this.mitre(window, { cases });
       case 'rules':
         return this.foldFindings(window, rulesFold(window));
       case 'entities':

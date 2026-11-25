@@ -6,9 +6,11 @@ import {
   incidentsReport,
   mitreReport,
   mitreReportFromCounts,
+  mitreReportSchema,
   mitreTactics,
   type ReportFinding,
   type ReportIncident,
+  reportQuerySchema,
   reportWindow,
   rulesReport,
   summaryFold,
@@ -274,5 +276,66 @@ describe('detecções, entidades, incidentes, cobertura e exceções', () => {
       WINDOW,
     );
     expect(exceptions.items[0]).toMatchObject({ active: true, matchedInPeriod: 1, matchedTotal: 9 });
+  });
+});
+
+describe('casos nos relatórios', () => {
+  const window = reportWindow('30d', new Date('2026-11-03T12:00:00.000Z'));
+
+  it('o pedido: `cases=true` junto do período ou do intervalo, e nada mais', () => {
+    expect(reportQuerySchema.parse({ period: '7d', cases: 'true' })).toEqual({ period: '7d', cases: 'true' });
+    expect(reportQuerySchema.parse({ cases: 'true' })).toEqual({ cases: 'true' });
+    for (const cases of ['false', '1', '', true]) {
+      expect(reportQuerySchema.safeParse({ cases }).success, String(cases)).toBe(false);
+    }
+    // O intervalo continua conferido.
+    expect(reportQuerySchema.safeParse({ from: window.from, cases: 'true' }).success).toBe(false);
+  });
+
+  it('o resumo: opcional (um nó de antes não manda), e tratados com pendentes somam os abertos', () => {
+    const report = summaryReport([], [], window);
+    expect(summaryReportSchema.safeParse(report).success).toBe(true);
+    const cases = { opened: 5, treated: 3, pending: 2, medianMinutesToTreat: 90 };
+    expect(summaryReportSchema.parse({ ...report, cases }).cases).toEqual(cases);
+    expect(
+      summaryReportSchema.safeParse({ ...report, cases: { ...cases, medianMinutesToTreat: null } }).success,
+    ).toBe(true);
+    for (const change of [
+      { opened: 6 },
+      { treated: 4 },
+      { pending: 0 },
+      { medianMinutesToTreat: -1 },
+      { extra: 1 },
+    ]) {
+      expect(
+        summaryReportSchema.safeParse({ ...report, cases: { ...cases, ...change } }).success,
+        JSON.stringify(change),
+      ).toBe(false);
+    }
+  });
+
+  it('o MITRE: os casos de cada tática pelo nome dela, zero nas outras; sem eles, nenhum campo', () => {
+    const counts = [
+      { mitreTactics: ['Impact'], mitreTechniques: ['T1485'], count: 20_000 },
+      { mitreTactics: ['Discovery'], mitreTechniques: [], count: 3 },
+    ];
+    const plain = mitreReportFromCounts(counts, [], window);
+    expect(JSON.stringify(plain)).not.toContain('"cases"');
+    const report = mitreReportFromCounts(
+      counts,
+      [],
+      window,
+      new Map([
+        ['Impact', 1],
+        ['Discovery', 2],
+        ['Tática que não existe', 9],
+      ]),
+    );
+    expect(mitreReportSchema.safeParse(report).success).toBe(true);
+    const of = (name: string) => report.tactics.find((tactic) => tactic.name === name);
+    expect(of('Impact')).toMatchObject({ findings: 20_000, cases: 1 });
+    expect(of('Discovery')).toMatchObject({ findings: 3, cases: 2 });
+    expect(report.tactics.filter((tactic) => tactic.cases === 0)).toHaveLength(MITRE_TACTICS.length - 2);
+    expect(mitreReportSchema.safeParse({ ...report, tactics: [] }).success).toBe(false);
   });
 });

@@ -44,6 +44,9 @@ import {
 
 export const INSPECTOR_PAGE_SIZE = 100;
 
+/** Até onde o nome do pacote é lido; a coluna é menor, e a gravação corta sem juntar dois nomes. */
+const MAX_PACKAGE_NAME = 512;
+
 export async function readInspectorPage(
   clients: DiscoveryClients,
   call: FindingsCaller,
@@ -110,6 +113,11 @@ export function parseInspectorFinding(raw: unknown, now: Date): ParseOutcome {
     (type === 'NETWORK_REACHABILITY' ? reachablePort(raw) : undefined) ??
     label(at(raw, 'codeVulnerabilityDetails', 'detectorName'), 256) ??
     type;
+  // O primeiro pacote vulnerável (o mesmo que abre a lista no título): parte da chave do caso.
+  const packageName = label(
+    at(raw, 'packageVulnerabilityDetails', 'vulnerablePackages', 'name'),
+    MAX_PACKAGE_NAME,
+  );
 
   const finding: ParsedFinding = {
     label: 'inspector',
@@ -142,6 +150,7 @@ export function parseInspectorFinding(raw: unknown, now: Date): ParseOutcome {
         mitreTactics: [],
         mitreTechniques: [],
         revision: { lastSeenAt: updatedAt },
+        ...(packageName !== undefined && { group: packageName }),
       },
     ],
   };

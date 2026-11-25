@@ -218,7 +218,15 @@ export function FilterBar({
 }
 
 /** A busca de texto: vale ao confirmar (Enter ou o botão), para não pedir à API a cada letra. */
-function SearchField({ value, onSearch }: { value: string; onSearch: (q: string | null) => void }) {
+export function SearchField({
+  value,
+  onSearch,
+  placeholder = 'Título, usuário, IP, recurso ou conta',
+}: {
+  value: string;
+  onSearch: (q: string | null) => void;
+  placeholder?: string | undefined;
+}) {
   const id = useId();
   const [text, setText] = useState(value);
   const submit = (event: FormEvent) => {
@@ -237,7 +245,7 @@ function SearchField({ value, onSearch }: { value: string; onSearch: (q: string 
           className="h-9"
           value={text}
           maxLength={200}
-          placeholder="Título, usuário, IP, recurso ou conta"
+          placeholder={placeholder}
           onChange={(event) => setText(event.target.value)}
         />
         <Button type="submit" variant="secondary" size="icon" aria-label="Buscar">
@@ -249,7 +257,7 @@ function SearchField({ value, onSearch }: { value: string; onSearch: (q: string 
 }
 
 /** A técnica do MITRE (T1078 ou T1078.004), confirmada como a busca. */
-function TechniqueField({
+export function TechniqueField({
   value,
   onSubmit,
 }: {
@@ -295,7 +303,7 @@ function TechniqueField({
 }
 
 /** As datas do intervalo personalizado (de e até, inclusive). */
-function CustomRange({
+export function CustomRange({
   from,
   to,
   onChange,

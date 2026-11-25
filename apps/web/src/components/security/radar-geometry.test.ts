@@ -1,16 +1,25 @@
-import { FINDING_SOURCES, RADAR_SECTORS, type RadarDetection, radarSectorOf } from '@verax/shared';
+import {
+  FINDING_SOURCES,
+  RADAR_SECTORS,
+  type RadarCase,
+  type RadarDetection,
+  radarSectorOf,
+} from '@verax/shared';
 import { describe, expect, it } from 'vitest';
 import {
   angleOf,
   capNotice,
+  caseScale,
   echoDelay,
   freshIds,
   hashUnit,
+  MAX_CASE_SCALE,
   pointAt,
   RADAR_CENTER,
   RADAR_MIN_RADIUS,
   RADAR_RADIUS,
   radarBlips,
+  radarCaseBlips,
   radarRings,
   radiusOf,
   SECTOR_MARGIN_DEG,
@@ -185,5 +194,64 @@ describe('teto, pulso e brilho', () => {
       const phase = ((angle / 360) * SWEEP_PERIOD_MS - delay) % SWEEP_PERIOD_MS;
       expect(Math.min(phase, SWEEP_PERIOD_MS - phase)).toBeLessThan(1);
     }
+  });
+});
+
+describe('pontos dos casos', () => {
+  const item = (overrides: Partial<RadarCase> = {}): RadarCase => ({
+    id: ids(1)[0] ?? '',
+    title: 'Caso',
+    severity: 'high',
+    sources: ['cloudtrail'],
+    sector: 'aws',
+    total: 1,
+    pending: 1,
+    recent: 1,
+    lastActivityAt: NOW,
+    incident: null,
+    ...overrides,
+  });
+
+  it('o setor vem da API, a distância é a da última atividade, e o ângulo do caso não muda entre as leituras', () => {
+    const [a = '', b = '', c = ''] = ids(3);
+    const items = [
+      item({ id: a, sector: 'agents', sources: [] }),
+      item({ id: b, sector: 'gcp', lastActivityAt: SINCE }),
+      // Mais velho que a janela (não deveria vir): na borda.
+      item({ id: c, sector: 'cloudflare', lastActivityAt: '2020-01-01T00:00:00.000Z' }),
+    ];
+    const blips = radarCaseBlips({ items }, { since: SINCE }, NOW);
+    expect(blips.map((blip) => [blip.item.id, blip.sector])).toEqual([
+      [a, 'agents'],
+      [b, 'gcp'],
+      [c, 'cloudflare'],
+    ]);
+    expect(blips.map((blip) => blip.radius)).toEqual([RADAR_MIN_RADIUS, RADAR_RADIUS, RADAR_RADIUS]);
+    for (const [index, blip] of blips.entries()) {
+      const quarter = [3, 1, 2][index] ?? 0;
+      expect(blip.angle).toBeGreaterThan(quarter * 90);
+      expect(blip.angle).toBeLessThan((quarter + 1) * 90);
+    }
+    const later = radarCaseBlips(
+      { items: [item({ id: b, sector: 'gcp', total: 900, lastActivityAt: NOW })] },
+      { since: SINCE },
+      NOW,
+    );
+    expect(later[0]?.angle).toBe(blips[1]?.angle);
+  });
+
+  it('o tamanho cresce com os alertas, sem passar do teto', () => {
+    expect(caseScale(0)).toBe(1);
+    expect(caseScale(1)).toBe(1);
+    expect(caseScale(10)).toBeCloseTo(1.32);
+    expect(caseScale(100)).toBeCloseTo(1.64);
+    const sizes = [1, 2, 10, 50, 100, 1_000, 5_000].map(caseScale);
+    expect([...sizes].sort((x, y) => x - y)).toEqual(sizes);
+    expect(new Set(sizes).size).toBe(sizes.length);
+    expect(caseScale(20_000)).toBe(MAX_CASE_SCALE);
+    expect(caseScale(2_000_000_000)).toBe(MAX_CASE_SCALE);
+    expect(radarCaseBlips({ items: [item({ total: 100 })] }, { since: SINCE }, NOW)[0]?.scale).toBe(
+      caseScale(100),
+    );
   });
 });

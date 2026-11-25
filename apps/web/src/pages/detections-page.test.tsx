@@ -37,7 +37,9 @@ const BUCKET_ALERT = '018f2c1e-0000-7000-8000-00000000100e';
  */
 const SLOW = { timeout: 12_000 };
 
+/** Com os casos desligados (o padrão de um nó): a tela de sempre. Com eles, `detections-cases.test.tsx`. */
 function renderAt(path: string, state: MockState = { me: demoMe('analista_cliente') }) {
+  state.cases ??= 'off';
   server.use(...createHandlers(state));
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   render(
@@ -64,7 +66,9 @@ function mockMedia(matches: (query: string) => boolean) {
   }));
 }
 
-const list = async () => screen.findByRole('table', { name: /^Incidentes do cliente|^Alertas do cliente/ });
+// A lista espera a situação dos casos antes de pedir os alertas.
+const list = async () =>
+  screen.findByRole('table', { name: /^Incidentes do cliente|^Alertas do cliente/ }, SLOW);
 const rows = async () =>
   within(await list())
     .getAllByRole('row')
@@ -428,7 +432,10 @@ describe('Detecções: o detalhe e a triagem', () => {
 describe('Detecções: os endereços de antes', () => {
   it.each([
     [`/incidentes/${INCIDENT}`, (s: URLSearchParams) => s.get('incidente') === INCIDENT],
-    [`/achados?achado=${FINDING}`, (s: URLSearchParams) => s.get('alerta') === FINDING && !s.has('visao')],
+    [
+      `/achados?achado=${FINDING}`,
+      (s: URLSearchParams) => s.get('alerta') === FINDING && s.get('visao') === 'alertas',
+    ],
     [
       '/incidentes?responsavel=nenhum',
       (s: URLSearchParams) => s.get('responsavel') === 'nenhum' && s.get('visao') === 'incidentes',

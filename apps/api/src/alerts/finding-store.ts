@@ -1,3 +1,4 @@
+import { boundedCaseGroup } from '../cases/case-key.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type {
@@ -81,6 +82,7 @@ export function findingRow(draft: FindingDraft, exception: ActiveException | nul
     mitreTactics: draft.mitreTactics,
     mitreTechniques: draft.mitreTechniques,
     exceptionId: exception?.id ?? null,
+    caseGroup: draft.group === undefined ? null : boundedCaseGroup(draft.group),
   };
 }
 
@@ -209,7 +211,16 @@ export class FindingStore {
   ): Promise<PersistOutcome> {
     const current = await db.finding.findUnique({
       where: { source_sourceEventId: { source: draft.source, sourceEventId: draft.sourceEventId } },
-      select: { id: true, lastSeenAt: true, severity: true, ruleId: true, title: true, status: true },
+      select: {
+        id: true,
+        lastSeenAt: true,
+        severity: true,
+        ruleId: true,
+        title: true,
+        status: true,
+        incidentId: true,
+        caseId: true,
+      },
     });
     if (!current) return 'duplicate' as const;
     const seenAt = new Date(revision.lastSeenAt);
@@ -237,7 +248,14 @@ export class FindingStore {
     await this.saveEvidence(tx, draft, current.id);
     const rose = SEVERITY_RANK[draft.severity] > SEVERITY_RANK[current.severity];
     if (rose && current.status !== 'legitimate') {
-      await this.notices.enqueue(db, { tenantId: draft.tenantId, id: current.id, severity: draft.severity });
+      const pending = current.status === 'new' || current.status === 'investigating';
+      await this.notices.enqueue(db, {
+        tenantId: draft.tenantId,
+        id: current.id,
+        severity: draft.severity,
+        // Com os avisos por caso, quem avisa da subida é o caso do alerta; este não tem um que o faça.
+        outsideCases: current.caseId === null || current.incidentId !== null || !pending,
+      });
     }
     return 'duplicate' as const;
   }

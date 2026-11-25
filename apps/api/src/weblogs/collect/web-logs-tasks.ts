@@ -2,6 +2,7 @@ import type { WebLogsCredentials } from './web-logs-job.js';
 import { awsSourceFeatures } from '../../common/config/web-logs.js';
 import { errorKind } from '../../common/logger/error-kind.js';
 import type { PrismaService } from '../../common/prisma/prisma.service.js';
+import type { AlertNotices } from '../../notifications/finding-notices.js';
 import type { ScheduledTask } from '../../worker/scheduler.js';
 import type { CountryLookup } from '../traffic.js';
 
@@ -10,6 +11,8 @@ export interface WebLogsTaskDeps {
   prisma: PrismaService;
   /** As sessões no papel de leitura; null no nó sem identidade na AWS. */
   credentials: WebLogsCredentials | null;
+  /** O aviso por e-mail dos achados: `undefined` é um por achado; com os casos ligados, quem avisa é o caso. */
+  notices: AlertNotices | undefined;
   logger: { warn(fields: object, message: string): void };
 }
 
@@ -27,7 +30,7 @@ const NONE: WebLogsTasks = { tasks: [], close: () => Promise.resolve() };
  */
 export async function webLogsTasks(
   config: Parameters<typeof awsSourceFeatures>[0],
-  { prisma, credentials, logger }: WebLogsTaskDeps,
+  { prisma, credentials, notices, logger }: WebLogsTaskDeps,
 ): Promise<WebLogsTasks> {
   if (!awsSourceFeatures(config).webLogs || credentials === null) return NONE;
   const [job, estimate, { sdkDiscoveryClients }, countries] = await Promise.all([
@@ -38,6 +41,7 @@ export async function webLogsTasks(
   ]);
   const collector = new job.WebLogsCollector(prisma, credentials, sdkDiscoveryClients, {
     countries,
+    ...(notices !== undefined && { notices }),
     onEvidenceRefused: (ruleId) => {
       logger.warn({ ruleId }, 'evidência de ataque web recusada: o achado foi gravado sem ela');
     },

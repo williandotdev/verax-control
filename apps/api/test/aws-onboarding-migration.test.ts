@@ -40,14 +40,22 @@ const OWNERSHIP = '20261124150000_cloudwatch_alert_ownership';
 const CHOSEN = '20261124160000_aws_chosen_capabilities';
 /** E a do número de sequência do sinal `applied` na prova do dono: uma coluna, com o CHECK dela. */
 const APPLIED_SEQ = '20261124170000_cloudwatch_ownership_applied_seq';
+/** A seguinte, de outro trabalho: a base dos casos (`alert-cases-migration.test.ts`). */
+const ALERT_CASES = '20261127120000_alert_cases';
 /** E, de outro trabalho, só índices: os alertas a validar da Torre e os e-mails ao contato de escalonamento na hora. */
 const UNTRIAGED_INDEX = '20261128120000_finding_untriaged_index';
 const NOTICE_INDEX = '20261128120000_notification_escalation_index';
+/** E a do autovacuum da tabela de alertas, que a atribuição dos casos atualiza (`case-assign.test.ts`). */
+const FINDING_AUTOVACUUM = '20261129120000_finding_autovacuum';
 /** E a dos ataques web pelos logs do ALB (`web-logs-migration.test.ts`). */
 const WEB_LOGS = '20261130120000_web_logs';
 /** E a dos contratos deles, com mais uma nota no CHECK da descoberta (`web-logs-contracts-migration.test.ts`). */
 const WEB_CONTRACTS = '20261201120000_web_logs_contracts';
 const WEB_CONTRACTS_NOTE = 'aws_cost_alb_logs';
+/** O índice dos avisos de um caso. */
+const CASE_NOTICE_INDEX = '20261202120000_notification_case_index';
+/** E a das chaves de acesso nas amostras do caso. */
+const CASE_ACCESS_KEYS = '20261203120000_case_access_keys';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -97,12 +105,26 @@ describe(`migration ${MIGRATION}`, () => {
       OWNERSHIP,
       CHOSEN,
       APPLIED_SEQ,
+      ALERT_CASES,
       UNTRIAGED_INDEX,
       NOTICE_INDEX,
+      FINDING_AUTOVACUUM,
       WEB_LOGS,
       WEB_CONTRACTS,
+      CASE_NOTICE_INDEX,
+      CASE_ACCESS_KEYS,
     ]);
-    const additive = [MIGRATION, RETRY_LIMIT, OWNERSHIP, CHOSEN, APPLIED_SEQ, UNTRIAGED_INDEX, NOTICE_INDEX];
+    const additive = [
+      MIGRATION,
+      RETRY_LIMIT,
+      OWNERSHIP,
+      CHOSEN,
+      APPLIED_SEQ,
+      UNTRIAGED_INDEX,
+      NOTICE_INDEX,
+      CASE_NOTICE_INDEX,
+      CASE_ACCESS_KEYS,
+    ];
     for (const name of additive) {
       const sql = sqlOf(name);
       expect(sql, name).not.toMatch(/\bDROP\b|DELETE FROM|^\s*UPDATE\b|\bTRUNCATE\b|ALTER COLUMN/im);

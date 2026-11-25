@@ -35,6 +35,24 @@ describe('MiniBars', () => {
     ]);
   });
 
+  it('por dia, o resumo e a tabela falam em dias', () => {
+    render(
+      <MiniBars
+        title="Alertas por dia"
+        values={[1, 4]}
+        labels={['20/11', '21/11']}
+        unit={{ one: 'alerta', many: 'alertas' }}
+        granularity="day"
+      />,
+    );
+    expect(
+      screen.getByRole('img', {
+        name: 'Alertas por dia: 5 alertas no total; o dia com mais foi 21/11, com 4. Use as setas para ver cada dia.',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Dia', hidden: true })).toBeInTheDocument();
+  });
+
   it('as setas e o Home/End escolhem a hora, anunciada ao leitor de tela', async () => {
     const { container } = renderBars();
     const chart = screen.getByRole('img');

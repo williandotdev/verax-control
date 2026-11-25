@@ -1,6 +1,8 @@
 import { gunzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { findWazuhSourceRows, serializeWazuhSources, toWazuhSources } from '../src/aws/wazuh-sources.js';
+import { CaseAssignJob } from '../src/cases/case-assign-job.js';
+import { CaseAlertNotices } from '../src/cases/case-notice-regime.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { MAX_LINE_CHARS } from '../src/weblogs/alb/alb-line.js';
 import { albLine, times } from './support/alb-lines.js';
@@ -467,6 +469,36 @@ describe('tarefa web-logs', () => {
     await task.runOnce();
     expect(await prisma.notification.findMany({ where: { tenantId: site.tenantId } })).toMatchObject([
       { kind: 'high_finding', severity: 'high' },
+    ]);
+  });
+
+  it('com os avisos por caso, o achado não avisa sozinho, e entra no caso do ataque ao login', async () => {
+    const site = await h.newSite('caso do login');
+    const { task, s3, lease } = h.newTask([site.tenantId], {
+      notices: new CaseAlertNotices({ active: true }),
+    });
+    deliver(
+      s3,
+      site.balancer,
+      NOON,
+      times(120, () => attack[0] ?? {}),
+    );
+    expect(await task.runOnce()).toMatchObject({ findings: 1 });
+    expect(await h.findings(site)).toMatchObject([{ ruleId: '990405', severity: 'high' }]);
+    expect(await prisma.notification.count({ where: { tenantId: site.tenantId } })).toBe(0);
+    const assign = new CaseAssignJob(prisma, {
+      name: `${lease}-caso`,
+      tenantIds: [site.tenantId],
+      caseNotices: true,
+    });
+    expect(await assign.runOnce()).toMatchObject({ assigned: 1, opened: 1 });
+    expect(await prisma.alertCase.findMany({ where: { tenantId: site.tenantId } })).toMatchObject([
+      {
+        queue: 'detection',
+        family: 'web-login',
+        title: 'Ataque ao login da aplicação',
+        noticedSeverity: null,
+      },
     ]);
   });
 

@@ -77,11 +77,17 @@ export interface FindingDraft {
    */
   revision?: { lastSeenAt: string };
   /**
+   * Subgrupo do alerta dentro do caso (`Finding.caseGroup`): por enquanto, só o pacote vulnerável do Inspector, que é
+   * também parte da chave do caso (`cases/case-key.ts`). Texto da origem, sem caractere de controle; a gravação o corta
+   * sem juntar dois valores.
+   */
+  group?: string;
+  /**
    * Só nos ataques web pelos logs do ALB (`weblogs/`): a evidência selada, que fica no lugar do evento bruto e é gravada na
    * transação do achado (`finding-evidence.ts`). Sem ela, a gravação é a de sempre, consulta por consulta.
    */
   evidence?: WebEvidence;
-  /** Só neles: as chaves por onde os casos vão juntar achados. Aceito e ainda não gravado: é da PR dos casos (PR-10). */
+  /** Só neles: as chaves do ataque. Aceito e não gravado: o caso sai das colunas do achado (`cases/case-key.ts`). */
   correlation?: WebCorrelation;
 }
 

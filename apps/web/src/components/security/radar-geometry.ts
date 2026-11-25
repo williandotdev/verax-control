@@ -1,10 +1,12 @@
 import {
   type FindingSeverity,
   RADAR_SECTORS,
+  type RadarCase,
   type RadarDetection,
   type RadarSector,
   radarSectorOf,
   type TowerRadar,
+  type TowerRadarCases,
 } from '@verax/shared';
 
 /**
@@ -16,6 +18,9 @@ import {
  *   (a 1 hora, um quinto do raio; a 6 horas, a metade), e os anéis marcam 1, 3, 6, 12 e 24 horas. Um raio mínimo afasta
  *   do centro as detecções do último minuto, para não se empilharem.
  * - **Forma e tamanho** são a severidade (`BLIP_SHAPES`), com a cor do token dela: nunca só a cor.
+ *
+ * Com os casos, cada ponto é um caso, nas mesmas regras: o setor vem da API, a distância é a da atividade mais recente, a
+ * forma é a da pior severidade pendente, e o tamanho cresce com os alertas que ele guarda (`caseScale`).
  */
 
 /** Lado do quadro (viewBox) e o centro do radar. */
@@ -45,8 +50,8 @@ export const BLIP_SHAPES: Readonly<
   low: { shape: 'diamond', radius: 4.5 },
 };
 
-export interface Blip {
-  detection: RadarDetection;
+/** O lugar de um ponto no quadro. */
+export interface BlipPosition {
   sector: RadarSector;
   /** Graus no sentido horário a partir do topo, de 0 a 360. */
   angle: number;
@@ -54,6 +59,16 @@ export interface Blip {
   radius: number;
   x: number;
   y: number;
+}
+
+export interface Blip extends BlipPosition {
+  detection: RadarDetection;
+}
+
+export interface CaseBlip extends BlipPosition {
+  item: RadarCase;
+  /** Quantas vezes o tamanho da marca da severidade. */
+  scale: number;
 }
 
 /**
@@ -74,11 +89,15 @@ export function hashUnit(text: string): number {
   return (hash >>> 0) / 2 ** 32;
 }
 
+/** O ângulo num setor: o começo dele, mais a folga, mais a posição estável do ID. */
+function angleIn(sector: RadarSector, id: string): number {
+  const usable = SECTOR_SPAN_DEG - 2 * SECTOR_MARGIN_DEG;
+  return RADAR_SECTORS.indexOf(sector) * SECTOR_SPAN_DEG + SECTOR_MARGIN_DEG + hashUnit(id) * usable;
+}
+
 /** O ângulo de uma detecção: o começo do setor da origem, mais a folga, mais a posição estável do ID dentro dele. */
 export function angleOf(detection: Pick<RadarDetection, 'id' | 'source'>): number {
-  const sector = RADAR_SECTORS.indexOf(radarSectorOf(detection.source));
-  const usable = SECTOR_SPAN_DEG - 2 * SECTOR_MARGIN_DEG;
-  return sector * SECTOR_SPAN_DEG + SECTOR_MARGIN_DEG + hashUnit(detection.id) * usable;
+  return angleIn(radarSectorOf(detection.source), detection.id);
 }
 
 /**
@@ -106,6 +125,39 @@ export function radarBlips(radar: Pick<TowerRadar, 'since' | 'detections'>, gene
     const angle = angleOf(detection);
     const radius = radiusOf(Date.parse(detection.occurredAt), since, until);
     return { detection, sector: radarSectorOf(detection.source), angle, radius, ...pointAt(angle, radius) };
+  });
+}
+
+/** O maior tamanho de um caso: passa disto, o radar viraria uma mancha. */
+export const MAX_CASE_SCALE = 2.2;
+
+/**
+ * O tamanho de um caso pelos alertas que ele guarda, em escala logarítmica (um caso vai de 1 a dezenas de milhares): 1 alerta
+ * é a marca de sempre, 10 é um terço maior, e o teto chega perto dos 6 mil.
+ */
+export function caseScale(total: number): number {
+  return Math.min(MAX_CASE_SCALE, 1 + 0.32 * Math.log10(Math.max(1, total)));
+}
+
+/** Os pontos dos casos, na ordem da API (os mais graves primeiro). */
+export function radarCaseBlips(
+  cases: Pick<TowerRadarCases, 'items'>,
+  window: Pick<TowerRadar, 'since'>,
+  generatedAt: string,
+): CaseBlip[] {
+  const since = Date.parse(window.since);
+  const until = Date.parse(generatedAt);
+  return cases.items.map((item) => {
+    const angle = angleIn(item.sector, item.id);
+    const radius = radiusOf(Date.parse(item.lastActivityAt), since, until);
+    return {
+      item,
+      sector: item.sector,
+      angle,
+      radius,
+      scale: caseScale(item.total),
+      ...pointAt(angle, radius),
+    };
   });
 }
 
