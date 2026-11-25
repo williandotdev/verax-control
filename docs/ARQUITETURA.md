@@ -2105,8 +2105,8 @@ de gatilhos da tabela de alertas.
   | `shadow` | Os alertas ganham caso (a medição no nó piloto)                                                    | Só a equipe da Verax (`admin_verax`) lê, no cliente escolhido; para os outros papéis, como `off` |
   | `on`     | O mesmo que `shadow`, mais a fila da triagem em massa (`triage-ops`) e os avisos por caso          | Todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa              |
 
-  O `start.sh` do nó ainda não escreve a variável no `worker.env` nem no ambiente da API: ligar num nó pede essas linhas
-  em `infra/`. A API lê o que houver no banco: com o worker em `off` e a API em `on`, os casos ficam parados no tempo (a
+  O `start.sh` passa a linha do `node.conf` à API e ao worker; sem ela, vale o padrão da versão. O nó gerenciado já instalado
+  não recebe linha nova: nele, quem liga é o padrão da versão (`docs/runbooks/casos.md`). A API lê o que houver no banco: com o worker em `off` e a API em `on`, os casos ficam parados no tempo (a
   situação mostra a última passagem).
 
 - **Tarefas do worker** (só com `shadow` ou `on`):

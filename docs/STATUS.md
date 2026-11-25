@@ -7525,3 +7525,13 @@ source-monitor,source-parts,sources,onboarding-labels,onboarding-section}`; `lib
   ou em qualquer ordem: nenhuma depende da outra.
 - **Testes:** API, `src/{cases,weblogs,alerts,common}`, 1.431; a tarefa `web-logs`, as migrations, os papéis do banco e o escopo por
   cliente, 135; web, 82 arquivos e 1.196.
+
+## Casos: a linha `CASES_MODE` do `node.conf` e o runbook (desligado por padrão)
+
+- **O que é:** `CASES_MODE` no `node.conf` (opcional) vai igual para a API e o worker pelo `start.sh`, e o runbook
+  `docs/runbooks/casos.md`. Vai para `integracao/casos`. **⚠️ `infra/`: revisar linha a linha.**
+- **Nenhum nó muda:** sem a linha, o `api.env` e o `worker.env` saem byte a byte como antes. Fora do formato, o nó sobe com os casos
+  desligados, com o aviso. O nó gerenciado já instalado não recebe a linha: quem liga nele é o padrão da versão.
+- **Arquivos:** `infra/node/{bin/start.sh,node.conf.example,tests/start-test.sh}`, `docs/ARQUITETURA.md`,
+  `docs/runbooks/casos.md` (novo).
+- **Dependências:** nenhuma.
