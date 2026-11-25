@@ -1,9 +1,10 @@
 import { QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { actionLabel, resourceLabel } from '@/features/audit/labels';
 import { api } from '@/lib/api';
 import { createQueryClient } from '@/lib/query-client';
 import { DEMO_TENANTS, demoMe } from '@/mocks/fixtures';
@@ -86,6 +87,31 @@ describe('Auditoria', () => {
     await waitFor(async () =>
       expect((await rows()).every((line) => line.textContent?.includes('Marina Alves'))).toBe(true),
     );
+  });
+
+  it('as áreas dos casos só são oferecidas com eles: um nó de antes recusaria o filtro', async () => {
+    renderAt('/auditoria');
+    await rows();
+    const areas = () =>
+      within(screen.getByLabelText('Área'))
+        .getAllByRole('option')
+        .map((option) => option.textContent);
+    await waitFor(() => expect(areas()).toEqual(expect.arrayContaining(['Casos', 'Triagem em massa'])));
+    cleanup();
+    renderAt('/auditoria', { me: demoMe('admin_cliente'), cases: 'off' });
+    await rows();
+    expect(areas()).not.toContain('Casos');
+    expect(areas()).not.toContain('Triagem em massa');
+    expect(areas()).toContain('Alertas');
+  });
+
+  it('as ações da triagem em massa têm nome em português', () => {
+    for (const action of ['request', 'finish', 'undo', 'undo_all', 'cancel', 'continue', 'replay']) {
+      expect(actionLabel(`triage.bulk.${action}`)).not.toContain('triage.bulk');
+    }
+    expect(actionLabel('case.split')).toBe('Dividiu um caso');
+    expect(resourceLabel('alert_case')).toBe('Casos');
+    expect(resourceLabel('triage_operation')).toBe('Triagem em massa');
   });
 
   it('o período segue o histórico do plano: 12 meses no Profissional, até 90 dias no Essencial', async () => {

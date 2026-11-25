@@ -14,12 +14,14 @@ import { AuditActorName } from '@/features/audit/audit-actor';
 import { useAuditEntries } from '@/features/audit/audit-api';
 import { AuditOutcomeBadge } from '@/features/audit/audit-outcome-badge';
 import { AuditPanel } from '@/features/audit/audit-panel';
+import { useCaseMode } from '@/features/cases/cases-api';
 import { usePeriodFilter } from '@/features/plan/plan-history';
 import {
   actionLabel,
   AUDIT_OUTCOME_LABELS,
   AUDIT_PERIOD_LABELS,
   AUDIT_RESOURCE_LABELS,
+  CASE_AUDIT_AREAS,
   resourceLabel,
 } from '@/features/audit/labels';
 import { useMe } from '@/features/session/session';
@@ -47,6 +49,10 @@ export function AuditPage() {
     resourceType: pick(AUDIT_RESOURCE_TYPES, params.get('area')),
     outcome: pick(AUDIT_OUTCOMES, params.get('resultado')),
   };
+  const cases = useCaseMode(me?.scopeTenantId ?? null, me?.permissions.includes('findings:read') === true);
+  const areas = AUDIT_RESOURCE_TYPES.filter(
+    (type) => cases.mode !== 'off' || filters.resourceType === type || !CASE_AUDIT_AREAS.includes(type),
+  );
   const query: AuditListQuery = { ...filters, actorId, page, pageSize: PAGE_SIZE };
   const entries = useAuditEntries(query, !periods.waiting);
 
@@ -178,7 +184,7 @@ export function AuditPage() {
               onChange={(value) => update({ area: value || null })}
               options={[
                 { value: '', label: 'Todas' },
-                ...AUDIT_RESOURCE_TYPES.map((type) => ({ value: type, label: AUDIT_RESOURCE_LABELS[type] })),
+                ...areas.map((type) => ({ value: type, label: AUDIT_RESOURCE_LABELS[type] })),
               ]}
             />
             <SelectField

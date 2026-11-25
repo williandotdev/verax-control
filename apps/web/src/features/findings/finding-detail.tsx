@@ -11,6 +11,7 @@ import { Link, useSearchParams } from 'react-router';
 import { SeverityBadge } from '@/components/security/severity-badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/field';
+import { FindingTriageTrail } from '@/features/cases/finding-triage-trail';
 import { selectionSearch } from '@/features/detections/url-state';
 import { AlertValidation } from '@/features/incidents/incident-actions';
 import { usePlanHistory } from '@/features/plan/plan-history';
@@ -114,6 +115,8 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
       {can('findings:triage') && (
         <StatusActions finding={finding} canCreateException={can('alert_exceptions:write')} />
       )}
+
+      <FindingTriageTrail findingId={finding.id} />
 
       <Comments finding={finding} canComment={can('findings:triage')} />
 

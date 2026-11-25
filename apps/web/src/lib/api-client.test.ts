@@ -37,6 +37,20 @@ describe('ApiClient', () => {
     await expect(client.get('/v1/x', itemSchema)).rejects.toBeInstanceOf(UnexpectedResponseError);
   });
 
+  it('os números da recusa chegam à tela; o que não é número fica de fora', async () => {
+    const refused = async (details: unknown) => {
+      const { client } = setup([json(409, { code: 'X', message: 'm', details })]);
+      return client.get('/v1/x').catch((error: unknown) => (error as ApiRequestError).details);
+    };
+    expect(await refused({ count: 12, excludedCritical: 0, texto: '<b>', nada: null, lista: [1] })).toEqual({
+      count: 12,
+      excludedCritical: 0,
+    });
+    for (const details of [undefined, null, 'x', [1, 2], {}, { texto: 'x' }]) {
+      expect(await refused(details)).toBeUndefined();
+    }
+  });
+
   it('em escrita, busca o token CSRF uma vez e manda no header', async () => {
     const { client, call, fetchMock } = setup([
       json(200, { token: 'tok-1' }),

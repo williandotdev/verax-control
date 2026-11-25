@@ -68,6 +68,15 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'incident.attach': 'Anexou alertas a incidente',
   'incident.detach': 'Removeu alerta de incidente',
   'incident.dissolve': 'Desfez incidente automático (alertas voltaram para validação)',
+  // Casos e triagem em massa (`apps/api/src/cases`): a pessoa pede, e o sistema registra o fim.
+  'case.split': 'Dividiu um caso',
+  'triage.bulk.request': 'Pediu triagem em massa',
+  'triage.bulk.finish': 'Triagem em massa terminou',
+  'triage.bulk.undo': 'Pediu para desfazer uma triagem em massa',
+  'triage.bulk.undo_all': 'Pediu para desfazer tudo o que uma pessoa triou em massa',
+  'triage.bulk.cancel': 'Cancelou uma triagem em massa',
+  'triage.bulk.continue': 'Retomou uma triagem em massa',
+  'triage.bulk.replay': 'Repetiu um pedido de triagem em massa (nada mudou)',
   'agents.install_instructions.view': 'Viu as instruções de instalação dos agentes',
 };
 
@@ -90,8 +99,16 @@ export const AUDIT_RESOURCE_LABELS: Readonly<Record<AuditResourceType, string>> 
   alert_exception: 'Exceções',
   finding: 'Alertas',
   incident: 'Incidentes',
+  alert_case: 'Casos',
+  triage_operation: 'Triagem em massa',
   wazuh_agents: 'Agentes',
 };
+
+/**
+ * As áreas que só existem com os casos ligados. Um nó de antes recusa o valor no filtro (400), então elas só são oferecidas
+ * quando a API diz que os casos valem.
+ */
+export const CASE_AUDIT_AREAS: readonly AuditResourceType[] = ['alert_case', 'triage_operation'];
 
 export function resourceLabel(resourceType: string | null): string | null {
   if (resourceType === null) return null;

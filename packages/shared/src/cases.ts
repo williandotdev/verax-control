@@ -98,6 +98,7 @@ const pendingSchema = z.strictObject({ critical: count, high: count, medium: cou
  * de ligar) só aparece para a equipe da Verax; para os outros papéis é `off`.
  */
 export const CASE_MODES = ['off', 'shadow', 'on'] as const;
+export type CaseMode = (typeof CASE_MODES)[number];
 export const caseStatusSchema = z.strictObject({
   mode: z.enum(CASE_MODES),
   /** A última passagem da tarefa que dá caso aos alertas; null se ela nunca rodou ou com os casos desligados. */

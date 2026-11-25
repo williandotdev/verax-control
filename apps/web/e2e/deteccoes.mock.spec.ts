@@ -39,7 +39,11 @@ const noHorizontalScroll = async (page: Page) =>
 
 test.describe('tela Detecções (modo mock)', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'analista_cliente'));
+    await page.addInitScript(() => {
+      window.localStorage.setItem('verax.mock.role', 'analista_cliente');
+      // Com os casos desligados (o padrão de um nó), a tela de sempre. Com eles, `casos.mock.spec.ts`.
+      window.localStorage.setItem('verax.mock.cases', 'off');
+    });
     await skipDemoTour(page);
   });
 
@@ -262,7 +266,7 @@ test.describe('tela Detecções (modo mock)', () => {
     await expect(page.getByRole('complementary', { name: INCIDENT_TITLE })).toBeVisible();
 
     await page.goto(`/achados?achado=${FINDING}`);
-    await expect(page).toHaveURL(new RegExp(`/\\?alerta=${FINDING}$`));
+    await expect(page).toHaveURL(`/?visao=alertas&alerta=${FINDING}`);
     await expect(
       page.getByRole('complementary', { name: 'Tentativa de desligar a trilha do CloudTrail' }),
     ).toBeVisible();

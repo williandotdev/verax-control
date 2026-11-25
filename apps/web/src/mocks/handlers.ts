@@ -1,10 +1,11 @@
-import { type Me, CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
+import { type CaseMode, type Me, CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { createAdminHandlers, demoAdminStore } from './admin';
 import { createAgentsHandlers } from './agents-handlers';
 import { createAuditHandlers } from './audit-handlers';
 import { createAuthHandlers } from './auth-handlers';
+import { addCaseFindings, createCaseHandlers } from './cases-handlers';
 import { demoTower } from './fixtures';
 import { demoFindings } from './findings-fixtures';
 import { createFindingHandlers } from './findings-handlers';
@@ -13,6 +14,7 @@ import { createReportHandlers, demoMitre } from './reports-handlers';
 import { createInventoryHandlers } from './inventory';
 import { createPlanHandlers } from './plan-handlers';
 import { createPostureHandlers } from './posture';
+import type { TriageScenario } from './triage-engine';
 import { createUnownedHandlers, demoUnownedAlerts } from './unowned-handlers';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
@@ -40,6 +42,12 @@ export interface MockState {
    * `localStorage['verax.mock.plan']` (`plataforma`).
    */
   platform?: boolean;
+  /** Os casos no nó. Sem informar, `localStorage['verax.mock.cases']` ou ligados. Vale o da montagem dos handlers. */
+  cases?: CaseMode;
+  /** O que dá errado na triagem em massa (`triage-engine.ts`). Sem informar, `localStorage['verax.mock.triage']` ou nada. */
+  triage?: TriageScenario;
+  /** Quantos alertas de vulnerabilidade existem. Sem informar, `localStorage['verax.mock.cases.volume']` ou o padrão. */
+  caseVolume?: number;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;
@@ -68,6 +76,7 @@ const ALLOWED_WITH_TEMPORARY_PASSWORD = new Set([
 export function createHandlers(state: MockState) {
   // Alertas, incidentes e Torre compartilham o mesmo estado: a validação aparece em todas as telas.
   const findings = demoFindings();
+  addCaseFindings(state, findings);
   const admin = demoAdminStore();
   const incidents = initialIncidents();
   const unowned = demoUnownedAlerts();
@@ -108,6 +117,7 @@ export function createHandlers(state: MockState) {
     ...createAuthHandlers(state),
     ...createAdminHandlers(state, admin),
     ...createFindingHandlers(state, findings),
+    ...createCaseHandlers(state, findings, incidents, admin),
     ...createIncidentHandlers(state, findings, incidents),
     ...createPostureHandlers(state),
     ...createInventoryHandlers(state),

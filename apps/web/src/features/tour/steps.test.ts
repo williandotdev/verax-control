@@ -20,12 +20,12 @@ describe('percurso do tour', () => {
     }
   });
 
-  // A tela Detecções (16/11/2026) tem 7 passos; o admin da Verax vê 18.
-  it.each(ROLES)('%s: de 12 a 19 passos, só por telas que o papel abre', (role) => {
+  // A tela Detecções (16/11/2026) tem 9 passos, com os casos; o admin da Verax vê 20.
+  it.each(ROLES)('%s: de 12 a 21 passos, só por telas que o papel abre', (role) => {
     const permissions = permissionsOf(role);
     const steps = tourStepsFor(permissions);
     expect(steps.length).toBeGreaterThanOrEqual(12);
-    expect(steps.length).toBeLessThanOrEqual(19);
+    expect(steps.length).toBeLessThanOrEqual(21);
     for (const step of steps.filter((candidate) => candidate.path)) {
       const permission = routePermission(step.path ?? '');
       expect(permission, step.id).toBeDefined();

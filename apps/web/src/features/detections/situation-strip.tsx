@@ -20,6 +20,7 @@ import { buttonVariants } from '@/components/ui/button-variants';
 import { Sheet } from '@/components/ui/sheet';
 import { scoreSeverity } from '@/design/score';
 import { type Severity, SEVERITY_STYLES } from '@/design/severity';
+import { useCasesContext } from '@/features/cases/cases-context';
 import { useMe } from '@/features/session/session';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -32,7 +33,7 @@ import {
   stalledPhrase,
 } from './tower-collection';
 import { towerReason, validationPhrase } from './tower-reason';
-import { selectionSearch, withChanges } from './url-state';
+import { ALERTS_VIEW, selectionSearch, withChanges } from './url-state';
 
 /**
  * O resumo da situação no topo da tela Detecções (o que era a Torre, enxuto): o radar das últimas 24 horas em
@@ -128,11 +129,17 @@ function ExpandedSituation({ summary, stacked }: { summary: TowerSummary; stacke
   const [params] = useSearchParams();
   // Com a lista ao lado, a análise de baixo fica como está. Sem ela, o detalhe só existe na aba Lista: um ponto do radar
   // aberto numa aba de análise volta para a lista.
-  const listParams = stacked ? params : withChanges(params, { analysis: null }, { keepPage: true });
+  const listParams = withChanges(
+    params,
+    { case: null, ...(!stacked && { analysis: null }) },
+    { keepPage: true },
+  );
+  const { mode } = useCasesContext();
   const links: RadarLinks = {
     finding: (id) => ({ search: selectionSearch(listParams, { kind: 'finding', id }) }),
     incident: (id) => ({ search: selectionSearch(listParams, { kind: 'incident', id }) }),
-    all: '/?periodo=24h',
+    // O radar conta alertas: com os casos ligados, a lista padrão é outra.
+    all: mode === 'off' ? '/?periodo=24h' : `/?visao=${ALERTS_VIEW}&periodo=24h`,
   };
   return (
     <div className="space-y-4">

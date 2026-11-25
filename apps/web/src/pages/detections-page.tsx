@@ -5,10 +5,18 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { EmptyState } from '@/components/states';
 import { Button } from '@/components/ui/button';
+import { BulkAlertsList } from '@/features/cases/alerts-bulk';
+import { CaseFilterBar } from '@/features/cases/case-filter-bar';
+import { caseListQuery } from '@/features/cases/case-query';
+import { type CaseModeState, useCaseMode } from '@/features/cases/cases-api';
+import { CasesProvider } from '@/features/cases/cases-provider';
+import { CasesView } from '@/features/cases/cases-view';
+import { OperationsPanel } from '@/features/cases/operations-panel';
+import { VIEW_LABELS, viewsOf } from '@/features/cases/views';
 import { DetectionDetailPanel } from '@/features/detections/detail-panel';
-import { AlertsList, IncidentsList } from '@/features/detections/detection-list';
+import { IncidentsList } from '@/features/detections/detection-list';
 import { useDetections } from '@/features/detections/detections-api';
-import { EXPORT_MAX_ROWS, exportFindings, exportIncidents } from '@/features/detections/export';
+import { EXPORT_MAX_ROWS, exportCases, exportFindings, exportIncidents } from '@/features/detections/export';
 import { FilterBar } from '@/features/detections/filter-bar';
 import { SituationStrip } from '@/features/detections/situation-strip';
 import { useStripPreference } from '@/features/detections/strip-preference';
@@ -17,8 +25,11 @@ import {
   type DetectionAnalysis,
   type DetectionSelection,
   type DetectionView,
-  INCIDENTS_VIEW,
+  parentCaseOf,
+  readCaseState,
   readDetectionState,
+  viewIsDecided,
+  viewParam,
   withChanges,
 } from '@/features/detections/url-state';
 import { useFindings } from '@/features/findings/findings-api';
@@ -41,6 +52,14 @@ import { cn } from '@/lib/cn';
 import { plural } from '@/lib/format';
 
 const PAGE_SIZE = 20;
+
+/** O nome do arquivo do CSV de cada visão. */
+const EXPORT_FILES: Readonly<Record<DetectionView, string>> = {
+  cases: 'casos',
+  alerts: 'alertas',
+  incidents: 'incidentes',
+  vulnerabilities: 'vulnerabilidades',
+};
 
 const ANALYSIS_TABS: readonly { value: DetectionAnalysis; label: string }[] = [
   { value: 'list', label: 'Lista' },
@@ -65,6 +84,8 @@ export function DetectionsPage() {
   const { data: me } = useMe();
   const scope = me?.scopeTenantId ?? null;
   const can = (permission: Permission) => me?.permissions.includes(permission) === true;
+  // Os casos (docs/ARQUITETURA.md, "Casos"): desligados, ou num nó de antes, a tela é a de sempre.
+  const cases = useCaseMode(scope, can('findings:read'));
 
   if (me && scope === null) {
     return (
@@ -78,14 +99,17 @@ export function DetectionsPage() {
   }
   if (!me || scope === null) return null;
   return (
-    <DetectionsContent
-      scope={scope}
-      userId={me.userId}
-      canTower={can('tower:read')}
-      canIncidents={can('incidents:read') && can('findings:read')}
-      canFindings={can('findings:read')}
-      canAnalysis={can('reports:read')}
-    />
+    <CasesProvider cases={cases} me={me}>
+      <DetectionsContent
+        cases={cases}
+        scope={scope}
+        userId={me.userId}
+        canTower={can('tower:read')}
+        canIncidents={can('incidents:read') && can('findings:read')}
+        canFindings={can('findings:read')}
+        canAnalysis={can('reports:read')}
+      />
+    </CasesProvider>
   );
 }
 
@@ -109,6 +133,7 @@ function Shell({ children, actions }: { children: ReactNode; actions?: ReactNode
 }
 
 function DetectionsContent({
+  cases,
   scope,
   userId,
   canTower,
@@ -116,6 +141,7 @@ function DetectionsContent({
   canFindings,
   canAnalysis,
 }: {
+  cases: CaseModeState;
   scope: string;
   userId: string;
   canTower: boolean;
@@ -124,8 +150,12 @@ function DetectionsContent({
   canAnalysis: boolean;
 }) {
   const [params, setParams] = useSearchParams();
-  const state = readDetectionState(params);
-  const view: DetectionView = canIncidents ? state.view : 'alerts';
+  const state = readDetectionState(params, cases.mode);
+  const caseState = readCaseState(params);
+  const view: DetectionView = state.view === 'incidents' && !canIncidents ? 'alerts' : state.view;
+  // Sem saber ainda se há casos, a lista padrão espera: pedir os alertas para trocar em seguida seria à toa.
+  const decided = !cases.loading || viewIsDecided(params);
+  const casesShown = view === 'cases' || view === 'vulnerabilities';
   const side = useMediaQuery(SIDE_PANEL_QUERY);
   const wide = useMediaQuery(WIDE_LIST_QUERY);
   const [stripExpanded, setStripExpanded] = useStripPreference(userId);
@@ -154,7 +184,7 @@ function DetectionsContent({
   );
   const findings = useFindings(
     { ...findingFilters, page: state.page, pageSize: PAGE_SIZE },
-    ready && listing && view === 'alerts' && canFindings,
+    ready && decided && listing && view === 'alerts' && canFindings,
   );
 
   const opener = useRef<HTMLElement | null>(null);
@@ -193,11 +223,17 @@ function DetectionsContent({
       {
         incident: next.kind === 'incident' ? next.id : null,
         finding: next.kind === 'finding' ? next.id : null,
+        case: next.kind === 'case' ? next.id : null,
       },
       { keepPage: true },
     );
   };
-  const close = () => update({ incident: null, finding: null }, { keepPage: true });
+  const close = () => update({ incident: null, finding: null, case: null }, { keepPage: true });
+  // O alerta (ou o incidente) aberto de dentro de um caso volta para ele.
+  const back =
+    cases.mode !== 'off' && parentCaseOf(params, selection) !== null
+      ? () => update({ incident: null, finding: null }, { keepPage: true })
+      : undefined;
 
   const hasFilters = Object.values(filters).some((value) => value !== undefined);
   const empty =
@@ -234,19 +270,19 @@ function DetectionsContent({
       stacked={besideRadar}
     />
   );
-  const viewToggle = listing && canIncidents && (
+  const views = viewsOf(cases.mode, canIncidents);
+  const viewToggle = listing && views.length > 1 && (
     <div
       data-tour="deteccoes-visao"
       role="group"
       aria-label="Visão da lista"
-      className="inline-flex rounded-md border p-0.5"
+      className={cn(
+        'inline-flex rounded-md border p-0.5',
+        // Quatro visões não cabem numa linha do celular: duas a duas, com a área de toque inteira.
+        cases.mode !== 'off' && 'max-sm:grid max-sm:w-full max-sm:grid-cols-2 max-md:[&>button]:min-h-11',
+      )}
     >
-      {(
-        [
-          ['alerts', 'Alertas'],
-          ['incidents', 'Incidentes'],
-        ] as const
-      ).map(([value, label]) => (
+      {views.map((value) => (
         <button
           key={value}
           type="button"
@@ -257,18 +293,23 @@ function DetectionsContent({
           )}
           onClick={() =>
             update({
-              view: value === 'incidents' ? INCIDENTS_VIEW : null,
+              view: viewParam(value, cases.mode),
               unassigned: null,
               sort: null,
+              caseState: null,
+              queue: null,
+              groupBy: null,
+              // O status é só dos alertas e dos incidentes.
+              ...((value === 'cases' || value === 'vulnerabilities') && { status: null }),
             })
           }
         >
-          {label}
+          {VIEW_LABELS[value]}
         </button>
       ))}
     </div>
   );
-  const filterBar = (
+  const commonFilterBar = (
     <FilterBar
       key={side ? view : `${view}:${analysis}`}
       state={{ ...state, view }}
@@ -278,7 +319,21 @@ function DetectionsContent({
       analysis={!listing}
     />
   );
-  const list =
+  const filterBar =
+    casesShown && listing ? (
+      <CaseFilterBar
+        key={view}
+        view={view}
+        state={state}
+        cases={caseState}
+        params={params}
+        periodOptions={periods.options}
+        onChange={(changes) => update(changes)}
+      />
+    ) : (
+      commonFilterBar
+    );
+  const commonList =
     view === 'incidents' ? (
       <IncidentsList
         page={{
@@ -299,9 +354,11 @@ function DetectionsContent({
         filtered={hasContentFilter(filters)}
       />
     ) : (
-      <AlertsList
+      <BulkAlertsList
+        resetKey={JSON.stringify(findingFilters)}
         page={{
-          rows: periods.waiting ? undefined : findings.data?.items,
+          // Sem saber se há casos, a tabela não aparece: com eles, ela ganha a coluna da seleção.
+          rows: periods.waiting || cases.loading ? undefined : findings.data?.items,
           total: findings.data?.total ?? 0,
           page: state.page,
           pageSize: PAGE_SIZE,
@@ -317,6 +374,22 @@ function DetectionsContent({
         onOpen={open}
       />
     );
+  const list = casesShown ? (
+    <CasesView
+      view={view}
+      filters={filters}
+      cases={caseState}
+      page={state.page}
+      ready={ready}
+      compact={compact}
+      dense={dense}
+      selection={selection}
+      onOpen={open}
+      onPageChange={onPageChange}
+    />
+  ) : (
+    commonList
+  );
   const tabList = (
     <Tabs.List
       data-tour="deteccoes-analise"
@@ -350,6 +423,9 @@ function DetectionsContent({
                 tactic: tactic.name,
                 incident: null,
                 finding: null,
+                case: null,
+                // A análise conta alertas, e o atalho diz isso: dos casos, ele vai para a lista de alertas.
+                ...(casesShown && { view: viewParam('alerts', cases.mode) }),
                 // A lista sem período mostra todo o histórico: o atalho leva a janela que a análise contou.
                 ...('period' in range ? { period: range.period } : {}),
               }).toString()}`
@@ -375,15 +451,22 @@ function DetectionsContent({
     </>
   );
 
+  const operations = listing && cases.mode !== 'off' && view !== 'incidents' && <OperationsPanel />;
   return (
     <Shell
       actions={
         listing && (
           <ExportButton
             run={() =>
-              view === 'incidents' ? exportIncidents(filters, state.sort) : exportFindings(filters)
+              casesShown
+                ? exportCases(
+                    caseListQuery({ view, filters, cases: caseState, page: 1, pageSize: PAGE_SIZE }),
+                  )
+                : view === 'incidents'
+                  ? exportIncidents(filters, state.sort)
+                  : exportFindings(filters)
             }
-            file={view === 'incidents' ? 'incidentes' : 'alertas'}
+            file={EXPORT_FILES[view]}
           />
         )
       }
@@ -398,13 +481,14 @@ function DetectionsContent({
             )}
           >
             {besideRadar && selection ? (
-              <DetectionDetailPanel selection={selection} side onClose={close} />
+              <DetectionDetailPanel selection={selection} side onClose={close} onBack={back} />
             ) : (
               strip
             )}
             <div ref={listRef} className="min-w-0 scroll-mt-4 space-y-4">
               {viewToggle}
               {filterBar}
+              {operations}
               <div
                 className={cn(
                   'grid gap-4',
@@ -412,7 +496,9 @@ function DetectionsContent({
                 )}
               >
                 <div className="min-w-0">{list}</div>
-                {!besideRadar && <DetectionDetailPanel selection={selection} side onClose={close} />}
+                {!besideRadar && (
+                  <DetectionDetailPanel selection={selection} side onClose={close} onBack={back} />
+                )}
               </div>
             </div>
           </div>
@@ -455,12 +541,13 @@ function DetectionsContent({
               {viewToggle}
             </div>
             {filterBar}
+            {operations}
             <Tabs.Content value="list" className="focus:outline-none">
               {list}
             </Tabs.Content>
             {canAnalysis && analyses}
           </Tabs.Root>
-          <DetectionDetailPanel selection={selection} side={false} onClose={close} />
+          <DetectionDetailPanel selection={selection} side={false} onClose={close} onBack={back} />
         </>
       )}
     </Shell>

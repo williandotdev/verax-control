@@ -4,6 +4,7 @@ import { type ReactNode, useId, useState } from 'react';
 import { Pagination } from '@/components/data-table';
 import { SeverityBadge } from '@/components/security/severity-badge';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
+import { type RowSelect, SelectCell, SelectHeader } from '@/features/cases/select-cells';
 import { FindingStatusBadge } from '@/features/findings/finding-status-badge';
 import { FINDING_SOURCE_LABELS, findingOriginId, findingOriginLabel } from '@/features/findings/labels';
 import { IncidentStatusBadge } from '@/features/incidents/incident-status-badge';
@@ -30,19 +31,19 @@ export interface ListPage<T> {
   dense?: boolean;
 }
 
-const HEAD = 'px-3 py-2 text-left font-medium';
-const CELL = 'px-3 py-2 align-top';
+export const HEAD = 'px-3 py-2 text-left font-medium';
+export const CELL = 'px-3 py-2 align-top';
 /** Coluna que sai com o painel aberto ao lado (o detalhe mostra o mesmo). */
-const OPTIONAL = 'group-data-[compact=true]:hidden';
+export const OPTIONAL = 'group-data-[compact=true]:hidden';
 /** Coluna que, ao lado do radar, vira uma linha embaixo do título (`DenseMeta`). */
-const ROOMY = 'group-data-[dense=true]:hidden';
+export const ROOMY = 'group-data-[dense=true]:hidden';
 /** A coluna do título. */
-const TITLE = 'md:min-w-64 group-data-[dense=true]:md:min-w-40';
+export const TITLE = 'md:min-w-64 group-data-[dense=true]:md:min-w-40';
 /** Coluna da tela média para cima: no celular, a severidade, o status e a hora vão embaixo do título. */
-const WIDE = 'hidden md:table-cell';
+export const WIDE = 'hidden md:table-cell';
 
 /** No celular, embaixo do título: a severidade, o status e quando. */
-function MobileMeta({ children }: { children: ReactNode }) {
+export function MobileMeta({ children }: { children: ReactNode }) {
   return (
     <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground md:hidden">
       {children}
@@ -51,13 +52,13 @@ function MobileMeta({ children }: { children: ReactNode }) {
 }
 
 /** Ao lado do radar, embaixo do título: o que saiu das colunas. No celular, o `MobileMeta` já diz. */
-function DenseMeta({ children }: { children: ReactNode }) {
+export function DenseMeta({ children }: { children: ReactNode }) {
   return (
     <span className="mt-0.5 hidden text-xs wrap-anywhere text-muted-foreground md:block">{children}</span>
   );
 }
 
-function When({ at }: { at: string }) {
+export function When({ at }: { at: string }) {
   return (
     <time dateTime={at} title={formatTimestamp(at)} className="whitespace-nowrap">
       {formatRelative(at)}
@@ -66,7 +67,7 @@ function When({ at }: { at: string }) {
 }
 
 /** O botão do título, que abre o item no painel ao lado. Fica marcado enquanto o item está aberto. */
-function OpenButton({
+export function OpenButton({
   selected,
   onOpen,
   children,
@@ -90,13 +91,17 @@ function OpenButton({
   );
 }
 
-function Frame<T>({
+export function Frame<T>({
   page,
+  label,
   caption,
   header,
   children,
 }: {
   page: ListPage<T>;
+  /** O nome da área que rola: "Lista de alertas". */
+  label: string;
+  /** A descrição da tabela para leitor de tela. */
   caption: string;
   header: ReactNode;
   children: (rows: T[]) => ReactNode;
@@ -112,7 +117,7 @@ function Frame<T>({
       <div
         data-tour="deteccoes-lista"
         role="region"
-        aria-label={caption.startsWith('Alertas') ? 'Lista de alertas' : 'Lista de incidentes'}
+        aria-label={label}
         tabIndex={0}
         // `relative`: os textos só para leitor de tela (posição absoluta) ficam presos à área que rola, e não alargam a página.
         className="relative overflow-x-auto rounded-lg border focus-visible:outline-2 focus-visible:outline-ring"
@@ -186,6 +191,7 @@ export function IncidentsList({
   return (
     <Frame
       page={page}
+      label="Lista de incidentes"
       caption="Incidentes do cliente, com os alertas de cada um"
       header={
         <>
@@ -414,17 +420,22 @@ export function AlertsList({
   page,
   selection,
   onOpen,
+  select,
 }: {
   page: ListPage<Finding>;
   selection: DetectionSelection;
   onOpen: (selection: NonNullable<DetectionSelection>, opener: HTMLElement) => void;
+  /** A seleção para a triagem em massa; sem ela (casos desligados, quem só lê), a lista é só a lista. */
+  select?: RowSelect<Finding>;
 }) {
   return (
     <Frame
       page={page}
+      label="Lista de alertas"
       caption="Alertas do cliente"
       header={
         <>
+          {select && <SelectHeader select={select} rows={page.rows ?? []} noun="alertas" />}
           <th scope="col" className={cn(HEAD, WIDE)}>
             Severidade
           </th>
@@ -455,6 +466,7 @@ export function AlertsList({
       {(rows) =>
         rows.map((row) => (
           <tr key={row.id} className={cn('border-t', selection?.id === row.id && 'bg-primary/5')}>
+            {select && <SelectCell select={select} rows={rows} row={row} label={row.title} />}
             <td className={cn(CELL, WIDE)}>
               <SeverityBadge severity={row.severity} />
             </td>
