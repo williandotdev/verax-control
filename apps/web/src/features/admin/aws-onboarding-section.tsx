@@ -20,6 +20,7 @@ import { AwsSourceGroups } from '@/features/admin/aws-source-groups';
 import { AwsSourceMonitor } from '@/features/admin/aws-source-monitor';
 import { AwsStackStatus } from '@/features/admin/aws-stack-status';
 import { Section } from '@/features/admin/aws-ui';
+import { WebAttacksSection } from '@/features/web-attacks/web-attacks-section';
 
 /** Os estados em que o Verax não está dentro da conta: antes de conectar, esperando, com o tempo esgotado ou recusado. */
 const OUTSIDE_STATES: readonly AwsOnboardingState[] = [
@@ -189,6 +190,7 @@ export function AwsOnboardingSection({ account, canWrite }: { account: CloudAcco
       {(discovered || onboarding.sources.length > 0) && (
         <>
           <AwsSourceMonitor account={account} onboarding={onboarding} canWrite={canWrite} retry={retry} />
+          <WebAttacksSection account={account} onboarding={onboarding} canWrite={canWrite} />
           <AwsSourceGroups account={account} onboarding={onboarding} canWrite={canWrite} retry={retry} />
         </>
       )}

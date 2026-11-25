@@ -11,7 +11,8 @@ import { DEMO_ACCOUNTS, DEMO_TENANTS } from './fixtures';
  * Achados fictícios da demonstração, coerentes com a Torre: o cliente Alfa tem exatamente 5 achados altos ou
  * críticos novos fora de incidente, e grupos de achados que formam os incidentes (mesma chave, mesmo IP, mesma
  * instância). Endereços IP das faixas reservadas para documentação (RFC 5737) e IDs de exemplo da AWS. O Alfa tem
- * também dois achados de um agente do Wazuh numa instância dele (origem `agent:001`, a `api-producao-01`).
+ * também dois achados de um agente do Wazuh numa instância dele (origem `agent:001`, a `api-producao-01`) e quatro de ataques
+ * web, dos logs de um balanceador (o `api-alb`, que está alertando).
  */
 
 /** O agente do Wazuh da instância `api-producao-01` do Alfa (o mesmo da tela Agentes). */
@@ -517,6 +518,73 @@ const ALFA_FINDINGS: DemoFindingTemplate[] = [
     techniques: ['T1562.007'],
     account: DEMO_ACCOUNTS.alfaGcp,
   },
+  // Ataques web vistos nos logs dos balanceadores (a evidência está em `finding-evidence.ts`). No fim da lista: o ID de cada
+  // achado sai da posição dele.
+  {
+    title: 'Força bruta numa rota de login por um mesmo endereço',
+    source: 'alb',
+    severity: 'high',
+    status: 'investigating',
+    minutesAgo: 235,
+    ruleId: '990405',
+    ruleLevel: 10,
+    eventName: '447 falhas em 448 tentativas de login em 15 min',
+    region: 'sa-east-1',
+    resource: 'alb:app/api-alb/50dc6c495c0c9101',
+    ip: '192.0.2.61',
+    tactics: ['Credential Access'],
+    techniques: ['T1110'],
+  },
+  {
+    title: 'Sondagem de caminhos sensíveis por um mesmo endereço',
+    source: 'alb',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 128,
+    ruleId: '990402',
+    ruleLevel: 7,
+    eventName: '88 sondas a caminhos sensíveis (5 famílias) em 15 min',
+    region: 'sa-east-1',
+    resource: 'alb:app/api-alb/50dc6c495c0c9101',
+    ip: '192.0.2.94',
+    tactics: ['Reconnaissance'],
+    techniques: ['T1595.003'],
+  },
+  {
+    title: 'Varredura oportunista contra o balanceador (resumo do dia)',
+    source: 'alb',
+    severity: 'low',
+    status: 'new',
+    minutesAgo: 420,
+    ruleId: '990400',
+    ruleLevel: 4,
+    eventName: '47 endereços no dia: 731 sondas, 118 requisições de ferramenta, 402 recusas de enumeração',
+    region: 'sa-east-1',
+    resource: 'alb:app/api-alb/50dc6c495c0c9101',
+    tactics: ['Reconnaissance'],
+    techniques: ['T1595'],
+  },
+  {
+    title: 'Força bruta distribuída numa rota de login',
+    source: 'alb',
+    severity: 'high',
+    status: 'resolved',
+    minutesAgo: 41 * 24 * 60,
+    ruleId: '990407',
+    ruleLevel: 10,
+    eventName: 'cerca de 1905 falhas de login de 212 endereços, até 20 cada um, em 15 min',
+    region: 'sa-east-1',
+    resource: 'alb:app/api-alb/50dc6c495c0c9101',
+    tactics: ['Credential Access'],
+    techniques: ['T1110'],
+    comments: [
+      {
+        author: 'Equipe Verax',
+        body: 'Limite por endereço ligado no WAF e senha trocada nas contas com sucesso.',
+        minutesAgo: 41 * 24 * 60 - 90,
+      },
+    ],
+  },
 ];
 
 const BETA_FINDINGS: DemoFindingTemplate[] = [
@@ -701,7 +769,8 @@ export function buildDemoFindings(
       ruleLevel: t.ruleLevel,
       mitreTechniques: t.techniques ?? [],
       comments,
-      rawEvent: t.minutesAgo > 90 * 24 * 60 ? null : rawEvent(t, account, occurredAt),
+      // Dos logs do ALB, nenhuma linha fica guardada: o que há é a evidência.
+      rawEvent: t.minutesAgo > 90 * 24 * 60 || t.source === 'alb' ? null : rawEvent(t, account, occurredAt),
     });
   });
 }

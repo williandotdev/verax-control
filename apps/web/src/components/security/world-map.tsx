@@ -13,7 +13,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { formatCompact, formatHour, useElementWidth } from '@/components/charts/chart-utils';
+import { formatCompact, formatHour, formatShare, useElementWidth } from '@/components/charts/chart-utils';
 import { Button } from '@/components/ui/button';
 import { SEVERITY_STYLES } from '@/design/severity';
 import { cn } from '@/lib/cn';
@@ -25,6 +25,8 @@ import {
   type CountryTraffic,
   countryName,
   dotAt,
+  FLAGGED_MIN_SHARE,
+  flaggedLimits,
   hasPoint,
   MAX_PULSING,
   momentText,
@@ -55,26 +57,49 @@ const requests = (value: number) => plural(value, 'requisição', 'requisições
 const suspicious = (value: number) => plural(value, 'suspeita', 'suspeitas');
 const blockedText = (value: number) => plural(value, 'bloqueada', 'bloqueadas');
 const windowText = (hours: number) =>
-  hours === 1 ? 'na última hora' : `nas últimas ${formatCount(hours)} horas`;
-const recentText = (minutes: number) =>
-  minutes === 1 ? 'no último minuto' : `nos últimos ${formatCount(minutes)} minutos`;
+  hours === 1
+    ? 'na última hora'
+    : hours > 24 && hours % 24 === 0
+      ? `nos últimos ${formatCount(hours / 24)} dias`
+      : `nas últimas ${formatCount(hours)} horas`;
+
+/** O "agora" por extenso e num rótulo: até o fim do último intervalo completo, quando ele veio. */
+interface RecentTexts {
+  sentence: string;
+  label: string;
+}
+
+function recentTexts({ recentMinutes, recentUntil, generatedAt }: WorldTraffic): RecentTexts {
+  const minutes = formatCount(recentMinutes);
+  if (recentUntil) {
+    const until = momentText(recentUntil, generatedAt);
+    return {
+      sentence: recentMinutes === 1 ? `no minuto até ${until}` : `nos ${minutes} minutos até ${until}`,
+      label: `${minutes} min até ${until}`,
+    };
+  }
+  return {
+    sentence: recentMinutes === 1 ? 'no último minuto' : `nos últimos ${minutes} minutos`,
+    label: `Últimos ${minutes} min`,
+  };
+}
 
 /** O país dito por extenso: o nome falado do ponto, com tudo o que a dica mostra. */
-function describe(country: CountryTraffic, total: number, recentMinutes: number): string {
-  const recent = country.recentRequests === 0 ? 'nenhuma' : formatCount(country.recentRequests);
+function describe(country: CountryTraffic, total: number, recent: RecentTexts): string {
+  const requestsNow = country.recentRequests === 0 ? 'nenhuma' : formatCount(country.recentRequests);
   const recentFlagged = country.recentFlagged > 0 ? ` (${suspicious(country.recentFlagged)})` : '';
   return (
     `${countryName(country.code)}: ${requests(country.requests)}, ${shareOf(country.requests, total)} do total; ` +
     `${blockedText(country.blocked)}, ${suspicious(country.flagged)}; ` +
-    `${recent} ${recentText(recentMinutes)}${recentFlagged}`
+    `${requestsNow} ${recent.sentence}${recentFlagged}`
   );
 }
 
 /**
  * Mapa de origens: de que países vieram as requisições da janela, num mapa-múndi sem fronteiras, com um ponto por país. O
- * raio é o volume (escala logarítmica); a cor e a forma são o que veio (o comum na tinta neutra, num círculo; o suspeito na
- * cor do crítico, num octógono com anel); a onda, só em quem teve requisição nos últimos minutos. Nada depende da cor, do
- * mouse ou da animação: tudo está na lista e na tabela, e a animação tem botão de pausa.
+ * raio é o volume (escala logarítmica); a cor e a forma são o que veio (o comum na tinta neutra, num círculo; com muitas
+ * suspeitas, `isFlagged`, na cor do crítico, num octógono com anel); a onda, só em quem teve requisição nos últimos minutos.
+ * Nada depende da cor, do mouse ou da animação: tudo está na lista e na tabela, e a animação tem botão de pausa.
  *
  * O país é o do endereço. O que não tem país (desconhecido, rede interna, CDN e proxy) não some: fica numa linha à parte, e
  * o percentual é sobre a soma de tudo.
@@ -83,6 +108,7 @@ export function WorldMap({ traffic, userId }: { traffic: WorldTraffic; userId: s
   const [paused, setPaused] = useWorldMapMotion(userId);
   const summary = useMemo(() => summarize(traffic), [traffic]);
   const pulsing = useMemo(() => pulsingCodes(summary.countries), [summary]);
+  const recent = useMemo(() => recentTexts(traffic), [traffic]);
   const [active, setActive] = useState<Active | null>(null);
   const onHover = useCallback(
     (code: string | null) => setActive(code === null ? null : { code, touched: false }),
@@ -98,7 +124,11 @@ export function WorldMap({ traffic, userId }: { traffic: WorldTraffic; userId: s
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
         <div className="min-w-0 flex-1 basis-60">
           <Headline summary={summary} windowHours={traffic.windowHours} />
-          <p className="text-xs text-muted-foreground">Atualizado às {formatHour(traffic.generatedAt)}</p>
+          <p className="text-xs text-muted-foreground">
+            Atualizado às {formatHour(traffic.generatedAt)}
+            {traffic.recentUntil &&
+              `, com os logs completos até ${momentText(traffic.recentUntil, traffic.generatedAt)}`}
+          </p>
         </div>
         {recentCodes.size > 0 && (
           <Button variant="secondary" size="sm" onClick={() => setPaused(!paused)}>
@@ -134,14 +164,14 @@ export function WorldMap({ traffic, userId }: { traffic: WorldTraffic; userId: s
           <MapFrame
             summary={summary}
             windowHours={traffic.windowHours}
-            recentMinutes={traffic.recentMinutes}
+            recent={recent}
             recentCodes={recentCodes}
             paused={paused}
             active={active}
             onActive={setActive}
           />
           {summary.countries.length > 0 && (
-            <Legend recentMinutes={traffic.recentMinutes} showRecent={recentCodes.size > 0} paused={paused} />
+            <Legend recent={recent} showRecent={recentCodes.size > 0} paused={paused} />
           )}
         </div>
         {showList && (
@@ -154,16 +184,13 @@ export function WorldMap({ traffic, userId }: { traffic: WorldTraffic; userId: s
           <Notes
             traffic={traffic}
             summary={summary}
+            recent={recent}
             capped={live && pulsing.active > MAX_PULSING ? pulsing.active : null}
           />
         )}
       </div>
       {showList && (
-        <OriginTable
-          summary={summary}
-          windowHours={traffic.windowHours}
-          recentMinutes={traffic.recentMinutes}
-        />
+        <OriginTable summary={summary} windowHours={traffic.windowHours} recentLabel={recent.label} />
       )}
     </div>
   );
@@ -184,8 +211,8 @@ function Headline({ summary, windowHours }: { summary: TrafficSummary; windowHou
         {total.flagged === 0 ? 'nenhuma suspeita' : suspicious(total.flagged)}
       </strong>
       {total.flagged > 0 &&
-        summary.flaggedCountries > 0 &&
-        ` (em ${plural(summary.flaggedCountries, 'país', 'países')})`}{' '}
+        summary.flaggedCodes.size > 0 &&
+        ` (${plural(summary.flaggedCodes.size, 'país marcado', 'países marcados')})`}{' '}
       e {total.blocked === 0 ? 'nenhuma bloqueada' : blockedText(total.blocked)}.
     </p>
   );
@@ -253,7 +280,7 @@ const Pulses = memo(function Pulses({ dots }: { dots: readonly WorldDot[] }) {
 function MapFrame({
   summary,
   windowHours,
-  recentMinutes,
+  recent,
   recentCodes,
   paused,
   active,
@@ -261,7 +288,7 @@ function MapFrame({
 }: {
   summary: TrafficSummary;
   windowHours: number;
-  recentMinutes: number;
+  recent: RecentTexts;
   recentCodes: ReadonlySet<string>;
   paused: boolean;
   active: Active | null;
@@ -275,15 +302,15 @@ function MapFrame({
   const [focusCode, setFocusCode] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
 
-  const { countries, total } = summary;
+  const { countries, total, flaggedCodes } = summary;
   const dots = useMemo(
-    () => worldDots(countries, recentCodes, COUNTRY_POINTS, WORLD_MAP_WIDTH, width),
-    [countries, recentCodes, width],
+    () => worldDots(countries, flaggedCodes, recentCodes, COUNTRY_POINTS, WORLD_MAP_WIDTH, width),
+    [countries, flaggedCodes, recentCodes, width],
   );
   const pulses = useMemo(() => dots.filter((dot) => dot.recent), [dots]);
   const labels = useMemo(
-    () => new Map(countries.map((item) => [item.code, describe(item, total.requests, recentMinutes)])),
-    [countries, total, recentMinutes],
+    () => new Map(countries.map((item) => [item.code, describe(item, total.requests, recent)])),
+    [countries, total, recent],
   );
 
   const current = dots.find((dot) => dot.code === active?.code);
@@ -363,7 +390,13 @@ function MapFrame({
   };
 
   const facts = currentCountry && (
-    <Facts country={currentCountry} total={total.requests} recentMinutes={recentMinutes} compact={compact} />
+    <Facts
+      country={currentCountry}
+      flagged={flaggedCodes.has(currentCountry.code)}
+      total={total.requests}
+      recentLabel={recent.label}
+      compact={compact}
+    />
   );
   const empty =
     total.requests === 0
@@ -607,13 +640,15 @@ function MapTip({
 /** Os números de um país, na dica (em lista) ou embaixo do mapa (em duas colunas). */
 function Facts({
   country,
+  flagged,
   total,
-  recentMinutes,
+  recentLabel,
   compact,
 }: {
   country: CountryTraffic;
+  flagged: boolean;
   total: number;
-  recentMinutes: number;
+  recentLabel: string;
   compact: boolean;
 }) {
   const rows = [
@@ -621,14 +656,14 @@ function Facts({
     ['Bloqueadas', formatCount(country.blocked)],
     ['Suspeitas', formatCount(country.flagged)],
     [
-      `Últimos ${formatCount(recentMinutes)} min`,
+      recentLabel,
       `${formatCount(country.recentRequests)}${country.recentFlagged > 0 ? ` (${suspicious(country.recentFlagged)})` : ''}`,
     ],
   ] as const;
   return (
     <>
       <p className="flex items-center gap-1.5 font-semibold text-foreground">
-        {country.flagged > 0 && <OctagonAlert className="size-3.5 shrink-0 text-critical" />}
+        {flagged && <OctagonAlert className="size-3.5 shrink-0 text-critical" />}
         {countryName(country.code)}
       </p>
       <dl className={cn('mt-1 grid gap-y-0.5', compact && 'gap-x-4 @md:grid-cols-2')}>
@@ -645,11 +680,11 @@ function Facts({
 
 /** A chave do mapa: o tamanho, as duas marcas e a onda. */
 function Legend({
-  recentMinutes,
+  recent,
   showRecent,
   paused,
 }: {
-  recentMinutes: number;
+  recent: RecentTexts;
   showRecent: boolean;
   paused: boolean;
 }) {
@@ -665,11 +700,11 @@ function Legend({
       <LegendItem text="Requisições comuns">
         <DotShape x={12} y={10} radius={5} ring={0} />
       </LegendItem>
-      <LegendItem text="Com requisições suspeitas">
+      <LegendItem text="Muitas requisições suspeitas">
         <DotShape x={12} y={10} radius={5} ring={3.5} />
       </LegendItem>
       {showRecent && (
-        <LegendItem text={`${paused ? 'Anel tracejado' : 'Onda'}: requisições ${recentText(recentMinutes)}`}>
+        <LegendItem text={`${paused ? 'Anel tracejado' : 'Onda'}: requisições ${recent.sentence}`}>
           <circle cx={12} cy={10} r={3} className="fill-muted-foreground" />
           <circle
             cx={12}
@@ -704,7 +739,7 @@ const TopOrigins = memo(function TopOrigins({
   onHover: (code: string | null) => void;
 }) {
   const titleId = useId();
-  const { countries, total } = summary;
+  const { countries, total, flaggedCodes } = summary;
   if (countries.length === 0) return null;
   const top = countries.slice(0, TOP_COUNT);
   const rest = countries.length - top.length;
@@ -726,13 +761,13 @@ const TopOrigins = memo(function TopOrigins({
             <div className="flex items-baseline justify-between gap-3 text-sm">
               <span className="min-w-0 wrap-anywhere">
                 {countryName(country.code)}
-                {country.flagged > 0 && (
+                {flaggedCodes.has(country.code) && (
                   <>
                     <OctagonAlert
                       aria-hidden
                       className="ml-1.5 inline size-3.5 -translate-y-px text-critical"
                     />
-                    <span className="sr-only"> (com requisições suspeitas)</span>
+                    <span className="sr-only"> (com muitas requisições suspeitas)</span>
                   </>
                 )}
               </span>
@@ -795,20 +830,35 @@ function OffMap({ summary }: { summary: TrafficSummary }) {
 function Notes({
   traffic,
   summary,
+  recent,
   capped,
 }: {
   traffic: WorldTraffic;
   summary: TrafficSummary;
+  recent: RecentTexts;
   /** Quantos países tiveram requisição agora, quando passam do limite de ondas. */
   capped: number | null;
 }) {
+  const limits = flaggedLimits(traffic.windowHours);
   return (
     <div className="space-y-1 text-xs text-muted-foreground @4xl:col-start-1">
       <p>
-        O país é o do endereço que fez a requisição: VPN, proxy e nuvem podem esconder a origem real. Suspeita
-        é a requisição com sinal de sondagem, de ferramenta de ataque ou de falha de login. O percentual é
-        sobre todas as requisições da janela.
+        O país é o do endereço que fez a requisição: VPN, proxy e nuvem podem esconder a origem real. O
+        percentual é sobre todas as requisições da janela.
       </p>
+      <p>
+        Suspeita é a requisição com sinal de sondagem, de ferramenta de ataque ou de falha de login. Sondagem
+        acontece o tempo todo, de todo lugar: o país só é marcado com {formatCount(limits.min)} ou mais
+        suspeitas na janela, ou com {formatCount(limits.minWithShare)} ou mais que sejam pelo menos{' '}
+        {formatShare(FLAGGED_MIN_SHARE)} das requisições dele.
+      </p>
+      {(traffic.unverified ?? 0) > 0 && (
+        <p>
+          Da origem desconhecida, {requests(traffic.unverified ?? 0)}{' '}
+          {traffic.unverified === 1 ? 'veio' : 'vieram'} de endereço público que pode ser do visitante ou de
+          uma CDN.
+        </p>
+      )}
       {summary.throughProxy.requests > 0 && (
         <p>
           Por CDN ou proxy, o log traz o endereço da CDN, e não o país de quem acessou: essas requisições
@@ -817,8 +867,8 @@ function Notes({
       )}
       {capped !== null && (
         <p>
-          A marca de atividade fica só nos {MAX_PULSING} países com mais requisições{' '}
-          {recentText(traffic.recentMinutes)}, de {formatCount(capped)} com requisições nesse tempo.
+          A marca de atividade fica só nos {MAX_PULSING} países com mais requisições {recent.sentence}, de{' '}
+          {formatCount(capped)} com requisições nesse tempo.
         </p>
       )}
     </div>
@@ -832,11 +882,11 @@ function Notes({
 const OriginTable = memo(function OriginTable({
   summary,
   windowHours,
-  recentMinutes,
+  recentLabel,
 }: {
   summary: TrafficSummary;
   windowHours: number;
-  recentMinutes: number;
+  recentLabel: string;
 }) {
   const title = `Origem das requisições ${windowText(windowHours)}`;
   const total = summary.total.requests;
@@ -897,7 +947,7 @@ const OriginTable = memo(function OriginTable({
                 Suspeitas
               </th>
               <th scope="col" className={head}>
-                Últimos {formatCount(recentMinutes)} min
+                {recentLabel}
               </th>
             </tr>
           </thead>

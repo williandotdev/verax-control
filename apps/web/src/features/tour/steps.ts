@@ -40,7 +40,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     path: '/',
     target: [tour('deteccoes-situacao')],
     title: 'Detecções: está tudo bem?',
-    body: 'A tela de entrada. No topo, a situação agora: o radar das últimas 24 horas em destaque e, numa linha, o que pede atenção (incidente crítico ou alto aberto, postura baixa ou coleta parada). Recolha o resumo para a lista subir; a escolha fica salva.',
+    body: 'A tela de entrada. A situação agora: o radar das últimas 24 horas em destaque e, numa linha, o que pede atenção (incidente crítico ou alto aberto, postura baixa ou coleta parada). Recolha o resumo para a lista subir; a escolha fica salva.',
   },
   {
     id: 'deteccoes-decisoes',
@@ -55,6 +55,14 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [tour('deteccoes-radar'), tour('deteccoes-situacao')],
     title: 'Radar das últimas 24 horas',
     body: 'Cada ponto é uma detecção: o ângulo é a origem (AWS, GCP, Cloudflare ou agentes), a distância do centro é a idade e a forma é a severidade. Passe o mouse, use as setas do teclado ou abra a tabela; Enter abre o alerta.',
+  },
+  {
+    id: 'deteccoes-origens',
+    path: '/',
+    target: [tour('deteccoes-origens')],
+    permission: 'tower:read',
+    title: 'De onde vêm as requisições',
+    body: 'Um ponto por país, no tamanho do volume, pelos logs de acesso do load balancer da AWS. A onda é quem teve requisição nos últimos minutos; o vermelho, país com muitas suspeitas (sondagem, ferramenta de ataque ou falha de login). Só existe para quem autoriza a leitura; recolha para a lista subir.',
   },
   {
     id: 'seletor-cliente',

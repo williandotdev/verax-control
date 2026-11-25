@@ -12,6 +12,7 @@ import { createQueryClient } from '@/lib/query-client';
 import { DEMO_TENANTS, demoMe, demoTower } from '@/mocks/fixtures';
 import { DEMO_INCIDENTS } from '@/mocks/findings-fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
+import { SIDE_PANEL_QUERY } from '@/lib/use-media-query';
 import { routes } from '@/routes/router';
 
 const server = setupServer();
@@ -71,6 +72,87 @@ const rows = async () =>
     .getAllByRole('row')
     .slice(1);
 const search = (router: ReturnType<typeof renderAt>) => new URLSearchParams(router.state.location.search);
+
+describe('Detecções: o mapa de origens no topo', () => {
+  const band = () => screen.queryByRole('region', { name: 'Origem das requisições' });
+  const findBand = () => screen.findByRole('region', { name: 'Origem das requisições' }, SLOW);
+  const strip = () => screen.findByRole('region', { name: 'Situação agora' });
+  /** O que vem logo antes do resumo (ou da grade com ele, no computador): sem o mapa, o cabeçalho da página. */
+  const header = () => screen.getByRole('heading', { level: 1, name: 'Detecções' }).closest('header');
+
+  it('vem antes do resumo e da lista, aberto, na tela estreita e no computador', async () => {
+    renderAt('/');
+    const region = await findBand();
+    expect(header()?.nextElementSibling).toBe(region);
+    expect(region.nextElementSibling).toBe(await strip());
+    expect(within(region).getByRole('button', { name: /^Recolher/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    cleanup();
+
+    mockMedia((query) => query === SIDE_PANEL_QUERY);
+    renderAt('/');
+    const wide = await findBand();
+    expect(header()?.nextElementSibling).toBe(wide);
+    expect(wide.nextElementSibling).toContainElement(await strip());
+  });
+
+  it.each(['no_source', 'off', 'error'] as const)(
+    'sem o mapa (%s), a página é a de sempre',
+    async (traffic) => {
+      for (const wide of [false, true]) {
+        mockMedia((query) => wide && query === SIDE_PANEL_QUERY);
+        renderAt('/', { me: demoMe('analista_cliente'), traffic });
+        const situation = await strip();
+        await screen.findByRole('table', { name: 'Alertas do cliente' }, SLOW);
+        expect(band()).toBeNull();
+        const next = header()?.nextElementSibling;
+        if (wide) expect(next).toContainElement(situation);
+        else expect(next).toBe(situation);
+        cleanup();
+      }
+    },
+  );
+
+  it('o cliente sem balanceador autorizado não tem a faixa, e trocar de cliente a tira da tela', async () => {
+    const me = demoMe('admin_verax', { activeTenantId: beta, scopeTenantId: beta });
+    renderAt('/', { me });
+    await screen.findByRole('table', { name: 'Alertas do cliente' }, SLOW);
+    expect(band()).toBeNull();
+  });
+
+  it('quem não tem a permissão do resumo não tem o mapa, que nem é pedido', async () => {
+    const me = demoMe('analista_cliente');
+    let asked = 0;
+    renderAt('/', { me: { ...me, permissions: me.permissions.filter((p) => p !== 'tower:read') } });
+    server.use(
+      http.get(`${API_URL}/v1/web-logs/traffic`, () => {
+        asked += 1;
+        return new HttpResponse(null, { status: 403 });
+      }),
+    );
+    await screen.findByRole('table', { name: 'Alertas do cliente' }, SLOW);
+    expect(band()).toBeNull();
+    expect(asked).toBe(0);
+  });
+
+  it('por um link direto (alerta, incidente ou análise) começa recolhido; abrir um alerta na tela não o recolhe', async () => {
+    for (const path of [`/?alerta=${FINDING}`, `/?incidente=${INCIDENT}`, '/?analise=mitre']) {
+      mockMedia((query) => query === SIDE_PANEL_QUERY);
+      renderAt(path);
+      const region = await findBand();
+      expect(within(region).getByRole('button', { name: /^Mostrar/ }), path).toBeInTheDocument();
+      cleanup();
+    }
+    const router = renderAt('/');
+    const region = await findBand();
+    const [alert] = await screen.findAllByRole('button', { name: /^Abrir o alerta/ }, SLOW);
+    await userEvent.click(alert as HTMLElement);
+    await waitFor(() => expect(search(router).get('alerta')).not.toBeNull());
+    expect(within(region).getByRole('button', { name: /^Recolher/ })).toBeInTheDocument();
+  });
+});
 
 describe('Detecções: a lista', () => {
   it('por padrão, os alertas: os a validar e os confirmados, com a marca "Em incidente" que abre o incidente', async () => {

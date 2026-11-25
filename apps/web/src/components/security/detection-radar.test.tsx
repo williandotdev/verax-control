@@ -48,6 +48,7 @@ const SECTOR_OF = {
   inspector: 'aws',
   access_analyzer: 'aws',
   vpc_flow: 'aws',
+  alb: 'aws',
   cloudwatch_logs: 'aws',
   gcp_audit: 'gcp',
   cloudflare_audit: 'cloudflare',

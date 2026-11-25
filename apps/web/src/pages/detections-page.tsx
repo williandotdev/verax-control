@@ -18,6 +18,7 @@ import { IncidentsList } from '@/features/detections/detection-list';
 import { useDetections } from '@/features/detections/detections-api';
 import { EXPORT_MAX_ROWS, exportCases, exportFindings, exportIncidents } from '@/features/detections/export';
 import { FilterBar } from '@/features/detections/filter-bar';
+import { OriginBand } from '@/features/detections/origin-band';
 import { SituationStrip } from '@/features/detections/situation-strip';
 import { useStripPreference } from '@/features/detections/strip-preference';
 import {
@@ -77,7 +78,8 @@ const ANALYSIS_TABS: readonly { value: DetectionAnalysis; label: string }[] = [
  * de Relatórios. No topo, o resumo da situação (recolhível); embaixo, a lista de alertas (o padrão) ou a de incidentes,
  * com um filtro só e o detalhe ao lado para a validação. No computador (23/11/2026), a lista fica ao lado do radar, com o
  * detalhe no lugar do radar enquanto está aberto, e as análises ficam embaixo, a começar pelo Resumo. Desde 17/11/2026 (taxonomia de SOC), o evento vira alerta, a
- * pessoa valida o alerta, e só a confirmação dela (promover) abre um incidente. As análises que vieram dos Relatórios (MITRE e
+ * pessoa valida o alerta, e só a confirmação dela (promover) abre um incidente. Acima de tudo, para quem tem balanceador com
+ * a leitura autorizada, o mapa de origens das requisições (24/11/2026, `origin-band.tsx`). As análises que vieram dos Relatórios (MITRE e
  * cobertura) usam o mesmo período. Cada parte aparece para quem tem a permissão dela (a API decide de qualquer forma).
  */
 export function DetectionsPage() {
@@ -200,6 +202,8 @@ function DetectionsContent({
 
   const listRef = useRef<HTMLDivElement>(null);
   const analysisRef = useRef<HTMLDivElement>(null);
+  // Quem chega por um link direto vem pelo que ele abre: o mapa do topo começa recolhido, só desta vez.
+  const [deepLink] = useState(selection !== null || (canAnalysis && state.analysis !== 'list'));
   // Um link para uma análise abre nela, que no computador fica abaixo da lista.
   const linkedAnalysis = useRef(side && asked !== 'list');
   useEffect(() => {
@@ -269,6 +273,9 @@ function DetectionsContent({
       onExpandedChange={setStripExpanded}
       stacked={besideRadar}
     />
+  );
+  const originBand = canTower && (
+    <OriginBand key={scope} scope={scope} userId={userId} startCollapsed={deepLink} />
   );
   const views = viewsOf(cases.mode, canIncidents);
   const viewToggle = listing && views.length > 1 && (
@@ -472,6 +479,7 @@ function DetectionsContent({
         )
       }
     >
+      {originBand}
       {side ? (
         <>
           <div

@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, type ReactNode, Suspense } from 'react';
 import type { WorldTraffic } from './world-map-model';
 import { WorldMapSkeleton } from './world-map-skeleton';
 
@@ -20,11 +20,18 @@ const WorldMap = lazy(() =>
 
 /**
  * O mapa de origens para as páginas: o desenho do mundo só é baixado quando o mapa aparece (fica fora do pacote principal),
- * com o esqueleto no lugar enquanto isso.
+ * com o esqueleto (ou o `fallback` de quem sabe a altura) no lugar enquanto isso.
  */
-export function LazyWorldMap(props: { traffic: WorldTraffic; userId: string }) {
+export function LazyWorldMap({
+  fallback = <WorldMapSkeleton />,
+  ...props
+}: {
+  traffic: WorldTraffic;
+  userId: string;
+  fallback?: ReactNode;
+}) {
   return (
-    <Suspense fallback={<WorldMapSkeleton />}>
+    <Suspense fallback={fallback}>
       <WorldMap {...props} />
     </Suspense>
   );

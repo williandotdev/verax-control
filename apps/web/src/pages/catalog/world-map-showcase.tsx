@@ -12,7 +12,7 @@ export function WorldMapShowcase() {
   return (
     <CatalogSection
       title="Mapa de origens"
-      description="De que países vieram as requisições: um ponto por país, no tamanho do volume. O comum é um círculo na tinta neutra; o suspeito, um octógono com anel na cor do crítico; a onda, só em quem teve requisição agora, com botão de pausa. Dados fictícios."
+      description="De que países vieram as requisições: um ponto por país, no tamanho do volume. O comum é um círculo na tinta neutra; com muitas suspeitas, um octógono com anel na cor do crítico; a onda, só em quem teve requisição agora, com botão de pausa. Dados fictícios."
     >
       <label className="flex w-fit max-w-full flex-col gap-1 text-xs text-muted-foreground">
         Estado do mapa

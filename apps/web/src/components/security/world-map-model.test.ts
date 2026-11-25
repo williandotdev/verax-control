@@ -4,8 +4,10 @@ import {
   countryName,
   dotAt,
   dotRadius,
+  flaggedLimits,
   hasPoint,
   HIT_RADIUS,
+  isFlagged,
   MAX_PULSING,
   maxRadius,
   momentText,
@@ -84,12 +86,14 @@ describe('soma por país', () => {
     const summary = summarize(
       traffic([country('BR', 10, { blocked: 1, flagged: 2 }), country('US', 5, { flagged: 1 })], {
         unknown: { requests: 100, blocked: 10, flagged: 5 },
+        // Já está na origem desconhecida: só diz quanto dela.
+        unverified: 60,
         throughProxy: { requests: 1_000, blocked: 20, flagged: 7 },
         internal: { requests: 10_000, blocked: 30, flagged: 9 },
       }),
     );
     expect(summary.total).toEqual({ requests: 11_115, blocked: 61, flagged: 24 });
-    expect(summary.flaggedCountries).toBe(2);
+    expect(summary.flaggedCodes.size).toBe(0);
     expect(summary.throughProxy.requests).toBe(1_000);
     expect(summary.internal.requests).toBe(10_000);
   });
@@ -103,6 +107,52 @@ describe('soma por país', () => {
     );
     expect(summary.countries).toEqual([country('FR', 2)]);
     expect(summary.total.requests).toBe(2);
+  });
+});
+
+describe('país marcado', () => {
+  const day = (requests: number, flagged: number) => isFlagged({ requests, flagged }, 24);
+
+  it('com 50 suspeitas, por maior que seja o volume; com 49 em muito volume, não', () => {
+    expect(day(10_000_000, 50)).toBe(true);
+    expect(day(10_000_000, 49)).toBe(false);
+  });
+
+  it('com 10 que sejam pelo menos 1% das requisições dele; com menos de 10, nem que seja tudo', () => {
+    expect(day(1_000, 10)).toBe(true);
+    expect(day(1_001, 10)).toBe(false);
+    expect(day(10, 10)).toBe(true);
+    expect(day(9, 9)).toBe(false);
+    expect(day(1, 1)).toBe(false);
+    expect(day(0, 0)).toBe(false);
+    // No limite exato, em toda a faixa em que a parte decide.
+    for (let flagged = 10; flagged < 50; flagged += 1) {
+      expect(day(flagged * 100, flagged), String(flagged)).toBe(true);
+      expect(day(flagged * 100 + 1, flagged), String(flagged)).toBe(false);
+    }
+  });
+
+  it('os números são de um dia: crescem com a janela maior, e não diminuem na menor', () => {
+    expect(flaggedLimits(24)).toEqual({ min: 50, minWithShare: 10 });
+    expect(flaggedLimits(1)).toEqual({ min: 50, minWithShare: 10 });
+    expect(flaggedLimits(168)).toEqual({ min: 350, minWithShare: 70 });
+    expect(flaggedLimits(720)).toEqual({ min: 1_500, minWithShare: 300 });
+    expect(flaggedLimits(36)).toEqual({ min: 75, minWithShare: 15 });
+    expect(isFlagged({ requests: 1_000_000, flagged: 349 }, 168)).toBe(false);
+    expect(isFlagged({ requests: 1_000_000, flagged: 350 }, 168)).toBe(true);
+    expect(isFlagged({ requests: 7_000, flagged: 69 }, 168)).toBe(false);
+    expect(isFlagged({ requests: 7_000, flagged: 70 }, 168)).toBe(true);
+  });
+
+  it('a soma diz quais são, pela janela dela e depois de juntar o mesmo código', () => {
+    const countries = [
+      country('BR', 600, { flagged: 6 }),
+      country('br', 400, { flagged: 4 }),
+      country('US', 90_000, { flagged: 60 }),
+      country('DE', 90_000, { flagged: 40 }),
+    ];
+    expect([...summarize(traffic(countries)).flaggedCodes]).toEqual(['US', 'BR']);
+    expect([...summarize(traffic(countries, { windowHours: 168 })).flaggedCodes]).toEqual([]);
   });
 });
 
@@ -204,6 +254,7 @@ describe('pontos', () => {
         country('US', 1),
       ],
       new Set(['DE']),
+      new Set(['DE']),
       POINTS,
       2_000,
       1_000,
@@ -221,17 +272,25 @@ describe('pontos', () => {
     expect(de?.phase).toBe(pulsePhase('DE'));
   });
 
+  it('com suspeitas e sem marca, o ponto e a onda são os comuns', () => {
+    const list = [country('BR', 1_000, { flagged: 3, recentRequests: 5, recentFlagged: 2 })];
+    const [dot] = worldDots(list, new Set(), new Set(['BR']), POINTS, 2_000, 1_000);
+    expect(dot).toMatchObject({ flagged: false, ring: 0, recent: true, recentFlagged: false });
+  });
+
   it('o suspeito pequeno cresce até o octógono ser lido; no mapa estreito o anel é mais fino', () => {
     const list = [country('BR', 1_000_000), country('US', 1, { flagged: 1 })];
-    const wide = worldDots(list, new Set(), POINTS, 2_000, 1_000);
+    const flagged = new Set(['US']);
+    const wide = worldDots(list, flagged, new Set(), POINTS, 2_000, 1_000);
     expect(wide[1]).toMatchObject({ radius: 3.5, ring: 3.5 });
-    const narrow = worldDots(list, new Set(), POINTS, 2_000, 300);
+    const narrow = worldDots(list, flagged, new Set(), POINTS, 2_000, 300);
     expect(narrow[1]).toMatchObject({ radius: 3.5, ring: 2.5 });
     expect(outerRadius({ radius: 4, ring: 2.5 })).toBe(6.5);
   });
 
   it('país sem ponto fica fora do mapa, sem mudar a escala dos outros', () => {
-    const dots = worldDots([country('GI', 1_000_000), country('BR', 1_000)], new Set(), POINTS, 2_000, 1_280);
+    const list = [country('GI', 1_000_000), country('BR', 1_000)];
+    const dots = worldDots(list, new Set(), new Set(), POINTS, 2_000, 1_280);
     expect(dots.map((dot) => dot.code)).toEqual(['BR']);
     expect(dots[0]?.radius).toBeCloseTo(3, 6);
     // Nome de propriedade herdada não é país.

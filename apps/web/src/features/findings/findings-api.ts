@@ -5,6 +5,7 @@ import {
   cloudAccountSchema,
   findingCommentSchema,
   findingDetailSchema,
+  findingEvidenceSchema,
   type FindingListQuery,
   findingSchema,
   type FindingStatusUpdate,
@@ -14,6 +15,7 @@ import {
 import { invalidateCases } from '@/features/cases/cases-api';
 import { toSearch } from '@/features/detections/detections-api';
 import { api } from '@/lib/api';
+import { ApiRequestError } from '@/lib/api-client';
 
 const findingPageSchema = paginatedSchema(findingSchema);
 const cloudAccountPageSchema = paginatedSchema(cloudAccountSchema);
@@ -34,6 +36,24 @@ export function useFinding(id: string | null) {
     queryKey: ['finding', id],
     queryFn: () => api.get(`/v1/findings/${encodeURIComponent(id ?? '')}`, findingDetailSchema),
     enabled: id !== null,
+  });
+}
+
+/**
+ * A evidência do achado que não tem evento bruto guardado (os ataques web dos logs do ALB). Rota à parte do detalhe: o nó de antes
+ * responde 404, e o achado aparece sem ela (`null`).
+ */
+export function useFindingEvidence(id: string) {
+  return useQuery({
+    queryKey: ['finding-evidence', id],
+    queryFn: async () => {
+      try {
+        return await api.get(`/v1/findings/${encodeURIComponent(id)}/evidence`, findingEvidenceSchema);
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status === 404) return null;
+        throw error;
+      }
+    },
   });
 }
 

@@ -93,12 +93,13 @@ describe('contas da demonstração', () => {
     });
     expect(alfa.checks.map((check) => check.id)).toEqual([...AWS_ONBOARDING_CHECK_IDS]);
     expect(checkOf(alfa, 'discovery')).toMatchObject({ status: 'ok', code: 'partial' });
-    // A permissão que falta é a ação do IAM que a AWS negou; a falha de leitura, o limite de requisições.
+    // A permissão que falta é a ação do IAM que a AWS negou; a falha de leitura, o log do balanceador que ficou para trás (a
+    // primeira, na ordem das fontes; a do Security Hub, limitada pela AWS, vem depois).
     expect(checkOf(alfa, 'permission')).toMatchObject({
       status: 'failed',
       code: 'access-analyzer:ListFindings',
     });
-    expect(checkOf(alfa, 'events')).toMatchObject({ status: 'failed', code: 'throttled' });
+    expect(checkOf(alfa, 'events')).toMatchObject({ status: 'failed', code: 'web_gap' });
     expect(checkOf(alfa, 'lag')).toMatchObject({ status: 'failed', code: 'stalled' });
     // Uma Web ACL acabou de ser autorizada: a configuração da coleta ainda não foi aplicada no servidor.
     expect(checkOf(alfa, 'collector_config')).toMatchObject({
@@ -148,7 +149,9 @@ describe('contas da demonstração', () => {
     });
     pass(60_000);
     expect(
-      (await view(ALFA)).sources.find((source) => source.state === 'ingestion_error')?.health.lagSeconds,
+      (await view(ALFA)).sources.find(
+        (source) => source.method === 'api' && source.state === 'ingestion_error',
+      )?.health.lagSeconds,
     ).toBe(3 * 3_600 + 60);
     // A ação do IAM que a AWS negou: o motivo é a própria ação, não um dos códigos.
     expect(of('access_analyzer', 'permission_error')).toMatchObject({
@@ -169,6 +172,8 @@ describe('contas da demonstração', () => {
     const buckets = alfa.sources.filter(
       (source) =>
         source.method === 's3' &&
+        // Os balanceadores são do worker: o teste deles está logo abaixo.
+        source.kind !== 'elb_logs' &&
         source.origin === 'discovered' &&
         source.authorization.authorizedAt !== null,
     );
@@ -214,7 +219,49 @@ describe('contas da demonstração', () => {
     if (!stalled) throw new Error('a demonstração não tem fonte parada');
     const revoked = await write(ALFA, `sources/${stalled.id}/revoke`);
     expect(checkOf(revoked, 'lag')).toMatchObject({ status: 'failed', code: 'sync_delayed' });
-    expect(checkOf(revoked, 'events')).toMatchObject({ status: 'failed', code: 'throttled' });
+    expect(checkOf(revoked, 'events')).toMatchObject({ status: 'failed', code: 'web_gap' });
+  });
+
+  it('os balanceadores da Alfa: três autorizados, cada um numa situação, e os outros com o motivo de cada um', async () => {
+    start();
+    const balancers = (await view(ALFA)).sources.filter((source) => source.kind === 'elb_logs');
+    const summary = balancers
+      .map((source) => `${source.name}|${source.state}|${source.stateCode ?? source.permissionDetail ?? '-'}`)
+      .sort();
+    expect(summary).toEqual([
+      'api-alb|collecting|web_quarantined',
+      'arquivo-alb|available|-',
+      'blog-alb|available|-',
+      'campanhas-alb|available|-',
+      'catalogo-alb|available|-',
+      'checkout-alb|ingestion_error|web_gap',
+      'legado-alb|needs_permission|outside_awslogs_prefix',
+      'loja-alb|collecting|-',
+      'parceiros-alb|needs_permission|bucket_denied',
+      'rede-nlb|unavailable|unsupported_format',
+      'relatorios-alb|available|-',
+      'site-alb|unavailable|no_destination',
+    ]);
+    expect(balancers.every((source) => source.collectable)).toBe(true);
+  });
+
+  it('com os ataques web desligados, os balanceadores são os de um nó que nunca os teve', async () => {
+    start({ me: demoMe('admin_cliente'), webLogs: false });
+    const alfa = await view(ALFA);
+    const balancers = alfa.sources.filter((source) => source.kind === 'elb_logs');
+    expect(balancers.length).toBeGreaterThan(5);
+    for (const source of balancers) {
+      expect(source, source.name).toMatchObject({
+        collectable: false,
+        notes: ['not_collected_yet'],
+        permission: 'unknown',
+      });
+      expect(source.details.internetFacing, source.name).toBeUndefined();
+      expect(['authorized', 'unavailable'], source.name).toContain(source.state);
+    }
+    // O que nem log tem, e o NLB, não aparecem.
+    expect(balancers.map((source) => source.name)).not.toContain('site-alb');
+    expect(balancers.map((source) => source.name)).not.toContain('rede-nlb');
   });
 
   it('numa conta nova, o Security Hub vai direto para a coleta, sincronizado e ainda sem achado', async () => {
@@ -434,7 +481,8 @@ describe('uma conta nova, do "Conectar com AWS" até coletar', () => {
     const discovered = await connectAndDiscover(id);
     for (const source of discovered.sources) seen.add(source.state);
     const available = discovered.sources.filter(
-      (source) => source.state === 'available' && !source.sensitive,
+      // O balanceador pede a estimativa antes: o caminho dele está em `web-logs.test.ts`.
+      (source) => source.state === 'available' && !source.sensitive && source.kind !== 'elb_logs',
     );
     // Duas fontes lidas de bucket e uma de achados: uma para no erro do cenário, e a outra de bucket passa por
     // "configurando" e "ainda sem eventos" (a de achados vai direto para a coleta).
