@@ -179,7 +179,8 @@ test.describe('mapa de origens na tela Detecções (modo mock)', () => {
     });
   }
 
-  for (const width of [768, 1280, 1920]) {
+  // Em 1.180 e 1.280 px (conforme a fonte), a explicação do cabeçalho passa a duas linhas quando a resposta chega.
+  for (const width of [768, 1180, 1280, 1920]) {
     test(`na visita seguinte, a lista não pula enquanto o mapa carrega (${width} px)`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
       await prepare(page);

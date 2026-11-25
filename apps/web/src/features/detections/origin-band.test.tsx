@@ -146,7 +146,7 @@ describe('quem não tem o mapa', () => {
   });
 
   it('quem tinha a faixa e não tem mais: some, e o lugar dela é esquecido', async () => {
-    rememberOriginPlace(USER, SCOPE, 500);
+    rememberOriginPlace(USER, SCOPE, { height: 500, header: 80 });
     answer(() => traffic({ state: 'no_source', countries: [] }));
     renderBand();
     expect(band()).not.toBeNull();
@@ -178,7 +178,7 @@ describe('aberta', () => {
     // O que pode ser do visitante ou de uma CDN conta como origem desconhecida, com a nota.
     expect(region.querySelector('[data-off-map]')).toHaveTextContent(/27 de origem desconhecida/);
     expect(region).toHaveTextContent('7 requisições vieram de endereço público que pode ser do visitante');
-    expect(readOriginPlace(USER, SCOPE)).toEqual({ height: null });
+    expect(readOriginPlace(USER, SCOPE)).toEqual({ height: null, header: null });
     expect(readOriginPlace(USER, OTHER_SCOPE)).toBeNull();
     expect(readOriginPlace('pessoa-b', SCOPE)).toBeNull();
   });
@@ -472,7 +472,7 @@ describe('recolher', () => {
 
 describe('o lugar da faixa na página', () => {
   it('quem a tinha vê o lugar reservado, com a altura da última vez, enquanto a resposta não vem', async () => {
-    rememberOriginPlace(USER, SCOPE, 611.4);
+    rememberOriginPlace(USER, SCOPE, { height: 611.4, header: 79.2 });
     let release: () => void = () => undefined;
     const ready = new Promise<void>((resolve) => {
       release = resolve;
@@ -487,20 +487,25 @@ describe('o lugar da faixa na página', () => {
     const loading = within(region as HTMLElement).getByRole('status');
     expect(loading).toHaveTextContent('Carregando o mapa de origens…');
     expect(loading.parentElement?.style.height).toBe('612px');
+    // O cabeçalho também: com a resposta, a explicação dele pode passar a duas linhas.
+    const header = region?.querySelector('header');
+    expect(header?.style.minHeight).toBe('80px');
     release();
     expect(await findMap()).toBeInTheDocument();
+    expect(header?.style.minHeight).toBe('');
   });
 
   it('recolhida, só a moldura', () => {
-    rememberOriginPlace(USER, SCOPE, 611);
+    rememberOriginPlace(USER, SCOPE, { height: 611, header: 80 });
     answer(() => new Promise<Response>(() => undefined));
     renderBand({ startCollapsed: true });
     expect(band()).not.toBeNull();
+    expect(band()?.querySelector('header')?.style.minHeight).toBe('');
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
   it('e, se a primeira resposta falha, o erro com "Tentar de novo" (ela existe; só não veio)', async () => {
-    rememberOriginPlace(USER, SCOPE, 611);
+    rememberOriginPlace(USER, SCOPE, { height: 611, header: 80 });
     let failing = true;
     answer(() => (failing ? problem(400) : traffic()));
     renderBand();
@@ -529,11 +534,11 @@ describe('o lugar da faixa na página', () => {
       renderBand();
       await findMap();
       act(() => callbacks.forEach((callback) => callback()));
-      expect(readOriginPlace(USER, SCOPE)).toEqual({ height: 640 });
+      expect(readOriginPlace(USER, SCOPE)).toEqual({ height: 640, header: 640 });
       await userEvent.click(screen.getByText(/^Ver em tabela/));
       height = 1_000;
       act(() => callbacks.forEach((callback) => callback()));
-      expect(readOriginPlace(USER, SCOPE)).toEqual({ height: 640 });
+      expect(readOriginPlace(USER, SCOPE)).toEqual({ height: 640, header: 640 });
     } finally {
       vi.unstubAllGlobals();
     }

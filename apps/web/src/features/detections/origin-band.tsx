@@ -67,6 +67,7 @@ export function OriginBand({ scope, userId, startCollapsed }: OriginBandProps) {
     <Band
       expanded={expanded}
       onExpandedChange={setExpanded}
+      headerHeight={latest === undefined ? (place?.header ?? null) : null}
       summary={<CompactSummary traffic={day.data ?? null} failed={day.isError} />}
       about={<About traffic={latest ?? null} />}
       controls={
@@ -94,6 +95,7 @@ export function OriginBand({ scope, userId, startCollapsed }: OriginBandProps) {
 function Band({
   expanded,
   onExpandedChange,
+  headerHeight,
   summary,
   about,
   controls,
@@ -101,6 +103,8 @@ function Band({
 }: {
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
+  /** Aberta e sem resposta ainda: a altura do cabeçalho da última vez, que a explicação inteira pode ter em mais linhas. */
+  headerHeight: number | null;
   summary: ReactNode;
   about: ReactNode;
   controls: ReactNode;
@@ -114,7 +118,10 @@ function Band({
       data-tour="deteccoes-origens"
       className="rounded-xl border bg-surface shadow-xs"
     >
-      <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3">
+      <header
+        className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3"
+        style={expanded && headerHeight !== null ? { minHeight: headerHeight } : undefined}
+      >
         <div className={cn('min-w-0 flex-1', expanded && 'basis-56')}>
           <h2 id={titleId} className="text-base font-semibold">
             Origem das requisições
@@ -277,17 +284,19 @@ function Waiting({ traffic }: { traffic: WebTraffic }) {
   );
 }
 
-/** Guarda a altura do mapa pronto, para a próxima visita. A da tabela aberta não conta: ela sempre começa fechada. */
+/** Guarda a altura do mapa pronto e a do cabeçalho dele, para a próxima visita. A da tabela aberta não conta: ela sempre começa fechada. */
 function Measured({ userId, scope, children }: { userId: string; scope: string; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const element = ref.current;
-    if (!element || typeof ResizeObserver === 'undefined') return undefined;
+    const header = element?.closest('section')?.querySelector('header');
+    if (!element || !header || typeof ResizeObserver === 'undefined') return undefined;
     const observer = new ResizeObserver(() => {
       if (!element.querySelector('[data-world-map]') || element.querySelector('details[open]')) return;
-      rememberOriginPlace(userId, scope, element.offsetHeight);
+      rememberOriginPlace(userId, scope, { height: element.offsetHeight, header: header.offsetHeight });
     });
     observer.observe(element);
+    observer.observe(header);
     return () => observer.disconnect();
   }, [userId, scope]);
   return <div ref={ref}>{children}</div>;

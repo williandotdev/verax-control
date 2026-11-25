@@ -38,7 +38,7 @@ it('a altura do esqueleto, enquanto o arquivo do mapa não vem, não é guardada
     },
   );
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(321);
-  rememberOriginPlace('pessoa-a', 'cliente-a', 611);
+  rememberOriginPlace('pessoa-a', 'cliente-a', { height: 611, header: 80 });
   server.use(
     http.get(`${API_URL}/v1/web-logs/traffic`, () =>
       HttpResponse.json(demoWebTraffic('ok', '24h', new Date())),
@@ -58,5 +58,5 @@ it('a altura do esqueleto, enquanto o arquivo do mapa não vem, não é guardada
   expect(loading.parentElement?.style.height).toBe('611px');
   expect(callbacks.length).toBeGreaterThan(0);
   act(() => callbacks.forEach((callback) => callback()));
-  expect(readOriginPlace('pessoa-a', 'cliente-a')).toEqual({ height: 611 });
+  expect(readOriginPlace('pessoa-a', 'cliente-a')).toEqual({ height: 611, header: 80 });
 });
