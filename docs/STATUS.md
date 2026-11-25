@@ -7688,3 +7688,9 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
 - Sem a linha `CASES_MODE`, o nó passa a calcular os casos (`shadow`). Só a equipe da Verax os vê, ninguém trata em massa, e os e-mails não
   mudam. Vale 48 horas antes de qualquer decisão sobre o `on` (portão em `docs/runbooks/casos.md`).
 - Nó com a linha no `node.conf` continua com o valor dela; `off` desliga.
+
+## Ataques web pelos logs do ALB: disponíveis por padrão na versão (pedido do responsável de 25/11/2026)
+
+- Sem a linha `AWS_WEB_LOGS_ENABLED`, o nó dedicado oferece os balanceadores no painel. **Nada é lido até alguém do cliente autorizar cada
+  um**, com a estimativa de volume; todo balanceador começa só observando, por 72 horas. `false` desliga; a célula continua sem.
+- A versão 1.4.0 já saiu com os contratos. Depois de existir achado `alb`, não se volta para antes dela.
