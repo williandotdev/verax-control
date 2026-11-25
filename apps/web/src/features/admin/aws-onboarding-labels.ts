@@ -522,7 +522,7 @@ export const WEB_SOURCE_STATE_CODE_TEXTS: Readonly<Record<WebSourceStateCode, st
   web_unread:
     'Há arquivo novo no bucket, e nada é lido deste balanceador há mais de 2 horas. O que fazer: clique em Tentar de novo, para o Verax conferir a permissão; se continuar, fale com a Verax.',
   web_quarantined:
-    'Nas últimas 24 horas, algum arquivo foi recusado (quebrado, grande demais ou arquivado no S3 Glacier) e ficou sem análise. A contagem está em "Ataques web".',
+    'Nas últimas 24 horas, algum arquivo foi recusado (quebrado, grande demais ou arquivado no S3 Glacier): o que vinha depois do ponto da recusa ficou sem análise. A contagem está em "Ataques web".',
   web_prefix_unsupported:
     'O prefixo do log no bucket tem um caractere que a leitura não aceita. O que fazer: tire o prefixo na configuração do log do balanceador e clique em Descobrir de novo, em "O que encontramos".',
 };
