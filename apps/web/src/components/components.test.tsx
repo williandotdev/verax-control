@@ -316,6 +316,7 @@ describe('catálogo', () => {
       'Tabela com filtro e paginação',
       'Linha do tempo',
       'Estados',
+      'Mapa de origens',
     ]) {
       expect(screen.getByRole('heading', { name })).toBeInTheDocument();
     }
