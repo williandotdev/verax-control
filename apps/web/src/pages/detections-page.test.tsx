@@ -66,7 +66,9 @@ function mockMedia(matches: (query: string) => boolean) {
   }));
 }
 
-const list = async () => screen.findByRole('table', { name: /^Incidentes do cliente|^Alertas do cliente/ });
+// A lista espera a situação dos casos antes de pedir os alertas.
+const list = async () =>
+  screen.findByRole('table', { name: /^Incidentes do cliente|^Alertas do cliente/ }, SLOW);
 const rows = async () =>
   within(await list())
     .getAllByRole('row')
