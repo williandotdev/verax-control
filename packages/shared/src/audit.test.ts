@@ -23,6 +23,10 @@ describe('auditoria', () => {
       pageSize: 25,
     });
     expect(auditListQuerySchema.safeParse({ resourceType: 'widget' }).success).toBe(false);
+    // As áreas dos casos: o que a triagem em massa e a divisão de um caso gravam.
+    for (const resourceType of ['triage_operation', 'alert_case']) {
+      expect(auditListQuerySchema.safeParse({ resourceType }).success).toBe(true);
+    }
     expect(auditListQuerySchema.safeParse({ tenantId: 'x' }).success).toBe(false);
     expect(auditListQuerySchema.parse({ period: '12m' })).toMatchObject({ period: '12m' });
     expect(auditListQuerySchema.safeParse({ period: '1y' }).success).toBe(false);

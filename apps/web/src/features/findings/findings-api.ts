@@ -11,6 +11,7 @@ import {
   paginatedSchema,
   relatedFindingsSchema,
 } from '@verax/shared';
+import { invalidateCases } from '@/features/cases/cases-api';
 import { toSearch } from '@/features/detections/detections-api';
 import { api } from '@/lib/api';
 
@@ -56,6 +57,8 @@ function useRefreshFindings() {
     void queryClient.invalidateQueries({ queryKey: ['incident'] });
     // O resumo da tela Detecções conta os achados sem triagem.
     void queryClient.invalidateQueries({ queryKey: ['tower'] });
+    // O caso conta os alertas dele por status.
+    invalidateCases(queryClient);
   };
 }
 

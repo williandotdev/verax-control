@@ -7049,3 +7049,63 @@ test.ts`, `test/case-{assign,assign-api,assign-concurrency,assign-benchmark,reco
 - **Riscos e dúvidas:** a trilha grava 201 no pedido que respondeu 202 ou 200 (o interceptor lê o status declarado da rota); a
   tela Auditoria mostra as ações novas pelo nome gravado até o painel ganhar os textos (`features/audit/labels.ts`), e a área
   `triage_operation` ainda não está no filtro dela; o aviso por e-mail ao administrador acima de 500 alertas fica para a parte dos avisos.
+
+## Casos, parte 5: a tela e a triagem em massa no painel (PRs 5 e 6 do desenho de 24/11/2026)
+
+- **O que muda:** com os casos desligados (o padrão de um nó), a tela é a de sempre: o HTML de `main` e os papéis de
+  acessibilidade foram comparados antes e depois, em dois papéis, oito endereços e quatro larguras (64 telas). Os papéis são
+  iguais nas 64 e o HTML em 58; nas outras seis, o endereço tinha um `caso=` de propósito, que os links do radar agora largam. Um
+  pedido a mais por visita (`GET /v1/cases/status`), e nenhum outro. Com `on`, a tela Detecções abre nos casos, com quatro visões
+  (Casos, Alertas, Incidentes e Vulnerabilidades), o detalhe do caso no painel, a triagem em massa com desfazer e "Operações
+  recentes". Com `shadow`, só a equipe da Verax vê, e ninguém trata. Nada muda na API. A regra inteira está em
+  `docs/ARQUITETURA.md`, "A tela dos casos".
+- **Decisões desta parte** (no código, para revisão):
+  - O modo vem de `GET /v1/cases/status` (vale por 5 min, sem repetir). 404, erro ou resposta que não se entende: desligados. A
+    lista que passa a responder 404 com a tela aberta faz perguntar de novo.
+  - `on` sem `visao` é a visão de casos, menos no endereço com `status`, que só a lista de alertas tem: assim o "Ver os alertas" da
+    Torre e os favoritos de antes continuam. `/achados` passa a levar `visao=alertas` (com os casos desligados, não muda nada).
+  - "Casos" não tem a fila de vulnerabilidades: ela tem a própria visão, agrupada (D1). Por isso o seletor de fila só tem Detecção e
+    Postura.
+  - Na lista, "Voltou (N×)" na detecção: `recurrence` também conta as voltas por janela de tempo, e só o detalhe sabe se foi
+    depois de tratado. Nas outras filas, que não têm janela, "Voltou depois de tratado (N×)".
+  - Para "em análise", a conta sai sem quem já está; quando não dá para saber quantos, o botão diz "até N" (a API só recusa o
+    conjunto que veio maior).
+  - O grupo se trata por filtro, um de cada vez (a API aceita um filtro por pedido); o filtro não diz quais casos tocam a lista de
+    proteção, e o diálogo avisa.
+  - O diálogo não é um formulário: um Enter perdido não confirma. Nenhum aviso some sozinho (WCAG 2.2.1).
+  - Nos atalhos que contam alertas (o radar e o MITRE), o destino é a lista de alertas.
+  - O detalhe do alerta ganha a trilha das operações em massa, só com os casos.
+  - As áreas "Casos" e "Triagem em massa" do filtro da Auditoria só aparecem com os casos: um nó de antes recusa o valor com 400.
+  - `MiniBars` ganha a opção de colunas por dia, e o `ApiRequestError`, os números de `details`.
+- **Arquivos:** `apps/web/src/features/cases/` (novo), `features/detections/{url-state,legacy-url,detection-list,detail-panel,
+filter-bar,export,situation-strip}`, `features/{findings,incidents}` (relê os casos depois de triar), `features/audit/labels.ts`,
+  `features/tour/steps.ts` (dois passos), `components/charts/mini-bars.tsx`, `lib/api-client.ts`, `pages/{detections,audit}-page.tsx`,
+  `mocks/{case-fixtures,case-store,triage-engine,cases-handlers}.ts` (novos), `e2e/casos.mock.spec.ts` (novo) e os e2e de
+  `deteccoes`, `history`, `radar`, `pages`, `tour` e `demo-login`; `packages/shared/src/{audit,cases}.ts` (dois valores do filtro da
+  Auditoria e um tipo). Testes: `features/cases/*.test.ts`, `pages/detections-cases.test.tsx`, e acréscimos nos que existiam.
+- **Dependências novas:** nenhuma. Sem migration, sem mudança de comportamento na API, e sem mudança em `infra/`, `.github/`, no
+  módulo `auth` ou em `.claude/`.
+- **Demonstração:** casos ligados por padrão, com 328 alertas a mais no cliente Alfa (vulnerabilidades, postura, um caso grande de
+  detecção e um que voltou depois de tratado), todos com mais de 24 horas; com `verax.mock.cases=off` eles não existem. O tour passa
+  de 18 para 20 passos (16 para a analista).
+- **Testes:** `pnpm lint` (zero avisos), `pnpm typecheck` (todos os pacotes), `format:check`, `test:lint-rules`, `pnpm build` e
+  `build:demo` do painel (com a varredura do pacote) limpos. Painel: 68 arquivos, 1024 testes (133 novos). Pacote `shared`: 31
+  arquivos, 577 testes. Navegador: 219 testes (projetos `mock` e `catalogo`, em portas próprias), 25 deles novos: desligado, a lista,
+  as vulnerabilidades, o detalhe e os diálogos sem violação de acessibilidade (WCAG 2.2 AA) nos dois temas e em 360, 768 e 1280 px;
+  nenhuma rolagem horizontal de 320 a 1920; 44 px no toque; teclado; e cada fluxo em massa (críticos, conjunto que mudou, cota,
+  fila, parou no meio, cancelar, continuar, desfazer, desfazer tudo, subgrupo, dividir, banco ocupado). Nenhum arquivo caiu com o erro
+  do worker do vitest no Windows. Não rodou: as suítes da API, do console e o e2e com a API (`fullstack`), porque nada mudou
+  neles além de dois valores no filtro da Auditoria.
+- **Mutações:** 102 na lógica (seleção, quantidade confirmada, endereço, regras da confirmação, recusas, fila, permissões), uma por
+  vez, com prazo e restauração conferida por hash. Na primeira rodada sobreviveram sete: seis viraram testes e uma mostrou uma
+  limpeza repetida no motivo, que saiu. Todas mortas no fim, e nenhuma ficou no código.
+- **Teste manual:** na demonstração, a visão Casos, marcar dois casos, "Legítimo", o motivo, "Desfazer"; Vulnerabilidades, "Tratar" no
+  openssl (vai para a fila: fechar o diálogo e acompanhar em Operações recentes); no celular, "Selecionar". No nó piloto, com
+  `CASES_MODE=shadow` e a sessão da Verax: as visões novas, sem caixas; com a do cliente, a tela de sempre.
+- **Riscos e dúvidas:**
+  - Não rodou contra a API de verdade num nó (só o contrato, pelos schemas, e a demonstração, que imita as regras).
+  - `recurrence` não diz por que a chave voltou: um `recurrenceTreated` na lista daria o "depois de tratado" em todas as filas.
+  - A lista não diz quantos alertas de cada caso seguem ativos na origem (pediria ler os alertas da página); só o detalhe diz.
+  - A prévia de um filtro não diz quantos casos tocam a lista de proteção.
+  - A Torre continua contando alertas ("N alertas altos ou críticos para validar"), agora com a lista padrão de casos: muda na
+    parte da Torre.

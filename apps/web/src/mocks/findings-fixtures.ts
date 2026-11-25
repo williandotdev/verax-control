@@ -32,7 +32,8 @@ export const DEMO_INCIDENTS = {
   betaLogin: '018f2c1e-0000-7000-8000-0000000b0002',
 } as const;
 
-interface Template {
+/** Um alerta fictício, com o tempo contado para trás a partir de agora. */
+export interface DemoFindingTemplate {
   title: string;
   source: FindingSource;
   severity: FindingSeverity;
@@ -61,7 +62,7 @@ const ATTACKER = '198.51.100.23';
 /** A conta de serviço de deploy do projeto fictício da GCP do Alfa. */
 const GCP_DEPLOY = 'deploy@loja-alfa-demo.iam.gserviceaccount.com';
 
-const ALFA_FINDINGS: Template[] = [
+const ALFA_FINDINGS: DemoFindingTemplate[] = [
   {
     title: 'Tentativa de desligar a trilha do CloudTrail',
     source: 'cloudtrail',
@@ -518,7 +519,7 @@ const ALFA_FINDINGS: Template[] = [
   },
 ];
 
-const BETA_FINDINGS: Template[] = [
+const BETA_FINDINGS: DemoFindingTemplate[] = [
   {
     title: 'Login no console sem MFA',
     source: 'cloudtrail',
@@ -577,7 +578,7 @@ const id = (prefix: number, index: number): string =>
 
 const iso = (now: Date, minutes: number): string => new Date(now.getTime() - minutes * 60_000).toISOString();
 
-function rawEvent(t: Template, account: string, at: string): Record<string, unknown> {
+function rawEvent(t: DemoFindingTemplate, account: string, at: string): Record<string, unknown> {
   if (t.source === 'wazuh_agent') {
     // O alerta do agente como o indexer o guarda, já sem o log bruto (o detalhe tira o `full_log`).
     const host = (t.resource ?? '').replace(/^host:/, '');
@@ -620,6 +621,17 @@ function rawEvent(t: Template, account: string, at: string): Record<string, unkn
       severity: 'NOTICE',
     };
   }
+  if (t.source === 'inspector' || t.source === 'security_hub') {
+    // O achado como a API da AWS o entrega, só com os campos que o detalhe mostra.
+    return {
+      awsAccountId: account,
+      updatedAt: at,
+      title: t.title,
+      severity: t.severity.toUpperCase(),
+      ...(t.source === 'inspector' ? { vulnerabilityId: t.eventName } : { controlId: t.eventName }),
+      resources: [{ id: t.resource, region: t.region }],
+    };
+  }
   if (t.source === 'waf') {
     return {
       timestamp: Date.parse(at),
@@ -650,7 +662,12 @@ function rawEvent(t: Template, account: string, at: string): Record<string, unkn
   };
 }
 
-function build(templates: Template[], prefix: number, defaultAccount: string, now: Date): FindingDetail[] {
+export function buildDemoFindings(
+  templates: readonly DemoFindingTemplate[],
+  prefix: number,
+  defaultAccount: string,
+  now: Date,
+): FindingDetail[] {
   return templates.map((t, index) => {
     const account = t.account ?? defaultAccount;
     const occurredAt = iso(now, t.minutesAgo);
@@ -694,7 +711,7 @@ export function demoFindings(now: Date = new Date()): Map<string, FindingDetail[
   const [alfa, beta] = DEMO_TENANTS.map((tenant) => tenant.id);
   const byDate = (a: FindingDetail, b: FindingDetail) => b.occurredAt.localeCompare(a.occurredAt);
   return new Map([
-    [alfa ?? '', build(ALFA_FINDINGS, 1, DEMO_ACCOUNTS.alfaProducao, now).sort(byDate)],
-    [beta ?? '', build(BETA_FINDINGS, 2, DEMO_ACCOUNTS.beta, now).sort(byDate)],
+    [alfa ?? '', buildDemoFindings(ALFA_FINDINGS, 1, DEMO_ACCOUNTS.alfaProducao, now).sort(byDate)],
+    [beta ?? '', buildDemoFindings(BETA_FINDINGS, 2, DEMO_ACCOUNTS.beta, now).sort(byDate)],
   ]);
 }

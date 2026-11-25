@@ -2080,8 +2080,8 @@ nenhum endereço sai do nó.
 
 ## Casos: agrupamento dos alertas (`apps/api/src/cases/`)
 
-_(partes 1 a 4: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API. A tela e os avisos por caso vêm
-depois; até lá, nada no painel nem no e-mail muda)_
+_(partes 1 a 5: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API, e a tela. Os avisos por caso e os
+números da Torre vêm depois; até lá, o e-mail não muda)_
 
 Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é o worker
 (a pessoa só divide um que juntou coisas demais); a pessoa trata alertas, um por um ou em massa, e as contagens do caso são
@@ -2291,6 +2291,53 @@ Uma pessoa trata muitos alertas de uma vez, com desfazer. Uma operação é um `
   alertas vai com a contagem e os 100 primeiros ids, para caber nos 16 KB de um estado.
 - **Banco ocupado:** na requisição, a espera pelo lock do cliente tem 3 s; com ele na mão (os coletores esperam por ele), a de uma
   linha presa, 1 s; e cada comando, 6 s. Passou, 503 sem mudar nada (o limite da requisição de escrita é de 15 s).
+
+### A tela dos casos (`apps/web/src/features/cases/`)
+
+_(a visão na tela Detecções, o detalhe no painel ao lado, a triagem em massa e o histórico; `pages/detections-page.tsx` só
+encaixa as peças)_
+
+- **Quem decide é a API:** o painel pergunta `GET /v1/cases/status` uma vez por visita (vale por 5 min). `off`, 404 (nó de
+  antes), erro ou resposta que não se entende: a tela é a de sempre, com esse pedido a mais e nada mais. `shadow`: a equipe da
+  Verax ganha as visões, só de leitura, e o padrão continua nos alertas. `on`: os casos são a visão padrão.
+- **Endereço:** `visao=casos|alertas|incidentes|vulnerabilidades` e `caso=<id>`. Com `on`, sem `visao`, são os casos, menos no
+  endereço com `status`, que só a lista de alertas tem (os atalhos da Torre e os favoritos de antes). `/achados` e
+  `visao=achados` são os alertas. `alerta`, `achado` e `incidente` abrem o painel sobre qualquer lista; com `caso` junto, o
+  painel ganha "Voltar ao caso". Enquanto a situação não chega, a lista padrão espera: pedir os alertas para trocar em seguida
+  seria à toa.
+- **Filas:** "Casos" tem a fila de detecção (o padrão) e a de postura. "Vulnerabilidades" tem a dela, agrupada por pacote (o
+  padrão), recurso ou conta, que a API agrupa, ou sem agrupar (a lista corrida, com todas as situações). Cada grupo abre os
+  casos dele e se trata inteiro, por um filtro com `groupBy` e `group`. A severidade some nos tratados e em todos: a API a
+  recusa.
+- **"Voltou depois de tratado":** o caso só diz quantas vezes a chave voltou (`recurrence`), e na fila de detecção ela também
+  volta quando a janela de 24 h ou de 7 dias passa. Na lista, a detecção diz "Voltou (N×)"; as outras filas, que não têm janela,
+  dizem "depois de tratado"; o detalhe confere nos casos anteriores.
+- **Seleção:** até 50 casos ou 500 alertas (os tetos da API), de uma página para outra; some quando o filtro muda. A caixa do
+  cabeçalho marca só a página. "Selecionar os N casos do filtro" é outro botão, que só existe com um filtro que estreite (o
+  contrato é quem diz: `triageFilterSchema`). Só o que tem pendência se marca.
+- **Confirmação:** casos, alertas e a conta por severidade; os críticos só com a caixa que diz quantos são; os casos que tocam a
+  lista de proteção; o motivo, quando a API o exige; a quantidade digitada acima de 1.000; o limite do analista antes de pedir.
+  O `expectedCount` é o que o botão diz. Para "em análise", sai da conta quem já está (quando não dá para saber quantos, é um
+  teto, e o botão diz "até"). O diálogo não é um formulário: um Enter perdido não confirma nada.
+- **Recusas:** `TRIAGE_SCOPE_CHANGED` mostra a contagem nova e pede outra confirmação (pedido novo); 503, 5xx e falta de
+  conexão dizem que repetir é seguro, e repetem com o **mesmo** `requestId` (um por conteúdo do pedido); cota, fila cheia,
+  incidente resolvido e item que sumiu dizem o que fazer. O `ApiRequestError` passa a levar os números de `details`.
+- **Andamento:** o diálogo mostra o resultado na hora ou acompanha a fila; fechar não para nada. "Operações recentes" fica acima
+  da lista, recolhida numa linha (some se não há operação): o andamento, cancelar, continuar, desfazer com o prazo, o filtro por
+  pessoa e, para quem administra, desfazer tudo de uma pessoa (nome digitado e motivo). Só se relê sozinha enquanto há operação
+  andando (3 s; 1,5 s no diálogo). Quando uma termina, as listas, o detalhe e a Torre são relidos.
+- **Detalhe:** resumo, o que os alertas têm em comum em português, o que foge do padrão, linha do tempo, subgrupos, alertas por
+  cursor (um que não vale mais recomeça e avisa), casos anteriores, incidentes e operações. O alerta abre no mesmo painel e
+  volta com o filtro e o foco. `analysis: null`, `complete: false` e o 503 da linha do tempo não derrubam o resto. No alerta, a
+  trilha das operações em massa (`GET /v1/findings/:id/triage`).
+- **Texto do evento** (amostras, partes da chave, subgrupos, nomes, motivos) é sempre texto do React: quebrado ou cortado na
+  largura, nunca HTML nem link. No CSV (`exportCases`, até 2.000 linhas), as mesmas proteções das outras listas.
+- **Demonstração** (`src/mocks/{case-fixtures,case-store,triage-engine,cases-handlers}.ts`): casos ligados, montados dos mesmos
+  alertas das outras telas, com as contagens calculadas na hora. `localStorage['verax.mock.cases']` (`off`, `shadow`, `on`),
+  `verax.mock.triage` (`lenta`, `parcial`, `falha`, `ocupada`, `mudou`, `cheia`) e `verax.mock.cases.volume` trocam o cenário.
+  Com `off`, os alertas a mais não existem.
+- **Auditoria:** as ações `triage.bulk.*` e `case.split` têm nome, e as áreas "Casos" e "Triagem em massa" entram no filtro só
+  quando os casos valem (um nó de antes recusa o valor com 400).
 
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 

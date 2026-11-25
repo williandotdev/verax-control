@@ -2,9 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { legacyDetectionsUrl } from './legacy-url';
 import {
   activeFilterCount,
+  CASE_FILTER_KEYS,
+  caseQueueSlug,
+  caseSortSlug,
+  caseStateSlug,
   dayBoundary,
+  DETECTION_PARAMS,
+  groupingSlug,
+  parentCaseOf,
+  readCaseState,
   readDetectionState,
   selectionSearch,
+  viewIsDecided,
+  viewParam,
   withChanges,
 } from './url-state';
 
@@ -124,6 +134,155 @@ describe('estado da tela Detecções na URL', () => {
   });
 });
 
+const CASE = '018f2c1e-0000-7000-8000-0000000ca5e1';
+
+describe('os casos na URL', () => {
+  const view = (search: string, mode: 'off' | 'shadow' | 'on') =>
+    readDetectionState(new URLSearchParams(search), mode).view;
+
+  it('desligados: a tela é a de sempre, seja qual for o endereço', () => {
+    for (const search of [
+      '',
+      'visao=casos',
+      'visao=vulnerabilidades',
+      'visao=alertas',
+      'visao=achados',
+      'visao=x',
+    ]) {
+      expect(view(search, 'off'), search).toBe('alerts');
+    }
+    expect(view('visao=incidentes', 'off')).toBe('incidents');
+    expect(readDetectionState(new URLSearchParams(`caso=${CASE}`), 'off').selection).toBeNull();
+  });
+
+  it('ligados: sem visão, os casos; as outras pelo nome; o que não se conhece são os alertas', () => {
+    expect(view('', 'on')).toBe('cases');
+    expect(view('visao=casos', 'on')).toBe('cases');
+    expect(view('visao=vulnerabilidades', 'on')).toBe('vulnerabilities');
+    expect(view('visao=alertas', 'on')).toBe('alerts');
+    expect(view('visao=achados', 'on')).toBe('alerts');
+    expect(view('visao=incidentes', 'on')).toBe('incidents');
+    expect(view('visao=x', 'on')).toBe('alerts');
+  });
+
+  it('ligados: o endereço com status (um atalho de antes) é a lista de alertas, a única que tem status', () => {
+    expect(view('status=new', 'on')).toBe('alerts');
+    expect(view('severidade=high', 'on')).toBe('cases');
+    expect(view('status=', 'on')).toBe('cases');
+    expect(view('visao=casos&status=new', 'on')).toBe('cases');
+  });
+
+  it('na medição, o padrão continua a ser os alertas, e os casos abrem pelo nome', () => {
+    expect(view('', 'shadow')).toBe('alerts');
+    expect(view('visao=casos', 'shadow')).toBe('cases');
+    expect(view('visao=vulnerabilidades', 'shadow')).toBe('vulnerabilities');
+  });
+
+  it('a visão que não depende de haver casos já está decidida', () => {
+    for (const search of ['visao=alertas', 'visao=achados', 'visao=incidentes', 'visao=x']) {
+      expect(viewIsDecided(new URLSearchParams(search)), search).toBe(true);
+    }
+    for (const search of ['', 'status=new', 'visao=casos', 'visao=vulnerabilidades']) {
+      expect(viewIsDecided(new URLSearchParams(search)), search).toBe(false);
+    }
+  });
+
+  it('o `visao` de cada lista, que volta a ser lido como ela', () => {
+    for (const mode of ['off', 'shadow', 'on'] as const) {
+      const views =
+        mode === 'off'
+          ? (['alerts', 'incidents'] as const)
+          : (['cases', 'alerts', 'incidents', 'vulnerabilities'] as const);
+      for (const value of views) {
+        const param = viewParam(value, mode);
+        expect(view(param === null ? '' : `visao=${param}`, mode), `${mode} ${value}`).toBe(value);
+      }
+    }
+    // A lista padrão não leva parâmetro.
+    expect(viewParam('alerts', 'off')).toBeNull();
+    expect(viewParam('alerts', 'shadow')).toBeNull();
+    expect(viewParam('cases', 'on')).toBeNull();
+  });
+
+  it('o alerta, o incidente e o caso abrem o painel sobre qualquer lista; um por vez, o caso por último', () => {
+    const selection = (search: string) => readDetectionState(new URLSearchParams(search), 'on').selection;
+    expect(selection(`visao=incidentes&caso=${CASE}`)).toEqual({ kind: 'case', id: CASE });
+    expect(selection(`caso=${CASE}&alerta=${FINDING}`)).toEqual({ kind: 'finding', id: FINDING });
+    expect(selection(`caso=${CASE}&achado=${FINDING}`)).toEqual({ kind: 'finding', id: FINDING });
+    expect(selection(`caso=${CASE}&incidente=${INCIDENT}`)).toEqual({ kind: 'incident', id: INCIDENT });
+    expect(selection('caso=nao-uuid')).toBeNull();
+  });
+
+  it('o que foi aberto de dentro de um caso volta para ele', () => {
+    const parent = (search: string) => {
+      const params = new URLSearchParams(search);
+      return parentCaseOf(params, readDetectionState(params, 'on').selection);
+    };
+    expect(parent(`caso=${CASE}&alerta=${FINDING}`)).toBe(CASE);
+    expect(parent(`caso=${CASE}&incidente=${INCIDENT}`)).toBe(CASE);
+    expect(parent(`caso=${CASE}`)).toBeNull();
+    expect(parent(`alerta=${FINDING}`)).toBeNull();
+    expect(parent(`caso=x&alerta=${FINDING}`)).toBeNull();
+    expect(parent('')).toBeNull();
+    // O alerta aberto de dentro do caso guarda o caso no endereço; o caso aberto sozinho tira os outros.
+    expect(selectionSearch(new URLSearchParams(`caso=${CASE}`), { kind: 'finding', id: FINDING })).toBe(
+      `?caso=${CASE}&alerta=${FINDING}`,
+    );
+    expect(
+      selectionSearch(new URLSearchParams(`caso=${CASE}&alerta=${FINDING}`), { kind: 'case', id: CASE }),
+    ).toBe(`?caso=${CASE}`);
+    expect(selectionSearch(new URLSearchParams(`caso=${CASE}&alerta=${FINDING}`), null)).toBe('');
+  });
+
+  it('a situação, a ordem, a fila e o agrupamento: em português, e o padrão sem parâmetro', () => {
+    expect(readCaseState(new URLSearchParams(''))).toEqual({
+      state: 'pending',
+      sort: 'priority',
+      queue: 'detection',
+      grouping: 'package',
+    });
+    expect(
+      readCaseState(new URLSearchParams('estado=tratados&ordem=volume&fila=postura&agrupar=sem-grupo')),
+    ).toEqual({ state: 'treated', sort: 'volume', queue: 'posture', grouping: 'none' });
+    // A ordem dos incidentes e os valores desconhecidos não valem aqui.
+    expect(
+      readCaseState(new URLSearchParams('estado=x&ordem=severidade&fila=vulnerability&agrupar=x')),
+    ).toEqual({
+      state: 'pending',
+      sort: 'priority',
+      queue: 'detection',
+      grouping: 'package',
+    });
+    for (const state of ['pending', 'investigating', 'treated', 'all'] as const) {
+      const slug = caseStateSlug(state);
+      expect(readCaseState(new URLSearchParams(slug === null ? '' : { estado: slug })).state).toBe(state);
+    }
+    for (const sort of ['priority', 'recent', 'volume'] as const) {
+      const slug = caseSortSlug(sort);
+      expect(readCaseState(new URLSearchParams(slug === null ? '' : { ordem: slug })).sort).toBe(sort);
+    }
+    for (const queue of ['detection', 'posture'] as const) {
+      const slug = caseQueueSlug(queue);
+      expect(readCaseState(new URLSearchParams(slug === null ? '' : { fila: slug })).queue).toBe(queue);
+    }
+    for (const grouping of ['package', 'resource', 'account', 'none'] as const) {
+      const slug = groupingSlug(grouping);
+      expect(readCaseState(new URLSearchParams(slug === null ? '' : { agrupar: slug })).grouping).toBe(
+        grouping,
+      );
+    }
+  });
+
+  it('"Limpar filtros" dos casos tira os filtros e a situação; a fila e o agrupamento ficam', () => {
+    const params = new URLSearchParams(
+      'visao=vulnerabilidades&agrupar=recurso&fila=postura&severidade=high&estado=em-analise&busca=x',
+    );
+    const cleared = withChanges(params, Object.fromEntries(CASE_FILTER_KEYS.map((key) => [key, null])));
+    expect(cleared.toString()).toBe('visao=vulnerabilidades&agrupar=recurso&fila=postura');
+    expect(CASE_FILTER_KEYS.map((key) => DETECTION_PARAMS[key])).not.toContain('fila');
+  });
+});
+
 describe('endereços de antes', () => {
   it.each([
     ['/incidentes', '', '/?visao=incidentes'],
@@ -135,11 +294,11 @@ describe('endereços de antes', () => {
     ['/incidentes', '?status=investigating', '/?visao=incidentes&status=investigating'],
     [`/incidentes/${INCIDENT}`, '', `/?incidente=${INCIDENT}`],
     ['/incidentes/nao-e-id', '', '/'],
-    ['/achados', '', '/'],
+    ['/achados', '', '/?visao=alertas'],
     [
       '/achados',
       `?severidade=high&status=new&conta=111122223333&periodo=24h&achado=${FINDING}`,
-      `/?severidade=high&status=new&conta=111122223333&periodo=24h&alerta=${FINDING}`,
+      `/?visao=alertas&severidade=high&status=new&conta=111122223333&periodo=24h&alerta=${FINDING}`,
     ],
     ['/relatorios', '', '/?analise=resumo'],
     ['/relatorios', '?aba=mitre&periodo=90d', '/?analise=mitre&periodo=90d'],

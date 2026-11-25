@@ -14,12 +14,14 @@ import { AuditActorName } from '@/features/audit/audit-actor';
 import { useAuditEntries } from '@/features/audit/audit-api';
 import { AuditOutcomeBadge } from '@/features/audit/audit-outcome-badge';
 import { AuditPanel } from '@/features/audit/audit-panel';
+import { useCaseMode } from '@/features/cases/cases-api';
 import { usePeriodFilter } from '@/features/plan/plan-history';
 import {
   actionLabel,
   AUDIT_OUTCOME_LABELS,
   AUDIT_PERIOD_LABELS,
   AUDIT_RESOURCE_LABELS,
+  CASE_AUDIT_AREAS,
   resourceLabel,
 } from '@/features/audit/labels';
 import { useMe } from '@/features/session/session';
@@ -42,13 +44,20 @@ export function AuditPage() {
   const actorId = params.get('pessoa') || undefined;
   // O período só vai para a API se couber no histórico do plano; o seletor só oferece os que cabem.
   const periods = usePeriodFilter(AUDIT_PERIODS, params.get('periodo'));
+  const cases = useCaseMode(me?.scopeTenantId ?? null, me?.permissions.includes('findings:read') === true);
+  const area = pick(AUDIT_RESOURCE_TYPES, params.get('area'));
+  // Um nó de antes dos casos recusaria a área deles (400): um link guardado para ela mostra a auditoria inteira.
+  const caseArea = area !== undefined && CASE_AUDIT_AREAS.includes(area);
   const filters = {
     period: periods.period,
-    resourceType: pick(AUDIT_RESOURCE_TYPES, params.get('area')),
+    resourceType: caseArea && cases.mode === 'off' ? undefined : area,
     outcome: pick(AUDIT_OUTCOMES, params.get('resultado')),
   };
+  const areas = AUDIT_RESOURCE_TYPES.filter(
+    (type) => cases.mode !== 'off' || !CASE_AUDIT_AREAS.includes(type),
+  );
   const query: AuditListQuery = { ...filters, actorId, page, pageSize: PAGE_SIZE };
-  const entries = useAuditEntries(query, !periods.waiting);
+  const entries = useAuditEntries(query, !periods.waiting && !(caseArea && cases.loading));
 
   const update = (changes: Record<string, string | null>, { keepPage = false } = {}) =>
     setParams((previous) => {
@@ -178,7 +187,7 @@ export function AuditPage() {
               onChange={(value) => update({ area: value || null })}
               options={[
                 { value: '', label: 'Todas' },
-                ...AUDIT_RESOURCE_TYPES.map((type) => ({ value: type, label: AUDIT_RESOURCE_LABELS[type] })),
+                ...areas.map((type) => ({ value: type, label: AUDIT_RESOURCE_LABELS[type] })),
               ]}
             />
             <SelectField

@@ -1,8 +1,11 @@
-import { X } from 'lucide-react';
+import { ArrowLeft, X } from 'lucide-react';
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef } from 'react';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { Sheet } from '@/components/ui/sheet';
+import { CaseDetailView } from '@/features/cases/case-detail';
+import { useCase } from '@/features/cases/cases-api';
+import { alertCount, QUEUE_LABELS } from '@/features/cases/labels';
 import { FindingDetailView } from '@/features/findings/finding-detail';
 import { useFinding } from '@/features/findings/findings-api';
 import { FINDING_SOURCE_LABELS, findingOriginLabel } from '@/features/findings/labels';
@@ -59,8 +62,24 @@ function useFindingContent(id: string | null): PanelContent {
   };
 }
 
+function useCaseContent(id: string | null): PanelContent {
+  const detail = useCase(id);
+  if (detail.isError) {
+    return {
+      title: 'Caso',
+      body: <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />,
+    };
+  }
+  if (!detail.data) return { title: 'Caso', body: <LoadingState rows={6} label="Carregando o caso" /> };
+  return {
+    title: detail.data.title,
+    description: `Caso · ${QUEUE_LABELS[detail.data.queue]} · ${alertCount(detail.data.counts.total)}`,
+    body: <CaseDetailView key={detail.data.id} detail={detail.data} />,
+  };
+}
+
 /**
- * O detalhe do item escolhido na lista: o incidente (resumo, primeiro passo, tratamento, linha do tempo, ativos e
+ * O detalhe do item escolhido na lista: o caso (o que os alertas têm em comum, o que foge do padrão, os alertas), o incidente (resumo, primeiro passo, tratamento, linha do tempo, ativos e
  * MITRE) ou o alerta (campos, validação, triagem, exceção, comentários e o evento bruto). Na tela larga, fica ao lado da lista,
  * sem cobrir nada; na estreita, numa gaveta (o diálogo acessível de sempre).
  */
@@ -68,15 +87,25 @@ export function DetectionDetailPanel({
   selection,
   side,
   onClose,
+  onBack,
 }: {
   selection: DetectionSelection;
   /** Ao lado da lista (tela larga) ou numa gaveta. */
   side: boolean;
   onClose: () => void;
+  /** O item foi aberto de dentro de um caso: o botão que volta a ele. */
+  onBack?: (() => void) | undefined;
 }) {
   const incident = useIncidentContent(selection?.kind === 'incident' ? selection.id : null);
   const finding = useFindingContent(selection?.kind === 'finding' ? selection.id : null);
-  const content = selection?.kind === 'incident' ? incident : finding;
+  const openCase = useCaseContent(selection?.kind === 'case' ? selection.id : null);
+  const content = { incident, finding, case: openCase }[selection?.kind ?? 'finding'];
+  const back = onBack && (
+    <Button variant="ghost" size="sm" className="-ml-3 max-md:h-11" onClick={onBack}>
+      <ArrowLeft aria-hidden />
+      Voltar ao caso
+    </Button>
+  );
 
   if (!side) {
     return (
@@ -88,16 +117,27 @@ export function DetectionDetailPanel({
         title={content.title}
         description={content.description}
       >
+        {back}
         {content.body}
       </Sheet>
     );
   }
   if (selection === null) return null;
-  return <SidePanel key={`${selection.kind}:${selection.id}`} content={content} onClose={onClose} />;
+  return (
+    <SidePanel key={`${selection.kind}:${selection.id}`} content={content} back={back} onClose={onClose} />
+  );
 }
 
 /** O painel ao lado da lista: o foco vai para o título ao abrir, Esc ou o botão fecham. */
-function SidePanel({ content, onClose }: { content: PanelContent; onClose: () => void }) {
+function SidePanel({
+  content,
+  back,
+  onClose,
+}: {
+  content: PanelContent;
+  back?: ReactNode;
+  onClose: () => void;
+}) {
   const titleId = useId();
   const descriptionId = useId();
   const title = useRef<HTMLHeadingElement>(null);
@@ -119,6 +159,7 @@ function SidePanel({ content, onClose }: { content: PanelContent; onClose: () =>
     >
       <header className="flex items-start justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0 space-y-1">
+          {back}
           <h2
             ref={title}
             id={titleId}

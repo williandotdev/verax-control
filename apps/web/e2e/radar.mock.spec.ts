@@ -13,7 +13,7 @@ async function openTower(page: Page) {
   await expect(page.getByRole('heading', { level: 1, name: 'Detecções' })).toBeVisible();
   await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
   // No celular, o resumo começa recolhido.
-  const show = page.getByRole('button', { name: /^Mostrar/ });
+  const show = page.getByRole('region', { name: 'Situação agora' }).getByRole('button', { name: /^Mostrar/ });
   if (await show.isVisible()) await show.click();
   return page.getByRole('region', { name: 'Radar das últimas 24 horas' });
 }

@@ -1,9 +1,10 @@
-import { CUSTOM_PERIOD, DETECTION_PARAMS, INCIDENTS_VIEW, NO_ASSIGNEE } from './url-state';
+import { ALERTS_VIEW, CUSTOM_PERIOD, DETECTION_PARAMS, INCIDENTS_VIEW, NO_ASSIGNEE } from './url-state';
 
 /**
  * Os endereços de antes da tela Detecções (Torre, Incidentes, Achados e Relatórios viraram uma tela só, em 16/11/2026)
  * continuam valendo: os links dos e-mails de aviso, do tour e dos favoritos levam à visão equivalente. Desde 17/11/2026,
- * os achados são os alertas (a visão padrão) e os incidentes têm a visão própria.
+ * os achados são os alertas e os incidentes têm a visão própria. A lista de alertas leva a visão no endereço: com os casos
+ * ligados, ela não é mais a padrão (sem eles, o parâmetro não muda nada).
  */
 
 /** O status do incidente na URL de antes para o status do filtro de agora (o aberto é o "novo ou aberto"). */
@@ -64,6 +65,7 @@ export function legacyDetectionsUrl(pathname: string, search: string): string {
   }
   if (path === '/achados') {
     return build('/', [
+      [P.view, ALERTS_VIEW],
       [P.severity, old.get('severidade')],
       [P.status, old.get('status')],
       [P.accountId, old.get('conta')],
