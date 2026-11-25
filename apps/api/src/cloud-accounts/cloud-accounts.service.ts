@@ -282,7 +282,8 @@ export class CloudAccountsService {
    * Numa transação, sob o lock das vagas do plano (como a desativação, a exclusão libera a vaga): a credencial do cofre
    * sai com o registro dela na trilha (`wipeCredential`), e a linha da conta é apagada. As chaves estrangeiras levam
    * junto o que só existe por ela: as execuções da descoberta e as fontes da AWS (`AwsDiscoveryRun`, `AwsSource`), os
-   * cursores dos coletores (`CollectorCursor`) e os objetos medidos na origem (`AwsVolumeObject`). Fica o que é
+   * cursores dos coletores (`CollectorCursor`), os objetos medidos na origem (`AwsVolumeObject`) e, com as fontes, tudo o
+   * que é dos logs do ALB por balanceador (as tabelas `Web*`, inclusive o tráfego por país). Fica o que é
    * histórico e guarda o ID da conta como texto: achados, incidentes, postura, inventário, volume e a trilha. Nada é
    * apagado na nuvem do cliente: a próxima lista do Wazuh, feita das linhas, só deixa de ter a conta.
    *

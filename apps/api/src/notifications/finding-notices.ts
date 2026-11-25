@@ -15,6 +15,8 @@ import type { Prisma } from '../generated/prisma/client.js';
  * `finding:<id>` (um aviso por alerta, por mais que ele seja relido); a do incidente leva a severidade
  * (`incident:<id>:<severidade>`): cada incidente avisa no máximo uma vez por faixa, e a mudança que não sobe a
  * severidade não avisa.
+ *
+ * Com os casos ligados (`CASES_MODE=on`), o alerta que chega não avisa: quem avisa é o caso dele (`cases/case-notices.ts`).
  */
 
 const SEVERITY_RANK: Readonly<Record<FindingSeverity, number>> = { low: 0, medium: 1, high: 2, critical: 3 };
@@ -94,15 +96,25 @@ export async function enqueueNotices(
   return count;
 }
 
+/** O alerta a avisar. */
+export interface AlertNoticeTarget {
+  tenantId: string;
+  id: string;
+  severity: FindingSeverity;
+  /**
+   * A severidade subiu na origem, e nenhum caso vai avisar disso: o alerta está num incidente, já foi tratado ou ainda não
+   * tem caso. Só importa com os avisos por caso (`CaseAlertNotices`).
+   */
+  outsideCases?: boolean;
+}
+
 /**
  * O passo do `FindingStore` depois de gravar um alerta novo: o aviso dele, na mesma transação. É uma classe para os
- * testes dos coletores trocarem por uma que falha e provarem que nada fica pela metade.
+ * testes dos coletores trocarem por uma que falha e provarem que nada fica pela metade, e para os avisos por caso
+ * (`CASES_MODE=on`, `CaseAlertNotices`).
  */
 export class AlertNotices {
-  async enqueue(
-    db: Prisma.TransactionClient,
-    finding: { tenantId: string; id: string; severity: FindingSeverity },
-  ): Promise<number> {
+  async enqueue(db: Prisma.TransactionClient, finding: AlertNoticeTarget): Promise<number> {
     return enqueueNotices(db, alertNotices(finding));
   }
 }

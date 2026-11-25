@@ -3,15 +3,20 @@ import {
   AWS_DISCOVERY_MANUAL_INTERVAL_MS,
   AWS_MAX_AUTHORIZED_LOG_GROUPS,
   AWS_MAX_AUTHORIZED_S3_SOURCES,
+  AWS_MAX_AUTHORIZED_WEB_SOURCES,
   AWS_MAX_SOURCES_PER_ACCOUNT,
   AWS_SOURCE_KIND_INFO,
   AWS_SOURCE_RETRY_INTERVAL_MS,
   type AwsConnect,
   type AwsOnboarding,
   type AwsOnboardingErrorCode,
+  type AwsSourceFeatures,
   type AwsSourceKind,
   type AwsSourcesAuthorize,
+  type AwsWebLogsAcknowledgement,
+  isAwsSourceCollectable,
   isAwsTemplateOutdated,
+  WEB_OBSERVE_MS,
 } from '@verax/shared';
 import {
   DISCOVERY_RUN_SELECT,
@@ -27,6 +32,7 @@ import {
 import { deriveAwsOnboarding } from '../aws/onboarding/onboarding-state.js';
 import {
   accountCapabilities,
+  gatedSource,
   isAuthorizedRow,
   runErrors,
   runSummary,
@@ -39,9 +45,16 @@ import {
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
+import { awsSourceFeatures } from '../common/config/web-logs.js';
 import { ApiError } from '../common/http/api-error.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import { PlanService } from '../plan/plan.service.js';
+import {
+  type AcknowledgementProblem,
+  acknowledgementProblem,
+  ESTIMATE_SELECT,
+} from '../weblogs/settings/estimate.js';
 
 const NOT_FOUND = 'Conta não encontrada';
 const SOURCE_NOT_FOUND = 'Fonte não encontrada';
@@ -92,6 +105,17 @@ function sourceState(row: SourceRow) {
   };
 }
 
+/** A fonte é de um balanceador, lida pelo worker (os ataques web)? */
+function isWebSource(row: Pick<SourceRow, 'kind'>): boolean {
+  return AWS_SOURCE_KIND_INFO[row.kind as AwsSourceKind].feature === 'webLogs';
+}
+
+const ACKNOWLEDGEMENT_MESSAGES: Readonly<Record<AcknowledgementProblem, string>> = {
+  WEB_LOGS_ESTIMATE_REQUIRED: 'Peça a estimativa de volume deste balanceador antes de autorizá-lo.',
+  WEB_LOGS_ESTIMATE_CHANGED: 'A estimativa de volume deste balanceador mudou. Confira de novo.',
+  WEB_LOGS_ACKNOWLEDGEMENT_REQUIRED: 'Confirme a estimativa de volume deste balanceador para autorizá-lo.',
+};
+
 /** O dia de hoje em UTC, para a coluna `DATE`: a coleta de uma fonte começa no dia da autorização. */
 function utcDay(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -116,6 +140,10 @@ function refusal(status: HttpStatus, message: string, code: AwsOnboardingErrorCo
  *   cadastro anterior; a coleta começa no dia da autorização (sem histórico). As fontes sensíveis (os grupos do
  *   CloudWatch Logs) só entram citadas uma a uma na confirmação. Tudo ou nada: uma fonte recusada recusa o pedido.
  *   O plano não bloqueia fonte nenhuma; os tetos são de quantidade (`AWS_MAX_AUTHORIZED_*`).
+ * - **O balanceador** (`elb_logs`), só no nó com os ataques web ligados, leva a ciência da estimativa de volume (D1: os bytes
+ *   contam no plano) e começa observando por 72 h (`WebSourceSettings`), também na nova autorização depois de uma retirada.
+ *   O plano também não o bloqueia: acima de 20%, o cliente confirma que viu. Retirar a autorização vale sempre, até com os
+ *   ataques web desligados.
  * - O lock da conta (`lockAwsOnboarding`) serializa a autorização, a revogação e a gravação da descoberta pelo worker.
  */
 @Injectable()
@@ -123,14 +151,19 @@ export class AwsOnboardingService {
   private readonly credentialMode: AwsOnboarding['credentialMode'];
   /** Célula compartilhada: a descoberta ainda não roda lá (a coleta da AWS na célula não foi construída). */
   private readonly sharedCell: boolean;
+  /** O que este nó tem ligado e muda o que ele coleta. */
+  private readonly features: AwsSourceFeatures;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditContext,
-    @Inject(APP_CONFIG) config: Pick<AppConfig, 'NODE_PLATFORM' | 'cell'>,
+    private readonly plan: PlanService,
+    @Inject(APP_CONFIG)
+    config: Pick<AppConfig, 'NODE_PLATFORM' | 'cell' | 'NODE_MODE' | 'AWS_WEB_LOGS_ENABLED'>,
   ) {
     this.credentialMode = config.NODE_PLATFORM === 'vm' ? 'access_key' : 'role';
     this.sharedCell = config.cell !== null;
+    this.features = awsSourceFeatures(config);
   }
 
   async get(id: string): Promise<AwsOnboarding> {
@@ -267,8 +300,14 @@ export class AwsOnboardingService {
     const pending = rows.filter((row) => !isAuthorizedRow(row) || row.state === 'source_missing');
     for (const row of pending) this.assertAuthorizable(row, confirmed);
     await this.assertWithinLimits(id, pending);
-
+    const acknowledgements = new Map((input.webLogs ?? []).map((item) => [item.sourceId, item]));
+    if (rows.some((row) => !isWebSource(row) && acknowledgements.has(row.id))) {
+      throw new ApiError(HttpStatus.BAD_REQUEST, 'A estimativa de volume é só dos balanceadores.');
+    }
     const now = new Date();
+    const balancers = pending.filter(isWebSource);
+    await this.assertAcknowledged(account.tenantId, balancers, acknowledgements, now);
+
     for (const row of pending) {
       await db.awsSource.update({
         where: { id: row.id },
@@ -284,16 +323,34 @@ export class AwsOnboardingService {
         select: { id: true },
       });
     }
+    const observeUntil = new Date(now.getTime() + WEB_OBSERVE_MS);
+    for (const row of balancers) await this.observe(auth, row, observeUntil);
     const after = await db.awsSource.findMany({
       where: { cloudAccountId: id, id: { in: input.sourceIds } },
       select: SOURCE_SELECT,
       orderBy: { id: 'asc' },
     });
-    this.audit.describe({ before: rows.map(sourceState), after: after.map(sourceState) });
+    const observed = new Set(balancers.map((row) => row.id));
+    this.audit.describe({
+      before: rows.map(sourceState),
+      after: after.map((row) => ({
+        ...sourceState(row),
+        // O que o cliente viu e confirmou, e até quando o balanceador só observa.
+        ...(observed.has(row.id) && {
+          estimate: acknowledgements.get(row.id),
+          mode: 'observe',
+          observeUntil: observeUntil.toISOString(),
+        }),
+      })),
+    });
     return this.view(account);
   }
 
-  /** Tira a autorização de uma fonte: ela sai da coleta, e a linha fica (com quem autorizou e quando). */
+  /**
+   * Tira a autorização de uma fonte: ela sai da coleta, e a linha fica (com quem autorizou e quando). Vale também para o
+   * balanceador de um nó que desligou os ataques web: tirar a autorização nunca depende deles. A configuração do balanceador
+   * fica; o que saiu da leitura dele (tráfego, objetos, resumo do dia) sai pela retenção.
+   */
   async revoke(id: string, sourceId: string): Promise<AwsOnboarding> {
     this.audit.describe({
       action: 'cloud_account.aws_source_revoked',
@@ -410,7 +467,7 @@ export class AwsOnboardingService {
   /** A fonte pode ser autorizada? A primeira regra que falha recusa o pedido inteiro. */
   private assertAuthorizable(row: SourceRow, confirmed: ReadonlySet<string>): void {
     this.assertNotLegacy(row);
-    if (!AWS_SOURCE_KIND_INFO[row.kind as AwsSourceKind].collectable) {
+    if (!isAwsSourceCollectable(row.kind as AwsSourceKind, this.features)) {
       throw refusal(
         HttpStatus.CONFLICT,
         'Este tipo de fonte ainda não é coletado.',
@@ -447,21 +504,64 @@ export class AwsOnboardingService {
     }
   }
 
-  /** Os tetos de quantidade da conta: grupos do CloudWatch Logs e fontes lidas de bucket. */
+  /** Cada balanceador do pedido leva a ciência da estimativa dele, conferida com a gravada. */
+  private async assertAcknowledged(
+    tenantId: string,
+    balancers: readonly SourceRow[],
+    acknowledgements: ReadonlyMap<string, AwsWebLogsAcknowledgement>,
+    now: Date,
+  ): Promise<void> {
+    if (balancers.length === 0) return;
+    const estimates = await this.prisma.scoped().webSourceEstimate.findMany({
+      where: { sourceId: { in: balancers.map((row) => row.id) } },
+      select: ESTIMATE_SELECT,
+    });
+    const allowance = await this.plan.volumeAllowance(tenantId);
+    for (const row of balancers) {
+      const problem = acknowledgementProblem(
+        estimates.find((estimate) => estimate.sourceId === row.id),
+        acknowledgements.get(row.id),
+        allowance,
+        now,
+      );
+      if (problem !== null) throw refusal(HttpStatus.CONFLICT, ACKNOWLEDGEMENT_MESSAGES[problem], problem);
+    }
+  }
+
+  /**
+   * O balanceador recém-autorizado só observa (conta, sem abrir achado) até `observeUntil`. Na nova autorização, a observação
+   * recomeça, porque o tráfego pode ser outro; o multiplicador, as rotas e as fontes confiáveis de antes continuam.
+   */
+  private async observe(auth: RequestAuth, row: SourceRow, observeUntil: Date): Promise<void> {
+    const start = { mode: 'observe', observeUntil, updatedBy: auth.userId };
+    await this.prisma.scoped().webSourceSettings.upsert({
+      where: { sourceId_tenantId: { sourceId: row.id, tenantId: row.tenantId } },
+      create: { sourceId: row.id, ...start } as Prisma.WebSourceSettingsUncheckedCreateInput,
+      update: start,
+      select: { sourceId: true },
+    });
+  }
+
+  /** Os tetos de quantidade da conta: grupos do CloudWatch Logs e fontes lidas de bucket (destas, os balanceadores). */
   private async assertWithinLimits(cloudAccountId: string, adding: readonly SourceRow[]): Promise<void> {
     const groups = adding.filter((row) => row.method === 'cloudwatch').length;
     const buckets = adding.filter((row) => row.method === 's3').length;
+    const balancers = adding.filter(isWebSource).length;
     if (groups === 0 && buckets === 0) return;
     const db = this.prisma.scoped();
     const authorized = { cloudAccountId, authorizedAt: { not: null }, revokedAt: null } as const;
     const ids = adding.map((row) => row.id);
-    const [currentGroups, currentBuckets] = await Promise.all([
+    const [currentGroups, currentBuckets, currentBalancers] = await Promise.all([
       db.awsSource.count({ where: { ...authorized, method: 'cloudwatch', id: { notIn: ids } } }),
       db.awsSource.count({ where: { ...authorized, method: 's3', id: { notIn: ids } } }),
+      balancers === 0
+        ? 0
+        : db.awsSource.count({ where: { ...authorized, kind: 'elb_logs', id: { notIn: ids } } }),
     ]);
     if (
       (groups > 0 && currentGroups + groups > AWS_MAX_AUTHORIZED_LOG_GROUPS) ||
-      (buckets > 0 && currentBuckets + buckets > AWS_MAX_AUTHORIZED_S3_SOURCES)
+      (buckets > 0 && currentBuckets + buckets > AWS_MAX_AUTHORIZED_S3_SOURCES) ||
+      (balancers > 0 && currentBalancers + balancers > AWS_MAX_AUTHORIZED_WEB_SOURCES)
     ) {
       throw refusal(
         HttpStatus.CONFLICT,
@@ -494,7 +594,7 @@ export class AwsOnboardingService {
     const db = this.prisma.scoped();
     const current =
       (await db.cloudAccount.findUnique({ where: { id: account.id }, select: ACCOUNT_SELECT })) ?? account;
-    const [latest, completed, rows] = await Promise.all([
+    const [latest, completed, stored] = await Promise.all([
       db.awsDiscoveryRun.findFirst({
         where: { cloudAccountId: current.id },
         orderBy: [{ requestedAt: 'desc' }, { id: 'desc' }],
@@ -512,6 +612,8 @@ export class AwsOnboardingService {
         take: AWS_MAX_SOURCES_PER_ACCOUNT,
       }),
     ]);
+    // O tipo que depende de uma funcionalidade desligada aqui aparece como no nó que nunca a teve.
+    const rows = stored.flatMap((row) => gatedSource(row, this.features) ?? []);
     const derived = deriveAwsOnboarding({
       account: current,
       latestRun:
@@ -554,7 +656,7 @@ export class AwsOnboardingService {
       },
       discoveryAvailable: this.discovers,
       infrastructure: completed === null ? null : runSummary(completed.summary),
-      sources: rows.map((row) => toSource(row, current)),
+      sources: rows.map((row) => toSource(row, current, new Date(), this.features)),
       updatedAt: updatedAt.toISOString(),
     };
   }

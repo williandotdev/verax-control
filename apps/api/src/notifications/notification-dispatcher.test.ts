@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   digestItems,
   hourStartOf,
+  laneAllowance,
   NOTICE_CATCH_UP_MS,
   NOTICE_RECIPIENT_ROLES,
   NOTIFICATION_MAX_ATTEMPTS,
@@ -102,6 +103,36 @@ describe('despachante dos avisos (PR-16)', () => {
         origin,
       ),
     ).toThrow(RangeError);
+  });
+});
+
+describe('a vez de cada faixa da fila', () => {
+  it('a primeira usa o que sobra depois da parte guardada para cada faixa seguinte com aviso vencido', () => {
+    // 20 e-mails por execução: 2 guardados por faixa que espera.
+    expect(laneAllowance(20, 20, 4)).toBe(12);
+    expect(laneAllowance(20, 20, 1)).toBe(18);
+    expect(laneAllowance(20, 20, 0)).toBe(20);
+    expect(laneAllowance(8, 20, 3)).toBe(2);
+    // Mil reuniões por execução: 100 guardadas por faixa.
+    expect(laneAllowance(1_000, 1_000, 2)).toBe(800);
+  });
+
+  it('com a execução pequena, cada faixa ainda tem uma vez enquanto sobra algo; sem nada, nenhuma', () => {
+    expect(laneAllowance(1, 1, 4)).toBe(1);
+    expect(laneAllowance(3, 5, 4)).toBe(1);
+    expect(laneAllowance(0, 20, 0)).toBe(0);
+    expect(laneAllowance(-1, 20, 0)).toBe(0);
+  });
+
+  it('nenhuma faixa fica sem vez: mesmo com a de cima cheia, as de baixo recebem a parte delas', () => {
+    let left = 20;
+    const used = [4, 3, 2, 1, 0].map((waiting) => {
+      const allowed = laneAllowance(left, 20, waiting);
+      left -= allowed;
+      return allowed;
+    });
+    expect(used).toEqual([12, 2, 2, 2, 2]);
+    expect(left).toBe(0);
   });
 });
 

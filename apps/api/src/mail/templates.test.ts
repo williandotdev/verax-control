@@ -176,6 +176,11 @@ describe("resumo por hora e de retomada (PR-17')", () => {
   });
 
   it('passa da lista: "e mais N", com o link do painel', () => {
+    // O total de verdade, escrito como aqui: 12.835.
+    const large = digestMail('pessoa@cliente.example', 'Ana', digest({ total: 12_835 }));
+    expect(large.text).toContain('12.835 avisos no total');
+    expect(large.html).toContain('12.835 avisos no total');
+    expect(large.text).toContain('E mais 12.833 avisos neste resumo.');
     const message = digestMail('pessoa@cliente.example', 'Ana', digest({ total: 13 }));
     expect(message.text).toContain('13 avisos no total');
     expect(message.text).toContain(`E mais 11 avisos neste resumo. Veja todos no painel: ${origin}/`);
@@ -309,6 +314,182 @@ describe('e-mails ao contato de escalonamento (D8)', () => {
       expect(message.html).toContain(
         `href="${origin}/escalonamento/descadastrar#token=&quot;&gt;&lt;script&gt;"`,
       );
+    }
+  });
+});
+
+describe('e-mails dos avisos por caso', () => {
+  const caseLink = `${origin}/?caso=018f2c1e-0000-7000-8000-0000000000ca`;
+  const queueLink = `${origin}/?visao=vulnerabilidades`;
+  const opened: NoticeMail = {
+    kind: 'case',
+    severity: 'critical',
+    growth: false,
+    title: 'Atividade suspeita na conta da AWS',
+    critical: 3,
+    high: 12,
+    link: caseLink,
+  };
+  const criticalCases: NoticeMail = {
+    kind: 'cases_critical',
+    cases: 2,
+    critical: 5,
+    items: [
+      { title: 'Vulnerabilidade em pacote', critical: 4, high: 1, link: caseLink },
+      { title: 'Controle de segurança reprovado', critical: 1, high: 0, link: `${caseLink}2` },
+    ],
+    link: queueLink,
+  };
+  const daily: NoticeMail = {
+    kind: 'cases_daily',
+    vulnerability: { cases: 1_250, critical: 40, high: 2_100 },
+    posture: { cases: 1, critical: 0, high: 1 },
+    items: [{ title: 'Vulnerabilidade em pacote', critical: 0, high: 7, link: caseLink }],
+    link: queueLink,
+  };
+  const mail = (notice: NoticeMail) => noticeMail('pessoa@cliente.example', 'Ana', notice);
+
+  it('assunto fixo por tipo e severidade: nem o título do caso', () => {
+    expect(
+      [
+        opened,
+        { ...opened, severity: 'high' as const },
+        { ...opened, growth: true },
+        criticalCases,
+        daily,
+      ].map((notice) => mail(notice).subject),
+    ).toEqual([
+      'Caso de severidade crítica no Verax Control',
+      'Caso de severidade alta no Verax Control',
+      'Caso de severidade crítica cresceu no Verax Control',
+      'Casos críticos novos de vulnerabilidade ou postura no Verax Control',
+      'Resumo diário de vulnerabilidades e postura no Verax Control',
+    ]);
+  });
+
+  it('o caso: o título do dicionário, as contagens e o link, e nada do evento', () => {
+    expect(mail(opened).text).toBe(
+      [
+        'Olá, Ana.',
+        'O caso "Atividade suspeita na conta da AWS" tem 3 alertas críticos e 12 altos a validar: pode ser um falso positivo ou virar um incidente.',
+        'Um caso reúne alertas parecidos: enquanto ele estiver pendente, os próximos alertas dele não geram um e-mail cada.',
+        'Por segurança, os detalhes (contas, recursos, IPs e identidades) aparecem só no painel, depois do login com MFA.',
+        `Ver o caso: ${caseLink}`,
+        'Você recebe este aviso por ter acesso a este cliente no Verax Control.',
+        'Para não receber mais os avisos de alertas e incidentes por e-mail, desligue a opção em Minha conta, no painel.',
+        'Verax Control',
+      ].join('\n\n'),
+    );
+    expect(mail(opened).html).toContain(`<a href="${caseLink}">Ver o caso</a>`);
+  });
+
+  it('as contagens: singular, plural e só o que há', () => {
+    const counted = (critical: number, high: number) =>
+      mail({ ...opened, critical, high })
+        .text.split(' tem ')[1]
+        ?.split(' a validar')[0];
+    expect([
+      counted(1, 0),
+      counted(2, 0),
+      counted(0, 1),
+      counted(0, 2),
+      counted(1, 1),
+      counted(12_835, 2),
+    ]).toEqual([
+      '1 alerta crítico',
+      '2 alertas críticos',
+      '1 alerta alto',
+      '2 alertas altos',
+      '1 alerta crítico e 1 alto',
+      '12.835 alertas críticos e 2 altos',
+    ]);
+  });
+
+  it('o crescimento diz o que mudou', () => {
+    const { text } = mail({ ...opened, growth: true });
+    expect(text).toContain('O caso "Atividade suspeita na conta da AWS" mudou desde o último aviso');
+    expect(text).toContain('A validar agora: 3 alertas críticos e 12 altos.');
+    expect(text).not.toContain('tem 3 alertas');
+  });
+
+  it('o aviso imediato e o resumo diário: as contagens e a lista dos casos, cada um com o link dele', () => {
+    const message = mail(criticalCases);
+    expect(message.text).toContain(
+      'Agora há 2 casos com 5 alertas críticos a validar. Os que receberam alerta por último:',
+    );
+    expect(message.text).toContain(
+      [
+        `- Vulnerabilidade em pacote: 4 alertas críticos e 1 alto: ${caseLink}`,
+        `- Controle de segurança reprovado: 1 alerta crítico: ${caseLink}2`,
+      ].join('\n'),
+    );
+    expect(message.html).toContain(
+      `<li><a href="${caseLink}">Vulnerabilidade em pacote: 4 alertas críticos e 1 alto</a></li>`,
+    );
+    expect(message.text).toContain(`Ver a fila: ${queueLink}`);
+    const summary = mail(daily).text;
+    expect(summary).toContain('Vulnerabilidades: 1.250 casos com 40 alertas críticos e 2.100 altos.');
+    expect(summary).toContain('Postura: 1 caso com 1 alerta alto.');
+    expect(summary).toContain(`- Vulnerabilidade em pacote: 7 alertas altos: ${caseLink}`);
+    // A fila vazia não aparece.
+    expect(mail({ ...daily, posture: { cases: 0, critical: 0, high: 0 } }).text).not.toContain('Postura:');
+    for (const notice of [criticalCases, daily])
+      expect(mail(notice).text).toContain('aparecem só no painel, depois do login com MFA');
+  });
+
+  it('no resumo da hora, o item leva o título do caso e as contagens', () => {
+    const message = digestMail('pessoa@cliente.example', 'Ana', {
+      catchUp: false,
+      hourStart: new Date('2026-11-05T17:00:00.000Z'),
+      items: [
+        opened,
+        { ...opened, growth: true, severity: 'high' as const, critical: 0 },
+        criticalCases,
+        daily,
+      ].map((notice) => ({ notice, at: new Date('2026-11-05T17:07:00.000Z') })),
+      total: 4,
+      panelLink: `${origin}/`,
+    });
+    expect(message.text).toContain(
+      [
+        `- 05/11/2026, 14:07 · Caso de severidade crítica: Atividade suspeita na conta da AWS, 3 alertas críticos e 12 altos: ${caseLink}`,
+        `- 05/11/2026, 14:07 · Caso de severidade alta cresceu: Atividade suspeita na conta da AWS, 12 alertas altos: ${caseLink}`,
+        `- 05/11/2026, 14:07 · Casos críticos novos de vulnerabilidade ou postura: 2 casos com 5 alertas críticos: ${queueLink}`,
+        `- 05/11/2026, 14:07 · Resumo diário de vulnerabilidades e postura: 1.251 casos com 40 alertas críticos e 2.101 altos: ${queueLink}`,
+      ].join('\n'),
+    );
+    expect(message.text).toContain('Minha conta');
+  });
+
+  it('o contato de escalonamento não recebe o título do caso nem a lista', () => {
+    const unsubscribe = `${origin}/escalonamento/descadastrar#token=${'u'.repeat(43)}`;
+    const one = escalationNoticeMail('contato@cliente.example', 'Ana', opened, unsubscribe);
+    expect(one.subject).toBe('Caso de severidade crítica no Verax Control');
+    expect(one.text).toContain('Um caso tem 3 alertas críticos e 12 altos a validar');
+    expect(`${one.text}${one.html}`).not.toContain('Atividade suspeita');
+    const many = escalationNoticeMail('contato@cliente.example', 'Ana', criticalCases, unsubscribe);
+    expect(many.text).toContain('Agora há 2 casos com 5 alertas críticos a validar.');
+    expect(`${many.text}${many.html}`).not.toContain('Vulnerabilidade em pacote');
+    expect(many.text).not.toContain('por último');
+    expect(many.html).toContain(unsubscribe);
+  });
+
+  it('um título hostil (que o dicionário nunca dá) não chega ao cabeçalho e vai escapado e limitado no corpo', () => {
+    const title = `<img src=x>\r\nBcc: outra@exemplo.com ${'a'.repeat(400)}`;
+    for (const notice of [
+      { ...opened, title },
+      { ...opened, growth: true, title },
+      { ...criticalCases, items: [{ title, critical: 1, high: 0, link: caseLink }] },
+      { ...daily, items: [{ title, critical: 1, high: 0, link: caseLink }] },
+    ] as NoticeMail[]) {
+      const message = mail(notice);
+      expect(message.subject).not.toContain('Bcc');
+      // eslint-disable-next-line no-control-regex -- confere que nenhum caractere de controle chega ao assunto
+      expect(message.subject).not.toMatch(/[\u0000-\u001f\u007f]/);
+      expect(message.html).not.toContain('<img');
+      expect(message.html).toContain('&lt;img src=x&gt; Bcc: outra@exemplo.com');
+      expect(message.text).not.toContain('\r\nBcc');
+      expect(message.text).not.toContain('a'.repeat(200));
     }
   });
 });

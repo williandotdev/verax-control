@@ -47,6 +47,21 @@ export function passwordResetMail(data: LinkMail): MailMessage {
   );
 }
 
+/** Um caso na lista de um e-mail: o título do dicionário dos casos, as contagens e o link. Nada do evento. */
+export interface CaseMailItem {
+  title: string;
+  critical: number;
+  high: number;
+  link: string;
+}
+
+/** Os casos pendentes de uma fila, e os alertas deles. */
+export interface CaseQueueTotals {
+  cases: number;
+  critical: number;
+  high: number;
+}
+
 /** O aviso por e-mail (fase 2, PR-16), já com o link do painel. Cada tipo leva só o que o texto fixo dele precisa. */
 export type NoticeMail =
   | { kind: 'incident_opened'; severity: 'low' | 'medium' | 'high' | 'critical'; link: string }
@@ -54,7 +69,35 @@ export type NoticeMail =
   | { kind: 'critical_finding'; link: string }
   | { kind: 'high_finding'; link: string }
   | { kind: 'aws_ingestion_stalled'; link: string }
-  | { kind: 'plan_usage'; percent: 80 | 100; month: Date; link: string };
+  | { kind: 'plan_usage'; percent: 80 | 100; month: Date; link: string }
+  | {
+      /** Um caso de detecção (`CASES_MODE=on`): a severidade do aviso, e as contagens de agora. */
+      kind: 'case';
+      severity: 'high' | 'critical';
+      /** O caso já avisado cresceu. */
+      growth: boolean;
+      /** Do dicionário dos casos; null para quem não é do cliente (o contato de escalonamento). */
+      title: string | null;
+      critical: number;
+      high: number;
+      link: string;
+    }
+  | {
+      /** Os casos críticos novos de vulnerabilidade e postura, todos num aviso. */
+      kind: 'cases_critical';
+      cases: number;
+      critical: number;
+      items: readonly CaseMailItem[];
+      link: string;
+    }
+  | {
+      /** O resumo diário de vulnerabilidades e postura. */
+      kind: 'cases_daily';
+      vulnerability: CaseQueueTotals;
+      posture: CaseQueueTotals;
+      items: readonly CaseMailItem[];
+      link: string;
+    };
 
 const SEVERITY_TEXT = { low: 'baixa', medium: 'média', high: 'alta', critical: 'crítica' } as const;
 
@@ -78,16 +121,116 @@ export function isIncidentNotice(notice: NoticeMail): boolean {
     notice.kind === 'incident_opened' ||
     notice.kind === 'incident_escalated' ||
     notice.kind === 'critical_finding' ||
-    notice.kind === 'high_finding'
+    notice.kind === 'high_finding' ||
+    notice.kind === 'case' ||
+    notice.kind === 'cases_critical' ||
+    notice.kind === 'cases_daily'
   );
 }
 
+/** Contagem como se escreve aqui: 12.835. */
+const COUNT_FORMAT = new Intl.NumberFormat('pt-BR');
+const numberOf = (count: number, one: string, many: string) =>
+  `${COUNT_FORMAT.format(count)} ${count === 1 ? one : many}`;
+
+/** "3 alertas críticos e 12 altos", sem a parte que é zero. */
+function alertsText(critical: number, high: number): string {
+  if (critical === 0) return numberOf(high, 'alerta alto', 'alertas altos');
+  const criticals = numberOf(critical, 'alerta crítico', 'alertas críticos');
+  return high === 0 ? criticals : `${criticals} e ${numberOf(high, 'alto', 'altos')}`;
+}
+
+/** O tamanho do título de um caso no e-mail: o da coluna. */
+const CASE_TITLE_MAX = 200;
+/** O título vem do dicionário dos casos, e não do evento; ainda assim, vai numa linha só e com tamanho limitado. */
+const caseTitleText = (title: string) => singleLine(title).slice(0, CASE_TITLE_MAX);
+
+const caseItems = (items: readonly CaseMailItem[]): { text: string; link: string }[] =>
+  items.map(({ title, critical, high, link }) => ({
+    text: `${caseTitleText(title)}: ${alertsText(critical, high)}`,
+    link,
+  }));
+
+/** Vulnerabilidades ou postura, numa linha do resumo diário. */
+const queueLine = (name: string, { cases, critical, high }: CaseQueueTotals): string[] =>
+  cases === 0 ? [] : [`${name}: ${numberOf(cases, 'caso', 'casos')} com ${alertsText(critical, high)}.`];
+
+interface NoticeContent {
+  /** O assunto, com o nome do produto: sempre fixo, por tipo e severidade. */
+  title: string;
+  /** O item do resumo da hora, se diz mais que o título. */
+  digestTitle?: string;
+  lines: string[];
+  /** Uma lista de casos, depois das linhas. */
+  items?: { text: string; link: string }[];
+  action: string;
+}
+
+/** O caso que espera a validação: o que o corpo do e-mail explica. */
+const CASE_HINT =
+  'Um caso reúne alertas parecidos: enquanto ele estiver pendente, os próximos alertas dele não geram um e-mail cada.';
+
 /**
  * Título fixo por tipo e severidade (o assunto é ele com o nome do produto, e o item do resumo é ele) e o que o corpo
- * diz. Nada vem do alerta, do incidente ou da conta.
+ * diz. Nada vem do alerta, do incidente ou da conta; do caso, só o título do dicionário e as contagens, e nunca no assunto.
  */
-function noticeContent(notice: NoticeMail): { title: string; lines: string[]; action: string } {
+function noticeContent(notice: NoticeMail): NoticeContent {
   switch (notice.kind) {
+    case 'case': {
+      const title = `Caso de severidade ${SEVERITY_TEXT[notice.severity]}${notice.growth ? ' cresceu' : ''}`;
+      const name = notice.title === null ? null : caseTitleText(notice.title);
+      const alerts = alertsText(notice.critical, notice.high);
+      const subject = name === null ? 'Um caso' : `O caso "${name}"`;
+      return {
+        title,
+        digestTitle: `${title}: ${name === null ? '' : `${name}, `}${alerts}`,
+        lines: notice.growth
+          ? [
+              `${subject} mudou desde o último aviso: chegaram muito mais alertas, uma tática de ataque que ele não tinha ou um alerta crítico novo durante a análise.`,
+              `A validar agora: ${alerts}.`,
+              DETAILS_IN_PANEL,
+            ]
+          : [
+              `${subject} tem ${alerts} a validar: pode ser um falso positivo ou virar um incidente.`,
+              CASE_HINT,
+              DETAILS_IN_PANEL,
+            ],
+        action: 'Ver o caso',
+      };
+    }
+    case 'cases_critical': {
+      const title = 'Casos críticos novos de vulnerabilidade ou postura';
+      const cases = numberOf(notice.cases, 'caso', 'casos');
+      const alerts = numberOf(notice.critical, 'alerta crítico', 'alertas críticos');
+      return {
+        title,
+        digestTitle: `${title}: ${cases} com ${alerts}`,
+        lines: [
+          'Entraram alertas críticos novos nas filas de vulnerabilidades e de postura.',
+          `Agora há ${cases} com ${alerts} a validar.${notice.items.length > 0 ? ' Os que receberam alerta por último:' : ''}`,
+        ],
+        items: caseItems(notice.items),
+        action: 'Ver a fila',
+      };
+    }
+    case 'cases_daily': {
+      const title = 'Resumo diário de vulnerabilidades e postura';
+      const { vulnerability, posture } = notice;
+      const cases = vulnerability.cases + posture.cases;
+      const alerts = alertsText(vulnerability.critical + posture.critical, vulnerability.high + posture.high);
+      return {
+        title,
+        digestTitle: `${title}: ${numberOf(cases, 'caso', 'casos')} com ${alerts}`,
+        lines: [
+          'Os casos de vulnerabilidade e de postura que esperam validação, com alertas críticos ou altos:',
+          ...queueLine('Vulnerabilidades', vulnerability),
+          ...queueLine('Postura', posture),
+          ...(notice.items.length > 0 ? ['Os piores:'] : []),
+        ],
+        items: caseItems(notice.items),
+        action: 'Ver a fila',
+      };
+    }
     case 'incident_opened':
       return {
         title: `Incidente de severidade ${SEVERITY_TEXT[notice.severity]} confirmado`,
@@ -164,15 +307,32 @@ function closingLines(what: 'este aviso' | 'este resumo', withHint: boolean): st
 
 /** O e-mail de um aviso para uma pessoa: o texto fixo do tipo e o link do painel, com o HTML escapado. */
 export function noticeMail(to: string, name: string, notice: NoticeMail): MailMessage {
-  const { title, lines, action } = noticeContent(notice);
-  const closing = closingLines('este aviso', isIncidentNotice(notice));
+  const { title, lines, items = [], action } = noticeContent(notice);
+  const details = items.length > 0 ? [DETAILS_IN_PANEL] : [];
+  const closing = [...details, ...closingLines('este aviso', isIncidentNotice(notice))];
   return {
     to,
     subject: singleLine(`${title} no ${PRODUCT_NAME}`),
-    text: [`Olá, ${name}.`, ...lines, `${action}: ${notice.link}`, ...closing, PRODUCT_NAME].join('\n\n'),
+    text: [
+      `Olá, ${name}.`,
+      ...lines,
+      ...(items.length === 0 ? [] : [items.map((item) => `- ${item.text}: ${item.link}`).join('\n')]),
+      `${action}: ${notice.link}`,
+      ...closing,
+      PRODUCT_NAME,
+    ].join('\n\n'),
     html: [
       `<p>Olá, ${escapeHtml(name)}.</p>`,
       ...lines.map((line) => `<p>${escapeHtml(line)}</p>`),
+      ...(items.length === 0
+        ? []
+        : [
+            '<ul>',
+            ...items.map(
+              (item) => `<li><a href="${escapeHtml(item.link)}">${escapeHtml(item.text)}</a></li>`,
+            ),
+            '</ul>',
+          ]),
       `<p><a href="${escapeHtml(notice.link)}">${escapeHtml(action)}</a></p>`,
       ...closing.map((line) => `<p>${escapeHtml(line)}</p>`),
       `<p>${escapeHtml(PRODUCT_NAME)}</p>`,
@@ -227,7 +387,7 @@ function hourOf(at: Date): string {
   return `${Number.parseInt(HOUR_FORMAT.format(at), 10)}h`;
 }
 
-const countOf = (total: number) => `${total} ${total === 1 ? 'aviso' : 'avisos'}`;
+const countOf = (total: number) => numberOf(total, 'aviso', 'avisos');
 
 /** Assunto e abertura fixos do resumo; o texto só leva a hora, a contagem e o limite. */
 function digestIntro(digest: DigestMail): { subject: string; intro: string } {
@@ -252,11 +412,10 @@ function digestIntro(digest: DigestMail): { subject: string; intro: string } {
  */
 export function digestMail(to: string, name: string, digest: DigestMail): MailMessage {
   const { subject, intro } = digestIntro(digest);
-  const items = digest.items.map(({ notice, at }) => ({
-    when: AT_FORMAT.format(at),
-    title: noticeContent(notice).title,
-    link: notice.link,
-  }));
+  const items = digest.items.map(({ notice, at }) => {
+    const { title, digestTitle = title } = noticeContent(notice);
+    return { when: AT_FORMAT.format(at), title: digestTitle, link: notice.link };
+  });
   const more = digest.total - items.length;
   const moreText = more > 0 ? `E mais ${countOf(more)} neste resumo.` : null;
   const closing = closingLines(
@@ -294,11 +453,17 @@ export function digestMail(to: string, name: string, digest: DigestMail): MailMe
   };
 }
 
-/** Os avisos que chegam ao contato de escalonamento (D8): só os críticos, de incidente e de alerta. */
+/** Os avisos que chegam ao contato de escalonamento (D8): só os críticos, de incidente, de alerta e de caso. */
 export type EscalationNotice = Extract<
   NoticeMail,
-  { kind: 'incident_opened' | 'incident_escalated' | 'critical_finding' }
+  { kind: 'incident_opened' | 'incident_escalated' | 'critical_finding' | 'case' | 'cases_critical' }
 >;
+
+/** O contato não é pessoa do cliente e não entra no painel: nem o título do caso, nem a lista dos casos. */
+function withoutCaseDetails(notice: EscalationNotice): EscalationNotice {
+  if (notice.kind === 'case') return { ...notice, title: null };
+  return notice.kind === 'cases_critical' ? { ...notice, items: [] } : notice;
+}
 
 /** Por que o contato recebe e como deixa de receber: o fecho fixo dos e-mails a ele. */
 function escalationClosing(unsubscribeLink: string): { text: string[]; html: string[] } {
@@ -367,7 +532,7 @@ export function escalationNoticeMail(
   notice: EscalationNotice,
   unsubscribeLink: string,
 ): MailMessage {
-  const { title, lines, action } = noticeContent(notice);
+  const { title, lines, action } = noticeContent(withoutCaseDetails(notice));
   const closing = escalationClosing(unsubscribeLink);
   const panel = `${action} no painel (com login)`;
   return {

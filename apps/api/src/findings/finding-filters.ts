@@ -23,7 +23,7 @@ export function findingContentWhere(filters: FindingFilters): Prisma.FindingWher
  * O Prisma passa o texto do `contains` como parâmetro, mas não escapa os curingas do `LIKE`: sem isto, `%` e `_` na
  * busca casariam com qualquer coisa. A barra invertida é o escape padrão do `LIKE` no Postgres.
  */
-function escapeLike(value: string): string {
+export function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`);
 }
 
