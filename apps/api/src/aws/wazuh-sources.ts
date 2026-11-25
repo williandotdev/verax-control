@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   AWS_MAX_AUTHORIZED_LOG_GROUPS,
   AWS_MAX_AUTHORIZED_S3_SOURCES,
+  AWS_WAZUH_SOURCE_KINDS,
   type AwsSourceDetails,
   type AwsSourceState,
   bucketNameProblem,
@@ -20,7 +21,9 @@ import { sourceDetails } from './onboarding/onboarding-view.js';
  * nem ExternalId. O papel nunca vai na lista: o gerador o deriva do ID da conta.
  *
  * A lista sai das fontes autorizadas (`AwsSource`, com a autorização valendo) lidas de bucket ou do CloudWatch Logs,
- * das contas AWS ativas, de clientes ativos, que passaram pela verificação ao menos uma vez (`ingestFrom`):
+ * das contas AWS ativas, de clientes ativos, que passaram pela verificação ao menos uma vez (`ingestFrom`). Só os tipos
+ * que o Wazuh lê (`collector`): o balanceador (`elb_logs`) também é lido de bucket, mas pelo worker, e nem a lista nem a
+ * saúde gravada pela tarefa `wazuh-config` sabem que ele existe (`wazuh-isolation.test.ts`).
  *
  * - **As linhas dos buckets do cadastro anterior** (`origin = legacy`, o espelho de `cloudtrailBucket` e dos outros
  *   dois; `onboarding/legacy-sources.ts`) entram sempre, como entravam: a conexão de agora não conta, e um erro
@@ -165,7 +168,14 @@ export const WAZUH_COLLECTOR_STATES = [
 ] as const satisfies readonly AwsSourceState[];
 
 const WAZUH_METHODS = ['s3', 'cloudwatch'];
-const AUTHORIZED = { authorizedAt: { not: null }, revokedAt: null, method: { in: WAZUH_METHODS } };
+const WAZUH_KINDS: readonly string[] = AWS_WAZUH_SOURCE_KINDS;
+const AUTHORIZED = {
+  authorizedAt: { not: null },
+  revokedAt: null,
+  method: { in: WAZUH_METHODS },
+  // A linha de um tipo do worker não chega nem a ser lida (e a conta que só tem delas não entra na busca).
+  kind: { in: [...WAZUH_KINDS] },
+};
 
 /** O que a lista e a saúde da coleta leem de uma fonte. */
 export const WAZUH_SOURCE_SELECT = {
@@ -544,7 +554,7 @@ function planDiscovered(row: WazuhSourceRow, account: WazuhAccountRow): Planned 
       };
     }
     default:
-      // Um tipo que o Wazuh não lê (descoberto e ainda não coletado) nunca chega autorizado até aqui.
+      // Um tipo que o Wazuh não lê nunca chega até aqui (`collected`).
       return excluded('invalid_details');
   }
 }
@@ -578,8 +588,12 @@ function entryOrder(entry: WazuhS3Entry): string {
 
 const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
-/** A fonte é da coleta do Wazuh: a linha do cadastro anterior, sempre; a descoberta, enquanto o estado é da coleta. */
+/**
+ * A fonte é da coleta do Wazuh: só os tipos dele (a busca já os filtra; aqui, o plano não depende dela); a linha do cadastro
+ * anterior, sempre; a descoberta, enquanto o estado é da coleta.
+ */
 function collected(row: WazuhSourceRow): boolean {
+  if (!WAZUH_KINDS.includes(row.kind)) return false;
   if (row.origin === 'legacy') return true;
   return (WAZUH_COLLECTOR_STATES as readonly string[]).includes(row.state);
 }

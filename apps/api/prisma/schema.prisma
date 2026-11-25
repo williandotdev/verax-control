@@ -150,6 +150,16 @@ model Tenant {
   /// Onboarding self-service da AWS: as execuções da descoberta e as fontes de log de cada conta.
   awsDiscoveryRuns         AwsDiscoveryRun[]
   awsSources               AwsSource[]
+  /// Ataques web pelos logs do ALB: a configuração do cliente, os objetos lidos, a evidência, o estado e o tráfego.
+  webSourceSettings        WebSourceSettings[]
+  webSourceEstimates       WebSourceEstimate[]
+  webTrustedSources        WebTrustedSource[]
+  webRoutes                WebRoute[]
+  webLogObjects            WebLogObject[]
+  findingEvidence          FindingEvidence[]
+  webEngineStates          WebEngineState[]
+  webTrafficSlots          WebTrafficSlot[]
+  webTrafficHours          WebTrafficHour[]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -395,6 +405,7 @@ model CloudAccount {
   credential               CloudCredential?
   awsDiscoveryRuns         AwsDiscoveryRun[]
   awsSources               AwsSource[]
+  webLogObjects            WebLogObject[]
 
   @@unique([provider, accountId])
   /// Alvo da chave estrangeira composta da `CloudCredential`: a credencial é sempre do mesmo cliente da conta.
@@ -497,7 +508,19 @@ model AwsSource {
   createdAt           DateTime     @default(now()) @db.Timestamptz(3)
   updatedAt           DateTime     @updatedAt @db.Timestamptz(3)
 
+  /// Ataques web pelos logs do ALB: o que só existe por este balanceador (`elb_logs`).
+  webSettings     WebSourceSettings?
+  webEstimate     WebSourceEstimate?
+  webTrusted      WebTrustedSource[]
+  webRoutes       WebRoute[]
+  webLogObjects   WebLogObject[]
+  webEngineState  WebEngineState?
+  webTrafficSlots WebTrafficSlot[]
+  webTrafficHours WebTrafficHour[]
+
   @@unique([cloudAccountId, kind, region, resourceId])
+  /// Alvo das chaves compostas do que é por fonte (`Web*`): a linha é sempre do mesmo cliente da fonte.
+  @@unique([id, tenantId])
   @@index([tenantId])
   @@index([cloudAccountId, state])
 }
@@ -657,6 +680,8 @@ model Finding {
   updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
   comments        FindingComment[]
   notifications   Notification[]
+  /// Só nos achados que trazem a própria evidência (os ataques web pelos logs do ALB).
+  evidence        FindingEvidence?
 
   @@unique([source, sourceEventId])
   /// Alvo da chave composta dos comentários e das recorrências: só apontam para achado do mesmo cliente.
@@ -1525,4 +1550,233 @@ model SsoTokenUse {
   expiresAt DateTime @db.Timestamptz(3)
 
   @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Ataques web pelos logs de acesso do ALB (`src/weblogs`). Nenhuma linha de log é guardada: nem IP, nem caminho, nem query
+// fora da evidência mascarada de um achado. Tudo sai com a fonte (`AwsSource`) ou com a conta, menos a evidência, que vive
+// e sai com o achado. As chaves estrangeiras levam o cliente, e todas são em cascata: a imagem anterior do nó apaga contas,
+// fontes e achados sem conhecer estas tabelas.
+// ---------------------------------------------------------------------------------------------------
+
+/// Configuração do cliente para um balanceador: `observe` só conta (o começo de toda fonte, 72 h), `alert` gera achado.
+/// Sem linha, vale o padrão (`observe`, multiplicador 1).
+model WebSourceSettings {
+  sourceId            String    @db.Uuid
+  tenantId            String    @db.Uuid
+  tenant              Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Chave estrangeira composta (fonte e cliente): o banco recusa a configuração de um cliente na fonte de outro.
+  source              AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// `observe` ou `alert` (CHECK).
+  mode                String    @default("observe") @db.VarChar(16)
+  /// Até quando a observação é obrigatória.
+  observeUntil        DateTime? @db.Timestamptz(3)
+  /// Multiplica os limites das regras, de 0,5 a 10 (CHECK).
+  thresholdMultiplier Float     @default(1)
+  createdAt           DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime  @updatedAt @db.Timestamptz(3)
+  /// O usuário da última mudança; null na linha criada pelo sistema. A trilha tem o resto.
+  updatedBy           String?   @db.VarChar(64)
+
+  @@id([sourceId, tenantId])
+  @@index([tenantId])
+}
+
+/// A estimativa de volume de um balanceador, antes da autorização: o pedido do painel (`requestedAt`, que o worker desfaz ao
+/// responder) e o último resultado. Só contagens. Sai com a fonte.
+model WebSourceEstimate {
+  sourceId       String    @db.Uuid
+  tenantId       String    @db.Uuid
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source         AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// Pedida e ainda não respondida; null sem pedido pendente.
+  requestedAt    DateTime? @db.Timestamptz(3)
+  requestedBy    String?   @db.VarChar(64)
+  /// O último pedido, respondido ou não: é o limite de um a cada 5 min.
+  lastRequestAt  DateTime  @db.Timestamptz(3)
+  /// `ready`, `no_sample` ou `failed` (CHECK); null antes do primeiro resultado.
+  status         String?   @db.VarChar(16)
+  computedAt     DateTime? @db.Timestamptz(3)
+  /// O dia (UTC) medido.
+  day            DateTime? @db.Date
+  objects        Int?
+  /// Quantos tiveram o tamanho descompactado lido.
+  sampledObjects Int?
+  /// Bytes descompactados por dia (o que conta no plano); só no `ready`.
+  bytesPerDay    BigInt?
+  /// A listagem foi cortada: o volume é um piso.
+  truncated      Boolean   @default(false)
+  errorCode      String?   @db.VarChar(64)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([sourceId, tenantId])
+  @@index([tenantId])
+  /// Os pedidos pendentes, do mais antigo.
+  @@index([requestedAt])
+}
+
+/// Fonte confiável declarada pelo cliente (monitor, escritório, parceiro, pentest ou proxy; `weblogs/trusted-sources.ts`):
+/// cala só as regras de varredura e de força bruta, antes de virarem achado e com contador à vista. Os pisos da faixa e a
+/// validade (até 365 dias) são conferidos também por CHECK.
+model WebTrustedSource {
+  id        String     @id @default(uuid(7)) @db.Uuid
+  tenantId  String     @db.Uuid
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Null: todos os balanceadores do cliente.
+  sourceId  String?    @db.Uuid
+  source    AwsSource? @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  cidr      String     @db.VarChar(49)
+  kind      String     @db.VarChar(16)
+  reason    String     @db.VarChar(200)
+  expiresAt DateTime   @db.Timestamptz(3)
+  createdAt DateTime   @default(now()) @db.Timestamptz(3)
+  createdBy String?    @db.VarChar(64)
+  updatedAt DateTime   @updatedAt @db.Timestamptz(3)
+  updatedBy String?    @db.VarChar(64)
+
+  /// `NULLS NOT DISTINCT` (migration): a faixa não se repete também entre as que valem para todos os balanceadores.
+  @@unique([tenantId, sourceId, cidr])
+}
+
+/// Rota declarada pelo cliente num balanceador (`weblogs/routes.ts`): o host (null é qualquer um), o método, o caminho
+/// literal com `*` no lugar de um segmento, o tipo, os códigos de falha e de sucesso e o multiplicador. `ignore` só diz que
+/// a rota não é de login.
+model WebRoute {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  tenantId     String    @db.Uuid
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sourceId     String    @db.Uuid
+  source       AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  host         String?   @db.VarChar(253)
+  method       String    @default("ANY") @db.VarChar(8)
+  path         String    @db.VarChar(256)
+  kind         String    @db.VarChar(16)
+  failureCodes Int[]     @default([]) @db.SmallInt
+  successCodes Int[]     @default([]) @db.SmallInt
+  multiplier   Float     @default(1)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  createdBy    String?   @db.VarChar(64)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+  updatedBy    String?   @db.VarChar(64)
+
+  /// `NULLS NOT DISTINCT` (migration): a rota de qualquer host também não se repete.
+  @@unique([tenantId, sourceId, host, method, path])
+}
+
+/// Os objetos do log do ALB já tratados: um por objeto, pelo hash do bucket e da chave (a chave não fica guardada). A linha
+/// entra na mesma transação do volume medido e do tráfego por país (`weblogs/store/`): o objeto relido não soma de novo.
+/// `read` e `late` foram analisados (o `late` chegou depois de a janela fechar); `quarantined` e `gap`, não. Só o sistema
+/// grava; sai depois de 10 dias.
+model WebLogObject {
+  cloudAccountId String       @db.Uuid
+  cloudAccount   CloudAccount @relation(fields: [cloudAccountId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  objectHash     String       @db.Char(64)
+  tenantId       String       @db.Uuid
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sourceId       String       @db.Uuid
+  source         AwsSource    @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// `read`, `late`, `quarantined` ou `gap` (CHECK).
+  status         String       @db.VarChar(16)
+  /// O começo do intervalo de 5 minutos do arquivo; null só no objeto não analisado cujo nome não diz o intervalo.
+  slotStart      DateTime?    @db.Timestamptz(3)
+  lines          Int          @default(0)
+  /// Bytes descompactados (o que conta no plano).
+  bytes          BigInt       @default(0)
+  malformed      Int          @default(0)
+  oversize       Int          @default(0)
+  foreign        Int          @default(0)
+  readAt         DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@id([cloudAccountId, objectHash])
+  @@index([tenantId, readAt])
+  @@index([sourceId, slotStart])
+}
+
+/// A evidência de um achado que não tem evento bruto guardado (`weblogs/evidence.ts`): o JSON estrito e mascarado, até 16
+/// KB (CHECK). Uma por achado, gravada só pelo sistema, na transação do achado (`alerts/finding-evidence.ts`), e apagada
+/// com ele. As amostras e os ponteiros para o bucket do cliente saem depois de 30 dias (`samplesPurgedAt`); os agregados
+/// vivem com o achado. A chave leva o cliente: a evidência nunca é do achado de outro.
+model FindingEvidence {
+  findingId       String    @db.Uuid
+  tenantId        String    @db.Uuid
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  finding         Finding   @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// A versão do formato (`EVIDENCE_VERSION`), a mesma de dentro do JSON (CHECK).
+  version         Int       @db.SmallInt
+  data            Json
+  /// A primeira atividade vista desde que o achado nasceu: a evidência é trocada pela mais nova, e esta data não avança.
+  firstSeenAt     DateTime  @db.Timestamptz(3)
+  lastSeenAt      DateTime  @db.Timestamptz(3)
+  /// Quando as amostras e os ponteiros saíram; null enquanto ficam.
+  samplesPurgedAt DateTime? @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([findingId, tenantId])
+  /// Expurgo das amostras: as ainda guardadas, pela última atividade.
+  @@index([tenantId, samplesPurgedAt, lastSeenAt])
+}
+
+/// O resumo do dia de um balanceador (`NoiseDigest.snapshot`), para o reinício do worker não encolher o achado 990400.
+/// Contagens e chaves de cliente (IP ou /64) de até dois dias; até 4 MiB (CHECK). Só o sistema grava; sai quando a fonte
+/// deixa de ser coletada ou 3 dias depois da última gravação.
+model WebEngineState {
+  sourceId     String    @db.Uuid
+  tenantId     String    @db.Uuid
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source       AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// `app/<nome>/<id>`: a fonte é pelo nome, e um balanceador recriado com o mesmo nome não herda o estado do anterior.
+  loadBalancer String    @db.VarChar(128)
+  version      Int       @db.SmallInt
+  state        Json
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([sourceId, tenantId])
+  @@index([tenantId, updatedAt])
+}
+
+/// Tráfego por país de um balanceador, em intervalos de 5 minutos (o mapa): só contagens, nunca IP nem caminho. Somado na
+/// transação do objeto lido (`WebLogObject`); depois de 48 h, cada hora passa para o `WebTrafficHour` e sai daqui, na mesma
+/// instrução (`weblogs/store/web-traffic-store.ts`). Só o sistema grava.
+model WebTrafficSlot {
+  tenantId     String    @db.Uuid
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// O balanceador (a conta é a da fonte).
+  sourceId     String    @db.Uuid
+  source       AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  slotStart    DateTime  @db.Timestamptz(3)
+  /// ISO 3166-1 alfa-2; `ZZ` é desconhecido.
+  country      String    @db.Char(2)
+  /// `direct`, `proxy` (qualquer CDN ou proxy do cliente), `private` ou `unverified` (sem a lista das CDNs; CHECK).
+  clientClass  String    @db.VarChar(10)
+  requests     BigInt
+  blocked      BigInt
+  clientErrors BigInt
+  serverErrors BigInt
+  /// Linhas que contaram como sonda, ferramenta de ataque ou falha de login.
+  flagged      BigInt
+
+  @@id([tenantId, sourceId, slotStart, country, clientClass])
+  /// O mapa: os últimos 15 minutos e as últimas 24 h do cliente; e a hora mais antiga, na passagem para as horas.
+  @@index([tenantId, slotStart])
+}
+
+/// O mesmo, por hora, de 48 h a 35 dias atrás. Cada contagem está nesta tabela ou na de 5 minutos, nunca nas duas.
+model WebTrafficHour {
+  tenantId     String    @db.Uuid
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sourceId     String    @db.Uuid
+  source       AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  hourStart    DateTime  @db.Timestamptz(3)
+  country      String    @db.Char(2)
+  clientClass  String    @db.VarChar(10)
+  requests     BigInt
+  blocked      BigInt
+  clientErrors BigInt
+  serverErrors BigInt
+  flagged      BigInt
+
+  @@id([tenantId, sourceId, hourStart, country, clientClass])
+  @@index([tenantId, hourStart])
 }

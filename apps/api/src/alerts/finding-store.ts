@@ -9,6 +9,7 @@ import type {
 import { AlertNotices } from '../notifications/finding-notices.js';
 import type { ActiveException } from './exception-match.js';
 import type { FindingDraft } from './finding-draft.js';
+import { type EvidenceOutcome, saveFindingEvidence } from './finding-evidence.js';
 
 /**
  * Gravação comum aos syncs de alertas (Wazuh e GCP): o achado (o alerta a validar), o uso da exceção, o aviso por e-mail,
@@ -126,10 +127,16 @@ export class LastEvents {
   }
 }
 
+export interface FindingStoreOptions {
+  /** A evidência foi recusada (schema ou tamanho): o achado foi gravado sem ela. Recebe só o id da regra. */
+  onEvidenceRefused?: (ruleId: string) => void;
+}
+
 export class FindingStore {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notices: AlertNotices = new AlertNotices(),
+    private readonly options: FindingStoreOptions = {},
   ) {}
 
   /**
@@ -139,22 +146,46 @@ export class FindingStore {
    * Os coletores rodam ao mesmo tempo (agendador do worker): os achados de um mesmo cliente entram um por vez, sob um
    * lock transacional por cliente, o mesmo que o expurgo e as mudanças de incidente pela API tomam (promover, anexar e
    * remover alertas). Clientes diferentes não esperam um pelo outro.
+   *
+   * O achado que traz a própria evidência (`draft.evidence`, só os ataques web pelos logs do ALB) a grava na mesma
+   * transação. Sem ela, nenhuma consulta a mais.
+   *
+   * `authorize` (só deles) confere, na mesma transação e antes de qualquer gravação, se a fonte ainda pode ser lida, e lança
+   * se não pode: nada é gravado. Sem ele, as consultas são as de sempre.
    */
-  async persist(draft: FindingDraft, exception: ActiveException | null, now: Date): Promise<PersistOutcome> {
+  async persist(
+    draft: FindingDraft,
+    exception: ActiveException | null,
+    now: Date,
+    authorize?: (tx: Prisma.TransactionClient) => Promise<void>,
+  ): Promise<PersistOutcome> {
     return this.prisma.$transaction(async (tx) => {
+      await authorize?.(tx);
       await lockTenantFindings(tx, draft.tenantId);
       const db = scopeToTenant(tx, draft.tenantId);
       const { count } = await db.finding.createMany({
         data: [findingRow(draft, exception)],
         skipDuplicates: true,
       });
-      if (count === 1) return this.settle(db, draft, draft.sourceEventId, exception, now);
+      if (count === 1) return this.settle(tx, db, draft, draft.sourceEventId, exception, now);
       // A chave já existe. Só o GuardDuty traz a versão do achado, que diz se é a mesma ou uma nova.
-      if (draft.recurrence) return this.recur(db, draft, draft.recurrence, exception, now);
+      if (draft.recurrence) return this.recur(tx, db, draft, draft.recurrence, exception, now);
       // Os achados de estado da API da AWS trazem a versão também, e ela só atualiza o que já existe.
-      if (draft.revision) return this.revise(db, draft, draft.revision);
+      if (draft.revision) return this.revise(tx, db, draft, draft.revision);
       return 'duplicate' as const;
     });
+  }
+
+  /** A evidência do achado, se o draft a traz. O `findingId` é de um achado lido no escopo do cliente. */
+  private async saveEvidence(
+    tx: Prisma.TransactionClient,
+    draft: FindingDraft,
+    findingId: string,
+  ): Promise<EvidenceOutcome | null> {
+    if (draft.evidence === undefined) return null;
+    const outcome = await saveFindingEvidence(tx, { tenantId: draft.tenantId, findingId }, draft.evidence);
+    if (outcome === 'refused') this.options.onEvidenceRefused?.(draft.ruleId);
+    return outcome;
   }
 
   /**
@@ -166,8 +197,12 @@ export class FindingStore {
    * crítica, o aviso por e-mail sai agora, uma vez só por achado (a chave do aviso é a do achado); o achado marcado
    * como legítimo (por uma pessoa ou por exceção) não avisa. A chave de um achado de outro cliente não é vista pelo
    * escopo, e nada é tocado.
+   *
+   * Com evidência (o resumo do dia dos ataques web), ela e o `eventName`, que traz as contagens, acompanham a versão; na
+   * mesma versão, só se a evidência cresceu (o arquivo de outro nó do balanceador que chegou depois).
    */
   private async revise(
+    tx: Prisma.TransactionClient,
     db: ScopedDb,
     draft: FindingDraft,
     revision: NonNullable<FindingDraft['revision']>,
@@ -178,7 +213,14 @@ export class FindingStore {
     });
     if (!current) return 'duplicate' as const;
     const seenAt = new Date(revision.lastSeenAt);
-    if (current.lastSeenAt !== null && seenAt <= current.lastSeenAt) return 'duplicate' as const;
+    const eventName = draft.evidence && { eventName: draft.eventName?.slice(0, 256) ?? null };
+    if (current.lastSeenAt !== null && seenAt <= current.lastSeenAt) {
+      if (eventName === undefined || seenAt < current.lastSeenAt) return 'duplicate' as const;
+      if ((await this.saveEvidence(tx, draft, current.id)) === 'stored') {
+        await db.finding.update({ where: { id: current.id }, data: eventName, select: { id: true } });
+      }
+      return 'duplicate' as const;
+    }
     const title = draft.title.slice(0, 500);
     const severityChanged = current.severity !== draft.severity;
     await db.finding.update({
@@ -188,9 +230,11 @@ export class FindingStore {
         ...(severityChanged && { severity: draft.severity, ruleLevel: draft.ruleLevel }),
         ...(current.ruleId !== draft.ruleId && { ruleId: draft.ruleId }),
         ...(current.title !== title && { title }),
+        ...eventName,
       },
       select: { id: true },
     });
+    await this.saveEvidence(tx, draft, current.id);
     const rose = SEVERITY_RANK[draft.severity] > SEVERITY_RANK[current.severity];
     if (rose && current.status !== 'legitimate') {
       await this.notices.enqueue(db, { tenantId: draft.tenantId, id: current.id, severity: draft.severity });
@@ -199,11 +243,13 @@ export class FindingStore {
   }
 
   /**
-   * Depois de gravar o achado: o uso da exceção, ou o aviso por e-mail do alerta alto ou crítico, na mesma transação.
+   * Depois de gravar o achado: o uso da exceção, ou o aviso por e-mail do alerta alto ou crítico, e a evidência, se o draft
+   * a traz, na mesma transação.
    */
   private async settle(
+    tx: Prisma.TransactionClient,
     db: ScopedDb,
-    draft: Pick<FindingDraft, 'tenantId' | 'source' | 'severity'>,
+    draft: FindingDraft,
     sourceEventId: string,
     exception: ActiveException | null,
     now: Date,
@@ -214,14 +260,23 @@ export class FindingStore {
         data: { matchedCount: { increment: 1 }, lastMatchedAt: now },
       });
       // Esperado por exceção: já nasce legítimo, fora da fila de validação, e não avisa.
+      if (draft.evidence !== undefined) {
+        await this.saveEvidence(tx, draft, await this.findingId(db, draft.source, sourceEventId));
+      }
       return 'excepted' as const;
     }
+    const id = await this.findingId(db, draft.source, sourceEventId);
+    await this.notices.enqueue(db, { tenantId: draft.tenantId, id, severity: draft.severity });
+    await this.saveEvidence(tx, draft, id);
+    return 'created' as const;
+  }
+
+  private async findingId(db: ScopedDb, source: string, sourceEventId: string): Promise<string> {
     const { id } = await db.finding.findUniqueOrThrow({
-      where: { source_sourceEventId: { source: draft.source, sourceEventId } },
+      where: { source_sourceEventId: { source, sourceEventId } },
       select: { id: true },
     });
-    await this.notices.enqueue(db, { tenantId: draft.tenantId, id, severity: draft.severity });
-    return 'created' as const;
+    return id;
   }
 
   /**
@@ -244,8 +299,13 @@ export class FindingStore {
    * não vira nada; o IP que aparece pela primeira vez é outro achado por IP, como sempre.
    * A chave é única no banco inteiro; se for de um achado de outro cliente (conta recadastrada), o escopo não o vê, e
    * nada é tocado.
+   *
+   * Com evidência (os ataques web), a do achado ainda não triado acompanha a atividade, também dentro da mesma versão (a
+   * hora cheia). A do triado não muda: é o que a pessoa viu ao decidir, e a atividade nova ganha achado e evidência
+   * próprios.
    */
   private async recur(
+    tx: Prisma.TransactionClient,
     db: ScopedDb,
     draft: FindingDraft,
     recurrence: NonNullable<FindingDraft['recurrence']>,
@@ -270,15 +330,21 @@ export class FindingStore {
         data: { lastSeenAt: seenAt, chainKey: recurrence.chainKey },
         select: { id: true },
       });
+      if (!isTriaged(latest.status)) await this.saveEvidence(tx, draft, latest.id);
       return 'duplicate' as const;
     }
-    if (seenAt <= latest.lastSeenAt) return 'duplicate' as const;
+    if (seenAt <= latest.lastSeenAt) {
+      const sameVersion = seenAt.getTime() === latest.lastSeenAt.getTime();
+      if (sameVersion && !isTriaged(latest.status)) await this.saveEvidence(tx, draft, latest.id);
+      return 'duplicate' as const;
+    }
     if (!isTriaged(latest.status)) {
       await db.finding.update({
         where: { id: latest.id },
         data: { lastSeenAt: seenAt },
         select: { id: true },
       });
+      await this.saveEvidence(tx, draft, latest.id);
       return 'duplicate' as const;
     }
     // Alerta de um item só da versão (a chave base leva o IP; a da cadeia, não) com exceção: não fala pela versão.
@@ -294,7 +360,7 @@ export class FindingStore {
       skipDuplicates: true,
     });
     if (count === 0) return 'duplicate' as const;
-    return this.settle(db, draft, recurrence.sourceEventId, exception, now);
+    return this.settle(tx, db, draft, recurrence.sourceEventId, exception, now);
   }
 
   /** Na dúvida, o evento não é de ninguém (T5.2): a fila guarda o motivo e o mínimo para a triagem. */

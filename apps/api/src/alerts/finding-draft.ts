@@ -6,6 +6,8 @@ import type { AlertOwner } from './alert-owner.js';
 import { awsAlertMitre } from './aws-mitre.js';
 import { awsAlertTitle } from './aws-rule-titles.js';
 import type { CloudWatchAlertOwner, WazuhCloudWatchAlert } from './cloudwatch-alert.js';
+import type { WebCorrelation } from '../weblogs/draft.js';
+import type { WebEvidence } from '../weblogs/evidence.js';
 import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
 
 /**
@@ -22,8 +24,9 @@ export interface FindingDraft {
   accountId: string;
   /**
    * Sistema de origem: o Wazuh (contas AWS e agentes nas instâncias do cliente), a própria leitura dos logs da GCP e do
-   * Cloudflare, ou a leitura dos achados da AWS pela API de cada serviço (`aws`: Security Hub, Inspector e Access
-   * Analyzer; o GuardDuty lido pela API sai como `wazuh`, com a mesma chave do que chega pelo bucket).
+   * Cloudflare, ou a leitura da AWS pelo worker (`aws`: os achados do Security Hub, do Inspector e do Access Analyzer,
+   * pela API de cada serviço, e os ataques web vistos nos logs do ALB; o GuardDuty lido pela API sai como `wazuh`, com a
+   * mesma chave do que chega pelo bucket).
    */
   source: 'wazuh' | 'gcp' | 'cloudflare' | 'aws';
   /** Chave do achado na origem: a mesma a cada releitura do mesmo evento (`wazuhFindingKey`, `gcpEventIdFor`). */
@@ -40,8 +43,8 @@ export interface FindingDraft {
    */
   title: string;
   /**
-   * Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `vpc_flow`, `cloudwatch_logs`, `security_hub`,
-   * `inspector`, `access_analyzer`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`.
+   * Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `vpc_flow`, `alb`, `cloudwatch_logs`,
+   * `security_hub`, `inspector`, `access_analyzer`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`.
    */
   logSource: FindingSource;
   eventName: string | null;
@@ -73,6 +76,13 @@ export interface FindingDraft {
    * e o título (`FindingStore.revise`).
    */
   revision?: { lastSeenAt: string };
+  /**
+   * Só nos ataques web pelos logs do ALB (`weblogs/`): a evidência selada, que fica no lugar do evento bruto e é gravada na
+   * transação do achado (`finding-evidence.ts`). Sem ela, a gravação é a de sempre, consulta por consulta.
+   */
+  evidence?: WebEvidence;
+  /** Só neles: as chaves por onde os casos vão juntar achados. Aceito e ainda não gravado: é da PR dos casos (PR-10). */
+  correlation?: WebCorrelation;
 }
 
 /**

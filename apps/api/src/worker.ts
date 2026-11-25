@@ -31,6 +31,7 @@ import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
 import { controlPlaneSyncTask } from './control-plane-sync/control-plane-sync-task.js';
 import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
+import { awsSourceFeatures } from './common/config/web-logs.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 import { buildPinoOptions } from './common/logger/logger.options.js';
 import { PrismaService } from './common/prisma/prisma.service.js';
@@ -74,6 +75,7 @@ import {
 } from './usage/aws-volume.js';
 import { WazuhStatsClient } from './usage/wazuh-stats.js';
 import { WAZUH_USAGE_INTERVAL_MS, WAZUH_USAGE_TASK, WazuhUsage } from './usage/wazuh-usage.js';
+import { type WebLogsTasks, webLogsTasks } from './weblogs/collect/web-logs-tasks.js';
 import { type ScheduledTask, Scheduler } from './worker/scheduler.js';
 
 /**
@@ -190,9 +192,14 @@ async function awsConnectionSetup(
  * (a cada 5 min olha as contas; cada conta já verificada é inventariada uma vez por dia, PR-14', e a postura nativa sai
  * da mesma coleta, PR-15'). Com ela, no nó dedicado, entra também a tarefa `aws-discovery` (onboarding self-service): a
  * cada 30 s executa as descobertas pedidas (pelo "Conectar", pelo painel e uma por dia por conta) e responde as
- * sondagens de permissão das fontes. Na célula, a descoberta fica de fora até a coleta da AWS existir lá. Junto com ela
+ * sondagens de permissão das fontes (com `AWS_WEB_LOGS_ENABLED`, também as dos balanceadores).
+ * Na célula, a descoberta fica de fora até a coleta da AWS existir lá. Junto com ela
  * entra a tarefa `aws-findings`: a cada 5 min lê, pela API de cada serviço, os achados das fontes autorizadas do
  * GuardDuty, do Security Hub, do Inspector e do Access Analyzer (`aws/findings/`).
+ *
+ * Com `AWS_WEB_LOGS_ENABLED` (desligada por padrão) e a mesma identidade, fora da célula, entram as dos ataques web pelos logs
+ * do ALB (`weblogs/collect/`): `web-logs` (a cada 2 min) lê do S3 os logs dos balanceadores autorizados, e
+ * `web-logs-estimate` (a cada 30 s) responde às estimativas de volume pedidas no painel.
  *
  * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
  * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos
@@ -236,6 +243,7 @@ async function main(): Promise<void> {
   let prisma: PrismaService;
   let logger: Logger;
   let aws: AwsConnectionSetup;
+  let webLogs: WebLogsTasks;
   try {
     const loaded = loadWorkerConfig();
     config = loaded;
@@ -362,7 +370,9 @@ async function main(): Promise<void> {
       if (awsOnboarding) {
         const discovery = await import('./aws/discovery/discovery-job.js');
         const { sdkDiscoveryClients } = await import('./aws/discovery/sdk-clients.js');
-        const discover = new discovery.AwsDiscovery(prisma, aws.credentials, sdkDiscoveryClients);
+        const discover = new discovery.AwsDiscovery(prisma, aws.credentials, sdkDiscoveryClients, {
+          features: awsSourceFeatures(loaded),
+        });
         tasks.push({
           name: 'aws-discovery',
           intervalMs: discovery.AWS_DISCOVERY_TICK_MS,
@@ -381,6 +391,10 @@ async function main(): Promise<void> {
         });
       }
     }
+
+    // Ataques web pelos logs do ALB: só com a linha ligada. Desligada, nada é carregado.
+    webLogs = await webLogsTasks(loaded, { prisma, credentials: aws.credentials, logger });
+    tasks.push(...webLogs.tasks);
 
     // Wazuh do nó (perfil standard): a geração das contas AWS para o host aplicar no manager, e o estado da coleta que o
     // host devolve, pela pasta dos sinais (sem segredo; quem escreve a configuração do manager é só o gerador).
@@ -586,6 +600,7 @@ async function main(): Promise<void> {
   scheduler.start();
   await stopRequested;
   await scheduler.stop();
+  await webLogs.close();
   await prisma.$disconnect();
   logger.info('worker encerrado');
 }

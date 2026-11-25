@@ -14,6 +14,7 @@ import { createInventoryHandlers } from './inventory';
 import { createPlanHandlers } from './plan-handlers';
 import { createPostureHandlers } from './posture';
 import { createUnownedHandlers, demoUnownedAlerts } from './unowned-handlers';
+import { createWebTrafficHandlers, type MockTrafficMode } from './web-traffic';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
 export interface MockState {
@@ -40,6 +41,16 @@ export interface MockState {
    * `localStorage['verax.mock.plan']` (`plataforma`).
    */
   platform?: boolean;
+  /**
+   * Os ataques web pelos logs do ALB neste nó. Sem informar, ligados, a não ser com
+   * `localStorage['verax.mock.web-logs'] = 'off'`.
+   */
+  webLogs?: boolean;
+  /**
+   * O mapa de origens da Alfa. Sem informar, vem do `localStorage['verax.mock.traffic']` (ou em dia, com os dados que andam
+   * com o relógio).
+   */
+  traffic?: MockTrafficMode;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;
@@ -116,6 +127,7 @@ export function createHandlers(state: MockState) {
     ...createUnownedHandlers(state, admin, unowned),
     ...createAgentsHandlers(state),
     ...createPlanHandlers(state, admin),
+    ...createWebTrafficHandlers(state),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)

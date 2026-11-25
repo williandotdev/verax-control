@@ -56,7 +56,7 @@ export const webRoutesSchema = z
     error: 'rota repetida',
   });
 
-interface CompiledRoute {
+export interface CompiledRoute {
   route: WebRoute;
   segments: readonly string[];
   failures: ReadonlySet<number>;

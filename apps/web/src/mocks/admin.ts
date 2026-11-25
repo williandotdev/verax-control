@@ -57,6 +57,7 @@ import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import {
   advanceAwsAccount,
+  awsFakeOf,
   type AwsOnboardingStore,
   createAwsOnboardingHandlers,
   demoAwsOnboardingStore,
@@ -75,7 +76,8 @@ import {
   DEMO_TENANTS,
 } from './fixtures';
 import type { MockState } from './handlers';
-import { demoPlanRefusal } from './plan-handlers';
+import { demoPlanRefusal, demoVolumeAllowance } from './plan-handlers';
+import { createWebLogsHandlers, demoWebLogsEnabled, demoWebLogsStore, type WebLogsStore } from './web-logs';
 
 /**
  * Cadastros do modo mock (E3), num estado só: clientes, usuários, contas cloud, lista de proteção e exceções. As
@@ -92,6 +94,8 @@ export interface AdminStore {
   noticePreferences: Map<string, boolean>;
   /** O onboarding self-service das contas AWS (a descoberta, as fontes e a autorização), por conta. */
   awsOnboarding: AwsOnboardingStore;
+  /** Os ataques web pelos logs do ALB: a configuração, as estimativas, as fontes confiáveis e as rotas. */
+  webLogs: WebLogsStore;
 }
 
 const VERAX = { id: 'demo-equipe-verax', name: 'Equipe Verax' };
@@ -258,7 +262,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       updatedAt: at(20),
     });
 
-  const store: Omit<AdminStore, 'awsOnboarding'> = {
+  const store: Omit<AdminStore, 'awsOnboarding' | 'webLogs'> = {
     tenants: [
       tenant(
         alfa,
@@ -436,7 +440,12 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       [beta, []],
     ]),
   };
-  return { ...store, awsOnboarding: demoAwsOnboardingStore([...store.accounts.values()].flat(), now) };
+  const awsOnboarding = demoAwsOnboardingStore([...store.accounts.values()].flat(), now);
+  const production = (store.accounts.get(alfa) ?? []).find(
+    (account) => account.accountId === DEMO_ACCOUNTS.alfaProducao,
+  );
+  const sources = production === undefined ? [] : awsFakeOf(awsOnboarding, production).sources;
+  return { ...store, awsOnboarding, webLogs: demoWebLogsStore(alfa, sources, now) };
 }
 
 const NO_BUCKETS: LogBuckets = { cloudtrail: null, guardduty: null, waf: null };
@@ -952,6 +961,11 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
     ...createAwsOnboardingHandlers({
       store: store.awsOnboarding,
       credentialMode: () => (state.nodePlatform === 'vm' ? 'access_key' : 'role'),
+      webLogs: {
+        store: store.webLogs,
+        enabled: () => demoWebLogsEnabled(state),
+        allowance: () => demoVolumeAllowance(state),
+      },
       findAccount: (id, write) => {
         const scope = scoped(write ? 'cloud_accounts:write' : 'cloud_accounts:read', write ?? undefined);
         if (!scope.ok) return scope;
@@ -962,6 +976,20 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         }
         return { ok: true, account, userId: scope.me.userId };
       },
+    }),
+    // Os ataques web pelos logs do ALB, em `web-logs.ts`.
+    ...createWebLogsHandlers({
+      store: store.webLogs,
+      enabled: () => demoWebLogsEnabled(state),
+      allowance: () => demoVolumeAllowance(state),
+      scoped,
+      accountsOf: (tenantId) =>
+        listOf(store.accounts, tenantId)
+          .filter((account) => account.provider === 'aws')
+          .map((account) => {
+            advanceAwsAccount(store.awsOnboarding, account);
+            return { account, sources: awsFakeOf(store.awsOnboarding, account).sources };
+          }),
     }),
     // Credencial de leitura (token do Cloudflare). O mock não fala com o Cloudflare: todo token no formato é aceito,
     // com um ID fictício, e nada do valor colado fica no estado (só o fim do ID, como na API).

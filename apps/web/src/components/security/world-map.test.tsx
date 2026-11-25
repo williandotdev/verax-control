@@ -88,7 +88,7 @@ describe('mapa de origens', () => {
     renderMap();
     const headline = screen.getByText('1.000 requisições').closest('p');
     expect(headline).toHaveTextContent(
-      '1.000 requisições nas últimas 24 horas, de 3 países identificados: 46 suspeitas (em 1 país) e 21 bloqueadas.',
+      '1.000 requisições nas últimas 24 horas, de 3 países identificados: 46 suspeitas (1 país marcado) e 21 bloqueadas.',
     );
     expect(screen.getByText('Atualizado às 14:30')).toBeInTheDocument();
     expect(map()).toHaveAccessibleName(
@@ -125,8 +125,86 @@ describe('mapa de origens', () => {
       'Brasil: 2 requisições, 3,8% do total; 0 bloqueadas, 1 suspeita; nenhuma no último minuto',
     );
     expect(screen.getByText('52 requisições').closest('p')).toHaveTextContent(
-      '52 requisições na última hora, de 1 país identificado: 2 suspeitas (em 1 país) e nenhuma bloqueada.',
+      '52 requisições na última hora, de 1 país identificado: 2 suspeitas e nenhuma bloqueada.',
     );
+  });
+
+  it('poucas suspeitas não marcam o país: o ponto e a dica são os comuns, e o número continua à vista', async () => {
+    mockMapBox();
+    mockReducedMotion(false);
+    const user = userEvent.setup();
+    const { container } = renderMap(
+      traffic({
+        countries: [country('BR', 10_000, { flagged: 49, recentRequests: 9, recentFlagged: 3 })],
+        unknown: none,
+      }),
+    );
+    expect(dot('Brasil').querySelector('[data-dot]')?.tagName).toBe('circle');
+    expect(dot('Brasil')).toHaveAccessibleName(
+      'Brasil: 10.000 requisições, 99% do total; 0 bloqueadas, 49 suspeitas; 9 nos últimos 15 minutos (3 suspeitas)',
+    );
+    expect(container.querySelector('[data-pulse="BR"]')?.className).toContain('text-muted-foreground');
+    expect(screen.queryByText(/com muitas requisições suspeitas/)).not.toBeInTheDocument();
+    await user.pointer({ target: map(), coords: at('BR') });
+    expect(tip(container)).toHaveTextContent('Suspeitas49');
+    expect(tip(container)?.querySelector('svg')).toBeNull();
+    expect(screen.getByText('49 suspeitas').closest('p')).toHaveTextContent(
+      /: 49 suspeitas e nenhuma bloqueada.$/,
+    );
+  });
+
+  it('a nota diz a partir de quanto o país é marcado, na janela que o mapa mostra', () => {
+    const { rerender } = renderMap();
+    expect(
+      screen.getByText(
+        /o país só é marcado com 50 ou mais suspeitas na janela, ou com 10 ou mais que sejam pelo menos 1% das requisições dele\.$/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Muitas requisições suspeitas')).toBeInTheDocument();
+    rerender(<WorldMap traffic={traffic({ windowHours: 168 })} userId="pessoa-a" />);
+    expect(screen.getByText(/com 350 ou mais suspeitas na janela, ou com 70 ou mais/)).toBeInTheDocument();
+  });
+
+  it('a janela de dias é dita em dias, no resumo, no nome do mapa e na tabela', () => {
+    renderMap(traffic({ windowHours: 168 }));
+    expect(screen.getByText('1.000 requisições').closest('p')).toHaveTextContent(
+      /^1\.000 requisições nos últimos 7 dias, de 3 países/,
+    );
+    expect(map()).toHaveAccessibleName(/^Mapa de origens nos últimos 7 dias: 3 países no mapa/);
+    expect(screen.getByText(/^Ver em tabela/)).toHaveTextContent('Origem das requisições nos últimos 7 dias');
+  });
+
+  it('com a hora do último intervalo completo, o "agora" é dito até ela: no ponto, na dica, na legenda e na tabela', async () => {
+    mockMapBox();
+    mockReducedMotion(false);
+    const user = userEvent.setup();
+    const { container } = renderMap(traffic({ recentUntil: new Date(2026, 10, 24, 14, 20).toISOString() }));
+    expect(screen.getByText(/^Atualizado às 14:30/)).toHaveTextContent(
+      'Atualizado às 14:30, com os logs completos até 14:20',
+    );
+    expect(dot('Estados Unidos')).toHaveAccessibleName(/; 4 nos 15 minutos até 14:20$/);
+    expect(screen.getByText('Onda: requisições nos 15 minutos até 14:20')).toBeInTheDocument();
+    await user.pointer({ target: map(), coords: at('RU', 6) });
+    expect(tip(container)).toHaveTextContent('15 min até 14:207 (1 suspeita)');
+    expect(screen.getByRole('columnheader', { name: '15 min até 14:20', hidden: true })).toBeInTheDocument();
+  });
+
+  it('um minuto só, até a hora do último intervalo completo', () => {
+    renderMap(traffic({ recentMinutes: 1, recentUntil: new Date(2026, 10, 24, 14, 20).toISOString() }));
+    expect(dot('Brasil')).toHaveAccessibleName(/; 30 no minuto até 14:20$/);
+  });
+
+  it('diz quanto da origem desconhecida pode ser de uma CDN; sem nada disso, não diz', () => {
+    const { rerender } = renderMap(traffic({ unverified: 12 }));
+    expect(
+      screen.getByText(
+        'Da origem desconhecida, 12 requisições vieram de endereço público que pode ser do visitante ou de uma CDN.',
+      ),
+    ).toBeInTheDocument();
+    rerender(<WorldMap traffic={traffic({ unverified: 1 })} userId="pessoa-a" />);
+    expect(screen.getByText(/^Da origem desconhecida, 1 requisição veio de endereço/)).toBeInTheDocument();
+    rerender(<WorldMap traffic={traffic({ unverified: 0 })} userId="pessoa-a" />);
+    expect(screen.queryByText(/^Da origem desconhecida/)).not.toBeInTheDocument();
   });
 
   it('o menor é desenhado por cima do maior, e o raio acompanha o volume', () => {
@@ -356,6 +434,7 @@ describe('mouse e toque', () => {
     expect(tip(container)).toHaveTextContent('Requisições100 (10%)');
     expect(tip(container)).toHaveTextContent('Bloqueadas20');
     expect(tip(container)).toHaveTextContent('Suspeitas45');
+    expect(tip(container)?.querySelector('svg')).not.toBeNull();
     expect(tip(container)).toHaveTextContent('Últimos 15 min7 (1 suspeita)');
     expect(container.querySelector('[data-ring="RU"]')).not.toBeNull();
     // Na tela larga, a dica é solta: não há o espaço reservado do celular.
@@ -452,7 +531,7 @@ describe('lista, fora do mapa e tabela', () => {
     expect(rows.map((row) => row.textContent)).toEqual([
       'Brasil600 60%',
       'Estados Unidos250 25%',
-      'Rússia (com requisições suspeitas)100 10%',
+      'Rússia (com muitas requisições suspeitas)100 10%',
     ]);
     const bars = rows.map((row) => row.querySelector<HTMLElement>('[style]')?.style.width);
     expect(bars[0]).toBe('100%');

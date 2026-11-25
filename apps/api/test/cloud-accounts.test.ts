@@ -587,6 +587,20 @@ describe('contas cloud (T3.3)', () => {
         prisma.cloudCredential.count({ where: { cloudAccountId: id } }),
       ]);
 
+    /** E com as fontes da conta: o que é dos logs do ALB por balanceador. */
+    const webRowsOf = async (sourceIds: string[]) => {
+      const where = { sourceId: { in: sourceIds } };
+      return {
+        settings: await prisma.webSourceSettings.count({ where }),
+        trusted: await prisma.webTrustedSource.count({ where }),
+        routes: await prisma.webRoute.count({ where }),
+        objects: await prisma.webLogObject.count({ where }),
+        states: await prisma.webEngineState.count({ where }),
+        slots: await prisma.webTrafficSlot.count({ where }),
+        hours: await prisma.webTrafficHour.count({ where }),
+      };
+    };
+
     /** Um achado da conta, como o sync grava: guarda o ID da conta como texto. */
     const findingOf = (tenantId: string, account: string) =>
       prisma.finding.create({
@@ -674,6 +688,95 @@ describe('contas cloud (T3.3)', () => {
       );
       expect(again.id).not.toBe(created.id);
       expect(again).toMatchObject({ accountId: id, connection: 'waiting', status: 'active' });
+    });
+
+    it('os logs do ALB: tudo o que é por balanceador sai com a conta; o achado e a evidência ficam; o outro cliente, inteiro', async () => {
+      const counters = { requests: 1n, blocked: 0n, clientErrors: 0n, serverErrors: 0n, flagged: 0n };
+      const traffic = { country: 'BR', clientClass: 'direct', ...counters };
+      const slotStart = new Date('2026-11-24T12:00:00.000Z');
+      const seed = async (tenantId: string, session: TestSession) => {
+        const id = accountId();
+        const account = cloudAccountSchema.parse(
+          (
+            await call(session)
+              .post('/v1/cloud-accounts', newAccount({ accountId: id }))
+              .expect(201)
+          ).body,
+        );
+        const source = await prisma.awsSource.create({
+          data: {
+            tenantId,
+            cloudAccountId: account.id,
+            kind: 'elb_logs',
+            region: 'sa-east-1',
+            resourceId: 'loja',
+            name: 'loja',
+            method: 's3',
+            availability: 'available',
+            state: 'available',
+          },
+        });
+        const common = { tenantId, sourceId: source.id };
+        await prisma.webSourceSettings.create({ data: common });
+        await prisma.webTrustedSource.create({
+          data: {
+            ...common,
+            cidr: '198.51.100.0/24',
+            kind: 'office',
+            reason: 'teste',
+            expiresAt: new Date(Date.now() + 86_400_000),
+          },
+        });
+        await prisma.webRoute.create({ data: { ...common, path: '/entrar', kind: 'login' } });
+        await prisma.webLogObject.create({
+          data: {
+            ...common,
+            cloudAccountId: account.id,
+            objectHash: randomBytes(32).toString('hex'),
+            status: 'read',
+            slotStart,
+          },
+        });
+        await prisma.webEngineState.create({
+          data: { ...common, loadBalancer: 'app/loja/0123456789abcdef', version: 1, state: {} },
+        });
+        await prisma.webTrafficSlot.create({ data: { ...common, slotStart, ...traffic } });
+        await prisma.webTrafficHour.create({ data: { ...common, hourStart: slotStart, ...traffic } });
+        const finding = await findingOf(tenantId, id);
+        await prisma.findingEvidence.create({
+          data: {
+            findingId: finding.id,
+            tenantId,
+            version: 1,
+            data: { version: 1 },
+            firstSeenAt: slotStart,
+            lastSeenAt: slotStart,
+          },
+        });
+        return { id, accountId: account.id, sourceId: source.id, findingId: finding.id };
+      };
+      const a = await seed(tenantA, adminA);
+      const b = await seed(tenantB, adminB);
+      const one = { settings: 1, trusted: 1, routes: 1, objects: 1, states: 1, slots: 1, hours: 1 };
+      expect(await webRowsOf([a.sourceId])).toEqual(one);
+
+      // B não exclui a conta de A, e nada sai.
+      await remove(adminB, a.accountId, a.id).expect(404);
+      expect(await webRowsOf([a.sourceId])).toEqual(one);
+
+      await remove(adminA, a.accountId, a.id).expect(204);
+      expect(await webRowsOf([a.sourceId])).toEqual({
+        settings: 0,
+        trusted: 0,
+        routes: 0,
+        objects: 0,
+        states: 0,
+        slots: 0,
+        hours: 0,
+      });
+      expect(await prisma.finding.count({ where: { id: a.findingId } })).toBe(1);
+      expect(await prisma.findingEvidence.count({ where: { findingId: a.findingId } })).toBe(1);
+      expect(await webRowsOf([b.sourceId])).toEqual(one);
     });
 
     it('Cloudflare (e conta desativada): sai e o mesmo ID volta, inclusive noutro cliente', async () => {

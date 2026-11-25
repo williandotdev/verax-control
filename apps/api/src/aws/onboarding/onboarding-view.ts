@@ -2,6 +2,7 @@ import {
   AWS_BUCKET_ERROR_CODES,
   AWS_DISCOVERY_MAX_ERRORS,
   AWS_READER_CAPABILITIES,
+  AWS_SOURCE_ACTIVE_STATES,
   AWS_SOURCE_KIND_INFO,
   AWS_SOURCE_NOTES,
   type AwsDiscoveryError,
@@ -16,6 +17,7 @@ import {
   type AwsSourceAvailability,
   type AwsSourceDetails,
   awsSourceDetailsSchema,
+  type AwsSourceFeatures,
   type AwsSourceKind,
   type AwsSourceLoggingState,
   type AwsSourceMethod,
@@ -24,7 +26,9 @@ import {
   type AwsSourcePermission,
   type AwsSourceState,
   type CloudAccountConnection,
+  isAwsSourceCollectable,
   isAwsSourcePermissionDetail,
+  NO_AWS_SOURCE_FEATURES,
   parseAwsConnectionError,
 } from '@verax/shared';
 import type { Prisma } from '../../generated/prisma/client.js';
@@ -92,6 +96,44 @@ export function isAuthorizedRow(row: Pick<SourceRow, 'authorizedAt' | 'revokedAt
 export function sourceDetails(value: unknown): AwsSourceDetails {
   const parsed = awsSourceDetailsSchema.safeParse(value);
   return parsed.success ? parsed.data : {};
+}
+
+const ACTIVE_STATES: readonly string[] = AWS_SOURCE_ACTIVE_STATES;
+
+/**
+ * A linha como este nó a mostra. O tipo que depende de uma funcionalidade desligada nele (o balanceador, sem os ataques web)
+ * aparece como no nó que nunca a teve, na hora em que ela é desligada e não só na descoberta seguinte: descoberto, ainda não
+ * coletado, sem nota nem detalhe que um painel de antes não conheça. A linha que aquele nó nem teria (o balanceador sem log,
+ * o NLB) fica de fora: null.
+ *
+ * O que está gravado não muda. A autorização continua à vista (e pode ser retirada), num estado que não finge coleta: ninguém
+ * lê a fonte, e a conta não fica "coletando" por causa dela.
+ */
+export function gatedSource(
+  row: SourceRow,
+  features: Readonly<AwsSourceFeatures> = NO_AWS_SOURCE_FEATURES,
+): SourceRow | null {
+  const kind = row.kind as AwsSourceKind;
+  if (AWS_SOURCE_KIND_INFO[kind].feature === undefined || isAwsSourceCollectable(kind, features)) return row;
+  if (row.authorizedAt === null && row.availability !== 'available') return null;
+  const { internetFacing: _unknown, ...details } = sourceDetails(row.details);
+  const shown: SourceRow = {
+    ...row,
+    details,
+    notes: ['not_collected_yet'],
+    // Desligada, a fonte não é sondada: o que se sabia da permissão não diz nada.
+    permission: 'unknown',
+    permissionDetail: null,
+    permissionCheckedAt: null,
+  };
+  if (isAuthorizedRow(row)) {
+    return ACTIVE_STATES.includes(row.state)
+      ? { ...shown, state: 'authorized', stateCode: 'not_collectable_yet' }
+      : shown;
+  }
+  return row.revokedAt !== null
+    ? shown
+    : { ...shown, state: 'unavailable', stateCode: 'not_collectable_yet' };
 }
 
 /** O que a conta diz da leitura dos buckets cadastrados (a conferência da conexão, tarefa `aws-check`). */
@@ -164,7 +206,12 @@ export function sourceFacts(
   };
 }
 
-export function toSource(row: SourceRow, account: LegacyAccountFacts, now: Date = new Date()): AwsSource {
+export function toSource(
+  row: SourceRow,
+  account: LegacyAccountFacts,
+  now: Date = new Date(),
+  features: Readonly<AwsSourceFeatures> = NO_AWS_SOURCE_FEATURES,
+): AwsSource {
   const kind = row.kind as AwsSourceKind;
   const { permission, permissionDetail, state, stateCode } = legacyPermission(row, account);
   return {
@@ -175,7 +222,7 @@ export function toSource(row: SourceRow, account: LegacyAccountFacts, now: Date 
     name: row.name,
     method: row.method as AwsSourceMethod,
     origin: row.origin as AwsSourceOrigin,
-    collectable: AWS_SOURCE_KIND_INFO[kind].collectable,
+    collectable: isAwsSourceCollectable(kind, features),
     sensitive: row.sensitive,
     availability: row.availability as AwsSourceAvailability,
     loggingState: row.loggingState as AwsSourceLoggingState | null,

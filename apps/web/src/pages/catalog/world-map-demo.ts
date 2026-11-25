@@ -19,7 +19,7 @@ export const DEMO_CODES: readonly string[] = [
 ].flatMap((line) => line.split(' '));
 
 /** Gerador de números com semente (mulberry32): a mesma semente dá sempre a mesma sequência. */
-function seeded(seed: number): () => number {
+export function seeded(seed: number): () => number {
   let state = seed;
   return () => {
     state = (state + 0x6d2b79f5) | 0;

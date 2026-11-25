@@ -6747,6 +6747,60 @@ tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views
 - **Riscos e sugestões:** os 97,5% de concordância com o GeoLite2 são do próprio projeto, não medidos aqui. Cada atualização
   soma cerca de 0,6 MB ao histórico do git. A tela precisa dizer que o país é o do endereço (VPN, proxy e nuvem).
 
+## Ataques web pelos logs do ALB, PR-2: o banco, a evidência e o tráfego por país (não ligado)
+
+- **O que é:** as tabelas dos ataques web, a evidência gravada com o achado, a leitura dela, o expurgo e as contagens por
+  país do mapa. Vai para `integracao/alb`. Nada chama isto ainda: nenhuma tarefa, nenhuma chamada à AWS, nenhuma tela,
+  nenhuma variável de ambiente.
+- **Migration `20261130120000_web_logs`** (só acrescenta, numa transação): `WebLogObject`, `WebSourceSettings`,
+  `WebTrustedSource`, `WebRoute`, `FindingEvidence`, `WebEngineState`, `WebTrafficSlot` e `WebTrafficHour`, e um índice único
+  `(id, tenantId)` na `AwsSource` (o alvo das chaves compostas). Toda chave é em cascata; as de fonte, conta e achado levam o
+  cliente e não se propagam.
+- **Gravação:** `FindingDraft` aceita `evidence` (gravada na transação do achado) e `correlation` (aceita, ainda não
+  gravada). A evidência do achado não triado acompanha a atividade, também dentro da mesma hora; a do triado não muda; o
+  resumo do dia troca também o `eventName`. Sem evidência, as consultas são as de antes, na mesma ordem.
+- **Leitura:** `GET /v1/findings/:id/evidence`, à parte do detalhe (o contrato do detalhe é estrito).
+- **Tráfego por país:** somado na transação do objeto (o relido não soma de novo); a passagem para as horas apaga e soma
+  numa instrução só; a leitura soma as duas tabelas. Sem rota ainda.
+- **Expurgo:** amostras e ponteiros da evidência 30 dias depois da última atividade, objetos em 10 dias, tráfego em 48 h e
+  35 dias, resumo do dia parado em 3 dias. A exclusão da conta leva tudo o que é por balanceador.
+- **Decisões tomadas aqui, a conferir** (o desenho dizia outra coisa, ou não dizia):
+  - por balanceador é a fonte (`AwsSource.id`), e não a conta e o nome: a chave composta prova o cliente no banco, e a conta
+    sai da fonte. O `WebEngineState` guarda também o `app/<nome>/<id>`, porque a fonte é pelo nome;
+  - a classe do tráfego tem um quarto valor, `unverified`: sem a lista das CDNs (o caso de hoje), todo endereço público é
+    `unverified`, e chamá-lo de direto ou de proxy seria invenção;
+  - as horas recebem os intervalos por **passagem** (apaga e soma), e não por cópia: não há marca d'água a guardar, e o objeto
+    atrasado não some;
+  - a comparação da evidência é por última atividade e, no empate, pela soma das contagens; a primeira atividade do achado
+    fica numa coluna da evidência (nenhuma coluna nova no achado);
+  - a amostra do User-Agent sai junto com as outras amostras;
+  - a evidência fora do schema ou do teto é recusada com aviso a quem chama, e o achado entra sem ela;
+  - sem chave estrangeira para a pessoa (autor): `VARCHAR(64)`, como na `AwsSource`.
+- **Ficou para depois:** `FINDING_SOURCES` com `alb`, notas e estados da fonte (PR-3); a tarefa, que chama o registro, o
+  volume, a soma, a passagem de hora em hora e o estado do motor (PR-4); os tetos de rotas e fontes confiáveis por
+  balanceador e a trilha da configuração (PR-5 e PR-8); `correlationKeys` (PR-10).
+- **Arquivos:** `apps/api/prisma/schema.prisma` e a migration; `apps/api/src/alerts/finding-evidence.ts` (novo),
+  `finding-{store,draft}.ts`; `weblogs/store/{web-traffic-store,web-object-ledger}.ts` (novos), `weblogs/draft.ts`
+  (comentário); `findings/findings.{service,controller}.ts`; `retention/retention-{job,policy}.ts`;
+  `common/prisma/tenant-scope.ts`; `cloud-accounts/cloud-accounts.service.ts` (comentário);
+  `packages/shared/src/finding-evidence.ts` (novo); testes; `docs/ARQUITETURA.md` e `docs/retencao-de-dados.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 195 arquivos e 3607 testes: na rodada inteira, 193 arquivos; em dois
+  (`detections` e `aws-volume`) o worker do vitest caiu no Windows (3221226505), e passaram rodados de novo. Shared, 30
+  arquivos e 522 testes. `pnpm lint` e `pnpm typecheck` (todos os pacotes), limpos. Novos: 31 da evidência, 26 do tráfego e
+  do registro, 17 da migration, 7 do expurgo, 6 do contrato e 3 noutros arquivos.
+  - **Imagem anterior:** o código e os testes da `main` (`24037e8`) no banco já migrado, com um gatilho provisório que cria
+    linhas filhas em todas as tabelas novas a cada achado e a cada fonte: 28 arquivos e 713 testes (o `detections` caiu duas
+    vezes com 3221226505 e passou na terceira). A sequência de consultas de cada caminho da gravação sem evidência é a mesma
+    com o `FindingStore` da `main`.
+  - **Mutações** (em série, com volta conferida): 171. 158 mortas de primeira, 10 depois de testes novos, uma era código
+    redundante (removido) e duas são equivalentes (a soma da hora já é agrupada pela classe; a busca do expurgo é conferida
+    de novo na escrita). Mais uma no código que sobrou, também equivalente (a data inválida já lança na linha seguinte).
+- **Riscos:** a frase do DPA sobre os endereços IP dos visitantes do cliente (`docs/retencao-de-dados.md`) precisa existir
+  antes de ligar a fonte. No pior caso (todo país e toda classe em todo intervalo), o tráfego de 2 balanceadores ocupa cerca
+  de 265 MB; um site comum fica bem abaixo. Sem a passagem de hora em hora (PR-4), os intervalos de 5 minutos ficam até 72 h
+  (o expurgo é diário).
+
 ## Mapa de origens: componente do painel, dados e catálogo (24/11/2026)
 
 - **O que faz:** um mapa-múndi com um ponto por país de onde vieram as requisições, pedido do responsável pelo produto. Só o
@@ -6786,3 +6840,247 @@ tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views
 - **Riscos e sugestões:** a lista de códigos do gerador é cópia da de `apps/api/src/geo/country-codes.ts` (outra branch): quando
   as duas estiverem na `main`, um teste pode comparar. Não foi conferido em leitor de tela de verdade, nem no Firefox e no
   Safari.
+
+## Ataques web pelos logs do ALB, PR-3: contratos e isolamento do Wazuh (não ligado)
+
+- **O que é:** o balanceador (`elb_logs`) passa a poder ser autorizado, atrás da linha `AWS_WEB_LOGS_ENABLED` (API e worker,
+  desligada por padrão), sem que o Wazuh do nó saiba que ele existe; a fonte `alb` nos achados; e a API da configuração
+  (`/v1/web-logs`). Vai para `integracao/alb`, sobre a PR-2. Nenhuma tarefa lê o S3, nenhuma tela nova, nada em `infra/`.
+- **Isolamento do Wazuh:** cada tipo de fonte diz quem o lê (`collector`: `wazuh`, `worker` ou ninguém). A busca e o plano da
+  lista só conhecem os do Wazuh: com balanceadores autorizados em várias contas, regiões e estados, a lista é, byte a byte, a
+  do código de antes, a conta que só tem deles não entra, e a tarefa `wazuh-config` não escreve nas linhas deles.
+- **Desligado é o de sempre:** descoberta, resposta do onboarding, recusa da autorização e nenhuma rota nova (404). Vale na
+  hora em que a linha é desligada, também para o que ficou gravado; tirar a autorização segue possível.
+- **Ligado:** a descoberta põe cada balanceador no lugar (disponível, sem log com o custo, prefixo fora do que o papel lê, NLB
+  e GWLB fora); a autorização pede a ciência da estimativa, conferida com a gravada e com o plano (D1), e cria a configuração
+  em `observe` por 72 h; até 20 por conta, dentro das 200 de bucket. CRUD de modo e multiplicador, fontes confiáveis (200 por
+  cliente) e rotas (50 por balanceador), com trilha e isolamento.
+- **Migration `20261201120000_web_logs_contracts`** (só acrescenta, numa transação): a nota `aws_cost_alb_logs` no CHECK da
+  descoberta e a tabela `WebSourceEstimate` (o pedido e o resultado da estimativa, com as chaves em cascata).
+- **Decisões tomadas aqui, a conferir:**
+  - nenhuma permissão nova: as rotas usam `cloud_accounts:read` e `cloud_accounts:write` (a mesma matriz pedida). A lista de
+    permissões vai no `GET /v1/me`, e um painel de antes recusaria a resposta inteira, mesmo com tudo desligado;
+  - desligado, as rotas respondem 404 (e não 409): é o que um nó de antes responde, e o painel trata os dois igual;
+  - a autorização continua na rota das outras fontes, com `webLogs` no corpo; a estimativa guardada é quem vale, e o número do
+    pedido só é conferido. A projeção não vai para quem não lê o plano (`plan:read`);
+  - a estimativa vale 7 dias; sem amostra ou com a listagem cortada, pede a confirmação como acima de 20%;
+  - `alert` antes do fim das 72 h é recusado, sem exceção; depois delas, é a pessoa que muda (nada vira `alert` sozinho);
+  - o teto das fontes confiáveis é do cliente inteiro (nenhum motor recebe mais que 200);
+  - faixa, dono e caminho não mudam numa alteração (é outra fonte confiável, ou outra rota): a trilha fica legível;
+  - desligados, a fonte já autorizada aparece como "aguardando", e nunca "coletando": a conta não fica verde por ela;
+  - o tipo que ninguém lê (`config`) também saiu do plano do Wazuh: antes, uma linha dele autorizada (o que nenhuma rota faz)
+    ganharia `invalid_details`. Assim, voltar a esta versão a partir de uma futura não escreve em tipos que ela não conhece.
+- **Diferença de versão:** a tabela está em `docs/ARQUITETURA.md`. Em resumo: com a linha desligada, nada muda para painel ou
+  nó de antes; esta versão sai uma versão inteira antes de a linha ser ligada, e com achados `alb` gravados não se volta para
+  antes dela.
+- **No painel, só o que não podia quebrar:** rótulos, textos, trilha e os mocks como estavam; o balanceador disponível aparece
+  sem a caixa de autorizar (a PR-5 traz a estimativa), e o NLB diz por que não serve.
+- **Ficou para depois:** a tarefa que lê e a que estima (PR-4); as telas (PR-5 e PR-8); `start.sh` e `node.conf` (PR-6); a chave
+  dos casos (`alb` cai em `other` no outro ramo).
+- **Arquivos:** `packages/shared/src/{aws-onboarding,findings,tower,web-logs}.ts`; `apps/api/src/weblogs/settings/` (novo);
+  `apps/api/src/aws/{wazuh-sources,discovery/*,onboarding/onboarding-view}.ts`;
+  `apps/api/src/cloud-accounts/aws-onboarding.service.ts`; `apps/api/src/common/config/{web-logs,env.schema}.ts`;
+  `plan/plan.service.ts`, `worker.ts`, `app.module.ts`, `tenant-scope.ts`; a migration e o schema; `apps/web` (rótulos e a lista
+  das fontes); testes; `docs/{ARQUITETURA,retencao-de-dados}.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 210 arquivos e 3960 testes, numa rodada só, sem repetir nenhum; shared, 32 arquivos e 548
+  testes; web, 61 e 817; console, 22 e 146. `pnpm lint` e `pnpm typecheck` (todos os pacotes), limpos; o `migrate diff` do
+  banco migrado com o schema, vazio. Playwright (mock): detecções, onboarding da AWS, radar e páginas, 97 testes. Novos: 76 na
+  API, 26 no shared e 6 na web.
+  - **O de antes, conferido com o código de antes:** os testes de "desligado" da descoberta (com e sem banco) e a lista do
+    Wazuh congelada passam também com `aws/discovery` e `wazuh-sources.ts` da 5e53ae48.
+  - **Mutações** (em série, com volta conferida por hash): 136. 113 mortas na primeira rodada e 11 na segunda; 7 depois de
+    testes novos; 2 sem veredito na primeira vez (o vitest saiu sem dizer qual teste) e mortas na repetição; 3 equivalentes (a
+    leitura sem escopo de fonte confiável, rota e balanceador: a busca seguinte, com escopo, recusa do mesmo jeito).
+- **Riscos:** a fonte é pelo nome do balanceador: apagado e recriado com o mesmo nome, herda a autorização (e o modo); a PR-4
+  compara o `app/<nome>/<id>`. A API e o worker com valores diferentes da linha não autorizam nada, mas a tela mostra o
+  balanceador sem permissão conferida.
+
+## Ataques web pelos logs do ALB, PR-4: a leitura, a estimativa e o tráfego por país (desligado por padrão)
+
+- **O que é:** as tarefas `web-logs` e `web-logs-estimate` do worker. A primeira lê do S3 do cliente, só leitura, os logs dos
+  balanceadores autorizados, passa as linhas pelo motor, grava os achados, mede o volume e soma o tráfego por país; a segunda
+  responde às estimativas pedidas antes da autorização. Só existem com `AWS_WEB_LOGS_ENABLED`, fora da célula. Vai para
+  `integracao/alb`, sobre a PR-3. Sem migration, sem tela e sem mudança em `infra/`.
+- **Só leitura e só do balanceador:** `ListObjectsV2` e `GetObject`, por um arquivo só (`alb-bucket.ts`), no prefixo exato até o
+  id do balanceador; a chave da listagem é conferida pela gramática antes de qualquer uso. O corpo é lido em pedaços, com teto
+  de tamanho, razão, linhas e tempo; o que passa fica de lado, contado e à vista (`quarantined`).
+- **Uma vez só:** achado antes do registro, e registro, volume e tráfego numa transação, com a autorização conferida sob o lock
+  da conta. A leitura cortada não conta nenhuma linha duas vezes no motor. A concessão não é devolvida entre execuções (o motor
+  vive na memória); quem a perde joga a memória fora e relê os últimos 70 minutos, sem cobrança.
+- **Ordem:** ao vivo, lacuna (mais de 24 h: registrada, nunca lida), atrasados (conferência de hora em hora) e atraso (motor à
+  parte, relógio virtual). O slot com objeto por ler não fecha.
+- **Motor (PR-1) mexido:** a conta por país de cada linha, antes de qualquer teto de memória; `recount`; e o multiplicador do
+  cliente (`thresholdMultiplier`) em todos os limites de contagem. O título da 990401 perdeu o "5 ou mais": com multiplicador,
+  o número não seria verdade.
+- **Decisões tomadas aqui, a conferir** (o desenho dizia outra coisa, ou não dizia):
+  - começa no primeiro intervalo **inteiro** depois da autorização (até 5 minutos ficam de fora): nada de antes dela é aberto;
+  - sem migration: a observação, o calado pelas fontes confiáveis e as notas ficam no `WebEngineState` (JSON com versão), e o
+    painel lê o pedaço dele;
+  - a concessão de 5 minutos é renovada, e não solta, entre as execuções; um worker novo depois de uma queda espera até 5
+    minutos (na parada normal, ela é devolvida);
+  - o dia do volume é o do tráfego, e o mês, o da leitura (o contrato do medidor); o arquivo recusado não é cobrado;
+  - `FindingStore.persist` ganhou um quarto parâmetro opcional (a conferência da autorização dentro da transação): sem ele, as
+    consultas são as de sempre;
+  - balanceador recriado: a observação de 72 h recomeça, pela ação de trilha que já existe (`web_logs.settings_update`, ator
+    sistema). Sem estado guardado (parado há mais de 3 dias), a troca não é percebida;
+  - a lacuna deixa a fonte em `ingestion_error` (`web_gap`) por 24 h; com mais de 9 dias, o pedaço mais antigo vai para a trilha
+    sem a contagem de arquivos;
+  - depois de uma parada de mais de 70 minutos, o resumo do dia (990400) de hoje só conta o que o motor ao vivo viu;
+  - a estimativa é uma tarefa à parte (30 s): a leitura pode levar minutos, e quem pediu está esperando;
+  - o motor do atraso usa uma fração da memória, até dois ao mesmo tempo;
+  - o WAF só rebaixa se a Web ACL regional da mesma região (ou o bucket do cadastro anterior) está coletando.
+- **Ficou para depois:** a tela, os textos dos códigos novos e a rota do mapa (PR-5 e a PR do mapa); `start.sh`, `node.conf`,
+  runbook e DPA (PR-6); 408 a 413 (PR-9).
+- **Arquivos:** `apps/api/src/weblogs/collect/**` (novo), `weblogs/traffic.ts` e `store/web-engine-state.ts` (novos);
+  `weblogs/{tally,engine,rules,routes,digest,draft}.ts`, `weblogs/store/{web-object-ledger,web-traffic-store}.ts`;
+  `alerts/finding-store.ts`; `worker.ts`; `packages/shared/src/web-logs.ts` (os códigos de estado); testes
+  (`test/web-logs-{task,recovery,faults,edges,estimate}.test.ts`, `test/support/{fake-alb-s3,web-logs-harness}.ts` e os unitários);
+  `scripts/bench-weblogs.mjs`; `docs/{ARQUITETURA,retencao-de-dados}.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/`, `.claude/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 219 arquivos e 4237 testes: na rodada inteira, 215 arquivos; em quatro
+  (`tower-posture-assets`, `detections`, `aws-volume` e `sso-staff-password-off`) o worker do vitest caiu no Windows
+  (3221226505), e passaram rodados de novo. Shared, 32 arquivos e 548 testes. `pnpm lint` e `pnpm typecheck` (todos os
+  pacotes), limpos. Novos na API: 277 em nove arquivos (o S3 falso em processo, com corpo em pedaços e falhas programadas).
+  - **O que eles provam:** cada linha conta uma vez no plano e no mapa com a queda antes do achado, entre o achado e o
+    registro, entre o registro e o commit, no meio de um lote e com o corpo cortado; duas réplicas; a retirada em cada ponto; o
+    tráfego igual a uma contagem independente com os tetos de memória no chão; a lista do Wazuh byte a byte igual; desligado,
+    nenhuma tarefa e nenhuma chamada.
+  - **Mutações** (em série, com volta conferida por hash): 225. 190 mortas de primeira e 24 depois de testes novos; duas mostraram
+    código redundante (removido) e uma mudou a condição da lacuna; 8 equivalentes (a fonte revogada já sai pelo estado, que o
+    banco amarra; a releitura e a lacuna repetidas já não gravam pela chave do registro; as demais só mudam custo ou uma corrida
+    que o passo anterior já fecha).
+- **Medido** (Windows, Node 24.15, com outros processos na máquina): a conta por país no motor, 400 mil linhas, antes e depois
+  alternados três vezes: comum, 5,4 a 6,6 s antes e 5,8 a 9,8 s depois (a terceira, com a máquina ocupada); enchente, 14,9 a
+  18,8 s e 15,5 a 18,5 s; heap e blocos iguais. Um arquivo de 536 MB abertos (804 mil linhas): 9 a 11 s de CPU, 16 MB de memória
+  a mais (depois da coleta, medida durante a leitura) e 13 ms no maior bloqueio do laço de eventos.
+- **Riscos:** nenhum dado real de ALB nem S3 de verdade foi usado. A frase do DPA precisa existir antes de ligar. Desligar a
+  linha com a fonte autorizada para a leitura: religada depois de mais de 24 h, o intervalo vira lacuna.
+
+## Ataques web pelos logs do ALB, PR-5: as telas (desligado por padrão)
+
+- **O que é:** as telas dos ataques web no painel do cliente: a estimativa de volume antes da autorização, os passos para ligar o
+  log do ALB, a seção "Ataques web" (modo, observação, leitura, multiplicador, rotas, fontes confiáveis) e a evidência no detalhe
+  do alerta. Na API, uma rota de leitura: `GET /v1/web-logs/sources/:id/health`. Vai para `integracao/alb`, sobre a PR-4. Sem
+  migration, sem dependência, sem permissão nova e sem mudança em `infra/`.
+- **Onde não existe, nada aparece:** o 404 de `/v1/web-logs` (desligado, nó de antes, célula) é "inexistente", sem erro; com o tipo
+  não coletado no onboarding, nenhum pedido sai. O nó sem a rota nova só fica sem as contagens; o sem a da evidência, sem ela.
+- **A rota nova:** as contagens do registro dos objetos, pelas regras da saúde da fonte, e, da memória do motor, só a observação sem
+  as chaves, o calado e as notas. O recorte é do banco: o resumo do dia (o único com endereços) não chega à API. Não vale o que é
+  de outra autorização, de outro balanceador ou de outra versão do formato. Mesma permissão das outras leituras, mesmo guard.
+- **Decisões tomadas aqui, a conferir:**
+  - as telas ficam na conta AWS (Contas cloud), e não numa página nova; as fontes confiáveis, que são do cliente inteiro,
+    aparecem nela também, com onde cada uma vale;
+  - a caixa do balanceador aparece desligada até haver uma estimativa que vale, com o motivo; com o pedido em andamento, a
+    estimativa anterior que ainda vale continua servindo;
+  - a ciência acima de 20% é uma caixa por balanceador, presa aos números vistos: mudou a estimativa, volta desmarcada. Abaixo
+    disso, o pedido vai com `acknowledged: false`, porque nada foi confirmado;
+  - o prefixo no bucket se resolve tirando o prefixo: os "buckets fora do padrão" são do CloudTrail, do GuardDuty e do WAF, e
+    cadastrar ali o bucket do ALB faria o Wazuh lê-lo como um deles;
+  - a lacuna (`web_gap`) aparece como "Parte do log ficou sem leitura", e não como falha de ingestão: a leitura de agora segue;
+  - no alerta `alb`, o bloco do evento bruto sai: não há evento bruto, e a evidência diz onde estão as linhas;
+  - o texto de consentimento dos logs no S3 fala dos logs do ALB "onde a detecção de ataques web estiver ligada": o texto é um só, e
+    continua verdadeiro com ela desligada;
+  - na demonstração, ligados por padrão (`localStorage['verax.mock.web-logs'] = 'off'` mostra o nó sem eles). Os quatro alertas novos
+    não mudam os altos e críticos para validar.
+- **Conferido nos passos da AWS**, na documentação dela (25/11): mesma região, só SSE-S3, política para
+  `logdelivery.elasticloadbalancing.amazonaws.com` em `AWSLogs/<conta>/*`, sem prefixo, os atributos `access_logs.s3.*`, os
+  comandos de criar o bucket e gravar a política, o bucket novo que já nasce com SSE-S3 e fechado ao público, e o aviso de
+  desligar o log antes de apagar o bucket. A política antiga (pelo ID da conta do ELB) continua valendo onde já existe. **Não
+  conferido:** o `access_logs.s3.prefix` vazio e os nomes dos menus em português.
+- **Arquivos:** `apps/web/src/features/web-attacks/` (novo); `components/ui/confirm-dialog.tsx` (novo);
+  `features/findings/finding-evidence.tsx` (novo) e `{finding-detail,findings-api}`; `features/admin/aws-{source-groups,
+source-monitor,source-parts,sources,onboarding-labels,onboarding-section}`; `lib/format.ts`; `mocks/{web-logs,finding-evidence}.ts`
+  (novos) e os existentes; `e2e/web-attacks.mock.spec.ts` (novo); `packages/shared/src/web-logs.ts`;
+  `apps/api/src/weblogs/{observed-since,settings/web-logs.*,store/web-engine-state,collect/{engine-state,source-config}}.ts`;
+  testes; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/`, `.claude/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 220 arquivos e 4254 testes: na rodada inteira, 218 arquivos; em dois (`cloud-accounts` e
+  `detections`) o worker do vitest caiu no Windows (3221226505), e passaram rodados de novo. Shared, 32 arquivos e 551 testes; web, 74
+  e 1002 (antes, 65 e 897). `pnpm lint`, `pnpm typecheck` (todos os pacotes) e o build da web com a varredura do bundle, limpos.
+  Playwright (mock): 19 novos (`web-attacks`), mais os 145 de onboarding da AWS, buckets, detecções, radar, MITRE, páginas,
+  histórico, tour, layout, exclusão de conta e plano. Os novos cobrem axe nos dois temas a 360, 768 e 1280 px, nenhuma rolagem de
+  lado de 320 a 1920 px, o teclado e o foco nas janelas, quem só lê e o nó sem os ataques web.
+  - **Mutações** (em série, com tempo limite e volta conferida por hash): 113. 109 mortas na primeira rodada; 3 depois de testes mais firmes (o
+    filtro de cliente na leitura do estado, a releitura da estimativa e o código errado numa rota válida); 1 não casava com o
+    texto (a formatação mudou) e morreu na repetição.
+- **Riscos:** nenhum ALB nem S3 de verdade foi usado. A leitura da saúde usa o índice por fonte e horário do tráfego (e por cliente
+  e horário de tratamento); com 20 balanceadores abertos numa tela, são 20 leituras por minuto, e só dos quadros abertos. O nome do
+  bucket não está na evidência: o alerta manda ver em Contas cloud.
+- **Ficou para depois:** `start.sh`, `node.conf`, runbook e a frase do DPA (PR-6); o mapa das origens (outra PR); as rotas
+  detectadas com "é login / ignorar" (PR-8).
+
+## Mapa de origens na tela Detecções: a rota e a faixa (só com a fonte)
+
+- **O que é:** `GET /v1/web-logs/traffic?window=24h|7d|30d` e a faixa "Origem das requisições" no topo da tela Detecções, com o
+  mapa do componente que já existia e o volume real dos logs dos balanceadores. Vai para `integracao/alb`, sobre a PR-4. Sem
+  migration, sem permissão nova e sem mudança em `infra/`.
+- **Quem não tem a fonte vê a tela de sempre:** nó desligado ou de antes (404), nenhum balanceador autorizado ou a primeira
+  resposta falhando: nada aparece e nada pula.
+- **Rota:** só leitura, do cliente da sessão, com `tower:read` (a do resumo do topo da tela; todos os papéis). Contrato estrito
+  (`packages/shared/src/web-traffic.ts`), só contagens. Estados `ok`, `stale`, `waiting` e `no_source`; memória por cliente e
+  janela (30 s; 2 min em 7 e 30 dias).
+- **O "agora" são os 15 minutos até o último intervalo fechado** (a posição do leitor), e não até a hora do pedido: a AWS entrega
+  com 5 a 10 minutos de atraso, e contado de agora nada pulsaria.
+- **Marca do país (pedido do responsável):** 50 suspeitas na janela, ou 10 que sejam pelo menos 1% das requisições dele, em
+  constantes (`FLAGGED_*`); os números são de um dia e crescem com a janela. A nota do mapa diz os números; a legenda virou
+  "Muitas requisições suspeitas"; a onda só sai vermelha em país marcado.
+- **Faixa:** recolhível (lembrada por pessoa; no celular começa recolhida), pedida a cada 60 s com a aba à vista, com o período, o
+  que só observa, o que está com problema, aguardando, parado e a atualização que falha (mantém os números). O desenho do mundo
+  só é baixado com ela aberta, e a altura da última vez fica reservada: a lista não pula.
+- **Animação:** uma volta da onda passou a ter dez períodos (24 s). Com um por volta, ao lado do radar a tela gastava 9% da thread
+  principal (cada volta acorda a página, e o radar redesenha); agora, 3%, e 2,5% sem o mapa.
+- **Decisões tomadas aqui, a conferir:**
+  - as três janelas (24 h, 7 e 30 dias): as horas guardadas por 35 dias só servem para isso, e o custo é baixo (abaixo);
+  - `unverified` é um grupo à parte no contrato; no painel soma em "origem desconhecida", com a nota de quantas são;
+  - parado é sem ler um intervalo novo há 45 minutos (em dia, são de 10 a 20); recuperando um atraso, vale o registro mais novo;
+  - o tráfego que já está na janela aparece mesmo que seja de um balanceador retirado, enquanto houver outro autorizado; sem
+    nenhum, a faixa some;
+  - por um link direto (alerta, incidente, análise) a faixa começa recolhida, só daquela vez: ela empurraria o que a pessoa veio ver;
+  - o texto da espera diz "cerca de 15 minutos depois das primeiras requisições" (o pedido dizia "até 15"): no pior caso chega a uns
+    20, e a onda só começa quando o primeiro intervalo fecha;
+  - clicar num país não filtra a lista: a API das listas não tem filtro por país (sugestão, não feita).
+- **Arquivos:** `packages/shared/src/web-traffic.ts`; `apps/api/src/weblogs/map/` (novo), `weblogs/settings/web-logs.module.ts`;
+  `apps/web/src/features/detections/{origin-band,origin-traffic,origin-place,strip-preference}`, `pages/detections-page.tsx`,
+  `components/security/world-map*`, `index.css`, `mocks/web-traffic.ts`, `features/tour/steps.ts`; testes; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/`, `.claude/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 221 arquivos e 4260 testes, numa rodada só, sem repetir nenhum; shared, 33 arquivos e
+  552; web, 69 e 953. `pnpm lint`, `pnpm typecheck` (todos os pacotes), `format:check` e o build com a varredura, limpos. Novos:
+  23 na API (12 da conta pura e 11 da rota, um deles do arquivo no S3 falso ao mapa, pela tarefa `web-logs`), 4 no shared e 56 na web.
+  - **Isolamento:** dois clientes com balanceador de mesmo nome e região, com a memória quente; todos os papéis; sem sessão 401,
+    sem cliente 409, query fora do contrato 400, desligado 404; nada que identifique balanceador, conta ou cliente na resposta.
+  - **Navegador (Playwright, mock):** 159 testes (os 24 da faixa, detecções, radar, tour, login da demonstração, estrutura, páginas
+    e o catálogo): 158 na rodada, e um (a Postura, que não carregou com a máquina cheia) passou repetido. Antes, a suíte mock
+    inteira (199), com quatro contagens de passos do tour corrigidas. Axe nos dois temas em 360, 768 e 1.280 px (em dia, com a
+    dica, a tabela e outro período; parado; aguardando; carregando) e, num tema só, com a atualização que falhou; recolhida, em
+    360 px. Sem rolagem horizontal de 320 a 1.920, teclado, menos movimento, aba em segundo plano, a lista que não pula e o
+    arquivo do mapa só com a faixa aberta.
+  - **Mutações** (em série, com volta conferida por hash): 161. 155 mortas de primeira e 2 depois de testes novos; uma mostrou código
+    redundante (removido); 3 equivalentes (a busca das fontes sem `authorizedAt` ou `revokedAt`, que o estado e o CHECK do banco já
+    amarram; a parte de 1% por multiplicação em vez de divisão).
+- **Medido** (Windows, com a CPU da máquina entre 85 e 100% por outros processos):
+  - **Banco** (2 balanceadores): num site comum (57 linhas por intervalo e balanceador), o agora em 1 ms, 24 h em 10 a 13 ms, 7
+    dias em 22 a 25 e 30 dias em 52 a 55; no pior caso (120 países e 3 classes em todo intervalo), 5 a 8, 72 a 110, 240 a 320 e 340
+    a 450. Sempre pelo índice `(tenantId, horário)`.
+  - **Pacote:** o principal, de 1.101,8 para 1.116,5 KB (331,4 para 336,4 com gzip; a rota, a faixa e o contrato); o mapa à parte,
+    40,6 KB (15,8 com gzip); CSS, mais 0,8 KB.
+  - **Thread principal, 246 pontos, 1.440 px** (três vezes, em repouso por 10 s): antes desta mudança, 3,3 a 3,9%; sem a fonte, 3,0 a
+    3,7; recolhida, 3,2 a 4,7; aberta, 5,3 a 6,6; aberta e pausada, 3,8 a 5,2. A carga da página, de 1,2 a 1,3 s para 1,6 a 1,7 com
+    ela aberta, e igual sem ela. Por rastreamento, a onda: 9% com uma por volta da animação, 3,1 a 3,7 com dez, e 2,3 a 2,5 sem o mapa.
+- **Riscos e sugestões:** nenhum dado real de ALB foi usado. A primeira visita depois de autorizar a fonte ainda desloca a lista (o
+  lugar só é guardado a partir dela). Não foi conferido em leitor de tela de verdade, no Firefox e no Safari. Sugestão: um filtro por
+  país nas listas, para o clique num país levar aos alertas dele.
+
+## Ataques web pelos logs do ALB, PR-6: a linha do `node.conf` e o runbook (desligado por padrão)
+
+- **O que é:** `AWS_WEB_LOGS_ENABLED` no `node.conf` (opcional) vai igual para a API e o worker pelo `start.sh`, e o runbook
+  `docs/runbooks/ataques-web.md`. Vai para `integracao/alb`. **⚠️ `infra/`: revisar linha a linha.**
+- **Nenhum nó muda:** sem a linha, o `api.env` e o `worker.env` saem byte a byte como antes (o teste do pacote confere os dois
+  inteiros). Fora do formato (a linha vazia também), o nó sobe com a leitura desligada, com o aviso.
+- **O nó gerenciado já instalado não recebe linha nova no `node.conf`** (a atualização da frota não o reescreve, e não há SSH):
+  nele, quem liga é o padrão da versão, numa versão depois da que leva os contratos. Cada balanceador continua dependendo da
+  autorização no painel.
+- **Arquivos:** `infra/node/{bin/start.sh,node.conf.example,tests/start-test.sh}`, `docs/ARQUITETURA.md`,
+  `docs/runbooks/ataques-web.md` (novo).
+- **Dependências:** nenhuma.
+- **Ficou para depois:** a frase do DPA (texto jurídico, com o responsável) e o teste com a máquina ociosa.

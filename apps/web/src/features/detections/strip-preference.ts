@@ -1,15 +1,15 @@
 import { useState } from 'react';
 
-const STORAGE_KEY = 'verax:deteccoes:resumo:';
 const NARROW = '(max-width: 47.99rem)';
 
 /**
  * Aberto ou recolhido, lembrado por pessoa neste navegador. O armazenamento pode faltar (janela privada, bloqueio): a
- * tela segue com o padrão, aberto no computador e recolhido no celular.
+ * tela segue com o padrão, aberto no computador e recolhido no celular. Com `startCollapsed`, começa recolhido só desta
+ * vez: a escolha guardada fica como está.
  */
-export function useStripPreference(userId: string): [boolean, (expanded: boolean) => void] {
-  const key = `${STORAGE_KEY}${userId}`;
+function usePanelPreference(key: string, startCollapsed = false): [boolean, (expanded: boolean) => void] {
   const [expanded, setState] = useState(() => {
+    if (startCollapsed) return false;
     try {
       const stored = window.localStorage.getItem(key);
       if (stored === 'aberto') return true;
@@ -29,3 +29,10 @@ export function useStripPreference(userId: string): [boolean, (expanded: boolean
   };
   return [expanded, set];
 }
+
+/** O resumo da situação. */
+export const useStripPreference = (userId: string) => usePanelPreference(`verax:deteccoes:resumo:${userId}`);
+
+/** A faixa do mapa de origens. */
+export const useOriginBandPreference = (userId: string, startCollapsed: boolean) =>
+  usePanelPreference(`verax:deteccoes:origens:${userId}`, startCollapsed);

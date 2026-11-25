@@ -32,6 +32,7 @@ import { ProtectedResourcesModule } from './protected-resources/protected-resour
 import { TenantsModule } from './tenants/tenants.module.js';
 import { UnownedAlertsModule } from './unowned-alerts/unowned-alerts.module.js';
 import { UsersModule } from './users/users.module.js';
+import { WebLogsModule } from './weblogs/settings/web-logs.module.js';
 
 export interface AppModuleOptions {
   logger?: LoggerParamsOptions;
@@ -57,6 +58,7 @@ export class AppModule {
         TenantsModule,
         UsersModule,
         CloudAccountsModule,
+        WebLogsModule,
         FindingsModule.register(options.rawEvents),
         IncidentsModule,
         DetectionsModule,
