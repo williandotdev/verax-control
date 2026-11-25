@@ -14,7 +14,7 @@ import {
 import { CloudWatchOwnershipStore, type CloudWatchProof, cloudWatchProof } from './cloudwatch-ownership.js';
 import { type ActiveException, matchingException } from './exception-match.js';
 import { cloudWatchFindingKey, toCloudWatchFindingDraft } from './finding-draft.js';
-import { FindingStore, LastEvents, SyncLease, type UnownedRecord } from './finding-store.js';
+import { FindingStore, storeOptions, LastEvents, SyncLease, type UnownedRecord } from './finding-store.js';
 import {
   cloudWatchSyncPage,
   cursorFromSort,
@@ -137,7 +137,7 @@ export class CloudWatchAlertSync {
     this.name = options.name ?? CLOUDWATCH_ALERT_SYNC;
     this.settings = options.settings ?? DEFAULT_CLOUDWATCH_SYNC_SETTINGS;
     this.maxPages = options.maxPages ?? 100;
-    this.store = new FindingStore(prisma, options.notices);
+    this.store = new FindingStore(prisma, options.notices, storeOptions(options));
     this.ownership = new CloudWatchOwnershipStore(prisma, options.ownershipKey);
     this.tenantIds = options.tenantIds;
     this.lease = new SyncLease(

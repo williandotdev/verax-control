@@ -10,6 +10,8 @@ export const TENANT_SCOPED_MODELS = [
   'cloudAccount',
   'protectedResource',
   'alertException',
+  // Exceções amplas a partir de um caso (casos, PR-9).
+  'scopedException',
   'finding',
   'findingComment',
   'incident',

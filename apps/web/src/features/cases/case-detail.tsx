@@ -3,6 +3,7 @@ import {
   type CaseDetail,
   type CaseOperation,
   type CaseTimeline,
+  canWriteScopedExceptions,
   isMassTriageRole,
   type TriageCan,
 } from '@verax/shared';
@@ -10,6 +11,7 @@ import { type ReactNode, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { MiniBars } from '@/components/charts/mini-bars';
 import { SeverityBadge } from '@/components/security/severity-badge';
+import { useMe } from '@/features/session/session';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { selectionSearch, withChanges } from '@/features/detections/url-state';
@@ -33,6 +35,7 @@ import { alertCount, groupingText, keyPartRows, QUEUE_LABELS, sealLabel } from '
 import { OperationActions } from './operation-outcome';
 import { OPERATION_STATE_LABELS, operationTitle } from './operation-text';
 import { SplitDialog, type SplitTarget } from './split-dialog';
+import { CaseExceptionDialog } from './case-exception-dialog';
 
 const ALERT_UNIT = { one: 'alerta', many: 'alertas' } as const;
 
@@ -52,8 +55,13 @@ function Section({ title, children, hint }: { title: string; children: ReactNode
  * operações. Tudo o que veio do evento é texto, quebrado na largura do painel.
  */
 export function CaseDetailView({ detail }: { detail: CaseDetail }) {
-  const { canTriage, canPromote, openBulk } = useCasesContext();
+  const { canTriage, canPromote, openBulk, mode, role } = useCasesContext();
   const [split, setSplit] = useState<SplitTarget | null>(null);
+  const [excepting, setExcepting] = useState(false);
+  const { data: me } = useMe();
+  // Criar exceção a partir do caso: quem opera exceções, com os casos ligados. A ampla, só administradores (D8).
+  const mayExcept = mode === 'on' && me?.permissions.includes('alert_exceptions:write') === true;
+  const mayWide = mayExcept && role !== null && canWriteScopedExceptions(role);
   const pending = sumPending(detail.pending);
   const mayTreat = canTriage && detail.can.triage;
   const actions = BULK_ACTIONS.filter(
@@ -92,6 +100,19 @@ export function CaseDetailView({ detail }: { detail: CaseDetail }) {
         </Section>
       )}
 
+      {mayExcept && (
+        <Section
+          title="Comportamento esperado"
+          hint="Os próximos alertas iguais entram como legítimos, sem pedir decisão."
+        >
+          <div>
+            <Button variant="secondary" size="sm" className="max-md:h-11" onClick={() => setExcepting(true)}>
+              Criar exceção
+            </Button>
+          </div>
+        </Section>
+      )}
+
       <Section title="O que os alertas têm em comum">
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
           {detail.preview.accounts.length === 1 && (
@@ -115,6 +136,9 @@ export function CaseDetailView({ detail }: { detail: CaseDetail }) {
       <Previous detail={detail} />
       <Incidents detail={detail} />
       <Operations detail={detail} />
+      {excepting && (
+        <CaseExceptionDialog caseId={detail.id} canWide={mayWide} onClose={() => setExcepting(false)} />
+      )}
       {split !== null && <SplitDialog detail={detail} target={split} onClose={() => setSplit(null)} />}
     </>
   );

@@ -31,6 +31,7 @@ import { scopeToTenant } from '../../common/prisma/tenant-scope.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { concurrencyLimit } from '../../inventory/inventory.js';
 import type { AlertNotices } from '../../notifications/finding-notices.js';
+import type { ScopedExceptionSource } from '../../alerts/scoped-exception-match.js';
 import { COLLECTING_TENANT } from '../../tenants/tenant-status.js';
 import type { ProviderRanges } from '../data/proxy-ranges.js';
 import { WebLogEngine } from '../engine.js';
@@ -157,6 +158,8 @@ export interface WebLogsReport extends ReadCounts {
 export interface WebLogsOptions {
   audit?: AuditService;
   notices?: AlertNotices;
+  /** As exceções amplas (casos, PR-9), só com `CASES_MODE=on`. */
+  scopedExceptions?: ScopedExceptionSource;
   /** A evidência de um achado foi recusada: ele foi gravado sem ela. Recebe só o id da regra. */
   onEvidenceRefused?: (ruleId: string) => void;
   /** A tabela de países; null: o tráfego sai com o país desconhecido. */
@@ -349,6 +352,7 @@ export class WebLogsCollector {
     {
       audit = new AuditService(),
       notices,
+      scopedExceptions,
       onEvidenceRefused,
       countries = null,
       name = WEB_LOGS_SYNC,
@@ -376,11 +380,10 @@ export class WebLogsCollector {
     this.lease = new SyncLease(prisma, name, owner, leaseMs);
     this.renewEveryMs = Math.max(250, Math.floor(leaseMs / 3));
     this.cursors = new CollectorCursors(prisma);
-    this.store = new FindingStore(
-      prisma,
-      notices,
-      onEvidenceRefused === undefined ? {} : { onEvidenceRefused },
-    );
+    this.store = new FindingStore(prisma, notices, {
+      ...(onEvidenceRefused !== undefined && { onEvidenceRefused }),
+      ...(scopedExceptions !== undefined && { scopedExceptions }),
+    });
     this.traffic = new WebTrafficStore(prisma);
     this.countries = countries;
     this.name = name;

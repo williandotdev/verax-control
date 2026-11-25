@@ -8,7 +8,7 @@ import { AccountDirectory, type RegisteredAwsAccount, resolveAlertOwner } from '
 import { awsAlertTitle } from './aws-rule-titles.js';
 import { type ActiveException, matchingException } from './exception-match.js';
 import { toFindingDraft } from './finding-draft.js';
-import { FindingStore, LastEvents, SyncLease, type UnownedRecord } from './finding-store.js';
+import { FindingStore, storeOptions, LastEvents, SyncLease, type UnownedRecord } from './finding-store.js';
 import {
   cursorFromSort,
   DEFAULT_SYNC_SETTINGS,
@@ -17,6 +17,7 @@ import {
   syncWindowStart,
 } from './sync-query.js';
 import type { AlertNotices } from '../notifications/finding-notices.js';
+import type { ScopedExceptionSource } from './scoped-exception-match.js';
 import { type AwsSource, parseWazuhAlert, type WazuhAwsAlert } from './wazuh-alert.js';
 
 /** Quem busca os alertas: o `IndexerClient` em produção, um dublê nos testes. */
@@ -38,6 +39,8 @@ export interface AlertSyncOptions {
   owner?: string;
   /** Avisos por e-mail do alerta (os testes trocam por um que falha, para provar que nada fica pela metade). */
   notices?: AlertNotices;
+  /** As exceções amplas (casos, PR-9), só com `CASES_MODE=on`. */
+  scopedExceptions?: ScopedExceptionSource;
 }
 
 export interface SyncReport {
@@ -115,7 +118,7 @@ export class AlertSync {
     this.name = options.name ?? ALERT_SYNC;
     this.settings = options.settings ?? DEFAULT_SYNC_SETTINGS;
     this.maxPages = options.maxPages ?? 100;
-    this.store = new FindingStore(prisma, options.notices);
+    this.store = new FindingStore(prisma, options.notices, storeOptions(options));
     this.lease = new SyncLease(
       prisma,
       this.name,

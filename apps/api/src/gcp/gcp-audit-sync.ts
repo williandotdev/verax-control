@@ -1,10 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { type ActiveException, matchingException } from '../alerts/exception-match.js';
-import { FindingStore, LastEvents, SyncLease, type UnownedRecord } from '../alerts/finding-store.js';
+import {
+  FindingStore,
+  storeOptions,
+  LastEvents,
+  SyncLease,
+  type UnownedRecord,
+} from '../alerts/finding-store.js';
 import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import type { AlertNotices } from '../notifications/finding-notices.js';
+import type { ScopedExceptionSource } from '../alerts/scoped-exception-match.js';
 import { COLLECTING_TENANT_SELECT, isCollectingTenant } from '../tenants/tenant-status.js';
 import { base64Bytes, UsageMeter } from '../usage/usage-meter.js';
 import { parseLogMessage } from './gcp-log-entry.js';
@@ -24,6 +31,8 @@ export interface GcpAuditSyncOptions {
   maxPulls?: number;
   /** Avisos por e-mail do alerta (os testes trocam por um que falha, para provar que nada fica pela metade). */
   notices?: AlertNotices;
+  /** As exceções amplas (casos, PR-9), só com `CASES_MODE=on`. */
+  scopedExceptions?: ScopedExceptionSource;
 }
 
 export interface GcpSyncReport {
@@ -146,7 +155,7 @@ export class GcpAuditSync {
     this.name = options.name ?? GCP_AUDIT_SYNC;
     this.pullSize = options.pullSize ?? 100;
     this.maxPulls = options.maxPulls ?? 20;
-    this.store = new FindingStore(prisma, options.notices);
+    this.store = new FindingStore(prisma, options.notices, storeOptions(options));
     this.lease = new SyncLease(
       prisma,
       this.name,
