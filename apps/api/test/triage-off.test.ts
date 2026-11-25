@@ -19,7 +19,7 @@ import {
   statusRequest,
 } from './support/triage.js';
 
-/** Com `CASES_MODE=off` (o padrão), a triagem em massa não existe para ninguém. */
+/** Com `CASES_MODE=off`, a triagem em massa não existe para ninguém. */
 describe('triagem em massa desligada (CASES_MODE=off)', () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;

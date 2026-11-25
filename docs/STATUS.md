@@ -7683,6 +7683,12 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
     desfaz.
   - Não rodou num nó de verdade nem o e2e `fullstack`.
 
+## Casos: a medição vira o padrão da versão (25/11/2026)
+
+- Sem a linha `CASES_MODE`, o nó passa a calcular os casos (`shadow`). Só a equipe da Verax os vê, ninguém trata em massa, e os e-mails não
+  mudam. Vale 48 horas antes de qualquer decisão sobre o `on` (portão em `docs/runbooks/casos.md`).
+- Nó com a linha no `node.conf` continua com o valor dela; `off` desliga.
+
 ## Ataques web pelos logs do ALB: disponíveis por padrão na versão (pedido do responsável de 25/11/2026)
 
 - Sem a linha `AWS_WEB_LOGS_ENABLED`, o nó dedicado oferece os balanceadores no painel. **Nada é lido até alguém do cliente autorizar cada
