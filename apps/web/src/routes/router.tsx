@@ -1,5 +1,9 @@
 import { type ComponentType, createElement } from 'react';
-import { ESCALATION_CONFIRM_PATH, ESCALATION_UNSUBSCRIBE_PATH } from '@verax/shared';
+import {
+  CLOUDFLARE_OAUTH_PANEL_PATH,
+  ESCALATION_CONFIRM_PATH,
+  ESCALATION_UNSUBSCRIBE_PATH,
+} from '@verax/shared';
 import { createBrowserRouter, type RouteObject } from 'react-router';
 import { LegacyRedirect } from '@/features/detections/legacy';
 import { DemoTourMount } from '@/features/tour/entry';
@@ -17,6 +21,7 @@ import { AgentsPage } from '@/pages/agents-page';
 import { AssetsPage } from '@/pages/assets-page';
 import { AuditPage } from '@/pages/audit-page';
 import { ChangePasswordPage } from '@/pages/change-password-page';
+import { CloudflareReturnPage } from '@/pages/cloudflare-return-page';
 import { DetectionsPage } from '@/pages/detections-page';
 import { EscalationConfirmPage, EscalationUnsubscribePage } from '@/pages/escalation-link-pages';
 import { ForbiddenPage } from '@/pages/forbidden-page';
@@ -107,6 +112,9 @@ export const routes: RouteObject[] = [
   { path: ESCALATION_CONFIRM_PATH, element: <EscalationConfirmPage /> },
   { path: ESCALATION_UNSUBSCRIBE_PATH, element: <EscalationUnsubscribePage /> },
   { path: '/sem-permissao', element: <ForbiddenPage /> },
+  // O retorno do "Conectar com Cloudflare" (o endereço que o nó anuncia, `CLOUDFLARE_OAUTH_PANEL_PATH`): cuida da sessão
+  // sozinho, sem o redirecionamento do `RequireSession` (o retorno sem sessão é descartado, não retomado depois do login).
+  { path: CLOUDFLARE_OAUTH_PANEL_PATH, element: <CloudflareReturnPage /> },
   {
     element: <RequireSession />,
     children: [
