@@ -54,6 +54,8 @@ const WEB_CONTRACTS = '20261201120000_web_logs_contracts';
 const WEB_CONTRACTS_NOTE = 'aws_cost_alb_logs';
 /** O índice dos avisos de um caso. */
 const CASE_NOTICE_INDEX = '20261202120000_notification_case_index';
+/** E a das chaves de acesso nas amostras do caso. */
+const CASE_ACCESS_KEYS = '20261203120000_case_access_keys';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -110,6 +112,7 @@ describe(`migration ${MIGRATION}`, () => {
       WEB_LOGS,
       WEB_CONTRACTS,
       CASE_NOTICE_INDEX,
+      CASE_ACCESS_KEYS,
     ]);
     const additive = [
       MIGRATION,
@@ -120,6 +123,7 @@ describe(`migration ${MIGRATION}`, () => {
       UNTRIAGED_INDEX,
       NOTICE_INDEX,
       CASE_NOTICE_INDEX,
+      CASE_ACCESS_KEYS,
     ];
     for (const name of additive) {
       const sql = sqlOf(name);

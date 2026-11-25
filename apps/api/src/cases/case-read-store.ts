@@ -43,7 +43,7 @@ export interface CaseSetFilter {
  */
 export function protectedCaseWhere(protectedItems: readonly string[]): Prisma.Sql {
   return Prisma.sql`(cardinality(${[...protectedItems]}::text[]) > 0 AND EXISTS (
-          SELECT 1 FROM unnest(c."resources" || c."actors" || c."ips") AS s(value)
+          SELECT 1 FROM unnest(c."resources" || c."actors" || c."accessKeys" || c."ips") AS s(value)
           WHERE s.value = ANY(${[...protectedItems]}::text[])
         ))`;
 }

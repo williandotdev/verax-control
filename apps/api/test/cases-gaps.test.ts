@@ -303,6 +303,17 @@ describe('casos: o que a tela pedia à API', () => {
         protectedCases: 1,
       });
     });
+
+    it('a prévia conta como protegido o caso que só toca a chave de acesso protegida', async () => {
+      const { tenantId, who } = await customer('prévia da chave');
+      const key = 'DEMOCHAVEDEACESSO4';
+      await caseWith(prisma, tenantId, [{}], { actors: ['dono-da-chave'], accessKeys: [key] });
+      await caseWith(prisma, tenantId, [{}], { actors: ['dono-da-chave'] });
+      await prisma.protectedResource.create({
+        data: { tenantId, type: 'access_key', identifier: key, reason: 'teste', createdById: who.userId },
+      });
+      expect(await previewOf(who, 'q=dono-da-chave')).toMatchObject({ cases: 2, protectedCases: 1 });
+    });
   });
 
   describe('quem pediu operações nos últimos 30 dias', () => {
