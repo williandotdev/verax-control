@@ -4,8 +4,9 @@ import {
   type FindingStatus,
   type MitreTactic,
   type ReportWindowPeriod,
+  type SummaryReport,
 } from '@verax/shared';
-import type { ReactNode } from 'react';
+import { type ReactNode, useContext } from 'react';
 import { Link } from 'react-router';
 import { INK_RAMP } from '@/components/charts/chart-utils';
 import { LineChart } from '@/components/charts/line-chart';
@@ -18,12 +19,13 @@ import { PROVIDER_LABELS } from '@/features/admin/labels';
 import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
 import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
 import { cn } from '@/lib/cn';
-import { formatTimestamp } from '@/lib/format';
-import { formatDuration, TACTIC_LABELS } from './labels';
-import { MitreGrid } from './mitre-grid';
+import { formatCount, formatTimestamp } from '@/lib/format';
+import { formatDuration } from './labels';
+import { MitreRadar } from './mitre-radar';
 import { ReportContext } from './report-context';
 import { ReportSection, ReportTable } from './report-table';
 import { type ReportRange, useReport } from './reports-api';
+import { formatPart, type TacticShare, tacticShares } from './tactic-share';
 
 /**
  * As análises que vieram do menu Relatórios para a tela Detecções, na janela do filtro de período da tela: o resumo
@@ -83,7 +85,41 @@ function Loaded<T extends { period: ReportWindowPeriod; from: string; to: string
   );
 }
 
-/** As 14 táticas na grade e na tabela; cada tática da grade filtra a lista por ela (`tacticHref`). */
+/** Por que um alerta pode ficar sem tática, em linguagem simples. */
+const NO_TACTIC_EXPLANATION =
+  'A matriz mostra ações de um ataque. Vulnerabilidades, controles reprovados e acessos abertos são fraquezas, não ações de um ataque: ficam sem tática, mas continuam na lista de alertas, para validar. Cada alerta fica com a classificação de quando chegou.';
+
+/**
+ * A matriz vazia, explicada: sem isto, um cliente com milhares de alertas de vulnerabilidade e de postura vê 14 zeros e
+ * acha que a tela quebrou. O relatório do MITRE não traz o total de alertas (o contrato é fechado, e um painel de antes
+ * recusaria um campo novo): ele vem do relatório de resumo da mesma janela, pedido só com a matriz vazia. Sem ele
+ * (carregando, erro, ou a matriz ainda da janela anterior), a explicação segue sem o número.
+ */
+function MitreEmptyNote({ range }: { range: ReportRange }) {
+  const { current } = useContext(ReportContext);
+  const summary = useReport('summary', range, current);
+  const total = current && summary.data && !summary.isPlaceholderData ? summary.data.findings.total : null;
+  if (total === 0) {
+    return <p className="rounded-md border p-3 text-sm">Nenhum alerta neste período.</p>;
+  }
+  return (
+    <div className="space-y-1 rounded-md border p-3 text-sm">
+      <p className="font-medium">
+        {total === null
+          ? 'Nenhum alerta deste período tem tática do MITRE ATT&CK.'
+          : total === 1
+            ? 'O único alerta deste período não tem tática do MITRE ATT&CK.'
+            : `Nenhum dos ${formatCount(total)} alertas deste período tem tática do MITRE ATT&CK.`}
+      </p>
+      <p className="text-muted-foreground">{NO_TACTIC_EXPLANATION}</p>
+    </div>
+  );
+}
+
+/**
+ * As 14 táticas no gráfico de radar e na tabela; cada tática com alerta, no gráfico, filtra a lista por ela
+ * (`tacticHref`). Sem alerta com tática, a explicação toma o lugar do gráfico: uma teia sem série pareceria quebrada.
+ */
 export function MitreReportView({
   range,
   tacticHref,
@@ -96,39 +132,66 @@ export function MitreReportView({
     <Loaded query={report} label="o MITRE ATT&CK">
       {(data) => (
         <>
-          <MitreGrid tactics={data.tactics} tacticHref={tacticHref} />
+          {data.tactics.every((tactic) => tactic.findings === 0) ? (
+            <MitreEmptyNote range={range} />
+          ) : (
+            <p className="text-xs text-muted-foreground">{NO_TACTIC_EXPLANATION}</p>
+          )}
+          <MitreRadar tactics={data.tactics} tacticHref={tacticHref} />
           <ReportTable
             caption="Táticas e técnicas do MITRE ATT&CK"
             file={'mitre-attck'}
-            rows={data.tactics}
-            rowKey={(row) => row.id}
+            rows={tacticShares(data.tactics)}
+            rowKey={({ tactic }) => tactic.id}
             columns={[
               {
                 header: 'Tática',
-                cell: (row) => `${row.id} · ${TACTIC_LABELS[row.name] ?? row.name}`,
-                csv: (row) => `${row.id} ${row.name}`,
+                cell: ({ tactic, label }) => `${tactic.id} · ${label}`,
+                csv: ({ tactic }) => `${tactic.id} ${tactic.name}`,
               },
-              { header: 'Alertas', cell: (row) => row.findings, csv: (row) => row.findings, align: 'right' },
+              // Só com os casos: sem eles, a tabela e o CSV são os de sempre.
+              ...(data.tactics.some((tactic) => tactic.cases !== undefined)
+                ? [
+                    {
+                      header: 'Casos',
+                      cell: ({ tactic }: TacticShare) => formatCount(tactic.cases ?? 0),
+                      csv: ({ tactic }: TacticShare) => tactic.cases,
+                      align: 'right' as const,
+                    },
+                  ]
+                : []),
+              {
+                header: 'Alertas',
+                cell: ({ tactic }) => formatCount(tactic.findings),
+                csv: ({ tactic }) => tactic.findings,
+                align: 'right',
+              },
+              {
+                // Só na tela: no CSV vão os números crus e inteiros, de onde o percentual sai.
+                header: 'Participação',
+                cell: ({ share }) => formatPart(share),
+                align: 'right',
+              },
               {
                 header: 'Incidentes',
-                cell: (row) => row.incidents,
-                csv: (row) => row.incidents,
+                cell: ({ tactic }) => formatCount(tactic.incidents),
+                csv: ({ tactic }) => tactic.incidents,
                 align: 'right',
               },
               {
                 header: 'Técnicas mais vistas',
-                cell: (row) =>
-                  row.techniques.length === 0 ? (
+                cell: ({ tactic }) =>
+                  tactic.techniques.length === 0 ? (
                     <span className="text-muted-foreground">—</span>
                   ) : (
                     <span className="font-mono text-xs">
-                      {row.techniques
-                        .map((technique) => `${technique.id} (${technique.findings})`)
+                      {tactic.techniques
+                        .map((technique) => `${technique.id} (${formatCount(technique.findings)})`)
                         .join(', ')}
                     </span>
                   ),
-                csv: (row) =>
-                  row.techniques.map((technique) => `${technique.id} (${technique.findings})`).join('; '),
+                csv: ({ tactic }) =>
+                  tactic.techniques.map((technique) => `${technique.id} (${technique.findings})`).join('; '),
               },
             ]}
           />
@@ -197,6 +260,33 @@ function Kpi({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+/**
+ * Os casos abertos no período e em que pé estão agora. A mediana, e não a média: tratar milhares de alertas de uma vez
+ * distorce a média por alerta que fica no topo.
+ */
+function CasesSummary({ cases }: { cases: NonNullable<SummaryReport['cases']> }) {
+  return (
+    <ReportSection
+      caption="Casos abertos no período"
+      file="casos-do-periodo"
+      rows={[cases]}
+      csv={[
+        { header: 'Casos abertos', csv: (row) => row.opened },
+        { header: 'Tratados', csv: (row) => row.treated },
+        { header: 'Pendentes', csv: (row) => row.pending },
+        { header: 'Mediana até tratar (minutos)', csv: (row) => row.medianMinutesToTreat },
+      ]}
+    >
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Kpi label="Casos abertos" value={formatCount(cases.opened)} />
+        <Kpi label="Já tratados" value={formatCount(cases.treated)} />
+        <Kpi label="Ainda pendentes" value={formatCount(cases.pending)} />
+        <Kpi label="Tempo mediano até tratar" value={formatDuration(cases.medianMinutesToTreat)} />
+      </div>
+    </ReportSection>
+  );
+}
+
 /** O resumo do período: os números do topo, os alertas por severidade, status (pizza) e fonte, e por dia (linhas). */
 export function SummaryReportView({ range }: { range: ReportRange }) {
   const report = useReport('summary', range, true);
@@ -205,12 +295,13 @@ export function SummaryReportView({ range }: { range: ReportRange }) {
       {(data) => (
         <>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <Kpi label="Alertas no período" value={data.findings.total} />
-            <Kpi label="Incidentes abertos no período" value={data.incidents.opened} />
-            <Kpi label="Incidentes resolvidos" value={data.incidents.resolved} />
+            <Kpi label="Alertas no período" value={formatCount(data.findings.total)} />
+            <Kpi label="Incidentes abertos no período" value={formatCount(data.incidents.opened)} />
+            <Kpi label="Incidentes resolvidos" value={formatCount(data.incidents.resolved)} />
             <Kpi label="Tempo médio até a validação" value={formatDuration(data.meanTimeToTriageMinutes)} />
             <Kpi label="Tempo médio até a resolução" value={formatDuration(data.meanTimeToResolveMinutes)} />
           </div>
+          {data.cases && <CasesSummary cases={data.cases} />}
           <div className="grid gap-6 lg:grid-cols-3">
             <ReportTable
               caption="Alertas por severidade"

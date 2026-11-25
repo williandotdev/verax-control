@@ -1,10 +1,11 @@
-import { type Me, CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
+import { type CaseMode, type Me, CREDENTIAL_CHANGE_REQUIRED_CODE, towerQuerySchema } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { createAdminHandlers, demoAdminStore } from './admin';
 import { createAgentsHandlers } from './agents-handlers';
 import { createAuditHandlers } from './audit-handlers';
 import { createAuthHandlers } from './auth-handlers';
+import { addCaseFindings, createCaseHandlers, createCaseWorlds } from './cases-handlers';
 import { demoTower } from './fixtures';
 import { demoFindings } from './findings-fixtures';
 import { createFindingHandlers } from './findings-handlers';
@@ -13,7 +14,9 @@ import { createReportHandlers, demoMitre } from './reports-handlers';
 import { createInventoryHandlers } from './inventory';
 import { createPlanHandlers } from './plan-handlers';
 import { createPostureHandlers } from './posture';
+import type { TriageScenario } from './triage-engine';
 import { createUnownedHandlers, demoUnownedAlerts } from './unowned-handlers';
+import { createWebTrafficHandlers, type MockTrafficMode } from './web-traffic';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
 export interface MockState {
@@ -40,6 +43,22 @@ export interface MockState {
    * `localStorage['verax.mock.plan']` (`plataforma`).
    */
   platform?: boolean;
+  /** Os casos no nó. Sem informar, `localStorage['verax.mock.cases']` ou ligados. Vale o da montagem dos handlers. */
+  cases?: CaseMode;
+  /** O que dá errado na triagem em massa (`triage-engine.ts`). Sem informar, `localStorage['verax.mock.triage']` ou nada. */
+  triage?: TriageScenario;
+  /** Quantos alertas de vulnerabilidade existem. Sem informar, `localStorage['verax.mock.cases.volume']` ou o padrão. */
+  caseVolume?: number;
+  /**
+   * Os ataques web pelos logs do ALB neste nó. Sem informar, ligados, a não ser com
+   * `localStorage['verax.mock.web-logs'] = 'off'`.
+   */
+  webLogs?: boolean;
+  /**
+   * O mapa de origens da Alfa. Sem informar, vem do `localStorage['verax.mock.traffic']` (ou em dia, com os dados que andam
+   * com o relógio).
+   */
+  traffic?: MockTrafficMode;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;
@@ -68,8 +87,10 @@ const ALLOWED_WITH_TEMPORARY_PASSWORD = new Set([
 export function createHandlers(state: MockState) {
   // Alertas, incidentes e Torre compartilham o mesmo estado: a validação aparece em todas as telas.
   const findings = demoFindings();
+  addCaseFindings(state, findings);
   const admin = demoAdminStore();
   const incidents = initialIncidents();
+  const worlds = createCaseWorlds(state, findings, incidents, admin);
   const unowned = demoUnownedAlerts();
   // A Torre conta a fila sem dono dos últimos 7 dias, como a API.
   const recentUnowned = () =>
@@ -108,21 +129,23 @@ export function createHandlers(state: MockState) {
     ...createAuthHandlers(state),
     ...createAdminHandlers(state, admin),
     ...createFindingHandlers(state, findings),
+    ...createCaseHandlers(state, findings, incidents, worlds),
     ...createIncidentHandlers(state, findings, incidents),
     ...createPostureHandlers(state),
     ...createInventoryHandlers(state),
-    ...createReportHandlers(state, findings, incidents, admin),
+    ...createReportHandlers(state, findings, incidents, admin, worlds),
     ...createAuditHandlers(state),
     ...createUnownedHandlers(state, admin, unowned),
     ...createAgentsHandlers(state),
     ...createPlanHandlers(state, admin),
+    ...createWebTrafficHandlers(state),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)
         : HttpResponse.json({ statusCode: 401, message: 'Não autenticado' }, { status: 401 }),
     ),
     http.get(url('/v1/csrf-token'), () => HttpResponse.json({ token: 'token-csrf-ficticio' })),
-    http.get(url('/v1/tower'), () => {
+    http.get(url('/v1/tower'), ({ request }) => {
       if (!state.me)
         return HttpResponse.json({ statusCode: 401, message: 'Não autenticado' }, { status: 401 });
       if (!state.me.scopeTenantId) {
@@ -131,14 +154,36 @@ export function createHandlers(state: MockState) {
           { status: 400 },
         );
       }
+      const query = towerQuerySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
+      if (!query.success) return HttpResponse.json({ statusCode: 400, message: 'Inválido' }, { status: 400 });
+      const tenantId = state.me.scopeTenantId;
+      const now = new Date();
+      const cases = worlds.requested(tenantId, query.data);
+      const counts = towerCounts(tenantId);
       return HttpResponse.json(
-        demoTower(state.me.scopeTenantId, {
+        demoTower(tenantId, {
           includeUnowned: state.me.role === 'admin_verax',
           unownedAlerts: recentUnowned(),
-          ...towerCounts(state.me.scopeTenantId),
-          mitre: demoMitre(state.me.scopeTenantId, findings, incidents),
+          ...counts,
+          mitre: demoMitre(tenantId, findings, incidents, now, cases),
           // O pulso e o radar das últimas 24 horas acompanham os achados do mock (e a triagem feita nas outras telas).
-          findings: findings.get(state.me.scopeTenantId) ?? [],
+          findings: findings.get(tenantId) ?? [],
+          now,
+          ...(cases && {
+            cases: {
+              pending: cases.pendingByQueue(),
+              radar: cases.radar(
+                incidentSummaries(tenantId, findings, incidents).map(({ id, status, severity }) => ({
+                  id,
+                  open: status !== 'resolved',
+                  severity,
+                })),
+                now,
+              ),
+              // Na medição, as decisões continuam contando alertas.
+              validation: worlds.mode === 'on' ? cases.validation() : null,
+            },
+          }),
         }),
       );
     }),

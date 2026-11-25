@@ -13,10 +13,13 @@ import {
   reportQueryWindow,
   rulesReport,
   summaryReport,
+  withTacticCases,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import type { AdminStore } from './admin';
+import type { DemoCases } from './case-store';
+import type { CaseWorlds } from './cases-handlers';
 import type { MockState } from './handlers';
 import { type IncidentState, incidentSummaries } from './incidents-handlers';
 import { demoPeriodRefusal, demoRangeRefusal } from './plan-handlers';
@@ -80,14 +83,18 @@ export function demoMitre(
   findings: Map<string, FindingDetail[]>,
   incidents: Map<string, IncidentState>,
   now: Date = new Date(),
+  cases: DemoCases | null = null,
 ) {
   const from = new Date(now.getTime() - 30 * 24 * 60 * MINUTE).toISOString();
   const inputs = reportInputs(tenantId, findings, incidents, now);
   return {
     periodDays: 30,
-    tactics: mitreTactics(
-      inputs.findings.filter((finding) => finding.occurredAt >= from),
-      inputs.incidents.filter((incident) => incident.firstSeenAt >= from),
+    tactics: withTacticCases(
+      mitreTactics(
+        inputs.findings.filter((finding) => finding.occurredAt >= from),
+        inputs.incidents.filter((incident) => incident.firstSeenAt >= from),
+      ),
+      cases?.casesByTactic(from, now.toISOString()),
     ),
   };
 }
@@ -98,6 +105,7 @@ export function createReportHandlers(
   findings: Map<string, FindingDetail[]>,
   incidents: Map<string, IncidentState>,
   admin: AdminStore,
+  worlds: CaseWorlds,
 ) {
   return [
     http.get(url('/v1/reports/:kind'), ({ params, request }) => {
@@ -113,11 +121,20 @@ export function createReportHandlers(
       const now = new Date();
       const window = reportQueryWindow(query.data, now);
       const inputs = reportInputs(tenantId, findings, incidents, now);
+      const cases = worlds.requested(tenantId, query.data);
       switch (kind) {
         case 'summary':
-          return HttpResponse.json(summaryReport(inputs.findings, inputs.incidents, window));
-        case 'mitre':
-          return HttpResponse.json(mitreReport(inputs.findings, inputs.incidents, window));
+          return HttpResponse.json({
+            ...summaryReport(inputs.findings, inputs.incidents, window),
+            ...(cases && { cases: cases.outcomes(window.from, window.to) }),
+          });
+        case 'mitre': {
+          const report = mitreReport(inputs.findings, inputs.incidents, window);
+          return HttpResponse.json({
+            ...report,
+            tactics: withTacticCases(report.tactics, cases?.casesByTactic(window.from, window.to)),
+          });
+        }
         case 'rules':
           return HttpResponse.json(rulesReport(inputs.findings, window));
         case 'entities':

@@ -11,7 +11,8 @@ import { DEMO_ACCOUNTS, DEMO_TENANTS } from './fixtures';
  * Achados fictícios da demonstração, coerentes com a Torre: o cliente Alfa tem exatamente 5 achados altos ou
  * críticos novos fora de incidente, e grupos de achados que formam os incidentes (mesma chave, mesmo IP, mesma
  * instância). Endereços IP das faixas reservadas para documentação (RFC 5737) e IDs de exemplo da AWS. O Alfa tem
- * também dois achados de um agente do Wazuh numa instância dele (origem `agent:001`, a `api-producao-01`).
+ * também dois achados de um agente do Wazuh numa instância dele (origem `agent:001`, a `api-producao-01`) e quatro de ataques
+ * web, dos logs de um balanceador (o `api-alb`, que está alertando).
  */
 
 /** O agente do Wazuh da instância `api-producao-01` do Alfa (o mesmo da tela Agentes). */
@@ -32,7 +33,8 @@ export const DEMO_INCIDENTS = {
   betaLogin: '018f2c1e-0000-7000-8000-0000000b0002',
 } as const;
 
-interface Template {
+/** Um alerta fictício, com o tempo contado para trás a partir de agora. */
+export interface DemoFindingTemplate {
   title: string;
   source: FindingSource;
   severity: FindingSeverity;
@@ -61,7 +63,7 @@ const ATTACKER = '198.51.100.23';
 /** A conta de serviço de deploy do projeto fictício da GCP do Alfa. */
 const GCP_DEPLOY = 'deploy@loja-alfa-demo.iam.gserviceaccount.com';
 
-const ALFA_FINDINGS: Template[] = [
+const ALFA_FINDINGS: DemoFindingTemplate[] = [
   {
     title: 'Tentativa de desligar a trilha do CloudTrail',
     source: 'cloudtrail',
@@ -516,9 +518,76 @@ const ALFA_FINDINGS: Template[] = [
     techniques: ['T1562.007'],
     account: DEMO_ACCOUNTS.alfaGcp,
   },
+  // Ataques web vistos nos logs dos balanceadores (a evidência está em `finding-evidence.ts`). No fim da lista: o ID de cada
+  // achado sai da posição dele.
+  {
+    title: 'Força bruta numa rota de login por um mesmo endereço',
+    source: 'alb',
+    severity: 'high',
+    status: 'investigating',
+    minutesAgo: 235,
+    ruleId: '990405',
+    ruleLevel: 10,
+    eventName: '447 falhas em 448 tentativas de login em 15 min',
+    region: 'sa-east-1',
+    resource: 'alb:app/api-alb/50dc6c495c0c9101',
+    ip: '192.0.2.61',
+    tactics: ['Credential Access'],
+    techniques: ['T1110'],
+  },
+  {
+    title: 'Sondagem de caminhos sensíveis por um mesmo endereço',
+    source: 'alb',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 128,
+    ruleId: '990402',
+    ruleLevel: 7,
+    eventName: '88 sondas a caminhos sensíveis (5 famílias) em 15 min',
+    region: 'sa-east-1',
+    resource: 'alb:app/api-alb/50dc6c495c0c9101',
+    ip: '192.0.2.94',
+    tactics: ['Reconnaissance'],
+    techniques: ['T1595.003'],
+  },
+  {
+    title: 'Varredura oportunista contra o balanceador (resumo do dia)',
+    source: 'alb',
+    severity: 'low',
+    status: 'new',
+    minutesAgo: 420,
+    ruleId: '990400',
+    ruleLevel: 4,
+    eventName: '47 endereços no dia: 731 sondas, 118 requisições de ferramenta, 402 recusas de enumeração',
+    region: 'sa-east-1',
+    resource: 'alb:app/api-alb/50dc6c495c0c9101',
+    tactics: ['Reconnaissance'],
+    techniques: ['T1595'],
+  },
+  {
+    title: 'Força bruta distribuída numa rota de login',
+    source: 'alb',
+    severity: 'high',
+    status: 'resolved',
+    minutesAgo: 41 * 24 * 60,
+    ruleId: '990407',
+    ruleLevel: 10,
+    eventName: 'cerca de 1905 falhas de login de 212 endereços, até 20 cada um, em 15 min',
+    region: 'sa-east-1',
+    resource: 'alb:app/api-alb/50dc6c495c0c9101',
+    tactics: ['Credential Access'],
+    techniques: ['T1110'],
+    comments: [
+      {
+        author: 'Equipe Verax',
+        body: 'Limite por endereço ligado no WAF e senha trocada nas contas com sucesso.',
+        minutesAgo: 41 * 24 * 60 - 90,
+      },
+    ],
+  },
 ];
 
-const BETA_FINDINGS: Template[] = [
+const BETA_FINDINGS: DemoFindingTemplate[] = [
   {
     title: 'Login no console sem MFA',
     source: 'cloudtrail',
@@ -577,7 +646,7 @@ const id = (prefix: number, index: number): string =>
 
 const iso = (now: Date, minutes: number): string => new Date(now.getTime() - minutes * 60_000).toISOString();
 
-function rawEvent(t: Template, account: string, at: string): Record<string, unknown> {
+function rawEvent(t: DemoFindingTemplate, account: string, at: string): Record<string, unknown> {
   if (t.source === 'wazuh_agent') {
     // O alerta do agente como o indexer o guarda, já sem o log bruto (o detalhe tira o `full_log`).
     const host = (t.resource ?? '').replace(/^host:/, '');
@@ -620,6 +689,17 @@ function rawEvent(t: Template, account: string, at: string): Record<string, unkn
       severity: 'NOTICE',
     };
   }
+  if (t.source === 'inspector' || t.source === 'security_hub') {
+    // O achado como a API da AWS o entrega, só com os campos que o detalhe mostra.
+    return {
+      awsAccountId: account,
+      updatedAt: at,
+      title: t.title,
+      severity: t.severity.toUpperCase(),
+      ...(t.source === 'inspector' ? { vulnerabilityId: t.eventName } : { controlId: t.eventName }),
+      resources: [{ id: t.resource, region: t.region }],
+    };
+  }
   if (t.source === 'waf') {
     return {
       timestamp: Date.parse(at),
@@ -650,7 +730,12 @@ function rawEvent(t: Template, account: string, at: string): Record<string, unkn
   };
 }
 
-function build(templates: Template[], prefix: number, defaultAccount: string, now: Date): FindingDetail[] {
+export function buildDemoFindings(
+  templates: readonly DemoFindingTemplate[],
+  prefix: number,
+  defaultAccount: string,
+  now: Date,
+): FindingDetail[] {
   return templates.map((t, index) => {
     const account = t.account ?? defaultAccount;
     const occurredAt = iso(now, t.minutesAgo);
@@ -684,7 +769,8 @@ function build(templates: Template[], prefix: number, defaultAccount: string, no
       ruleLevel: t.ruleLevel,
       mitreTechniques: t.techniques ?? [],
       comments,
-      rawEvent: t.minutesAgo > 90 * 24 * 60 ? null : rawEvent(t, account, occurredAt),
+      // Dos logs do ALB, nenhuma linha fica guardada: o que há é a evidência.
+      rawEvent: t.minutesAgo > 90 * 24 * 60 || t.source === 'alb' ? null : rawEvent(t, account, occurredAt),
     });
   });
 }
@@ -694,7 +780,7 @@ export function demoFindings(now: Date = new Date()): Map<string, FindingDetail[
   const [alfa, beta] = DEMO_TENANTS.map((tenant) => tenant.id);
   const byDate = (a: FindingDetail, b: FindingDetail) => b.occurredAt.localeCompare(a.occurredAt);
   return new Map([
-    [alfa ?? '', build(ALFA_FINDINGS, 1, DEMO_ACCOUNTS.alfaProducao, now).sort(byDate)],
-    [beta ?? '', build(BETA_FINDINGS, 2, DEMO_ACCOUNTS.beta, now).sort(byDate)],
+    [alfa ?? '', buildDemoFindings(ALFA_FINDINGS, 1, DEMO_ACCOUNTS.alfaProducao, now).sort(byDate)],
+    [beta ?? '', buildDemoFindings(BETA_FINDINGS, 2, DEMO_ACCOUNTS.beta, now).sort(byDate)],
   ]);
 }

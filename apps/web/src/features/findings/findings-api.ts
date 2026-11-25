@@ -5,14 +5,17 @@ import {
   cloudAccountSchema,
   findingCommentSchema,
   findingDetailSchema,
+  findingEvidenceSchema,
   type FindingListQuery,
   findingSchema,
   type FindingStatusUpdate,
   paginatedSchema,
   relatedFindingsSchema,
 } from '@verax/shared';
+import { invalidateCases } from '@/features/cases/cases-api';
 import { toSearch } from '@/features/detections/detections-api';
 import { api } from '@/lib/api';
+import { ApiRequestError } from '@/lib/api-client';
 
 const findingPageSchema = paginatedSchema(findingSchema);
 const cloudAccountPageSchema = paginatedSchema(cloudAccountSchema);
@@ -36,6 +39,24 @@ export function useFinding(id: string | null) {
   });
 }
 
+/**
+ * A evidência do achado que não tem evento bruto guardado (os ataques web dos logs do ALB). Rota à parte do detalhe: o nó de antes
+ * responde 404, e o achado aparece sem ela (`null`).
+ */
+export function useFindingEvidence(id: string) {
+  return useQuery({
+    queryKey: ['finding-evidence', id],
+    queryFn: async () => {
+      try {
+        return await api.get(`/v1/findings/${encodeURIComponent(id)}/evidence`, findingEvidenceSchema);
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status === 404) return null;
+        throw error;
+      }
+    },
+  });
+}
+
 /** Contas cloud do cliente (filtro por conta). */
 export function useCloudAccounts(enabled: boolean) {
   return useQuery({
@@ -56,6 +77,8 @@ function useRefreshFindings() {
     void queryClient.invalidateQueries({ queryKey: ['incident'] });
     // O resumo da tela Detecções conta os achados sem triagem.
     void queryClient.invalidateQueries({ queryKey: ['tower'] });
+    // O caso conta os alertas dele por status.
+    invalidateCases(queryClient);
   };
 }
 

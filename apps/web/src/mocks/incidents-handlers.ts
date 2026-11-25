@@ -69,7 +69,7 @@ export function initialIncidents(): Map<string, IncidentState> {
 
 let created = 0;
 /** Id de um incidente confirmado na demonstração. */
-const newIncidentId = (): string =>
+export const newIncidentId = (): string =>
   `018f2c1e-0000-7000-8000-${(0xc00000 + (created += 1)).toString(16).padStart(12, '0')}`;
 
 const ORDER: readonly FindingSeverity[] = ['low', 'medium', 'high', 'critical'];

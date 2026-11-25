@@ -20,6 +20,7 @@ export const FINDING_SOURCE_LABELS: Readonly<Record<FindingSource, string>> = {
   inspector: 'Inspector',
   access_analyzer: 'IAM Access Analyzer',
   vpc_flow: 'VPC Flow Logs',
+  alb: 'ALB (logs de acesso)',
   cloudwatch_logs: 'CloudWatch Logs',
   gcp_audit: 'GCP (auditoria)',
   cloudflare_audit: 'Cloudflare (auditoria)',

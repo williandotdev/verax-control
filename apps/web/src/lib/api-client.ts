@@ -10,6 +10,8 @@ export class ApiRequestError extends Error {
     readonly code?: string,
     readonly requestId?: string,
     readonly issues?: readonly { path: string; message: string }[],
+    /** Números que a API manda junto da recusa (a contagem nova de um pedido que mudou de tamanho). */
+    readonly details?: Readonly<Record<string, number>>,
   ) {
     super(message);
     this.name = 'ApiRequestError';
@@ -56,6 +58,16 @@ interface ErrorBody {
   code?: unknown;
   requestId?: unknown;
   issues?: unknown;
+  details?: unknown;
+}
+
+/** Só os números de `details`: o resto não é do contrato e não chega à tela. */
+function numbersOf(value: unknown): Readonly<Record<string, number>> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value).filter(
+    (entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]),
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 /**
@@ -173,6 +185,7 @@ export class ApiClient {
       typeof body.code === 'string' ? body.code : undefined,
       typeof body.requestId === 'string' ? body.requestId : undefined,
       issues,
+      numbersOf(body.details),
     );
   }
 }
