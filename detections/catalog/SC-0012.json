@@ -1,0 +1,18 @@
+{
+  "id": "SC-0012",
+  "title": "Domínio e DNS alterados",
+  "goal": "Detectar mudanças que podem levar ao sequestro do domínio: transferência, destravamento ou troca de DNS no Route 53, registro DNS apagado ou alterado no Cloudflare, DNSSEC desativado e bloqueio de transferência do domínio desligado ou nameservers trocados.",
+  "logSources": ["cloudtrail", "cloudflare_audit"],
+  "rules": ["100320", "990308", "990309", "990310", "990322"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Resource Development", "Defense Evasion"],
+    "techniques": ["T1562", "T1584.001"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Confirmar a mudança com o responsável pelo domínio. Se não foi autorizada, reverter os registros, religar o bloqueio de transferência e o DNSSEC, e trocar as credenciais da conta do registrador.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": true,
+  "evidence": []
+}

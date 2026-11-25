@@ -1,0 +1,18 @@
+{
+  "id": "SC-0019",
+  "title": "Criação de recursos e permissão negada na GCP",
+  "goal": "Registrar a criação de máquina virtual e o acesso negado a uma API do Google. Isoladas, são atividades comuns; em sequência com outras detecções, ajudam a reconstruir o que uma credencial tentou fazer.",
+  "logSources": ["gcp_audit"],
+  "rules": ["990118", "990119"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Defense Evasion", "Discovery"],
+    "techniques": ["T1526", "T1578.002"]
+  },
+  "severity": "low",
+  "expectedResponse": "Usar como contexto na investigação de outros alertas. Se a criação ou as negativas vierem de uma identidade inesperada, revisar a credencial dela.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

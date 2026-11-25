@@ -1,0 +1,18 @@
+{
+  "id": "SC-0014",
+  "title": "Papel de leitura da Verax usado ou alterado indevidamente",
+  "goal": "Detectar o uso do papel de leitura da Verax fora do endereço do nó (sessão ou tentativa de assumir o papel) e alterações no papel ou na política dele. O papel só deve ser usado pelo nó da Verax.",
+  "logSources": ["cloudtrail"],
+  "rules": ["100202", "100203", "100204", "100205"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": [],
+    "techniques": ["T1078.004"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Avisar o cliente e a equipe da Verax. Conferir o endereço de origem, revogar as sessões do papel e, se a alteração não foi feita pelo template de conexão, restaurar a política original.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": true,
+  "evidence": []
+}

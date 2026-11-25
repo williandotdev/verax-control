@@ -1,0 +1,18 @@
+{
+  "id": "SC-0009",
+  "title": "Proteções de borda reduzidas (WAF e Cloudflare)",
+  "goal": "Detectar o enfraquecimento da proteção na borda: WAF da AWS desligado, desassociado, sem log ou com regras alteradas; no Cloudflare, regra de WAF desativada, endereço liberado, proteção da zona reduzida, SSL rebaixado, proxy desligado e Authenticated Origin Pulls desligado.",
+  "logSources": ["cloudtrail", "cloudflare_audit"],
+  "rules": ["100322", "100323", "990302", "990303", "990304", "990305", "990307", "990319"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Defense Evasion", "Credential Access"],
+    "techniques": ["T1557", "T1562.007", "T1562.008", "T1600"]
+  },
+  "severity": "high",
+  "expectedResponse": "Confirmar se a mudança foi planejada e por quanto tempo. Restaurar a configuração de proteção e revisar o tráfego que passou durante a janela enfraquecida, em especial tentativas de exploração.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

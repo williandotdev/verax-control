@@ -485,6 +485,43 @@ nas instâncias do cliente (regras do próprio Wazuh). Um teste confere que toda
 título e que nenhum título leva campo do evento: é o título, e não a descrição, que o aviso por e-mail (PR-16) pode
 usar.
 
+### Cobertura de detecção: o catálogo de cenários (UC-1)
+
+_(UC-1 feito: contratos, catálogo e validação. A construir: o corredor de evidências no CI (UC-2), a API e a situação por
+cliente (UC-3), a tela (UC-5) e o artefato do catálogo na versão do nó (UC-6))_
+
+- **Cenário, não regra:** cada entrada do catálogo é um cenário de detecção, agrupado pelo objetivo ("força bruta e
+  adivinhação de senha"), com as regras de qualquer fonte que servem a ele. Na interface, a tela se chama "Cobertura de
+  detecção"; a aba "Cobertura das fontes" (o relatório `coverage`) mantém o nome. "Cenário" não é o "caso" dos alertas.
+- **Onde fica:** `detections/catalog/SC-xxxx.json`, um arquivo por cenário, no schema estrito
+  `detectionScenarioSchema` (`packages/shared/src/detection-coverage.ts`): título, objetivo e resposta esperada em
+  português, fontes (`FINDING_SOURCES`), regras, MITRE, severidade, dono (apelido ou papel, nunca e-mail), estado,
+  `quietExpected` (silêncio é o esperado) e evidências. O repositório só guarda cenários com regra no código, nos
+  estados `em_teste`, `homologado` e `aposentado`; `sugerido` e `em_desenvolvimento` existem no enum, mas são da equipe
+  e não vêm para o repositório (ele é público). O cliente vê `homologado` e `em_teste`, com o rótulo, só leitura.
+- **Detecção do provedor:** GuardDuty, Security Hub, Inspector e Access Analyzer entram com `providerDetection: true` e
+  severidade `from_source`: a lógica é do provedor, e a Verax responde só pelo repasse do achado.
+- **Estado efetivo** (`effectiveScenarioState`): `homologado` declarado só vale se toda regra do cenário existe na
+  versão e tem evidência do CI positiva e negativa, com `pass`, presa à fingerprint atual da regra, e nenhuma evidência
+  do CI nessa fingerprint falhou. Senão, `em_teste` com o motivo por regra (`rule_changed`, `rule_missing`,
+  `missing_evidence`, `evidence_failed`). A evidência de laboratório é opcional, citada só pelo hash do evento, e não
+  homologa.
+- **Fingerprint** (`apps/api/test/detection-coverage/rule-fingerprints.ts`, funções puras, sem disco; a API em execução
+  não carrega o módulo): XML da Verax pelo elemento `<rule>` canonizado (sem comentários, espaços normalizados,
+  atributos em ordem) mais as mães (`if_sid`, `if_matched_sid`) em fecho; a de fábrica pelo ID e pela imagem do manager
+  com o digest do `infra/wazuh/docker-compose.yml`; a do worker pelos metadados mais o texto do módulo e do fecho dos
+  imports relativos (achados com o `ts.preProcessFile`); o GuardDuty pela imagem do manager mais `finding-keys.ts` e
+  `aws-mitre.ts`. Quebra de linha do Windows não muda o hash.
+- **O que o teste confere** (`apps/api/test/detection-coverage/catalog.test.ts`, sem banco): toda regra que pode virar
+  achado (XML de nível 5 ou mais, as tabelas do worker, as de fábrica que o código cita: 80254, GuardDuty, login nas
+  instâncias e as dos agentes) está em exatamente um cenário; nenhum cenário cita regra inexistente ou de nível abaixo
+  do mínimo; ID repetido; MITRE que o código não mapeia para as regras do cenário; fontes, severidade e
+  `providerDetection` coerentes com as regras; nenhum `@` nem número de 12 algarismos fora de `111111111111` e
+  `222222222222` em `detections/`; e as propriedades da fingerprint.
+- **Fora do catálogo hoje:** as regras genéricas do Wazuh no CloudWatch Logs e as demais regras de fábrica dos agentes
+  (nível 7 ou mais) que o código não cita por ID, como as do detector de vulnerabilidades: viram achado, mas não têm
+  lista fechada no repositório. O nó não envia nada do catálogo ao plano de controle.
+
 ## Cofre de credenciais
 
 _(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em `apps/api/src/credentials` e

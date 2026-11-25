@@ -1,0 +1,18 @@
+{
+  "id": "SC-0006",
+  "title": "Trilha de auditoria desligada ou desviada",
+  "goal": "Detectar a parada ou a exclusão do CloudTrail, o desvio ou a exclusão dos logs de auditoria da GCP (sink, exclusão, bucket), a redução da auditoria de acesso a dados e o Logpush do Cloudflare apagado ou apontado para outro destino. Sem trilha, o restante da detecção fica cego.",
+  "logSources": ["cloudtrail", "gcp_audit", "cloudflare_audit"],
+  "rules": ["100310", "990101", "990102", "990301"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Defense Evasion"],
+    "techniques": ["T1562.008"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Restaurar a trilha imediatamente e confirmar quem a alterou. Tratar a mudança não autorizada como incidente: o atacante costuma desligar a auditoria antes de agir. Revisar o que aconteceu na conta durante a janela sem registro, pelas outras fontes.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": true,
+  "evidence": []
+}

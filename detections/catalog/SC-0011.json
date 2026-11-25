@@ -1,0 +1,18 @@
+{
+  "id": "SC-0011",
+  "title": "Destruição de dados e recursos",
+  "goal": "Detectar a exclusão em massa ou de alto impacto: muitos objetos apagados no S3 em pouco tempo, versão de chave de criptografia destruída, projeto ou bucket do Cloud Storage apagado na GCP e zona apagada no Cloudflare.",
+  "logSources": ["cloudtrail", "gcp_audit", "cloudflare_audit"],
+  "rules": ["80252", "990112", "990113", "990115", "990306"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Impact"],
+    "techniques": ["T1485"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Confirmar imediatamente com o dono do recurso. Se não foi planejado, conter a credencial que apagou, verificar o que pode ser recuperado (versões, lixeira, período de exclusão programada da chave) e acionar a recuperação.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": true,
+  "evidence": []
+}

@@ -1,0 +1,18 @@
+{
+  "id": "SC-0007",
+  "title": "Ferramentas de segurança desligadas",
+  "goal": "Detectar o desligamento ou o silenciamento de ferramentas de defesa: GuardDuty desligado, com detector apagado ou com filtro de supressão, API do Google desativada no projeto e notificação do Cloudflare desativada ou apagada.",
+  "logSources": ["cloudtrail", "gcp_audit", "cloudflare_audit"],
+  "rules": ["100311", "100312", "100313", "990114", "990321"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Defense Evasion"],
+    "techniques": ["T1562", "T1562.001", "T1562.006"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Religar a ferramenta e conferir quem a desligou e se havia mudança aprovada. Sem aprovação, tratar como tentativa de evasão e revisar a atividade recente da identidade que fez a mudança.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}
