@@ -6,6 +6,7 @@ import {
   type AwsInfrastructureSummary,
   type AwsLogGroupCategory,
   type AwsReaderCapability,
+  type AwsSourceFeatures,
   type AwsSourceKind,
   isAwsRegion,
   type LogBuckets,
@@ -27,7 +28,7 @@ import {
   flowLogGroup,
   flowLogSource,
   inspectorSource,
-  loadBalancerSource,
+  loadBalancerSources,
   type LogGroupFact,
   logGroupSource,
   NOT_ENABLED_KINDS,
@@ -97,6 +98,8 @@ export interface DiscoveryTarget {
   templateOutdated: boolean;
   /** Os buckets do cadastro anterior da conta. */
   legacyBuckets: LogBuckets;
+  /** O que o nó tem ligado; sem informar, nada. */
+  features?: Readonly<AwsSourceFeatures>;
 }
 
 export interface DiscoveryResult {
@@ -246,6 +249,7 @@ export async function discoverAccount(
     accountId: target.accountId,
     legacyBuckets: target.legacyBuckets,
     capabilities: target.capabilities,
+    features: target.features,
   };
   const monitored = [...new Set(target.regions.filter(isAwsRegion))];
   const home = monitored[0] ?? STS_FALLBACK_REGION;
@@ -424,10 +428,7 @@ export async function discoverAccount(
       if (!region.balancers.truncated && region.balancers.issues.length === 0) {
         covered.add(scopeKey('elb_logs', name));
       }
-      for (const balancer of region.balancers.balancers) {
-        const source = loadBalancerSource(balancer, name, context);
-        if (source !== null) sources.push(source);
-      }
+      sources.push(...loadBalancerSources(region.balancers.balancers, name, context));
     }
   }
   if (cloudfront !== null) {

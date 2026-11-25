@@ -573,6 +573,16 @@ export const AWS_SOURCE_AVAILABILITY_TEXTS: Readonly<Record<AwsSourceAvailabilit
     'Grava num formato que o Verax não lê (Parquet, partições do Hive ou campos fora do padrão)',
 };
 
+/**
+ * Por que a fonte não dá para ler de onde está. O balanceador que não serve é de outro tipo (NLB ou GWLB): o problema não é
+ * o formato do arquivo.
+ */
+export function awsAvailabilityText(source: Pick<AwsSource, 'kind' | 'availability'>): string {
+  return source.kind === 'elb_logs' && source.availability === 'unsupported_format'
+    ? 'Não é um balanceador de aplicação (ALB): o log dele não traz as requisições web'
+    : AWS_SOURCE_AVAILABILITY_TEXTS[source.availability];
+}
+
 export const AWS_SOURCE_LOGGING_STATE_LABELS: Readonly<Record<AwsSourceLoggingState, string>> = {
   logging: 'gravando',
   stopped: 'parado',
@@ -684,6 +694,7 @@ export const AWS_SOURCE_NOTE_TEXTS: Readonly<Record<AwsSourceNote, string>> = {
   aws_cost_new_trail: 'Criar uma trilha do CloudTrail tem custo na AWS.',
   aws_cost_flow_logs: 'Ligar os VPC Flow Logs tem custo na AWS, pelo volume gravado.',
   aws_cost_waf_logging: 'Ligar o log da Web ACL tem custo na AWS, pelo volume gravado.',
+  aws_cost_alb_logs: 'Ligar o log de acesso do balanceador tem custo na AWS, pelo volume gravado no S3.',
   high_volume: 'Volume alto: pode aumentar o volume mensal do seu plano.',
   flow_logs_read_together:
     'Ao autorizar este Flow Log, o Verax lê todos os Flow Logs desta conta e região que gravam no mesmo bucket.',
@@ -709,6 +720,7 @@ export const AWS_COST_NOTES = [
   'aws_cost_new_trail',
   'aws_cost_flow_logs',
   'aws_cost_waf_logging',
+  'aws_cost_alb_logs',
 ] as const satisfies readonly AwsSourceNote[];
 
 export function isAwsCostNote(note: AwsSourceNote): boolean {
@@ -823,6 +835,12 @@ export const AWS_ONBOARDING_ERROR_TEXTS: Readonly<Record<AwsOnboardingErrorCode,
     'Os grupos do CloudWatch Logs precisam ser confirmados um a um. Marque a confirmação e autorize de novo.',
   SOURCE_LIMIT_REACHED:
     'Esta conta chegou ao limite de fontes autorizadas (50 grupos do CloudWatch Logs e 200 fontes do S3). Retire a autorização de uma fonte para autorizar outra.',
+  WEB_LOGS_ESTIMATE_REQUIRED:
+    'Um dos balanceadores escolhidos ainda não tem a estimativa de volume, ou ela tem mais de 7 dias. Peça a estimativa e autorize de novo.',
+  WEB_LOGS_ESTIMATE_CHANGED:
+    'A estimativa de volume de um dos balanceadores mudou. Confira os números de agora e autorize de novo.',
+  WEB_LOGS_ACKNOWLEDGEMENT_REQUIRED:
+    'Confirme a estimativa de volume do balanceador: ela passa de 20% do plano, ou não deu para medir o volume.',
   ACCOUNT_NOT_CONNECTED:
     'A conta não está conectada agora. Conecte a conta (ou espere a verificação terminar) antes de pedir a descoberta ou conferir uma fonte.',
   DISCOVERY_RATE_LIMITED:

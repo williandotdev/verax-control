@@ -31,6 +31,7 @@ import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
 import { controlPlaneSyncTask } from './control-plane-sync/control-plane-sync-task.js';
 import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
+import { awsSourceFeatures } from './common/config/web-logs.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 import { buildPinoOptions } from './common/logger/logger.options.js';
 import { PrismaService } from './common/prisma/prisma.service.js';
@@ -190,7 +191,8 @@ async function awsConnectionSetup(
  * (a cada 5 min olha as contas; cada conta já verificada é inventariada uma vez por dia, PR-14', e a postura nativa sai
  * da mesma coleta, PR-15'). Com ela, no nó dedicado, entra também a tarefa `aws-discovery` (onboarding self-service): a
  * cada 30 s executa as descobertas pedidas (pelo "Conectar", pelo painel e uma por dia por conta) e responde as
- * sondagens de permissão das fontes. Na célula, a descoberta fica de fora até a coleta da AWS existir lá. Junto com ela
+ * sondagens de permissão das fontes (com `AWS_WEB_LOGS_ENABLED`, também as dos balanceadores, que nenhuma tarefa lê ainda).
+ * Na célula, a descoberta fica de fora até a coleta da AWS existir lá. Junto com ela
  * entra a tarefa `aws-findings`: a cada 5 min lê, pela API de cada serviço, os achados das fontes autorizadas do
  * GuardDuty, do Security Hub, do Inspector e do Access Analyzer (`aws/findings/`).
  *
@@ -362,7 +364,9 @@ async function main(): Promise<void> {
       if (awsOnboarding) {
         const discovery = await import('./aws/discovery/discovery-job.js');
         const { sdkDiscoveryClients } = await import('./aws/discovery/sdk-clients.js');
-        const discover = new discovery.AwsDiscovery(prisma, aws.credentials, sdkDiscoveryClients);
+        const discover = new discovery.AwsDiscovery(prisma, aws.credentials, sdkDiscoveryClients, {
+          features: awsSourceFeatures(loaded),
+        });
         tasks.push({
           name: 'aws-discovery',
           intervalMs: discovery.AWS_DISCOVERY_TICK_MS,

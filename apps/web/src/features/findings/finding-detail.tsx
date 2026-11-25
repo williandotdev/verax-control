@@ -22,12 +22,14 @@ import { useAddFindingComment, useCreateAlertException, useUpdateFindingStatus }
 
 /**
  * De onde vem a regra do alerta, quando não é a do Wazuh para os logs da AWS. Os achados lidos pela API do Security
- * Hub, do Inspector e do IAM Access Analyzer têm regras do próprio nó, uma por classe de achado.
+ * Hub, do Inspector e do IAM Access Analyzer têm regras do próprio nó, uma por classe de achado; os ataques web vistos nos
+ * logs dos balanceadores, as do motor do nó.
  */
 const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
   security_hub: 'Regra (achados do Security Hub)',
   inspector: 'Regra (achados do Inspector)',
   access_analyzer: 'Regra (achados do IAM Access Analyzer)',
+  alb: 'Regra (logs de acesso do ALB)',
   gcp_audit: 'Regra (auditoria da GCP)',
   cloudflare_audit: 'Regra (auditoria do Cloudflare)',
   cloudflare_waf: 'Regra (eventos de segurança do Cloudflare)',

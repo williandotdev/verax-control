@@ -6840,3 +6840,58 @@ tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views
 - **Riscos e sugestões:** a lista de códigos do gerador é cópia da de `apps/api/src/geo/country-codes.ts` (outra branch): quando
   as duas estiverem na `main`, um teste pode comparar. Não foi conferido em leitor de tela de verdade, nem no Firefox e no
   Safari.
+
+## Ataques web pelos logs do ALB, PR-3: contratos e isolamento do Wazuh (não ligado)
+
+- **O que é:** o balanceador (`elb_logs`) passa a poder ser autorizado, atrás da linha `AWS_WEB_LOGS_ENABLED` (API e worker,
+  desligada por padrão), sem que o Wazuh do nó saiba que ele existe; a fonte `alb` nos achados; e a API da configuração
+  (`/v1/web-logs`). Vai para `integracao/alb`, sobre a PR-2. Nenhuma tarefa lê o S3, nenhuma tela nova, nada em `infra/`.
+- **Isolamento do Wazuh:** cada tipo de fonte diz quem o lê (`collector`: `wazuh`, `worker` ou ninguém). A busca e o plano da
+  lista só conhecem os do Wazuh: com balanceadores autorizados em várias contas, regiões e estados, a lista é, byte a byte, a
+  do código de antes, a conta que só tem deles não entra, e a tarefa `wazuh-config` não escreve nas linhas deles.
+- **Desligado é o de sempre:** descoberta, resposta do onboarding, recusa da autorização e nenhuma rota nova (404). Vale na
+  hora em que a linha é desligada, também para o que ficou gravado; tirar a autorização segue possível.
+- **Ligado:** a descoberta põe cada balanceador no lugar (disponível, sem log com o custo, prefixo fora do que o papel lê, NLB
+  e GWLB fora); a autorização pede a ciência da estimativa, conferida com a gravada e com o plano (D1), e cria a configuração
+  em `observe` por 72 h; até 20 por conta, dentro das 200 de bucket. CRUD de modo e multiplicador, fontes confiáveis (200 por
+  cliente) e rotas (50 por balanceador), com trilha e isolamento.
+- **Migration `20261201120000_web_logs_contracts`** (só acrescenta, numa transação): a nota `aws_cost_alb_logs` no CHECK da
+  descoberta e a tabela `WebSourceEstimate` (o pedido e o resultado da estimativa, com as chaves em cascata).
+- **Decisões tomadas aqui, a conferir:**
+  - nenhuma permissão nova: as rotas usam `cloud_accounts:read` e `cloud_accounts:write` (a mesma matriz pedida). A lista de
+    permissões vai no `GET /v1/me`, e um painel de antes recusaria a resposta inteira, mesmo com tudo desligado;
+  - desligado, as rotas respondem 404 (e não 409): é o que um nó de antes responde, e o painel trata os dois igual;
+  - a autorização continua na rota das outras fontes, com `webLogs` no corpo; a estimativa guardada é quem vale, e o número do
+    pedido só é conferido. A projeção não vai para quem não lê o plano (`plan:read`);
+  - a estimativa vale 7 dias; sem amostra ou com a listagem cortada, pede a confirmação como acima de 20%;
+  - `alert` antes do fim das 72 h é recusado, sem exceção; depois delas, é a pessoa que muda (nada vira `alert` sozinho);
+  - o teto das fontes confiáveis é do cliente inteiro (nenhum motor recebe mais que 200);
+  - faixa, dono e caminho não mudam numa alteração (é outra fonte confiável, ou outra rota): a trilha fica legível;
+  - desligados, a fonte já autorizada aparece como "aguardando", e nunca "coletando": a conta não fica verde por ela;
+  - o tipo que ninguém lê (`config`) também saiu do plano do Wazuh: antes, uma linha dele autorizada (o que nenhuma rota faz)
+    ganharia `invalid_details`. Assim, voltar a esta versão a partir de uma futura não escreve em tipos que ela não conhece.
+- **Diferença de versão:** a tabela está em `docs/ARQUITETURA.md`. Em resumo: com a linha desligada, nada muda para painel ou
+  nó de antes; esta versão sai uma versão inteira antes de a linha ser ligada, e com achados `alb` gravados não se volta para
+  antes dela.
+- **No painel, só o que não podia quebrar:** rótulos, textos, trilha e os mocks como estavam; o balanceador disponível aparece
+  sem a caixa de autorizar (a PR-5 traz a estimativa), e o NLB diz por que não serve.
+- **Ficou para depois:** a tarefa que lê e a que estima (PR-4); as telas (PR-5 e PR-8); `start.sh` e `node.conf` (PR-6); a chave
+  dos casos (`alb` cai em `other` no outro ramo).
+- **Arquivos:** `packages/shared/src/{aws-onboarding,findings,tower,web-logs}.ts`; `apps/api/src/weblogs/settings/` (novo);
+  `apps/api/src/aws/{wazuh-sources,discovery/*,onboarding/onboarding-view}.ts`;
+  `apps/api/src/cloud-accounts/aws-onboarding.service.ts`; `apps/api/src/common/config/{web-logs,env.schema}.ts`;
+  `plan/plan.service.ts`, `worker.ts`, `app.module.ts`, `tenant-scope.ts`; a migration e o schema; `apps/web` (rótulos e a lista
+  das fontes); testes; `docs/{ARQUITETURA,retencao-de-dados}.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 210 arquivos e 3960 testes, numa rodada só, sem repetir nenhum; shared, 32 arquivos e 548
+  testes; web, 61 e 817; console, 22 e 146. `pnpm lint` e `pnpm typecheck` (todos os pacotes), limpos; o `migrate diff` do
+  banco migrado com o schema, vazio. Playwright (mock): detecções, onboarding da AWS, radar e páginas, 97 testes. Novos: 76 na
+  API, 26 no shared e 6 na web.
+  - **O de antes, conferido com o código de antes:** os testes de "desligado" da descoberta (com e sem banco) e a lista do
+    Wazuh congelada passam também com `aws/discovery` e `wazuh-sources.ts` da 5e53ae48.
+  - **Mutações** (em série, com volta conferida por hash): 136. 113 mortas na primeira rodada e 11 na segunda; 7 depois de
+    testes novos; 2 sem veredito na primeira vez (o vitest saiu sem dizer qual teste) e mortas na repetição; 3 equivalentes (a
+    leitura sem escopo de fonte confiável, rota e balanceador: a busca seguinte, com escopo, recusa do mesmo jeito).
+- **Riscos:** a fonte é pelo nome do balanceador: apagado e recriado com o mesmo nome, herda a autorização (e o modo); a PR-4
+  compara o `app/<nome>/<id>`. A API e o worker com valores diferentes da linha não autorizam nada, mas a tela mostra o
+  balanceador sem permissão conferida.

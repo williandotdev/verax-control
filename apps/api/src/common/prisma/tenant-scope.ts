@@ -47,6 +47,8 @@ export const TENANT_SCOPED_MODELS = [
   // Ataques web pelos logs do ALB: a configuração do cliente (o painel grava, pelo escopo da sessão) e o que só o sistema
   // grava (`SYSTEM_WRITTEN_MODELS`): os objetos já lidos, a evidência do achado, o resumo do dia e o tráfego por país.
   'webSourceSettings',
+  // O pedido é do painel; o resultado, do worker (como nas fontes).
+  'webSourceEstimate',
   'webTrustedSource',
   'webRoute',
   'webLogObject',

@@ -1,6 +1,7 @@
 import {
   AWS_MAX_SOURCES_PER_ACCOUNT,
   AWS_SOURCE_KIND_INFO,
+  type AwsSourceFeatures,
   type AwsSourceState,
   awsSourceDetailsSchema,
   awsSourceIdleState,
@@ -65,6 +66,7 @@ interface Seen {
 export function nextSourceState(
   row: Pick<SourceRow, 'state' | 'stateCode' | 'authorizedAt' | 'revokedAt'>,
   seen: Seen,
+  features?: Readonly<AwsSourceFeatures>,
 ): { state: AwsSourceState; stateCode: string | null } | null {
   if (row.revokedAt !== null) return null;
   const changed = (state: AwsSourceState, stateCode: string | null) =>
@@ -74,6 +76,7 @@ export function nextSourceState(
       seen.kind,
       seen.availability,
       seen.permission as 'granted' | 'missing' | 'unknown',
+      features,
     );
     return changed(idle.state, idle.stateCode);
   }
@@ -155,17 +158,21 @@ interface KnownChange {
 }
 
 /** O que muda numa fonte já conhecida com o que foi visto dela agora (na descoberta, ou na releitura dela). */
-function knownChange(row: SourceRow, source: ValidatedSource, now: Date): KnownChange {
+function knownChange(
+  row: SourceRow,
+  source: ValidatedSource,
+  now: Date,
+  features: Readonly<AwsSourceFeatures> | undefined,
+): KnownChange {
   // A sondagem que não terminou não apaga o que já se sabia da permissão.
   const keepPermission = source.permissionDetail === 'probe_failed' && row.permission !== 'unknown';
   const permission = keepPermission ? row.permission : source.permission;
   const permissionDetail = keepPermission ? row.permissionDetail : source.permissionDetail;
-  const next = nextSourceState(row, {
-    kind: source.kind,
-    availability: source.availability,
-    permission,
-    permissionDetail,
-  });
+  const next = nextSourceState(
+    row,
+    { kind: source.kind, availability: source.availability, permission, permissionDetail },
+    features,
+  );
   const same =
     described({ ...source, permission, permissionDetail }) === described(row) &&
     next === null &&
@@ -202,6 +209,7 @@ export async function applySourceReading(
   row: SourceRow,
   candidate: DiscoveredSource,
   now: Date,
+  features?: Readonly<AwsSourceFeatures>,
 ): Promise<'updated' | 'unchanged' | 'invalid'> {
   const source = validated(candidate);
   if (source === null || keyOf(source) !== keyOf(row)) {
@@ -212,7 +220,7 @@ export async function applySourceReading(
     });
     return 'invalid';
   }
-  const change = knownChange(row, source, now);
+  const change = knownChange(row, source, now, features);
   await db.awsSource.update({
     where: { id: row.id },
     data: change.same
@@ -230,11 +238,13 @@ export interface ApplyInput {
   /** Os escopos (`tipo:região`) lidos por inteiro. */
   covered: readonly string[];
   now: Date;
+  /** O que o nó tem ligado; sem informar, nada. */
+  features?: Readonly<AwsSourceFeatures>;
 }
 
 /** Grava o resultado de uma descoberta. `db` é o cliente do banco no escopo do cliente da conta, numa transação. */
 export async function applyDiscovery(db: Prisma.TransactionClient, input: ApplyInput): Promise<ApplyReport> {
-  const { now, cloudAccountId } = input;
+  const { now, cloudAccountId, features } = input;
   const report: ApplyReport = {
     created: 0,
     updated: 0,
@@ -277,7 +287,7 @@ export async function applyDiscovery(db: Prisma.TransactionClient, input: ApplyI
       }
       room -= 1;
       seenKeys.add(key);
-      const idle = awsSourceIdleState(source.kind, source.availability, source.permission);
+      const idle = awsSourceIdleState(source.kind, source.availability, source.permission, features);
       creates.push({
         tenantId: input.tenantId,
         cloudAccountId,
@@ -304,7 +314,7 @@ export async function applyDiscovery(db: Prisma.TransactionClient, input: ApplyI
       continue;
     }
     seenKeys.add(key);
-    const change = knownChange(row, source, now);
+    const change = knownChange(row, source, now, features);
     if (change.same) {
       (change.checked ? unchangedProbed : unchanged).push(row.id);
       continue;

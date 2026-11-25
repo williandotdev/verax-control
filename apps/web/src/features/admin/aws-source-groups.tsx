@@ -10,10 +10,10 @@ import { AwsLogGroupList } from '@/features/admin/aws-log-groups';
 import type { SourceRetry } from '@/features/admin/aws-hooks';
 import { useAwsAuthorizeSources } from '@/features/admin/aws-onboarding-api';
 import {
-  AWS_SOURCE_AVAILABILITY_TEXTS,
   AWS_SOURCE_COLLECTION_NOTES,
   AWS_SOURCE_KIND_TEXTS,
   AWS_SOURCE_NOTE_TEXTS,
+  awsAvailabilityText,
   awsOnboardingErrorText,
   awsSourceName,
   isAwsCostNote,
@@ -292,9 +292,10 @@ export function AwsSourceGroups({
           {groups.available.map((source) => {
             const fieldId = `aws-fonte-${source.id}`;
             const covered = isCoveredByGuardDutyApi(source, sources);
+            const selectable = canAuthorize && isAuthorizableSource(source);
             return (
               <li key={source.id} className="flex items-start gap-2 px-3 py-2">
-                {canAuthorize && (
+                {selectable && (
                   <input
                     id={fieldId}
                     type="checkbox"
@@ -304,12 +305,17 @@ export function AwsSourceGroups({
                   />
                 )}
                 <div className="min-w-0 flex-1 space-y-1">
-                  <label htmlFor={canAuthorize ? fieldId : undefined} className="block">
+                  <label htmlFor={selectable ? fieldId : undefined} className="block">
                     <SourceTitle source={source} tags={sourceTags(source, sources)} />
                   </label>
                   <p className="text-xs text-muted-foreground">
                     {AWS_SOURCE_KIND_TEXTS[source.kind].description}
                   </p>
+                  {canAuthorize && !selectable && (
+                    <p className="text-xs text-muted-foreground">
+                      A autorização deste tipo de fonte ainda não está disponível nesta tela.
+                    </p>
+                  )}
                   <SourceCollectionNote source={source} />
                   <SourceLocation source={source} />
                   {covered && !source.notes.includes('covered_by_api') && (
@@ -431,8 +437,7 @@ export function AwsSourceGroups({
             <li key={source.id} className="space-y-1 px-3 py-2">
               <SourceTitle source={source} />
               <p className="text-xs text-muted-foreground">
-                {AWS_SOURCE_AVAILABILITY_TEXTS[source.availability]}.{' '}
-                {AWS_SOURCE_KIND_TEXTS[source.kind].description}
+                {awsAvailabilityText(source)}. {AWS_SOURCE_KIND_TEXTS[source.kind].description}
               </p>
               <SourceNotes source={source} omit={source.notes.filter((note) => !isAwsCostNote(note))} />
             </li>
@@ -449,9 +454,7 @@ export function AwsSourceGroups({
           {groups.unsupported.map((source) => (
             <li key={source.id} className="space-y-1 px-3 py-2">
               <SourceTitle source={source} />
-              <p className="text-xs text-muted-foreground">
-                {AWS_SOURCE_AVAILABILITY_TEXTS[source.availability]}.
-              </p>
+              <p className="text-xs text-muted-foreground">{awsAvailabilityText(source)}.</p>
               {source.details.destination !== undefined && (
                 <p className="break-all text-xs text-muted-foreground">
                   Destino: <code className="font-mono">{source.details.destination}</code>

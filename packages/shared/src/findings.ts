@@ -19,14 +19,18 @@ export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
 export const FINDING_STATUSES = ['new', 'investigating', 'legitimate', 'resolved'] as const;
 export type FindingStatus = (typeof FINDING_STATUSES)[number];
 
-/** Origem do alerta na AWS, lida pelo Wazuh. */
 /**
  * Fontes de log: as da AWS (lidas pelo Wazuh: a trilha, o GuardDuty, o WAF, os flow logs da VPC e os grupos do
  * CloudWatch Logs), a auditoria da GCP (lida do Pub/Sub pelo próprio nó), do Cloudflare (lidos pela API dele, com o
  * token do cofre do nó) a auditoria da conta e os eventos de segurança das zonas (WAF, limite de taxa, DDoS), e os
  * agentes do Wazuh nas instâncias do cliente. Os achados da AWS lidos pela API de cada serviço (tarefa `aws-findings`
  * do worker, onboarding self-service): o Security Hub, o Inspector e o Access Analyzer; o GuardDuty lido pela API cai
- * na mesma fonte (`guardduty`) e na mesma chave do que chega pelo Wazuh.
+ * na mesma fonte (`guardduty`) e na mesma chave do que chega pelo Wazuh. Os ataques web vistos nos logs de acesso dos
+ * balanceadores (`alb`) são do motor próprio do nó, sem evento bruto: a evidência tem rota à parte
+ * (`finding-evidence.ts`).
+ *
+ * A lista é fechada também nas respostas: um painel de antes recusa a resposta com uma fonte que ele não conhece. Um valor
+ * novo entra aqui numa versão, e só é gravado num achado numa versão seguinte (`docs/ARQUITETURA.md`).
  */
 export const FINDING_SOURCES = [
   'cloudtrail',
@@ -36,6 +40,7 @@ export const FINDING_SOURCES = [
   'inspector',
   'access_analyzer',
   'vpc_flow',
+  'alb',
   'cloudwatch_logs',
   'gcp_audit',
   'cloudflare_audit',

@@ -15,7 +15,7 @@ import { type EntryAt, loadHit, WEB_RULES, type WebHit, type WebRuleId } from '.
 import { UA_FAMILIES, type UaFamily } from './user-agent.js';
 
 /**
- * De detecção a achado. O formato é o do `FindingDraft`, com a fonte `alb` (que entra em `FINDING_SOURCES` na PR-3), a
+ * De detecção a achado. O formato é o do `FindingDraft`, com a fonte `alb` (`FINDING_SOURCES`), a
  * evidência (que o `FindingStore` grava com o achado) e a correlação (aceita, gravada só com os casos). Nada liga isto ao
  * `FindingStore` ainda.
  *
@@ -38,7 +38,7 @@ export interface WebCorrelation {
   keys: string[];
 }
 
-export interface WebFindingDraft extends Omit<FindingDraft, 'logSource'> {
+export interface WebFindingDraft extends FindingDraft {
   logSource: 'alb';
   evidence: WebEvidence;
   correlation: WebCorrelation;
