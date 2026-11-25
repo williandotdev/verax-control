@@ -1,8 +1,9 @@
 import { type Finding, MAX_TRIAGE_FINDINGS } from '@verax/shared';
 import { CheckSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { AlertsList, type ListPage } from '@/features/detections/detection-list';
+import { AlertsList, FILL_COLUMN, type ListPage } from '@/features/detections/detection-list';
 import type { DetectionSelection } from '@/features/detections/url-state';
+import { cn } from '@/lib/cn';
 import { addPending, isActionable, NO_PENDING, scopeOfFindings, selectionNote } from './bulk';
 import { BulkBar } from './bulk-bar';
 import type { OpenItem } from './case-list';
@@ -38,7 +39,7 @@ function SelectableAlerts({ page, selection, onOpen, resetKey, stale }: AlertsPr
   // Um alerta que deixou de poder ser tratado (alguém tratou) sai da conta, e a API o pula de qualquer forma.
   const items = selected.items(page.rows ?? []).filter(isActionable);
   return (
-    <div className="space-y-3">
+    <div className={cn(FILL_COLUMN, 'space-y-3')}>
       <Button
         variant="secondary"
         size="sm"

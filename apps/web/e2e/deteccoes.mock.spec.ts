@@ -224,6 +224,46 @@ test.describe('tela Detecções (modo mock)', () => {
     await noHorizontalScroll(page);
   });
 
+  for (const [width, height] of [
+    [1280, 900],
+    [1440, 900],
+    [1920, 1080],
+  ] as const) {
+    test(`em ${width} px, a coluna da lista termina na altura do quadro do radar, e só a tabela rola`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height });
+      await open(page);
+      const strip = page.getByRole('region', { name: 'Situação agora' });
+      await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+      for (const [view, name] of [
+        ['Alertas', 'Lista de alertas'],
+        ['Incidentes', 'Lista de incidentes'],
+      ] as const) {
+        await page.getByRole('button', { name: view, exact: true }).click();
+        const region = page.getByRole('region', { name });
+        await expect(region).toBeVisible();
+        const bottoms = async () => {
+          const [left, right] = await Promise.all([
+            strip.boundingBox(),
+            page.locator('[data-list-frame]').boundingBox(),
+          ]);
+          return Math.abs((left?.y ?? 0) + (left?.height ?? 0) - (right?.y ?? 0) - (right?.height ?? 0));
+        };
+        await expect.poll(bottoms, `${view} em ${width} px`).toBeLessThanOrEqual(1);
+        // O cabeçalho fica à vista quando a tabela rola.
+        const shift = await region.evaluate((element) => {
+          element.scrollTop = element.scrollHeight;
+          const head = element.querySelector('thead');
+          return (head?.getBoundingClientRect().top ?? -1) - element.getBoundingClientRect().top;
+        });
+        expect(Math.abs(shift)).toBeLessThanOrEqual(1);
+      }
+      await page.getByRole('button', { name: 'Alertas', exact: true }).click();
+      await noHorizontalScroll(page);
+    });
+  }
+
   test('recolher o resumo alarga a lista e fica lembrado depois de recarregar', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page);

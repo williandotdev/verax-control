@@ -284,7 +284,7 @@ function DetectionsContent({
       role="group"
       aria-label="Visão da lista"
       className={cn(
-        'inline-flex rounded-md border p-0.5',
+        'inline-flex self-start rounded-md border p-0.5',
         // Quatro visões não cabem numa linha do celular: duas a duas, com a área de toque inteira.
         cases.mode !== 'off' && 'max-sm:grid max-sm:w-full max-sm:grid-cols-2 max-md:[&>button]:min-h-11',
       )}
@@ -494,17 +494,22 @@ function DetectionsContent({
             ) : (
               strip
             )}
-            <div ref={listRef} className="min-w-0 scroll-mt-4 space-y-4">
+            <div
+              ref={listRef}
+              data-fill={besideRadar}
+              className={cn('min-w-0 scroll-mt-4 space-y-4', besideRadar && 'flex flex-col self-stretch')}
+            >
               {viewToggle}
               {filterBar}
               {operations}
               <div
                 className={cn(
                   'grid gap-4',
+                  besideRadar && 'grow grid-rows-[minmax(0,1fr)]',
                   !besideRadar && selection && 'grid-cols-[minmax(0,1fr)_minmax(0,28rem)]',
                 )}
               >
-                <div className="min-w-0">{list}</div>
+                <div className={cn('min-w-0', besideRadar && 'flex flex-col')}>{list}</div>
                 {!besideRadar && (
                   <DetectionDetailPanel selection={selection} side onClose={close} onBack={back} />
                 )}
