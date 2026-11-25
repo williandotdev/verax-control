@@ -23,6 +23,8 @@ export const MAX_ACTIVE_SCOPED_EXCEPTIONS = 50;
 export const SCOPED_EXCEPTION_PREVIEW_DAYS = 30;
 /** Exceções de usuário, IP ou recurso criadas de uma vez a partir de um caso. Acima disso, a ampla. */
 export const MAX_ALERT_EXCEPTIONS_PER_REQUEST = 20;
+/** O maior valor de uma exceção de usuário, IP ou recurso. */
+export const ALERT_EXCEPTION_VALUE_MAX = 256;
 /** O começo do recurso precisa dizer algo: um prefixo de poucas letras cobriria quase tudo. */
 export const SCOPED_RESOURCE_PREFIX_MIN = 8;
 
@@ -198,7 +200,7 @@ export const alertExceptionBatchSchema = z
   .strictObject({
     ruleId: ruleIdSchema,
     field: z.enum(ALERT_EXCEPTION_FIELDS),
-    values: z.array(plainText(256)).min(1).max(MAX_ALERT_EXCEPTIONS_PER_REQUEST),
+    values: z.array(plainText(ALERT_EXCEPTION_VALUE_MAX)).min(1).max(MAX_ALERT_EXCEPTIONS_PER_REQUEST),
     reason: plainText(500),
     expiresAt: z.iso
       .datetime({ offset: true })

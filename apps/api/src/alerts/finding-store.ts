@@ -216,9 +216,11 @@ export class FindingStore {
   private async scopedFor(draft: FindingDraft, now: Date): Promise<ActiveScopedException | null> {
     const source = this.options.scopedExceptions;
     if (source === undefined) return null;
-    const matched = matchingScopedException(draft, await source.forTenant(draft.tenantId, now), now);
+    // O relógio de agora, e não o do começo da execução: uma que atravessa o vencimento não segue marcando alertas.
+    const at = new Date(Math.max(now.getTime(), Date.now()));
+    const matched = matchingScopedException(draft, await source.forTenant(draft.tenantId, at), at);
     if (matched === null) return null;
-    return (await source.stillActive(draft.tenantId, matched.id, now)) ? matched : null;
+    return (await source.stillActive(draft.tenantId, matched.id, at)) ? matched : null;
   }
 
   /** A evidência do achado, se o draft a traz. O `findingId` é de um achado lido no escopo do cliente. */

@@ -469,6 +469,30 @@ describe('exceções amplas (CASES_MODE=on)', () => {
       });
     });
 
+    it('a que vence no meio da execução deixa de marcar, mesmo com o relógio do começo dela', async () => {
+      const tenantId = await createTenant(app, 'Cliente Demo A (venceu)');
+      tenants.push(tenantId);
+      const now = Date.now();
+      await exception(tenantId, { createdAt: new Date(now - DAY_MS), expiresAt: new Date(now - 60_000) });
+      const started = new Date(now - 120_000);
+      const late = draft(tenantId);
+      expect(await store.persist(late, null, started)).toBe('created');
+      expect(await row(tenantId, late.sourceEventId)).toMatchObject({
+        status: 'new',
+        scopedExceptionId: null,
+      });
+    });
+
+    it('o recurso que não cabe numa exceção não é oferecido pelo rascunho do caso', async () => {
+      const { caseId } = await caseWith(prisma, tenantA, [
+        { resource: 's3:relatorios-demo' },
+        { resource: `arn:aws:demo:${'x'.repeat(300)}` },
+      ]);
+      const response = await read(app, analystA, `/v1/cases/${caseId}/exception-draft`).expect(200);
+      const draftOf = caseExceptionDraftSchema.parse(response.body);
+      expect(draftOf.values.resource).toEqual({ values: ['s3:relatorios-demo'], complete: false });
+    });
+
     it('a leitura que falha não para a coleta: o alerta entra na fila', async () => {
       const tenantId = await createTenant(app, 'Cliente Demo A (falha)');
       tenants.push(tenantId);

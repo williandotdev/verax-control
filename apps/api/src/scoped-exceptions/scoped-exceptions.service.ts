@@ -1,5 +1,6 @@
 import { ForbiddenException, HttpStatus, Injectable } from '@nestjs/common';
 import {
+  ALERT_EXCEPTION_VALUE_MAX,
   type AlertExceptionBatch,
   type AlertExceptionBatchResult,
   canWriteScopedExceptions,
@@ -269,10 +270,13 @@ export class ScopedExceptionsService {
         if (SEVERITY_ORDER[group.severity] < SEVERITY_ORDER[known.severity]) known.severity = group.severity;
       }
     }
-    const values = (rows: { value: string | null }[]) => ({
-      values: rows.slice(0, cap).flatMap((row) => (row.value === null ? [] : [row.value])),
-      complete: rows.length <= cap,
-    });
+    // O valor que não cabe numa exceção (um recurso longo) não é oferecido: o lote inteiro seria recusado por ele.
+    const values = (rows: { value: string | null }[]) => {
+      const offered = rows
+        .slice(0, cap)
+        .flatMap(({ value }) => (value === null || value.length > ALERT_EXCEPTION_VALUE_MAX ? [] : [value]));
+      return { values: offered, complete: offered.length === rows.length };
+    };
     const list = [...targets.values()];
     return {
       caseId,
