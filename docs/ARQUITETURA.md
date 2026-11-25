@@ -1920,6 +1920,81 @@ voltar depois como modo completo, sem amostragem.
 - **Medidor:** os bytes de cada resposta GraphQL e as linhas lidas entram no uso do cliente (`cloudflare`), depois de o
   cursor avançar.
 
+### Conectar com Cloudflare (OAuth, CF-1 a CF-9)
+
+_(no código, desligado: nenhum cliente é liberado antes da homologação com o app registrado,
+`docs/runbooks/cloudflare-oauth.md`)_
+
+No servidor dedicado que a Verax gerencia, a conta do Cloudflare passa a ser conectada pelo botão **Conectar com
+Cloudflare**: o cliente autoriza a leitura na tela do próprio Cloudflare, sem criar nem colar token. Decisões do
+responsável (finais):
+
+- **Só OAuth no nó gerenciado**, com a configuração ligada; com ela, token colado novo é recusado (409
+  `CLOUDFLARE_OAUTH_ONLY`), e as contas que já usam token seguem coletando até o cliente migrar. **Na VM do cliente, só
+  o token colado** (ameaça do consentimento enganado: a API é do cliente, e a defesa da sessão não vale). Célula e nó da
+  própria Verax (`PLAN=interno`) também ficam no token.
+- **Todas as zonas da conta**, inclusive as novas (`zones = []`); conta antiga com lista fica como está e ganha
+  "Monitorar todas as zonas".
+- **O token colado sai** do cofre do nó depois da migração bem-sucedida (o cliente apaga o dele no Cloudflare).
+- **O app é da Verax e público** (registrado na conta Cloudflare da Verax; privado só durante a homologação).
+- **Nó anterior** (que não anuncia a capacidade `cloudflare_oauth`): a tela é exatamente a de antes.
+
+**Fluxo.** O painel chama `POST /v1/cloudflare-oauth/start` (permissão `cloud_credentials:write`) e navega
+(`location.assign`) só para uma URL que comece por `https://dash.cloudflare.com/oauth2/auth?` (o contrato confere na API
+e de novo no painel). O `state` é `<subdomínio>.<32 bytes aleatórios>`, preso a cliente, usuário e sessão, com PKCE S256
+e prazo de 10 min. O Cloudflare devolve ao endereço fixo do plano de controle
+(`https://conta.<domínio>/v1/public/cloudflare/callback`), que confere tudo, não guarda nada e responde 303 para
+`https://<subdomínio>.<domínio do painel>/conexao-cloudflare#code=…&state=…&iss=…` (ou `#error=…&state=…[&iss=…]`): o
+destino sai só do subdomínio validado e do sufixo fixo, nunca da requisição.
+
+**A página de retorno** (`apps/web/src/pages/cloudflare-return-page.tsx`, rota `CLOUDFLARE_OAUTH_PANEL_PATH`, fora do
+`RequireSession`):
+
+1. lê o fragmento uma vez (`features/cloudflare/oauth-return.ts`) e o apaga da barra de endereço com
+   `history.replaceState` antes de qualquer chamada; só aceita exatamente os campos de um formato, uma vez cada
+   (campo a mais, repetido ou fora do alfabeto: descartado, sem chamar a API). O `iss` que vem junto do erro é
+   descartado;
+2. sem sessão, o cliente HTTP leva ao login, e o retorno se perde (nada vai para armazenamento, nem para depois do login);
+3. com sessão, `POST /v1/cloudflare-oauth/complete` (chamada direta, sem `useMutation`, para o código não ficar nas
+   `variables`). A recusa é uma só (outra sessão, outro usuário, vencida, repetida, emissor errado);
+4. troca o endereço por `?tentativa=<id>` (não é segredo: a API só mostra a tentativa à mesma sessão) e acompanha
+   `GET /v1/cloudflare-oauth/attempts/:id` a cada 2 s enquanto o worker troca o código ou liga as contas.
+
+Estados na tela, cada um com a mensagem em foco (anunciada ao leitor de tela): conferindo; **escolha das contas**
+(mais de uma conta autorizada: nome e ID de cada uma, só como texto, a situação dela, e o endereço do ambiente do Verax
+que vai ler; a única que pode ser monitorada já vem marcada; sem lista do Cloudflare, o ID digitado); **pronta** (links
+para as contas ligadas e o lembrete de apagar o token antigo no Cloudflare); **falha** (um texto fixo por código de
+`CLOUDFLARE_OAUTH_ATTEMPT_ERRORS`, nunca a descrição do Cloudflare) e **vencida**, as duas com "Começar de novo".
+
+**Contas cloud** (`apps/web/src/features/cloudflare/`): com `GET /v1/cloudflare-oauth/options` respondendo `oauth`, a
+tela ganha o botão "Conectar com Cloudflare" ao lado de "Cadastrar conta", e o detalhe da conta do Cloudflare mostra a
+conexão (`GET /v1/cloud-accounts/:id/cloudflare-connection`) no lugar dos passos do token:
+
+- **por OAuth:** situação da autorização, data, última renovação, escopos e quantas contas a usam; com
+  `oauth_reconnect_required` ou concessão em `reconnect`, "Conectar de novo";
+- **por token colado:** "Migrar para Conectar com Cloudflare" (o `start` com `cloudAccountId`). A coleta segue com o
+  token até a prova da mesma conta passar pela autorização nova; só então o token sai, na transação que liga a conta;
+- **sem conexão:** "Conectar com Cloudflare" para a conta;
+- **desconectar** é desativar o monitoramento ou excluir a conta (botões de sempre): a conta sai da concessão, e a
+  última conta manda revogar no Cloudflare.
+
+A **saúde das zonas** (`GET /v1/cloud-accounts/:id/cloudflare-zones`) aparece embaixo: auditoria da conta, todas ou só a
+lista, as zonas além do limite de 50 (nomeadas) e cada zona com a situação, o plano, a última leitura e o código do último
+erro. No nó sem OAuth (que pode ser anterior e não ter a rota), ela só aparece com os dados já lidos: nem carregando, nem
+com erro, e o 404 some.
+
+**Versões.** Painel anterior com nó novo: rotas próprias, nada muda (`cloudAccountSchema` não ganhou campo). Painel novo
+com nó anterior: `options`, `cloudflare-connection` e `cloudflare-zones` respondem 404, e o painel mostra a tela do token
+colado, sem o botão. O CF-4 (o nó anuncia a capacidade) e a rota `/conexao-cloudflare` saem na mesma versão do nó.
+
+**Demonstração** (`apps/web/src/mocks/cloudflare-oauth.ts`): desligada por padrão; `localStorage['verax.mock.cloudflare-oauth']`
+liga (`one`, `multi` ou `manual`) ou simula o nó anterior (`legacy`). O Cloudflare de mentira só existe no e2e
+(`apps/web/e2e/cloudflare-oauth.mock.spec.ts`), que intercepta a navegação para a autorização e devolve o fragmento.
+
+**O que falta para ligar para um cliente** (detalhe em `docs/STATUS.md`, CF-8 e CF-9): a homologação com um app
+registrado (escopos, renovação sem segredo, `iss`, listas de contas e zonas, limites) e aplicar a exclusão do log de
+requisição do caminho do retorno (`cloudflare-oauth-callback`, em `infra/gcp/envs/control-plane/logging.tf`).
+
 ## Agentes nas instâncias do cliente
 
 _(no código, desligado por padrão em cada nó; o aceite depende da homologação no ar. Roteiro para ligar:
