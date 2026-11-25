@@ -1,4 +1,7 @@
 import {
+  AWS_MAX_AUTHORIZED_LOG_GROUPS,
+  AWS_MAX_AUTHORIZED_S3_SOURCES,
+  AWS_MAX_AUTHORIZED_WEB_SOURCES,
   AWS_ONBOARDING_CHECK_CODES,
   AWS_SOURCE_PERMISSION_CODES,
   AWS_SOURCE_STATE_CODES,
@@ -25,6 +28,8 @@ import {
   CONSOLE_MANAGED_CODE,
   isAwsConnectionWarningCode,
   type WazuhSourceStateCode,
+  WEB_SOURCE_STATE_CODES,
+  type WebSourceStateCode,
 } from '@verax/shared';
 import type { Severity } from '@/design/severity';
 import { ApiRequestError } from '@/lib/api-client';
@@ -434,7 +439,7 @@ export const AWS_SOURCE_KIND_TEXTS: Readonly<Record<AwsSourceKind, KindText>> = 
   },
   elb_logs: {
     label: 'Balanceador (log de acesso)',
-    description: 'As requisições que passam pelos balanceadores de carga.',
+    description: 'As requisições que passam pelo balanceador: a base da detecção de ataques web.',
   },
 };
 
@@ -507,6 +512,25 @@ export const AWS_WAZUH_SOURCE_STATE_CODE_TEXTS: Readonly<Record<WazuhSourceState
     'Outro cadastro deste servidor já lê um grupo com este nome nesta região, e só o primeiro autorizado é lido. O que fazer: retire a autorização deste grupo, ou a do outro.',
 };
 
+/**
+ * Os motivos que só a leitura dos logs do ALB grava (`WEB_SOURCE_STATE_CODES`). O que ficou sem leitura e os arquivos recusados
+ * têm a contagem e o intervalo em "Ataques web".
+ */
+export const WEB_SOURCE_STATE_CODE_TEXTS: Readonly<Record<WebSourceStateCode, string>> = {
+  web_gap:
+    'Nas últimas 24 horas, alguns arquivos com mais de um dia ficaram sem leitura: o Verax não analisa log velho, para não abrir alerta de ontem como se fosse de agora. O intervalo está em "Ataques web". A leitura de agora segue normal, e este aviso sai sozinho em um dia.',
+  web_unread:
+    'Há arquivo novo no bucket, e nada é lido deste balanceador há mais de 2 horas. O que fazer: clique em Tentar de novo, para o Verax conferir a permissão; se continuar, fale com a Verax.',
+  web_quarantined:
+    'Nas últimas 24 horas, algum arquivo foi recusado (quebrado, grande demais ou arquivado no S3 Glacier) e ficou sem análise. A contagem está em "Ataques web".',
+  web_prefix_unsupported:
+    'O prefixo do log no bucket tem um caractere que a leitura não aceita. O que fazer: tire o prefixo na configuração do log do balanceador e clique em Descobrir de novo, em "O que encontramos".',
+};
+
+function isWebSourceStateCode(code: string): code is WebSourceStateCode {
+  return (WEB_SOURCE_STATE_CODES as readonly string[]).includes(code);
+}
+
 function isWazuhSourceStateCode(code: string): code is WazuhSourceStateCode {
   return (AWS_WAZUH_SOURCE_STATE_CODES as readonly string[]).includes(code);
 }
@@ -521,6 +545,8 @@ export const AWS_SOURCE_COLLECTION_NOTES: Readonly<Partial<Record<AwsSourceKind,
     'Só o tráfego recusado é lido. As detecções vêm de duas regras: varredura de rede (muitas conexões recusadas do mesmo endereço) e insistência em porta de administração remota (SSH, na 22, e RDP, na 3389).',
   cloudwatch_log_group:
     'Os alertas destes logs aparecem com pelo menos 10 minutos de atraso, e só são atribuídos a você quando uma única conta neste servidor tem grupos autorizados. Fora disso, vão para a fila de alertas sem dono, que só a Verax vê.',
+  elb_logs:
+    'O Verax analisa todas as linhas e não guarda nenhuma; o original segue no seu bucket. Os endereços IP de quem visita a sua aplicação são tratados nessa análise.',
 };
 
 /**
@@ -553,6 +579,7 @@ export function awsIngestionErrorText(code: string | null): string {
     return 'A leitura desta fonte falhou nas últimas tentativas. O Verax continua tentando sozinho.';
   if (code === 'throttled') return AWS_SOURCE_STATE_CODE_TEXTS.throttled;
   if (isWazuhSourceStateCode(code)) return AWS_WAZUH_SOURCE_STATE_CODE_TEXTS[code];
+  if (isWebSourceStateCode(code)) return WEB_SOURCE_STATE_CODE_TEXTS[code];
   if (Object.hasOwn(INGESTION_ERROR_TEXTS, code)) return INGESTION_ERROR_TEXTS[code] ?? '';
   return `A leitura desta fonte falhou nas últimas tentativas. O Verax continua tentando sozinho. Tipo do erro: ${code}.`;
 }
@@ -578,9 +605,11 @@ export const AWS_SOURCE_AVAILABILITY_TEXTS: Readonly<Record<AwsSourceAvailabilit
  * o formato do arquivo.
  */
 export function awsAvailabilityText(source: Pick<AwsSource, 'kind' | 'availability'>): string {
-  return source.kind === 'elb_logs' && source.availability === 'unsupported_format'
-    ? 'Não é um balanceador de aplicação (ALB): o log dele não traz as requisições web'
-    : AWS_SOURCE_AVAILABILITY_TEXTS[source.availability];
+  if (source.kind === 'elb_logs') {
+    if (source.availability === 'unsupported_format') return 'Não é um balanceador de aplicação (ALB)';
+    if (source.availability === 'no_destination') return 'O log de acesso está desligado';
+  }
+  return AWS_SOURCE_AVAILABILITY_TEXTS[source.availability];
 }
 
 export const AWS_SOURCE_LOGGING_STATE_LABELS: Readonly<Record<AwsSourceLoggingState, string>> = {
@@ -635,6 +664,13 @@ export function awsSourceHealthText(source: AwsSource): { label: string; tone: T
           detail: AWS_SOURCE_STATE_CODE_TEXTS.no_findings_yet,
         };
       }
+      if (code !== null && isWebSourceStateCode(code)) {
+        return {
+          label: 'Coletando, com arquivos recusados',
+          tone: 'medium',
+          detail: WEB_SOURCE_STATE_CODE_TEXTS[code],
+        };
+      }
       // Sem o código (a fonte que já trouxe achados antes): pelo volume do dia, só nas fontes de achados.
       const { eventsLast24h, lastEventAt } = source.health;
       const quiet = eventsLast24h === 0 || (eventsLast24h === null && lastEventAt === null);
@@ -648,14 +684,19 @@ export function awsSourceHealthText(source: AwsSource): { label: string; tone: T
         detail: `Falta permissão: ${awsPermissionDetailText(source.permissionDetail ?? code)}.`,
       };
     case 'ingestion_error':
-      return { ...base, detail: awsIngestionErrorText(code) };
+      // A lacuna é do que ficou para trás: a leitura de agora segue normal, e "falha de ingestão" diria o contrário.
+      return code === 'web_gap'
+        ? { label: 'Parte do log ficou sem leitura', tone: 'high', detail: awsIngestionErrorText(code) }
+        : { ...base, detail: awsIngestionErrorText(code) };
     case 'stalled':
       return {
         ...base,
         detail:
           code === 'no_progress'
             ? AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.no_progress
-            : 'Esta fonte entrega eventos o tempo todo, e parou de entregar há mais de 2 horas.',
+            : code === 'web_unread'
+              ? WEB_SOURCE_STATE_CODE_TEXTS.web_unread
+              : 'Esta fonte entrega eventos o tempo todo, e parou de entregar há mais de 2 horas.',
       };
     case 'source_missing':
       // O serviço desligado e a fonte que sumiu têm o texto deles; os outros motivos são os da descoberta (o log
@@ -753,7 +794,7 @@ export const AWS_AUTHORIZATION_TEXTS: Readonly<Record<AwsReaderAuthorization, Au
   'service-logs': {
     label: 'Logs de serviços da AWS no S3',
     description:
-      'Permite ler os logs que a própria AWS grava no S3 para esta conta: CloudTrail, VPC Flow Logs, WAF e o export do GuardDuty. O Verax lê o conteúdo só do que está na pasta AWSLogs/<conta>/, em qualquer bucket, e você não informa bucket nenhum. Para achar essa pasta, ele lista os nomes do primeiro nível dos buckets: só os nomes, nunca o conteúdo. Nenhum outro arquivo seu é lido.',
+      'Permite ler os logs que a própria AWS grava no S3 para esta conta: CloudTrail, VPC Flow Logs, WAF e o export do GuardDuty; e, onde a detecção de ataques web estiver ligada, os logs de acesso dos balanceadores de aplicação (ALB) que você autorizar, um a um. O Verax lê o conteúdo só do que está na pasta AWSLogs/<conta>/, em qualquer bucket, e você não informa bucket nenhum. Para achar essa pasta, ele lista os nomes do primeiro nível dos buckets: só os nomes, nunca o conteúdo. Nenhum outro arquivo seu é lido. Dos logs do ALB, o Verax analisa todas as linhas e não guarda nenhuma: fica só a evidência mascarada de um ataque, com a indicação do arquivo no seu próprio S3. Essa análise trata os endereços IP de quem visita a sua aplicação.',
   },
   findings: {
     label: 'Achados de segurança',
@@ -833,8 +874,7 @@ export const AWS_ONBOARDING_ERROR_TEXTS: Readonly<Record<AwsOnboardingErrorCode,
   SOURCE_NOT_AUTHORIZED: 'Esta fonte não está autorizada: a autorização já tinha sido retirada.',
   SENSITIVE_CONFIRMATION_REQUIRED:
     'Os grupos do CloudWatch Logs precisam ser confirmados um a um. Marque a confirmação e autorize de novo.',
-  SOURCE_LIMIT_REACHED:
-    'Esta conta chegou ao limite de fontes autorizadas (50 grupos do CloudWatch Logs e 200 fontes do S3). Retire a autorização de uma fonte para autorizar outra.',
+  SOURCE_LIMIT_REACHED: `Esta conta chegou ao limite de fontes autorizadas (${AWS_MAX_AUTHORIZED_LOG_GROUPS} grupos do CloudWatch Logs e ${AWS_MAX_AUTHORIZED_S3_SOURCES} fontes do S3, das quais até ${AWS_MAX_AUTHORIZED_WEB_SOURCES} balanceadores). Retire a autorização de uma fonte para autorizar outra.`,
   WEB_LOGS_ESTIMATE_REQUIRED:
     'Um dos balanceadores escolhidos ainda não tem a estimativa de volume, ou ela tem mais de 7 dias. Peça a estimativa e autorize de novo.',
   WEB_LOGS_ESTIMATE_CHANGED:

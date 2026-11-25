@@ -2090,7 +2090,7 @@ nenhum endereço sai do nó.
 ## Ataques web pelos logs do ALB: o que fica guardado (`apps/api/src/weblogs/`)
 
 _(PR-1, o motor; PR-2, o banco, migration `20261130120000_web_logs`; PR-3, os contratos, e PR-4, a leitura, nas seções
-seguintes. Desligado por padrão; a tela é da PR-5.)_
+seguintes; as telas, PR-5, na última delas. Desligado por padrão.)_
 
 O worker lê cada linha do log de acesso do ALB do bucket do cliente, conta e **não guarda linha nenhuma** (decisão D2). O
 original fica no S3 do cliente, pela retenção dele; a evidência aponta o objeto e o minuto.
@@ -2187,6 +2187,7 @@ dele.
 | Rota                                                    | O quê                                                                                                      |
 | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `GET sources`, `GET sources/:id`                        | Os balanceadores de todas as contas, com a configuração e a estimativa                                     |
+| `GET sources/:id/health`                                | A leitura das últimas 24 h e o resumo da observação: só contagens e códigos (PR-5)                         |
 | `PATCH sources/:id/settings`                            | Modo e multiplicador (0,5 a 10). `alert` só depois de `observeUntil` (409 `WEB_OBSERVATION_PENDING`)       |
 | `POST sources/:id/estimate`                             | O pedido da estimativa                                                                                     |
 | `GET`/`POST trusted-sources`, `PATCH`/`DELETE …/:id`    | Até 200 por cliente (as de todos e as de cada um, vencidas inclusive); /16 a /32 e /32 a /64; até 365 dias |
@@ -2302,6 +2303,60 @@ ainda não autorizado, e só porque o cliente a pediu: os nomes e os tamanhos do
 
 **O que não faz:** chamar o Wazuh, gravar em `AwsSource` de outro tipo, avisar por conta própria (só o achado alto ou crítico,
 como sempre), ou guardar linha, chave, caminho ou endereço no log do worker (só contagens e códigos).
+
+## Ataques web no painel (`apps/web/src/features/web-attacks/`)
+
+_(PR-5. Nada muda num nó com os ataques web desligados, num nó de antes deles ou na célula: `/v1/web-logs` responde 404, e o
+painel trata como inexistente, sem erro e sem pedir nada quando o onboarding diz que o tipo não é coletado.)_
+
+**A leitura nova da API.** `GET /v1/web-logs/sources/:id/health` (a de `cloud_accounts:read`, atrás do mesmo guard): as contagens
+de `WebLogObject` nas últimas 24 h (arquivos lidos, atrasados, recusados e sem leitura, com o intervalo da lacuna; linhas
+analisadas, tortas, grandes demais e alheias; bytes), pelas mesmas regras da saúde da fonte (o lido pelo horário do tráfego; o
+recusado e a lacuna por quando foram tratados). Da memória do motor (`WebEngineState`), o banco devolve só a observação sem as
+chaves, o calado pelas fontes confiáveis e as notas (`readWebEngineView`): o resumo do dia, o único lugar com endereços fora dos
+achados, nem chega à API. O que não é desta autorização, deste balanceador ou desta versão do formato não aparece
+(`observed-since.ts` é a conta que a tarefa e a tela dividem); o pedaço fora do formato fica de fora sozinho. O atraso e a última
+leitura continuam no onboarding (`AwsSource.health`).
+
+**Fontes de log.** O balanceador que o Verax lê mostra o passo da estimativa, e a caixa dele só liga com uma estimativa que vale
+(calculada, de até 7 dias, com a projeção):
+
+| Situação        | O que a tela mostra                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------------------- |
+| Nunca pedida    | O que é lido para estimar (nomes e tamanhos) e o botão                                                   |
+| Pedida          | A espera, relida a cada 4 s; depois de 3 min, o aviso de demora e a releitura a cada 30 s; e a anterior  |
+| Pronta          | O volume por dia, quanto é do plano e de quê (mês ou franquia), o dia medido e até quando vale           |
+| Sem amostra     | Que não deu para medir; dá para autorizar com a confirmação                                              |
+| Falhou          | O motivo (o catálogo da estimativa, da permissão e da conexão; o resto, pelo nome do erro) e o que fazer |
+| Mais de 7 dias  | Que não vale mais                                                                                        |
+| Sem ler o plano | Que foi calculada; o volume e a porcentagem, nunca                                                       |
+
+Na confirmação, o volume de cada um, o que é feito com o log e, acima de 20% (ou sem amostra, ou com a listagem cortada), uma caixa
+por balanceador. A ciência é da estimativa vista (`estimateKey`): refeita, ou com o plano mudado, a caixa volta desmarcada. O campo
+`webLogs` só vai no pedido que tem um balanceador. Recusado por a estimativa ter mudado, os números são relidos.
+
+O que não dá para ler diz por quê: ALB sem log, com os passos do cliente (console e linha de comando; o nome do bucket entra nos
+comandos só se seguir as regras da AWS, e o ARN só se for de um ALB desta conta e desta região); NLB e GWLB; bucket de outra
+conta; e o prefixo, que se tira (os "buckets fora do padrão" são de outras fontes). **O Verax nunca liga nada.**
+
+**"Ataques web"**, na conta AWS, com um quadro por balanceador autorizado (a leitura só é pedida com o quadro aberto):
+
+- o modo, com quanto falta das 72 h, o que teria virado alerta por regra e nível, e a janela que confirma antes de alertar;
+- a leitura: o estado, o atraso, o que foi lido, o que ficou de fora e por quê, as notas do motor e o que foi calado;
+- o multiplicador, as rotas declaradas e, do cliente inteiro, as fontes confiáveis, com o que elas nunca calam;
+- o que a detecção não vê, sempre à vista.
+
+Todos leem; os controles só aparecem para quem administra, com o monitoramento da conta ativo (quem decide é a API). As janelas
+(`components/ui/confirm-dialog.tsx`) devolvem o foco a quem abriu ou, se ele saiu da tela, à lista; sem o overlay do Radix, que
+injeta um `<style>` que a CSP recusa.
+
+**O alerta.** No detalhe de um achado `alb`, a evidência fica no lugar do evento bruto, que não existe: contagens, respostas,
+caminhos mascarados, endereços, User-Agent, amostras e a chave do arquivo no bucket do cliente (com o botão de copiar; nunca um
+link). Tudo passa pelo schema estrito e é mostrado como texto. Código desconhecido (nota, família, classe, regra) aparece pelo
+próprio nome. Com as amostras expiradas, a tela diz quando saíram e onde está o original. A exceção e a triagem são as de sempre.
+
+**Demonstração (`dev:mock`).** Ligados, com um balanceador em cada situação na conta de produção da Alfa e quatro alertas; a
+imitação da API está em `apps/web/src/mocks/web-logs.ts`. `localStorage['verax.mock.web-logs'] = 'off'` mostra o nó sem eles.
 
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 

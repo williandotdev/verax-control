@@ -103,7 +103,13 @@ describe('ataques web pelos logs do ALB: desligados', () => {
   it('toda rota de /v1/web-logs é 404 com o código, antes de olhar o corpo; sem permissão, 403; sem sessão, 401', async () => {
     const id = randomUUID();
     const own = `/v1/web-logs/sources/${id}`;
-    const reads = ['/v1/web-logs/sources', own, `${own}/routes`, '/v1/web-logs/trusted-sources'];
+    const reads = [
+      '/v1/web-logs/sources',
+      own,
+      `${own}/health`,
+      `${own}/routes`,
+      '/v1/web-logs/trusted-sources',
+    ];
     const writes: ['post' | 'patch' | 'delete', string][] = [
       ['patch', `${own}/settings`],
       ['post', `${own}/estimate`],

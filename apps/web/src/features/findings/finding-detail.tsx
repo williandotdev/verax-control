@@ -17,6 +17,7 @@ import { usePlanHistory } from '@/features/plan/plan-history';
 import { useMe } from '@/features/session/session';
 import { errorMessage } from '@/lib/errors';
 import { formatRelative, formatTimestamp } from '@/lib/format';
+import { FindingEvidenceSection } from './finding-evidence';
 import { FindingStatusBadge } from './finding-status-badge';
 import { useAddFindingComment, useCreateAlertException, useUpdateFindingStatus } from './findings-api';
 
@@ -38,7 +39,8 @@ const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
 
 /**
  * Detalhe do alerta (tela Detecções, no painel ao lado da lista): os campos, o MITRE, o incidente ou a validação
- * (promover a incidente, anexar a um incidente aberto), a triagem com a exceção, os comentários e o evento bruto.
+ * (promover a incidente, anexar a um incidente aberto), a triagem com a exceção, os comentários e o evento bruto. O alerta
+ * dos logs do ALB não tem evento bruto (nenhuma linha do log fica guardada): no lugar dele, a evidência.
  */
 export function FindingDetailView({ finding }: { finding: FindingDetail }) {
   const { data: me } = useMe();
@@ -99,6 +101,8 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
         </section>
       )}
 
+      {finding.source === 'alb' && <FindingEvidenceSection finding={finding} />}
+
       {finding.incidentId ? (
         <p className="rounded-md border bg-foreground/[0.03] p-3 text-sm">
           Este alerta foi confirmado como parte de um incidente.{' '}
@@ -119,25 +123,27 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
 
       <Comments finding={finding} canComment={can('findings:triage')} />
 
-      <details className="rounded-md border">
-        <summary className="cursor-pointer px-3 py-2 text-sm font-semibold">Evento bruto</summary>
-        <RawEventRetention />
-        {finding.rawEvent ? (
-          // Rola por dentro: o foco pelo teclado deixa ler o evento inteiro sem mouse.
-          <pre
-            role="region"
-            aria-label="Evento bruto do log"
-            tabIndex={0}
-            className="max-h-96 overflow-auto border-t bg-foreground/[0.03] p-3 text-xs"
-          >
-            {JSON.stringify(finding.rawEvent, null, 2)}
-          </pre>
-        ) : (
-          <p className="border-t p-3 text-sm text-muted-foreground">
-            O evento bruto deste alerta não está disponível.
-          </p>
-        )}
-      </details>
+      {(finding.source !== 'alb' || finding.rawEvent) && (
+        <details className="rounded-md border">
+          <summary className="cursor-pointer px-3 py-2 text-sm font-semibold">Evento bruto</summary>
+          <RawEventRetention />
+          {finding.rawEvent ? (
+            // Rola por dentro: o foco pelo teclado deixa ler o evento inteiro sem mouse.
+            <pre
+              role="region"
+              aria-label="Evento bruto do log"
+              tabIndex={0}
+              className="max-h-96 overflow-auto border-t bg-foreground/[0.03] p-3 text-xs"
+            >
+              {JSON.stringify(finding.rawEvent, null, 2)}
+            </pre>
+          ) : (
+            <p className="border-t p-3 text-sm text-muted-foreground">
+              O evento bruto deste alerta não está disponível.
+            </p>
+          )}
+        </details>
+      )}
     </>
   );
 }

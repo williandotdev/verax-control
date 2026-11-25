@@ -26,6 +26,9 @@ import {
   webRouteCreateSchema,
   webRouteListSchema,
   webRouteUpdateSchema,
+  WEB_HEALTH_RULES_LIMIT,
+  WEB_HEALTH_SUPPRESSED_LIMIT,
+  webSourceHealthSchema,
   webSourceSettingsUpdateSchema,
   webTrustedSourceCreateSchema,
   webTrustedSourceListSchema,
@@ -506,5 +509,62 @@ describe('a configuração e a leitura dos balanceadores', () => {
     expect(ok(webTrustedSourceListSchema, { items: [], limit: 201 })).toBe(false);
     expect(ok(webRouteListSchema, { items: [], limit: WEB_ROUTES_LIMIT })).toBe(true);
     expect(new Set(WEB_LOGS_ERROR_CODES).size).toBe(WEB_LOGS_ERROR_CODES.length);
+  });
+});
+
+describe('a saúde da leitura de um balanceador', () => {
+  const at = NOW.toISOString();
+  const rule = { ruleId: '990405', level: 10, findings: 3, firstSeenAt: at, lastSeenAt: at };
+  const suppressed = { trustedId: uuid(9), ruleId: '990402', clients: 2, lastSeenAt: at };
+  const health = {
+    sourceId: uuid(1),
+    since: at,
+    objects: { read: 864, late: 2, quarantined: 1, gap: 0 },
+    lines: { analysed: 1_000_000, malformed: 3, oversize: 1, foreign: 0 },
+    bytes: 800_000_000,
+    gap: { from: at, to: at },
+    observation: { since: at, rules: [rule], truncated: false },
+    suppressed: [suppressed],
+    notes: ['behind_proxy'],
+    stateAt: at,
+  };
+
+  it('a resposta inteira e a vazia', () => {
+    expect(ok(webSourceHealthSchema, health)).toBe(true);
+    const empty = { gap: null, observation: null, suppressed: [], notes: [], stateAt: null };
+    expect(ok(webSourceHealthSchema, { ...health, ...empty })).toBe(true);
+  });
+
+  it('nenhum campo a mais entra, em nível nenhum: nem endereço, nem chave, nem o resumo do dia', () => {
+    const observation = health.observation;
+    for (const extra of [
+      { ...health, digest: {} },
+      { ...health, observation: { ...observation, keys: ['0123456789ab'] } },
+      { ...health, observation: { ...observation, rules: [{ ...rule, client: '203.0.113.7' }] } },
+      { ...health, suppressed: [{ ...suppressed, ip: '203.0.113.7' }] },
+      { ...health, objects: { ...health.objects, keys: 1 } },
+      { ...health, lines: { ...health.lines, text: 1 } },
+      { ...health, gap: { from: at, to: at, objectKey: 'x' } },
+      { ...health, notes: ['203.0.113.7'] },
+    ]) {
+      expect(ok(webSourceHealthSchema, extra)).toBe(false);
+    }
+  });
+
+  it('os códigos são abertos (um nó mais novo), os tetos não', () => {
+    const { observation } = health;
+    const withRules = (rules: unknown[]) => ({ ...health, observation: { ...observation, rules } });
+    expect(ok(webSourceHealthSchema, withRules([{ ...rule, ruleId: '990499', level: 15 }]))).toBe(true);
+    expect(ok(webSourceHealthSchema, { ...health, notes: ['uma_nota_nova'] })).toBe(true);
+    expect(ok(webSourceHealthSchema, withRules([{ ...rule, level: 16 }]))).toBe(false);
+    expect(ok(webSourceHealthSchema, withRules([{ ...rule, findings: 0 }]))).toBe(false);
+    expect(ok(webSourceHealthSchema, withRules([{ ...rule, ruleId: '99040' }]))).toBe(false);
+    const many = <T>(item: T, total: number): T[] => new Array<T>(total).fill(item);
+    expect(ok(webSourceHealthSchema, withRules(many(rule, WEB_HEALTH_RULES_LIMIT)))).toBe(true);
+    expect(ok(webSourceHealthSchema, withRules(many(rule, WEB_HEALTH_RULES_LIMIT + 1)))).toBe(false);
+    const calm = (total: number) => ({ ...health, suppressed: many(suppressed, total) });
+    expect(ok(webSourceHealthSchema, calm(WEB_HEALTH_SUPPRESSED_LIMIT))).toBe(true);
+    expect(ok(webSourceHealthSchema, calm(WEB_HEALTH_SUPPRESSED_LIMIT + 1))).toBe(false);
+    expect(ok(webSourceHealthSchema, { ...health, bytes: -1 })).toBe(false);
   });
 });

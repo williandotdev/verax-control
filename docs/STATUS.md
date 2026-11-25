@@ -6956,3 +6956,56 @@ tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views
   a mais (depois da coleta, medida durante a leitura) e 13 ms no maior bloqueio do laço de eventos.
 - **Riscos:** nenhum dado real de ALB nem S3 de verdade foi usado. A frase do DPA precisa existir antes de ligar. Desligar a
   linha com a fonte autorizada para a leitura: religada depois de mais de 24 h, o intervalo vira lacuna.
+
+## Ataques web pelos logs do ALB, PR-5: as telas (desligado por padrão)
+
+- **O que é:** as telas dos ataques web no painel do cliente: a estimativa de volume antes da autorização, os passos para ligar o
+  log do ALB, a seção "Ataques web" (modo, observação, leitura, multiplicador, rotas, fontes confiáveis) e a evidência no detalhe
+  do alerta. Na API, uma rota de leitura: `GET /v1/web-logs/sources/:id/health`. Vai para `integracao/alb`, sobre a PR-4. Sem
+  migration, sem dependência, sem permissão nova e sem mudança em `infra/`.
+- **Onde não existe, nada aparece:** o 404 de `/v1/web-logs` (desligado, nó de antes, célula) é "inexistente", sem erro; com o tipo
+  não coletado no onboarding, nenhum pedido sai. O nó sem a rota nova só fica sem as contagens; o sem a da evidência, sem ela.
+- **A rota nova:** as contagens do registro dos objetos, pelas regras da saúde da fonte, e, da memória do motor, só a observação sem
+  as chaves, o calado e as notas. O recorte é do banco: o resumo do dia (o único com endereços) não chega à API. Não vale o que é
+  de outra autorização, de outro balanceador ou de outra versão do formato. Mesma permissão das outras leituras, mesmo guard.
+- **Decisões tomadas aqui, a conferir:**
+  - as telas ficam na conta AWS (Contas cloud), e não numa página nova; as fontes confiáveis, que são do cliente inteiro,
+    aparecem nela também, com onde cada uma vale;
+  - a caixa do balanceador aparece desligada até haver uma estimativa que vale, com o motivo; com o pedido em andamento, a
+    estimativa anterior que ainda vale continua servindo;
+  - a ciência acima de 20% é uma caixa por balanceador, presa aos números vistos: mudou a estimativa, volta desmarcada. Abaixo
+    disso, o pedido vai com `acknowledged: false`, porque nada foi confirmado;
+  - o prefixo no bucket se resolve tirando o prefixo: os "buckets fora do padrão" são do CloudTrail, do GuardDuty e do WAF, e
+    cadastrar ali o bucket do ALB faria o Wazuh lê-lo como um deles;
+  - a lacuna (`web_gap`) aparece como "Parte do log ficou sem leitura", e não como falha de ingestão: a leitura de agora segue;
+  - no alerta `alb`, o bloco do evento bruto sai: não há evento bruto, e a evidência diz onde estão as linhas;
+  - o texto de consentimento dos logs no S3 fala dos logs do ALB "onde a detecção de ataques web estiver ligada": o texto é um só, e
+    continua verdadeiro com ela desligada;
+  - na demonstração, ligados por padrão (`localStorage['verax.mock.web-logs'] = 'off'` mostra o nó sem eles). Os quatro alertas novos
+    não mudam os altos e críticos para validar.
+- **Conferido nos passos da AWS**, na documentação dela (25/11): mesma região, só SSE-S3, política para
+  `logdelivery.elasticloadbalancing.amazonaws.com` em `AWSLogs/<conta>/*`, sem prefixo, os atributos `access_logs.s3.*`, os
+  comandos de criar o bucket e gravar a política, o bucket novo que já nasce com SSE-S3 e fechado ao público, e o aviso de
+  desligar o log antes de apagar o bucket. A política antiga (pelo ID da conta do ELB) continua valendo onde já existe. **Não
+  conferido:** o `access_logs.s3.prefix` vazio e os nomes dos menus em português.
+- **Arquivos:** `apps/web/src/features/web-attacks/` (novo); `components/ui/confirm-dialog.tsx` (novo);
+  `features/findings/finding-evidence.tsx` (novo) e `{finding-detail,findings-api}`; `features/admin/aws-{source-groups,
+source-monitor,source-parts,sources,onboarding-labels,onboarding-section}`; `lib/format.ts`; `mocks/{web-logs,finding-evidence}.ts`
+  (novos) e os existentes; `e2e/web-attacks.mock.spec.ts` (novo); `packages/shared/src/web-logs.ts`;
+  `apps/api/src/weblogs/{observed-since,settings/web-logs.*,store/web-engine-state,collect/{engine-state,source-config}}.ts`;
+  testes; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem mudança em `infra/`, `.github/`, `.claude/` nem no módulo `auth`.
+- **Testes:** API com Postgres descartável, 220 arquivos e 4254 testes: na rodada inteira, 218 arquivos; em dois (`cloud-accounts` e
+  `detections`) o worker do vitest caiu no Windows (3221226505), e passaram rodados de novo. Shared, 32 arquivos e 551 testes; web, 74
+  e 1002 (antes, 65 e 897). `pnpm lint`, `pnpm typecheck` (todos os pacotes) e o build da web com a varredura do bundle, limpos.
+  Playwright (mock): 19 novos (`web-attacks`), mais os 145 de onboarding da AWS, buckets, detecções, radar, MITRE, páginas,
+  histórico, tour, layout, exclusão de conta e plano. Os novos cobrem axe nos dois temas a 360, 768 e 1280 px, nenhuma rolagem de
+  lado de 320 a 1920 px, o teclado e o foco nas janelas, quem só lê e o nó sem os ataques web.
+  - **Mutações** (em série, com tempo limite e volta conferida por hash): 113. 109 mortas na primeira rodada; 3 depois de testes mais firmes (o
+    filtro de cliente na leitura do estado, a releitura da estimativa e o código errado numa rota válida); 1 não casava com o
+    texto (a formatação mudou) e morreu na repetição.
+- **Riscos:** nenhum ALB nem S3 de verdade foi usado. A leitura da saúde usa o índice por fonte e horário do tráfego (e por cliente
+  e horário de tratamento); com 20 balanceadores abertos numa tela, são 20 leituras por minuto, e só dos quadros abertos. O nome do
+  bucket não está na evidência: o alerta manda ver em Contas cloud.
+- **Ficou para depois:** `start.sh`, `node.conf`, runbook e a frase do DPA (PR-6); o mapa das origens (outra PR); as rotas
+  detectadas com "é login / ignorar" (PR-8).

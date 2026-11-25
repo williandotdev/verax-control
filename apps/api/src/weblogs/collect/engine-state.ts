@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { type DigestState, digestStateSchema } from '../digest.js';
 import { ENGINE_NOTES, type EngineNote, type EvaluateResult } from '../engine.js';
+import { ENGINE_STATE_VERSION } from '../store/web-engine-state.js';
 import { type ObservationState, observationSchema } from './observation.js';
 
 /**
@@ -8,9 +9,9 @@ import { type ObservationState, observationSchema } from './observation.js';
  * cliente, o único lugar com IP fora dos achados), a observação (contagens), o que as fontes confiáveis calaram e as notas
  * do motor. Lido de volta com zod, pedaço a pedaço: o que não serve recomeça vazio, sem derrubar o resto.
  *
- * O painel lê a observação, o calado e as notas (`state -> 'observation'`...), nunca o resumo do dia.
+ * O painel lê a observação, o calado e as notas (`readWebEngineView`, em `store/web-engine-state.ts`), nunca o resumo do dia.
  */
-export const ENGINE_STATE_VERSION = 1;
+export { ENGINE_STATE_VERSION };
 /** O teto do banco (`WebEngineState_state_check`), sobre o JSON como ele o escreve. */
 export const MAX_ENGINE_STATE_BYTES = 4 * 1024 * 1024;
 /** Quanto tempo uma fonte confiável que calou algo fica à vista. */

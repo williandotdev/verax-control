@@ -4,6 +4,7 @@ import {
   AWS_DISCOVERY_MANUAL_INTERVAL_MS,
   AWS_MAX_AUTHORIZED_LOG_GROUPS,
   AWS_MAX_AUTHORIZED_S3_SOURCES,
+  AWS_MAX_AUTHORIZED_WEB_SOURCES,
   AWS_READER_CAPABILITIES,
   AWS_READER_TEMPLATE_VERSION,
   AWS_SOURCE_GLOBAL_REGION,
@@ -34,15 +35,24 @@ import {
   type AwsSourceState,
   type CloudAccount,
   isAwsSourceActiveState,
+  isAwsSourceCollectable,
   isAwsTemplateOutdated,
   LOG_SOURCES,
   type LogSource,
   parseAwsConnectionError,
   sortAwsChosenCapabilities,
+  type VolumeAllowance,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { DEMO_ACCOUNTS, DEMO_AWS_CHECK_DELAY_MS } from './fixtures';
+import {
+  DEMO_ALBS,
+  demoEstimateRefusal,
+  demoGatedSource,
+  demoStartObservation,
+  type WebLogsStore,
+} from './web-logs';
 
 /**
  * O onboarding self-service da AWS no modo mock: uma imitação com estado das rotas `/v1/cloud-accounts/:id/aws/...`
@@ -59,7 +69,8 @@ import { DEMO_ACCOUNTS, DEMO_AWS_CHECK_DELAY_MS } from './fixtures';
  *   limitada pela AWS (`throttled`), uma sincronizada sem achado nenhum (`no_findings_yet`) e outra com achados; uma
  *   fonte de bucket em cada estado da coleta (configurando, sem eventos ainda, coletando com o atraso medido, parada e
  *   de fora da coleta por estar numa região que o coletor não lê); mais a autorização dos grupos de logs desligada na
- *   pilha, a descoberta parcial e fontes em quase todos os estados;
+ *   pilha, a descoberta parcial e fontes em quase todos os estados. Os balanceadores (`DEMO_ALBS`, em `web-logs.ts`)
+ *   também: três autorizados (observando, alertando e com a observação terminada) e os outros em cada estado da estimativa;
  * - a de homologação da Alfa: desconectada (a AWS recusa a entrada no papel);
  * - a da Beta: coletando, com a pilha do modelo anterior (o bloco "Atualize a pilha");
  * - uma conta nova: do "Conectar com AWS" até coletar tudo. Os IDs de `DEMO_AWS_SCENARIO_ACCOUNTS`, cadastrados na
@@ -128,6 +139,8 @@ export interface AwsFake {
 export type AwsOnboardingStore = Map<string, AwsFake>;
 
 const iso = (ms: number): string => new Date(ms).toISOString();
+/** A demonstração é um nó com os ataques web ligados; desligados, a resposta passa por `demoGatedSource`. */
+const FEATURES = { webLogs: true };
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const GB = 1_000_000_000;
@@ -167,7 +180,7 @@ function sourceRow(found: Discovered, now: number): AwsSource {
   const info = AWS_SOURCE_KIND_INFO[found.kind];
   const availability = found.availability ?? 'available';
   const permission = found.permission ?? (availability === 'available' ? 'granted' : 'unknown');
-  const idle = awsSourceIdleState(found.kind, availability, permission);
+  const idle = awsSourceIdleState(found.kind, availability, permission, FEATURES);
   return {
     id: newSourceId(),
     kind: found.kind,
@@ -176,7 +189,7 @@ function sourceRow(found: Discovered, now: number): AwsSource {
     name: found.name,
     method: info.method,
     origin: 'discovered',
-    collectable: info.collectable,
+    collectable: isAwsSourceCollectable(found.kind, FEATURES),
     sensitive: info.sensitive,
     availability,
     loggingState: found.loggingState ?? null,
@@ -217,6 +230,17 @@ const collectingCode = (source: Pick<AwsSource, 'kind'>): string | null =>
 function collectingHealth(source: AwsSource, now: number): AwsSource['health'] {
   const api = source.method === 'api';
   const quiet = isQuietFindingSource(source);
+  if (source.kind === 'elb_logs') {
+    // O log do ALB chega de 5 em 5 minutos, e o intervalo só fecha 10 minutos depois.
+    return {
+      lastSyncAt: iso(now - 70_000),
+      lastEventAt: iso(now - 9 * 60_000),
+      lastIngestedAt: iso(now - 2 * 60_000),
+      lagSeconds: 12 * 60,
+      eventsLast24h: 412_830,
+      bytesLast24h: 0.31 * GB,
+    };
+  }
   return {
     lastSyncAt: iso(now - 40_000),
     lastEventAt: quiet ? null : iso(now - (api ? 50 * 60_000 : 3 * 60_000)),
@@ -584,21 +608,88 @@ function discoveredSources(account: CloudAccount, fake: AwsFake): Discovered[] {
         prefix: prefix('Config', main),
       },
     },
-    {
+    ...balancers(),
+  ];
+
+  /** Um ALB com o log ligado, no bucket da conta. */
+  function alb(name: string, index: number, internetFacing: boolean): Discovered {
+    return {
       kind: 'elb_logs',
       region: main,
-      resourceId: 'loja-alb',
-      name: 'loja-alb',
+      resourceId: name,
+      name,
       loggingState: 'logging',
-      notes: ['not_collected_yet'],
+      notes: withUpdate('elb_logs', ['high_volume']),
       details: {
-        arn: `arn:aws:elasticloadbalancing:${main}:${id}:loadbalancer/app/loja-alb/50dc6c495c0c9188`,
+        arn: `arn:aws:elasticloadbalancing:${main}:${id}:loadbalancer/app/${name}/50dc6c495c0c9${index + 100}`,
+        internetFacing,
         destinationType: 's3',
         bucket: `alb-logs-${id}-demo`,
         prefix: prefix('elasticloadbalancing', main),
       },
-    },
-  ];
+      ...granted('elb_logs'),
+    };
+  }
+
+  /** Os balanceadores: em toda conta, um que dá para ler e cada motivo de não dar; na da Alfa, também os dos outros estados. */
+  function balancers(): Discovered[] {
+    const balancer = (type: 'app' | 'net', name: string) =>
+      `arn:aws:elasticloadbalancing:${main}:${id}:loadbalancer/${type}/${name}/6ab1c2d3e4f50718`;
+    const own =
+      id === DEMO_ACCOUNTS.alfaProducao
+        ? [
+            alb(DEMO_ALBS.alerting, 1, true),
+            alb(DEMO_ALBS.ready, 2, true),
+            alb(DEMO_ALBS.heavy, 3, true),
+            alb(DEMO_ALBS.noSample, 4, true),
+            alb(DEMO_ALBS.failed, 5, true),
+            alb(DEMO_ALBS.expired, 6, false),
+            alb(DEMO_ALBS.fresh, 7, false),
+          ]
+        : [];
+    return [
+      alb(DEMO_ALBS.observing, 0, true),
+      ...own,
+      {
+        ...alb(DEMO_ALBS.otherAccount, 8, false),
+        notes: withUpdate('elb_logs', ['high_volume']),
+        details: {
+          ...alb(DEMO_ALBS.otherAccount, 8, false).details,
+          bucket: 'logs-da-conta-de-rede-demo',
+        },
+        ...missing(can('service-logs') ? 'bucket_denied' : 'capability_off'),
+      },
+      {
+        ...alb(DEMO_ALBS.prefixed, 9, false),
+        notes: ['high_volume', 'additional_bucket_required'],
+        details: {
+          ...alb(DEMO_ALBS.prefixed, 9, false).details,
+          prefix: `balanceadores/${prefix('elasticloadbalancing', main)}`,
+          customPrefix: 'balanceadores',
+        },
+        ...missing(can('service-logs') ? 'outside_awslogs_prefix' : 'capability_off'),
+      },
+      {
+        kind: 'elb_logs',
+        region: main,
+        resourceId: DEMO_ALBS.noLogs,
+        name: DEMO_ALBS.noLogs,
+        availability: 'no_destination',
+        loggingState: 'disabled',
+        notes: ['aws_cost_alb_logs'],
+        details: { arn: balancer('app', DEMO_ALBS.noLogs), internetFacing: true, destinationType: 'none' },
+      },
+      {
+        kind: 'elb_logs',
+        region: main,
+        resourceId: DEMO_ALBS.network,
+        name: DEMO_ALBS.network,
+        availability: 'unsupported_format',
+        loggingState: 'logging',
+        details: { arn: balancer('net', DEMO_ALBS.network), internetFacing: false },
+      },
+    ];
+  }
 
   LOG_GROUP_NAMES.forEach(([name, gb, retentionDays, tagged], index) => {
     const region = index % 5 === 4 ? second : main;
@@ -649,7 +740,7 @@ function demoInfrastructure(partial: boolean): AwsInfrastructureSummary {
     rdsPublic: 0,
     rdsUnencrypted: 1,
     rdsClusters: 1,
-    loadBalancers: partial ? null : 2,
+    loadBalancers: partial ? null : 5,
     internetFacingLoadBalancers: partial ? null : 2,
     vpcs: 3,
     webAcls: 3,
@@ -974,8 +1065,12 @@ function runCollectors(account: CloudAccount, fake: AwsFake, now: number): void 
     if (elapsed >= collectingAt) {
       setState(source, 'collecting', collectingCode(source), now);
       source.health = collectingHealth(source, now);
-    } else if (source.method === 'api') {
-      // A fonte de achados não tem passo intermediário: espera o coletor até a primeira leitura.
+    } else if (
+      source.method === 'api' ||
+      (source.kind === 'elb_logs' && elapsed < DEMO_AWS_COLLECTOR_MS.waitingEvents)
+    ) {
+      // A fonte de achados não tem passo intermediário: espera o coletor até a primeira leitura. O balanceador, lido pelo
+      // worker, também não passa pela configuração do Wazuh.
       continue;
     } else if (elapsed >= DEMO_AWS_COLLECTOR_MS.waitingEvents) {
       setState(source, 'waiting_events', null, now);
@@ -1336,6 +1431,39 @@ export function demoAwsOnboardingStore(
       { stateCode: 'region_unsupported', stateSince: iso(at - 9 * DAY) },
       9,
     );
+    // Os balanceadores: observando há 30 h; alertando, com arquivos recusados; e atrás de uma CDN, com a observação terminada
+    // e parte do log sem leitura. A configuração e a contagem deles estão em `web-logs.ts`.
+    const isAlb = (name: string) => (source: AwsSource) => source.kind === 'elb_logs' && source.name === name;
+    pin(fake, at, isAlb(DEMO_ALBS.observing), 'collecting', {}, 30 / 24);
+    pin(fake, at, isAlb(DEMO_ALBS.alerting), 'collecting', {
+      stateCode: 'web_quarantined',
+      health: {
+        lastSyncAt: iso(at - 80_000),
+        lastEventAt: iso(at - 8 * 60_000),
+        lastIngestedAt: iso(at - 2 * 60_000),
+        lagSeconds: 13 * 60,
+        eventsLast24h: 2_104_377,
+        bytesLast24h: 1.62 * GB,
+      },
+    });
+    pin(
+      fake,
+      at,
+      isAlb(DEMO_ALBS.ready),
+      'ingestion_error',
+      {
+        stateCode: 'web_gap',
+        health: {
+          lastSyncAt: iso(at - 90_000),
+          lastEventAt: iso(at - 10 * 60_000),
+          lastIngestedAt: iso(at - 4 * 60_000),
+          lagSeconds: 14 * 60,
+          eventsLast24h: 980_112,
+          bytesLast24h: 0.78 * GB,
+        },
+      },
+      5,
+    );
     // Uma Web ACL autorizada que foi apagada da conta, e outra com a autorização retirada.
     const gone = sourceRow(
       {
@@ -1608,8 +1736,10 @@ export function awsOnboardingView(
   fake: AwsFake,
   credentialMode: AwsCredentialMode = 'role',
   now: number = Date.now(),
+  webLogs = true,
 ): AwsOnboarding {
   const sources = fake.sources
+    .flatMap((source) => (webLogs ? source : (demoGatedSource(source) ?? [])))
     .map((source) => withApiLag(withLegacyPermission(source, account), now))
     .sort((a, b) => {
       for (const field of SOURCE_ORDER) {
@@ -1697,12 +1827,22 @@ export interface AwsOnboardingMockDeps {
   findAccount: (id: string, write: Request | null) => Found;
   /** Como o nó lê a conta: pelo papel, ou com a chave (a VM própria do cliente). */
   credentialMode: () => AwsCredentialMode;
+  /** Os ataques web: o que a demonstração guarda deles, se estão ligados e o volume do plano (a autorização confere). */
+  webLogs: { store: WebLogsStore; enabled: () => boolean; allowance: () => VolumeAllowance };
 }
 
 /** As rotas do onboarding da AWS no mock, com os mesmos status e códigos de recusa da API. */
-export function createAwsOnboardingHandlers({ store, findAccount, credentialMode }: AwsOnboardingMockDeps) {
+export function createAwsOnboardingHandlers({
+  store,
+  findAccount,
+  credentialMode,
+  webLogs,
+}: AwsOnboardingMockDeps) {
   const view = (account: CloudAccount, status = 200) =>
-    HttpResponse.json(awsOnboardingView(account, awsFakeOf(store, account), credentialMode()), { status });
+    HttpResponse.json(
+      awsOnboardingView(account, awsFakeOf(store, account), credentialMode(), Date.now(), webLogs.enabled()),
+      { status },
+    );
   /** A conta já com o que o "worker" da demonstração fez até agora. */
   const load = (id: unknown, write: Request | null): Found => {
     const found = findAccount(String(id), write);
@@ -1799,7 +1939,7 @@ export function createAwsOnboardingHandlers({ store, findAccount, credentialMode
       }
       const pending = rows.filter((row) => !isAuthorized(row) || row.state === 'source_missing');
       for (const row of pending) {
-        if (!row.collectable) {
+        if (!row.collectable || (row.kind === 'elb_logs' && !webLogs.enabled())) {
           return refusal(409, 'Este tipo de fonte ainda não é coletado.', 'SOURCE_NOT_COLLECTABLE');
         }
         if (row.availability !== 'available' || row.missingSince !== null) {
@@ -1831,6 +1971,7 @@ export function createAwsOnboardingHandlers({ store, findAccount, credentialMode
           );
         }
       }
+      const balancers = pending.filter((source) => source.kind === 'elb_logs');
       const others = fake.sources.filter((source) => isAuthorized(source) && !pending.includes(source));
       const count = (list: readonly AwsSource[], method: AwsSource['method']) =>
         list.filter((source) => source.method === method).length;
@@ -1838,7 +1979,10 @@ export function createAwsOnboardingHandlers({ store, findAccount, credentialMode
         (count(pending, 'cloudwatch') > 0 &&
           count(others, 'cloudwatch') + count(pending, 'cloudwatch') > AWS_MAX_AUTHORIZED_LOG_GROUPS) ||
         (count(pending, 's3') > 0 &&
-          count(others, 's3') + count(pending, 's3') > AWS_MAX_AUTHORIZED_S3_SOURCES)
+          count(others, 's3') + count(pending, 's3') > AWS_MAX_AUTHORIZED_S3_SOURCES) ||
+        (balancers.length > 0 &&
+          others.filter((source) => source.kind === 'elb_logs').length + balancers.length >
+            AWS_MAX_AUTHORIZED_WEB_SOURCES)
       ) {
         return refusal(
           409,
@@ -1846,7 +1990,12 @@ export function createAwsOnboardingHandlers({ store, findAccount, credentialMode
           'SOURCE_LIMIT_REACHED',
         );
       }
+      const estimate = demoEstimateRefusal(webLogs.store, balancers, input.data, webLogs.allowance());
+      if (estimate !== null) {
+        return refusal(409, 'A estimativa de volume do balanceador precisa ser conferida.', estimate);
+      }
       const now = Date.now();
+      demoStartObservation(webLogs.store, balancers, found.userId, now);
       for (const row of pending) {
         Object.assign(row, {
           authorization: { authorizedAt: iso(now), authorizedBy: found.userId, revokedAt: null },

@@ -57,14 +57,12 @@ export function awsSourceGroup(source: AwsSource): AwsSourceGroup {
 }
 
 /**
- * A fonte pode entrar num pedido de autorização (a API recusa as outras, e a tela nem as oferece)? O balanceador, ainda não:
- * ele leva a ciência da estimativa de volume, que esta versão da tela não mostra (a API o recusaria, e o pedido inteiro com
- * ele).
+ * A fonte pode entrar num pedido de autorização (a API recusa as outras, e a tela nem as oferece)? O balanceador também
+ * precisa da estimativa de volume que vale (`usableEstimate`, em `features/web-attacks`): quem olha isso é a lista.
  */
 export function isAuthorizableSource(source: AwsSource): boolean {
   return (
     source.origin !== 'legacy' &&
-    source.kind !== 'elb_logs' &&
     (!isAuthorizedSource(source) || source.state === 'source_missing') &&
     awsSourceGroup(source) === 'available'
   );

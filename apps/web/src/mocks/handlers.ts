@@ -40,6 +40,11 @@ export interface MockState {
    * `localStorage['verax.mock.plan']` (`plataforma`).
    */
   platform?: boolean;
+  /**
+   * Os ataques web pelos logs do ALB neste nó. Sem informar, ligados, a não ser com
+   * `localStorage['verax.mock.web-logs'] = 'off'`.
+   */
+  webLogs?: boolean;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;

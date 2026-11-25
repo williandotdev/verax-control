@@ -12,6 +12,7 @@ import {
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
+import { demoFindingEvidence } from './finding-evidence';
 import { demoFindings } from './findings-fixtures';
 import type { MockState } from './handlers';
 import { demoPeriodRefusal, demoRangeRefusal } from './plan-handlers';
@@ -112,6 +113,16 @@ export function createFindingHandlers(
         .slice(0, MAX_RELATED_FINDINGS)
         .map(summary);
       return HttpResponse.json({ items });
+    }),
+
+    // A evidência dos ataques web: rota à parte do detalhe, como na API.
+    http.get(url('/v1/findings/:id/evidence'), ({ params }) => {
+      const scope = scoped();
+      if ('error' in scope) return scope.error;
+      const finding = scope.findings.find((candidate) => candidate.id === params['id']);
+      return finding
+        ? HttpResponse.json(demoFindingEvidence(finding))
+        : problem(404, 'Alerta não encontrado');
     }),
 
     http.get(url('/v1/findings/:id'), ({ params }) => {

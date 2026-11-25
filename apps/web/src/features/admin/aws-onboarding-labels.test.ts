@@ -5,6 +5,9 @@ import {
   AWS_DISCOVERY_SERVICES,
   AWS_DISCOVERY_STATUSES,
   AWS_LOG_GROUP_CATEGORIES,
+  AWS_MAX_AUTHORIZED_LOG_GROUPS,
+  AWS_MAX_AUTHORIZED_S3_SOURCES,
+  AWS_MAX_AUTHORIZED_WEB_SOURCES,
   AWS_ONBOARDING_CHECK_CODES,
   AWS_ONBOARDING_CHECK_IDS,
   AWS_ONBOARDING_CHECK_STATUSES,
@@ -25,6 +28,7 @@ import {
   awsInfrastructureSummarySchema,
   CONSOLE_MANAGED_CODE,
   isAwsRegion,
+  WEB_SOURCE_STATE_CODES,
 } from '@verax/shared';
 import { describe, expect, it } from 'vitest';
 import { ApiRequestError } from '@/lib/api-client';
@@ -58,6 +62,7 @@ import {
   AWS_SOURCE_STATE_CODE_TEXTS,
   AWS_SOURCE_STATE_TEXTS,
   AWS_WAZUH_SOURCE_STATE_CODE_TEXTS,
+  WEB_SOURCE_STATE_CODE_TEXTS,
   awsCheckLabel,
   awsCheckText,
   awsDiscoveryErrorHint,
@@ -371,11 +376,63 @@ describe('textos do onboarding da AWS: todo código do contrato tem o texto dele
     expect(AWS_SOURCE_COLLECTION_NOTES.cloudwatch_log_group).toMatch(
       /fila de alertas sem dono, que só a Verax vê/,
     );
-    // Só esses dois tipos têm a observação.
+    // Só esses dois tipos e o balanceador têm a observação.
     expect(Object.keys(AWS_SOURCE_COLLECTION_NOTES).sort()).toEqual([
       'cloudwatch_log_group',
+      'elb_logs',
       'vpc_flow_logs',
     ]);
+  });
+
+  it('balanceadores: o que o cliente autoriza diz que tudo é analisado, que nada fica guardado e que IPs de visitantes são tratados', () => {
+    const consent = AWS_AUTHORIZATION_TEXTS['service-logs'].description;
+    for (const text of [consent, AWS_SOURCE_COLLECTION_NOTES.elb_logs ?? '']) {
+      expect(text).toMatch(/analisa todas as linhas e não guarda nenhuma/);
+      expect(text).toMatch(/endereços IP de quem visita a sua aplicação/);
+    }
+    expect(consent).toMatch(
+      /logs de acesso dos balanceadores de aplicação \(ALB\) que você autorizar, um a um/,
+    );
+    // Num nó com eles desligados, o texto continua verdadeiro.
+    expect(consent).toMatch(/onde a detecção de ataques web estiver ligada/);
+    expect(consent).toMatch(
+      /só a evidência mascarada de um ataque, com a indicação do arquivo no seu próprio S3/,
+    );
+  });
+
+  it('balanceadores: todo motivo de estado da leitura tem o texto dele, no estado em que aparece', () => {
+    const health = (state: 'collecting' | 'stalled' | 'ingestion_error', stateCode: string) =>
+      awsSourceHealthText(authorizedSourceFixture('elb_logs', state, { stateCode }));
+    for (const code of WEB_SOURCE_STATE_CODES) {
+      expect(WEB_SOURCE_STATE_CODE_TEXTS[code], code).toMatch(/\S/);
+      expect(awsIngestionErrorText(code), code).toBe(WEB_SOURCE_STATE_CODE_TEXTS[code]);
+    }
+    expect(health('collecting', 'web_quarantined')).toEqual({
+      label: 'Coletando, com arquivos recusados',
+      tone: 'medium',
+      detail: WEB_SOURCE_STATE_CODE_TEXTS.web_quarantined,
+    });
+    expect(health('stalled', 'web_unread')).toMatchObject({
+      label: 'Parada',
+      detail: WEB_SOURCE_STATE_CODE_TEXTS.web_unread,
+    });
+    // A lacuna é do que ficou para trás: não é "falha de ingestão".
+    expect(health('ingestion_error', 'web_gap')).toMatchObject({
+      label: 'Parte do log ficou sem leitura',
+      tone: 'high',
+      detail: WEB_SOURCE_STATE_CODE_TEXTS.web_gap,
+    });
+    expect(health('ingestion_error', 'web_prefix_unsupported')).toMatchObject({
+      label: 'Falha de ingestão',
+      detail: WEB_SOURCE_STATE_CODE_TEXTS.web_prefix_unsupported,
+    });
+  });
+
+  it('o limite de fontes autorizadas cita os três tetos, o dos balanceadores também', () => {
+    const text = AWS_ONBOARDING_ERROR_TEXTS.SOURCE_LIMIT_REACHED;
+    expect(text).toContain(`${AWS_MAX_AUTHORIZED_LOG_GROUPS} grupos do CloudWatch Logs`);
+    expect(text).toContain(`${AWS_MAX_AUTHORIZED_S3_SOURCES} fontes do S3`);
+    expect(text).toContain(`até ${AWS_MAX_AUTHORIZED_WEB_SOURCES} balanceadores`);
   });
 
   it('saúde da fonte autorizada: textos honestos para cada estado', () => {

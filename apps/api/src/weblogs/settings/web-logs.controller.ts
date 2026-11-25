@@ -25,6 +25,7 @@ import {
   type WebRouteUpdate,
   webRouteUpdateSchema,
   type WebSourceSettingsUpdate,
+  type WebSourceHealth,
   webSourceSettingsUpdateSchema,
   type WebTrustedSource,
   type WebTrustedSourceCreate,
@@ -67,6 +68,13 @@ export class WebLogsController {
     @Param('sourceId', { schema: awsSourceIdSchema }) sourceId: string,
   ): Promise<WebLogSource> {
     return this.webLogs.source(request.auth as RequestAuth, sourceId);
+  }
+
+  /** A leitura das últimas 24 h e o resumo da observação: só contagens e códigos. */
+  @Get('sources/:sourceId/health')
+  @RequirePermission('cloud_accounts:read')
+  health(@Param('sourceId', { schema: awsSourceIdSchema }) sourceId: string): Promise<WebSourceHealth> {
+    return this.webLogs.health(sourceId);
   }
 
   /** O modo (observar ou alertar) e o multiplicador dos limites. */

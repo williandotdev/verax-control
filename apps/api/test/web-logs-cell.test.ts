@@ -33,6 +33,12 @@ describe('ataques web pelos logs do ALB na célula compartilhada', () => {
     const read = await onHost(app, SLUG)('get', '/v1/web-logs/sources').set('Cookie', session.cookie);
     expect(read.status).toBe(404);
     expect(read.body).toMatchObject({ code: 'WEB_LOGS_DISABLED' });
+    const health = await onHost(app, SLUG)(
+      'get',
+      '/v1/web-logs/sources/018f0000-0000-7000-8000-000000000001/health',
+    ).set('Cookie', session.cookie);
+    expect(health.status).toBe(404);
+    expect(health.body).toMatchObject({ code: 'WEB_LOGS_DISABLED' });
     const written = await onHost(app, SLUG)('post', '/v1/web-logs/trusted-sources')
       .set('Cookie', session.cookie)
       .set('X-CSRF-Token', session.token)
