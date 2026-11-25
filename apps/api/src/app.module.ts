@@ -5,6 +5,7 @@ import { AgentsModule } from './agents/agents.module.js';
 import { AlertExceptionsModule } from './alert-exceptions/alert-exceptions.module.js';
 import { AuditTrailModule } from './audit-trail/audit-trail.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { CasesModule } from './cases/cases.module.js';
 import { CloudAccountsModule } from './cloud-accounts/cloud-accounts.module.js';
 import { AuditInterceptor } from './common/audit/audit.interceptor.js';
 import { RequestContextInterceptor } from './common/context/request-context.interceptor.js';
@@ -32,6 +33,7 @@ import { ProtectedResourcesModule } from './protected-resources/protected-resour
 import { TenantsModule } from './tenants/tenants.module.js';
 import { UnownedAlertsModule } from './unowned-alerts/unowned-alerts.module.js';
 import { UsersModule } from './users/users.module.js';
+import { WebLogsModule } from './weblogs/settings/web-logs.module.js';
 
 export interface AppModuleOptions {
   logger?: LoggerParamsOptions;
@@ -57,9 +59,11 @@ export class AppModule {
         TenantsModule,
         UsersModule,
         CloudAccountsModule,
+        WebLogsModule,
         FindingsModule.register(options.rawEvents),
         IncidentsModule,
         DetectionsModule,
+        CasesModule,
         PostureModule,
         AssetsModule,
         TowerModule,

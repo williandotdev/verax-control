@@ -153,6 +153,20 @@ model Tenant {
   cloudflareAttempts       CloudflareConnectAttempt[]
   cloudflareGrants         CloudflareGrant[]
   cloudflareZones          CloudflareZone[]
+  /// Casos (agrupamento dos alertas) e triagem em massa.
+  alertCases               AlertCase[]
+  triageOperations         TriageOperation[]
+  triageOperationItems     TriageOperationItem[]
+  /// Ataques web pelos logs do ALB: a configuração do cliente, os objetos lidos, a evidência, o estado e o tráfego.
+  webSourceSettings        WebSourceSettings[]
+  webSourceEstimates       WebSourceEstimate[]
+  webTrustedSources        WebTrustedSource[]
+  webRoutes                WebRoute[]
+  webLogObjects            WebLogObject[]
+  findingEvidence          FindingEvidence[]
+  webEngineStates          WebEngineState[]
+  webTrafficSlots          WebTrafficSlot[]
+  webTrafficHours          WebTrafficHour[]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -194,6 +208,8 @@ model User {
   /// Preferência de aviso por e-mail (fase 2, PR-17'); sem linha, vale o padrão.
   notificationPreference     NotificationPreference?
   noticeDigests              NotificationDigest[]
+  /// Operações de triagem em massa que a pessoa pediu.
+  triageOperations           TriageOperation[]
 
   @@index([tenantId])
 }
@@ -405,6 +421,7 @@ model CloudAccount {
   cloudflareGrant          CloudflareGrant?           @relation(fields: [cloudflareGrantId, tenantId], references: [id, tenantId], onDelete: Restrict)
   cloudflareAttempts       CloudflareConnectAttempt[]
   cloudflareZones          CloudflareZone[]
+  webLogObjects            WebLogObject[]
 
   @@unique([provider, accountId])
   /// Alvo da chave estrangeira composta da `CloudCredential`: a credencial é sempre do mesmo cliente da conta.
@@ -624,7 +641,19 @@ model AwsSource {
   createdAt           DateTime     @default(now()) @db.Timestamptz(3)
   updatedAt           DateTime     @updatedAt @db.Timestamptz(3)
 
+  /// Ataques web pelos logs do ALB: o que só existe por este balanceador (`elb_logs`).
+  webSettings     WebSourceSettings?
+  webEstimate     WebSourceEstimate?
+  webTrusted      WebTrustedSource[]
+  webRoutes       WebRoute[]
+  webLogObjects   WebLogObject[]
+  webEngineState  WebEngineState?
+  webTrafficSlots WebTrafficSlot[]
+  webTrafficHours WebTrafficHour[]
+
   @@unique([cloudAccountId, kind, region, resourceId])
+  /// Alvo das chaves compostas do que é por fonte (`Web*`): a linha é sempre do mesmo cliente da fonte.
+  @@unique([id, tenantId])
   @@index([tenantId])
   @@index([cloudAccountId, state])
 }
@@ -730,69 +759,252 @@ enum FindingStatus {
 /// mostra e os estados humanos (status e comentários); o evento bruto continua no indexer e só vem no detalhe.
 /// `(source, sourceEventId)` é único: o sync relê uma janela de sobreposição sem duplicar achados.
 model Finding {
-  id              String           @id @default(uuid(7)) @db.Uuid
-  tenantId        String           @db.Uuid
-  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  id              String                @id @default(uuid(7)) @db.Uuid
+  tenantId        String                @db.Uuid
+  tenant          Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   /// Conta do provedor de onde veio o evento (12 dígitos, ID do projeto ou ID do Cloudflare).
-  accountId       String           @db.VarChar(32)
+  accountId       String                @db.VarChar(32)
   /// Sistema de origem do alerta: `wazuh`, `gcp`, `cloudflare` ou `aws` (os achados lidos pela API do Security Hub, do
   /// Inspector e do Access Analyzer; o GuardDuty lido pela API sai como `wazuh`, com a chave do caminho do bucket).
-  source          String           @db.VarChar(16)
+  source          String                @db.VarChar(16)
   /// Chave do achado na origem, a mesma a cada releitura do evento (no Wazuh, `wazuh/<conta>/<tipo>:<id>:<regra>`).
-  sourceEventId   String           @db.VarChar(128)
+  sourceEventId   String                @db.VarChar(128)
   /// Só no Wazuh: ID do alerta da primeira leitura, por onde o detalhe busca o evento bruto no indexer.
-  rawEventId      String?          @db.VarChar(128)
+  rawEventId      String?               @db.VarChar(128)
   /// Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `security_hub`, `inspector`...
-  logSource       String           @db.VarChar(32)
-  occurredAt      DateTime         @db.Timestamptz(3)
+  logSource       String                @db.VarChar(32)
+  occurredAt      DateTime              @db.Timestamptz(3)
   severity        FindingSeverity
-  status          FindingStatus    @default(new)
-  ruleId          String           @db.VarChar(6)
-  ruleLevel       Int              @db.SmallInt
+  status          FindingStatus         @default(new)
+  ruleId          String                @db.VarChar(6)
+  ruleLevel       Int                   @db.SmallInt
   /// Descrição da regra do Wazuh.
-  title           String           @db.VarChar(500)
-  eventName       String?          @db.VarChar(256)
-  region          String?          @db.VarChar(64)
-  resource        String?          @db.VarChar(2048)
-  actorUser       String?          @db.VarChar(512)
-  actorType       String?          @db.VarChar(64)
-  accessKeyId     String?          @db.VarChar(128)
-  sourceIp        String?          @db.VarChar(64)
+  title           String                @db.VarChar(500)
+  eventName       String?               @db.VarChar(256)
+  region          String?               @db.VarChar(64)
+  resource        String?               @db.VarChar(2048)
+  actorUser       String?               @db.VarChar(512)
+  actorType       String?               @db.VarChar(64)
+  accessKeyId     String?               @db.VarChar(128)
+  sourceIp        String?               @db.VarChar(64)
   mitreTactics    String[]
   mitreTechniques String[]
   /// Exceção que marcou o achado como esperado na chegada (T3.5); o achado já nasce "legítimo".
-  exceptionId     String?          @db.Uuid
-  exception       AlertException?  @relation(fields: [exceptionId], references: [id], onDelete: SetNull)
+  exceptionId     String?               @db.Uuid
+  exception       AlertException?       @relation(fields: [exceptionId], references: [id], onDelete: SetNull)
   /// Incidente em que o alerta foi confirmado (por uma pessoa, pela API), sempre do mesmo cliente.
-  incidentId      String?          @db.Uuid
-  incident        Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+  incidentId      String?               @db.Uuid
+  incident        Incident?             @relation(fields: [incidentId], references: [id], onDelete: SetNull)
   /// Primeira vez que alguém tirou o achado de "novo" (relatório de tempo até a triagem).
-  triagedAt       DateTime?        @db.Timestamptz(3)
+  triagedAt       DateTime?             @db.Timestamptz(3)
   /// A versão do achado na origem (o `updatedAt`, que só avança). No GuardDuty, decide a reincidência: a versão mais
   /// nova de um achado já triado vira outro achado; a de um ainda não triado só avança esta data. Nos achados de estado
   /// lidos pela API da AWS (Security Hub, Inspector, Access Analyzer), a versão nova só avança esta data.
-  lastSeenAt      DateTime?        @db.Timestamptz(3)
+  lastSeenAt      DateTime?             @db.Timestamptz(3)
   /// Só no GuardDuty: a chave do achado inteiro na origem (`wazuh/<conta>/guardduty:<id>:<regra>`), a mesma no
   /// original, nas recorrências e, na sondagem de porta, no achado de cada IP. A cadeia da reincidência é lida por aqui.
-  chainKey        String?          @db.VarChar(128)
+  chainKey        String?               @db.VarChar(128)
   /// Achado original de que este é a recorrência (GuardDuty: atividade nova depois da triagem). A chave estrangeira
   /// inclui o cliente, então uma recorrência nunca aponta para achado de outro cliente.
-  recurrenceOfId  String?          @db.Uuid
-  recurrenceOf    Finding?         @relation("FindingRecurrence", fields: [recurrenceOfId, tenantId], references: [id, tenantId], onDelete: Restrict)
-  recurrences     Finding[]        @relation("FindingRecurrence")
-  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
-  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+  recurrenceOfId  String?               @db.Uuid
+  recurrenceOf    Finding?              @relation("FindingRecurrence", fields: [recurrenceOfId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  recurrences     Finding[]             @relation("FindingRecurrence")
+  /// Caso (agrupamento) do alerta; nulo até a tarefa dos casos o atribuir. A chave estrangeira inclui o cliente, então um
+  /// alerta nunca entra em caso de outro cliente, e não se propaga (`onUpdate: Restrict`): trocar o cliente do caso não
+  /// leva os alertas dele junto. As contagens do caso saem de gatilhos desta tabela (migration
+  /// `20261127120000_alert_cases`): mudar `caseId`, `status`, `severity` ou `incidentId` já acerta o caso.
+  caseId          String?               @db.Uuid
+  alertCase       AlertCase?            @relation(fields: [caseId, tenantId], references: [id, tenantId], onDelete: Restrict, onUpdate: Restrict)
+  /// Subgrupo dentro do caso, para tratar só uma parte dele: o pacote vulnerável (gravado na chegada, no Inspector) ou
+  /// o recurso do controle reprovado.
+  caseGroup       String?               @db.VarChar(128)
+  /// Última operação de triagem em massa que mudou o alerta (`TriageOperation`). Sem chave estrangeira: o cabeçalho da
+  /// operação tem retenção própria, e o alerta pode viver mais que ele.
+  triageOpId      String?               @db.Uuid
+  createdAt       DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime              @updatedAt @db.Timestamptz(3)
   comments        FindingComment[]
   notifications   Notification[]
+  triageItems     TriageOperationItem[]
+  /// Há mais dois índices, parciais, só no banco (SQL da migration; o Prisma 7.10 não os declara nem os compara, então
+  /// `migrate diff` e `migrate dev` não propõem apagá-los): `Finding_case_outbox_idx` (os alertas pendentes sem caso) e
+  /// `Finding_mitre_tactics_idx` (os alertas com tática do MITRE).
+  /// Só nos achados que trazem a própria evidência (os ataques web pelos logs do ALB).
+  evidence        FindingEvidence?
 
   @@unique([source, sourceEventId])
-  /// Alvo da chave composta dos comentários e das recorrências: só apontam para achado do mesmo cliente.
+  /// Alvo da chave composta dos comentários, das recorrências e dos itens da triagem em massa: só apontam para achado do
+  /// mesmo cliente.
   @@unique([id, tenantId])
   @@index([tenantId, occurredAt(sort: Desc)])
   @@index([tenantId, status])
+  /// Alertas altos e críticos ainda em "novo" (a Torre conta em toda tela aberta), sem ler a tabela inteira.
+  @@index([tenantId, status, severity])
   @@index([incidentId])
   @@index([recurrenceOfId])
   @@index([tenantId, chainKey])
+  /// Os alertas de um caso, do mais novo para o mais antigo (e o alvo da chave estrangeira do caso).
+  @@index([tenantId, caseId, occurredAt(sort: Desc), id(sort: Desc)])
+}
+
+/// Fila de um caso: detecção (o padrão de tudo o que não se conhece), vulnerabilidade ou postura.
+enum CaseQueue {
+  detection
+  vulnerability
+  posture
+}
+
+/// Caso: alertas de um cliente com a mesma chave de agrupamento (`src/cases/case-key.ts`). Só o sistema grava
+/// (`SYSTEM_WRITTEN_MODELS`); a pessoa trata os alertas, e as contagens acompanham.
+///
+/// **As contagens são dos gatilhos da tabela `Finding`**, nunca de um service: `total` e as partes dele. Cada alerta do
+/// caso conta uma vez só: em `incidentCount` se está num incidente (seja qual for o status) e, fora de incidente, no
+/// status dele (`newCount`, `investigatingCount`, `legitimateCount`, `resolvedCount`). Pendente é o alerta fora de
+/// incidente em `new` ou `investigating`: `pendingCritical` a `pendingLow` o dividem por severidade, e `pending` diz se
+/// há algum. Não há CHECK nas contagens de propósito: um erro de contagem se corrige depois (a conferência semanal), e
+/// nunca pode impedir a gravação ou a triagem de um alerta.
+///
+/// Sem índice nas contagens nem nos horários, e com `fillfactor = 70` (na migration): a mudança de contagem é um update
+/// HOT, que não mexe em índice nenhum (menos quando `pending` vira).
+model AlertCase {
+  id                 String           @id @default(uuid(7)) @db.Uuid
+  tenantId           String           @db.Uuid
+  tenant             Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  queue              CaseQueue
+  /// Versão da chave (`CASE_KEY_VERSION`) e a chave (SHA-256 em hexadecimal), que não mudam depois de gravadas.
+  keyVersion         Int              @db.SmallInt
+  groupKey           String           @db.Char(64)
+  /// A chave enquanto o caso está aberto (igual a `groupKey`); nula depois de selado. É única por cliente: no máximo um
+  /// caso aberto por chave.
+  openKey            String?          @db.Char(64)
+  family             String           @db.VarChar(64)
+  /// Título fixo, do dicionário dos casos: nunca leva texto que veio do evento.
+  title              String           @db.VarChar(200)
+  /// As partes da chave, cortadas, só para mostrar (texto que pode vir do evento).
+  keyParts           Json
+  /// Caso anterior da mesma chave e quantas vezes ele já voltou. Sem chave estrangeira: o anterior sai antes, na
+  /// retenção.
+  previousCaseId     String?          @db.Uuid
+  recurrence         Int              @default(0)
+  /// O alerta que abriu o caso. Sem chave estrangeira: o alerta pode sair antes do caso, na retenção.
+  anchorFindingId    String           @db.Uuid
+  /// Horários do servidor, nunca os do log.
+  openedAt           DateTime         @default(now()) @db.Timestamptz(3)
+  sealedAt           DateTime?        @db.Timestamptz(3)
+  /// Por que selou: `window` (a janela passou), `treated` (tratado inteiro), `idle` (sem pendência quando chegou o
+  /// seguinte) ou `split` (dividido). Texto com CHECK, e não enum: um valor novo não faz a imagem anterior falhar ao ler.
+  sealReason         String?          @db.VarChar(16)
+  /// O primeiro e o último alerta, pelo horário do evento, e a chegada do último, pelo relógio do servidor.
+  firstSeenAt        DateTime         @db.Timestamptz(3)
+  lastSeenAt         DateTime         @db.Timestamptz(3)
+  lastAlertAt        DateTime         @db.Timestamptz(3)
+  /// A maior severidade já avisada por e-mail.
+  noticedSeverity    FindingSeverity?
+  pending            Boolean          @default(false)
+  total              Int              @default(0)
+  pendingCritical    Int              @default(0)
+  pendingHigh        Int              @default(0)
+  pendingMedium      Int              @default(0)
+  pendingLow         Int              @default(0)
+  newCount           Int              @default(0)
+  investigatingCount Int              @default(0)
+  legitimateCount    Int              @default(0)
+  resolvedCount      Int              @default(0)
+  incidentCount      Int              @default(0)
+  /// Amostras limitadas (os tetos são CHECK na migration).
+  ruleIds            String[]         @default([])
+  accounts           String[]         @default([])
+  actors             String[]         @default([])
+  /// Só para conferir a lista de proteção: não sai na API.
+  accessKeys         String[]         @default([])
+  ips                String[]         @default([])
+  resources          String[]         @default([])
+  mitreTactics       String[]         @default([])
+  mitreTechniques    String[]         @default([])
+  /// Incidente para onde o caso foi promovido; um gatilho no banco confere que é do mesmo cliente.
+  incidentId         String?          @db.Uuid
+  incident           Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+  findings           Finding[]
+
+  @@unique([tenantId, openKey])
+  /// Alvo da chave composta do alerta: só aponta para caso do mesmo cliente.
+  @@unique([id, tenantId])
+  @@index([tenantId, queue, pending])
+  @@index([tenantId, openedAt])
+  /// O caso anterior da mesma chave (a chave não muda: não tira o HOT das contagens).
+  @@index([tenantId, groupKey])
+  @@index([incidentId])
+}
+
+/// Operação de triagem em massa: um pedido de uma pessoa sobre muitos alertas, executado na requisição ou pelo worker, em
+/// lotes. O `requestId` é único por cliente: o pedido repetido não roda duas vezes. O que cada alerta era antes fica em
+/// `TriageOperationItem`.
+model TriageOperation {
+  id              String                @id @default(uuid(7)) @db.Uuid
+  tenantId        String                @db.Uuid
+  tenant          Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  requestId       String                @db.Uuid
+  /// `status`, `promote`, `attach`, `undo` ou `undo_all_of`. Como o estado, é texto com CHECK, e não enum.
+  action          String                @db.VarChar(16)
+  /// O alvo do pedido (casos, alertas, filtro, a operação desfeita ou a pessoa), já validado pela API, e o que o motor
+  /// guarda com ele: `run` (o andamento, pequeno) e `ids` (o conjunto congelado, que sai quando a operação termina).
+  target          Json
+  /// O status pedido (`status`) e o incidente (`promote` e `attach`; sem chave estrangeira: ele pode sair na retenção).
+  status          FindingStatus?
+  incidentId      String?               @db.Uuid
+  /// A pessoa confirmou que os alertas críticos entram.
+  includeCritical Boolean               @default(false)
+  /// O conjunto é congelado aqui: alerta que chegou depois não entra.
+  cutoffAt        DateTime              @db.Timestamptz(3)
+  expectedCount   Int
+  reason          String?               @db.VarChar(500)
+  /// `queued`, `running`, `done`, `partial`, `failed`, `canceled`, `undoing` ou `undone`.
+  state           String                @default("queued") @db.VarChar(16)
+  /// Até onde os lotes chegaram.
+  cursor          String?               @db.VarChar(128)
+  matched         Int                   @default(0)
+  changed         Int                   @default(0)
+  skipped         Int                   @default(0)
+  /// Quem pediu; nulo se a pessoa for excluída.
+  createdById     String?
+  createdBy       User?                 @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  undoUntil       DateTime?             @db.Timestamptz(3)
+  /// A operação que esta desfaz. A chave estrangeira inclui o cliente.
+  undoOfId        String?               @db.Uuid
+  undoOf          TriageOperation?      @relation("TriageOperationUndo", fields: [undoOfId, tenantId], references: [id, tenantId], onDelete: NoAction, onUpdate: Restrict)
+  undoneBy        TriageOperation[]     @relation("TriageOperationUndo")
+  createdAt       DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime              @updatedAt @db.Timestamptz(3)
+  items           TriageOperationItem[]
+
+  @@unique([tenantId, requestId])
+  /// Alvo das chaves compostas dos itens e do desfazer: só apontam para operação do mesmo cliente.
+  @@unique([id, tenantId])
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([state, createdAt])
+  @@index([undoOfId])
+  @@index([createdById])
+}
+
+/// O que um alerta era antes de uma operação de triagem em massa: é a trilha por alerta (com o pedido e o fim na
+/// auditoria) e o que o desfazer devolve. Vive enquanto o alerta viver: sai em cascata com ele. A operação não sai
+/// enquanto tiver item (RESTRICT). As chaves estrangeiras incluem o cliente.
+model TriageOperationItem {
+  tenantId           String          @db.Uuid
+  tenant             Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  operationId        String          @db.Uuid
+  operation          TriageOperation @relation(fields: [operationId, tenantId], references: [id, tenantId], onDelete: Restrict, onUpdate: Restrict)
+  findingId          String          @db.Uuid
+  finding            Finding         @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  previousStatus     FindingStatus
+  previousTriagedAt  DateTime?       @db.Timestamptz(3)
+  /// Sem chave estrangeira: o incidente pode sair na retenção.
+  previousIncidentId String?         @db.Uuid
+  createdAt          DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@id([operationId, findingId])
+  /// A cascata do alerta (sem ele, cada alerta apagado leria a tabela inteira).
+  @@index([findingId, tenantId])
 }
 
 /// Comentário num achado (T5.5). Não é editado nem apagado (trigger na migration): é parte do registro da
@@ -997,6 +1209,7 @@ model Incident {
   updatedAt       DateTime        @updatedAt @db.Timestamptz(3)
   findings        Finding[]
   notifications   Notification[]
+  alertCases      AlertCase[]
 
   @@index([tenantId, status])
   @@index([tenantId, riskScore(sort: Desc)])
@@ -1404,7 +1617,9 @@ model Notification {
   tenantId              String              @db.Uuid
   tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   kind                  NotificationKind
-  /// `incident:<id>:<severidade>`, `finding:<id>`, `usage:<AAAA-MM>:<80|100>` ou `aws-stalled:<início da parada>`.
+  /// `incident:<id>:<severidade>`, `finding:<id>`, `usage:<AAAA-MM>:<80|100>` ou `aws-stalled:<início da parada>`. Com os
+  /// avisos por caso, também `case:<id>:<severidade>` (e `:<instante>` na onda seguinte), `case:<id>:growth:<dia>`,
+  /// `cases-critical:<hora>` e `cases-daily:<dia>`, nos tipos `critical_finding` e `high_finding`.
   dedupeKey             String              @db.VarChar(128)
   /// Severidade que gerou o aviso (o incidente ao abrir ou ao subir, o achado crítico).
   severity              FindingSeverity?
@@ -1415,6 +1630,9 @@ model Notification {
   /// Alerta alto ou crítico que chegou. A chave estrangeira inclui o cliente.
   findingId             String?             @db.Uuid
   finding               Finding?            @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  /// Caso do aviso (o alerta é o que o abriu). Sem chave estrangeira: o caso tem retenção própria. O índice
+  /// (`Notification_caseId_idx`) é parcial, e só está na migration.
+  caseId                String?             @db.Uuid
   /// Volume do plano: o mês (primeiro dia, calendário de Brasília) e a faixa alcançada (80 ou 100).
   usageMonth            DateTime?           @db.Date
   usagePercent          Int?                @db.SmallInt
@@ -1444,6 +1662,8 @@ model Notification {
   @@index([status, nextAttemptAt])
   @@index([incidentId])
   @@index([findingId])
+  /// E-mails ao contato de escalonamento na hora (o limite dele), sem ler a tabela inteira a cada aviso crítico.
+  @@index([tenantId, escalationDeliveredAt])
 }
 
 /// Preferência de aviso por e-mail de uma pessoa do cliente (fase 2, PR-17'). Só a própria pessoa a muda
@@ -1651,4 +1871,233 @@ model SsoTokenUse {
   expiresAt DateTime @db.Timestamptz(3)
 
   @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Ataques web pelos logs de acesso do ALB (`src/weblogs`). Nenhuma linha de log é guardada: nem IP, nem caminho, nem query
+// fora da evidência mascarada de um achado. Tudo sai com a fonte (`AwsSource`) ou com a conta, menos a evidência, que vive
+// e sai com o achado. As chaves estrangeiras levam o cliente, e todas são em cascata: a imagem anterior do nó apaga contas,
+// fontes e achados sem conhecer estas tabelas.
+// ---------------------------------------------------------------------------------------------------
+
+/// Configuração do cliente para um balanceador: `observe` só conta (o começo de toda fonte, 72 h), `alert` gera achado.
+/// Sem linha, vale o padrão (`observe`, multiplicador 1).
+model WebSourceSettings {
+  sourceId            String    @db.Uuid
+  tenantId            String    @db.Uuid
+  tenant              Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Chave estrangeira composta (fonte e cliente): o banco recusa a configuração de um cliente na fonte de outro.
+  source              AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// `observe` ou `alert` (CHECK).
+  mode                String    @default("observe") @db.VarChar(16)
+  /// Até quando a observação é obrigatória.
+  observeUntil        DateTime? @db.Timestamptz(3)
+  /// Multiplica os limites das regras, de 0,5 a 10 (CHECK).
+  thresholdMultiplier Float     @default(1)
+  createdAt           DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime  @updatedAt @db.Timestamptz(3)
+  /// O usuário da última mudança; null na linha criada pelo sistema. A trilha tem o resto.
+  updatedBy           String?   @db.VarChar(64)
+
+  @@id([sourceId, tenantId])
+  @@index([tenantId])
+}
+
+/// A estimativa de volume de um balanceador, antes da autorização: o pedido do painel (`requestedAt`, que o worker desfaz ao
+/// responder) e o último resultado. Só contagens. Sai com a fonte.
+model WebSourceEstimate {
+  sourceId       String    @db.Uuid
+  tenantId       String    @db.Uuid
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source         AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// Pedida e ainda não respondida; null sem pedido pendente.
+  requestedAt    DateTime? @db.Timestamptz(3)
+  requestedBy    String?   @db.VarChar(64)
+  /// O último pedido, respondido ou não: é o limite de um a cada 5 min.
+  lastRequestAt  DateTime  @db.Timestamptz(3)
+  /// `ready`, `no_sample` ou `failed` (CHECK); null antes do primeiro resultado.
+  status         String?   @db.VarChar(16)
+  computedAt     DateTime? @db.Timestamptz(3)
+  /// O dia (UTC) medido.
+  day            DateTime? @db.Date
+  objects        Int?
+  /// Quantos tiveram o tamanho descompactado lido.
+  sampledObjects Int?
+  /// Bytes descompactados por dia (o que conta no plano); só no `ready`.
+  bytesPerDay    BigInt?
+  /// A listagem foi cortada: o volume é um piso.
+  truncated      Boolean   @default(false)
+  errorCode      String?   @db.VarChar(64)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([sourceId, tenantId])
+  @@index([tenantId])
+  /// Os pedidos pendentes, do mais antigo.
+  @@index([requestedAt])
+}
+
+/// Fonte confiável declarada pelo cliente (monitor, escritório, parceiro, pentest ou proxy; `weblogs/trusted-sources.ts`):
+/// cala só as regras de varredura e de força bruta, antes de virarem achado e com contador à vista. Os pisos da faixa e a
+/// validade (até 365 dias) são conferidos também por CHECK.
+model WebTrustedSource {
+  id        String     @id @default(uuid(7)) @db.Uuid
+  tenantId  String     @db.Uuid
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Null: todos os balanceadores do cliente.
+  sourceId  String?    @db.Uuid
+  source    AwsSource? @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  cidr      String     @db.VarChar(49)
+  kind      String     @db.VarChar(16)
+  reason    String     @db.VarChar(200)
+  expiresAt DateTime   @db.Timestamptz(3)
+  createdAt DateTime   @default(now()) @db.Timestamptz(3)
+  createdBy String?    @db.VarChar(64)
+  updatedAt DateTime   @updatedAt @db.Timestamptz(3)
+  updatedBy String?    @db.VarChar(64)
+
+  /// `NULLS NOT DISTINCT` (migration): a faixa não se repete também entre as que valem para todos os balanceadores.
+  @@unique([tenantId, sourceId, cidr])
+}
+
+/// Rota declarada pelo cliente num balanceador (`weblogs/routes.ts`): o host (null é qualquer um), o método, o caminho
+/// literal com `*` no lugar de um segmento, o tipo, os códigos de falha e de sucesso e o multiplicador. `ignore` só diz que
+/// a rota não é de login.
+model WebRoute {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  tenantId     String    @db.Uuid
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sourceId     String    @db.Uuid
+  source       AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  host         String?   @db.VarChar(253)
+  method       String    @default("ANY") @db.VarChar(8)
+  path         String    @db.VarChar(256)
+  kind         String    @db.VarChar(16)
+  failureCodes Int[]     @default([]) @db.SmallInt
+  successCodes Int[]     @default([]) @db.SmallInt
+  multiplier   Float     @default(1)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  createdBy    String?   @db.VarChar(64)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+  updatedBy    String?   @db.VarChar(64)
+
+  /// `NULLS NOT DISTINCT` (migration): a rota de qualquer host também não se repete.
+  @@unique([tenantId, sourceId, host, method, path])
+}
+
+/// Os objetos do log do ALB já tratados: um por objeto, pelo hash do bucket e da chave (a chave não fica guardada). A linha
+/// entra na mesma transação do volume medido e do tráfego por país (`weblogs/store/`): o objeto relido não soma de novo.
+/// `read` e `late` foram analisados (o `late` chegou depois de a janela fechar); `quarantined` e `gap`, não. Só o sistema
+/// grava; sai depois de 10 dias.
+model WebLogObject {
+  cloudAccountId String       @db.Uuid
+  cloudAccount   CloudAccount @relation(fields: [cloudAccountId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  objectHash     String       @db.Char(64)
+  tenantId       String       @db.Uuid
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sourceId       String       @db.Uuid
+  source         AwsSource    @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// `read`, `late`, `quarantined` ou `gap` (CHECK).
+  status         String       @db.VarChar(16)
+  /// O começo do intervalo de 5 minutos do arquivo; null só no objeto não analisado cujo nome não diz o intervalo.
+  slotStart      DateTime?    @db.Timestamptz(3)
+  lines          Int          @default(0)
+  /// Bytes descompactados (o que conta no plano).
+  bytes          BigInt       @default(0)
+  malformed      Int          @default(0)
+  oversize       Int          @default(0)
+  foreign        Int          @default(0)
+  readAt         DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@id([cloudAccountId, objectHash])
+  @@index([tenantId, readAt])
+  @@index([sourceId, slotStart])
+}
+
+/// A evidência de um achado que não tem evento bruto guardado (`weblogs/evidence.ts`): o JSON estrito e mascarado, até 16
+/// KB (CHECK). Uma por achado, gravada só pelo sistema, na transação do achado (`alerts/finding-evidence.ts`), e apagada
+/// com ele. As amostras e os ponteiros para o bucket do cliente saem depois de 30 dias (`samplesPurgedAt`); os agregados
+/// vivem com o achado. A chave leva o cliente: a evidência nunca é do achado de outro.
+model FindingEvidence {
+  findingId       String    @db.Uuid
+  tenantId        String    @db.Uuid
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  finding         Finding   @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// A versão do formato (`EVIDENCE_VERSION`), a mesma de dentro do JSON (CHECK).
+  version         Int       @db.SmallInt
+  data            Json
+  /// A primeira atividade vista desde que o achado nasceu: a evidência é trocada pela mais nova, e esta data não avança.
+  firstSeenAt     DateTime  @db.Timestamptz(3)
+  lastSeenAt      DateTime  @db.Timestamptz(3)
+  /// Quando as amostras e os ponteiros saíram; null enquanto ficam.
+  samplesPurgedAt DateTime? @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([findingId, tenantId])
+  /// Expurgo das amostras: as ainda guardadas, pela última atividade.
+  @@index([tenantId, samplesPurgedAt, lastSeenAt])
+}
+
+/// O resumo do dia de um balanceador (`NoiseDigest.snapshot`), para o reinício do worker não encolher o achado 990400.
+/// Contagens e chaves de cliente (IP ou /64) de até dois dias; até 4 MiB (CHECK). Só o sistema grava; sai quando a fonte
+/// deixa de ser coletada ou 3 dias depois da última gravação.
+model WebEngineState {
+  sourceId     String    @db.Uuid
+  tenantId     String    @db.Uuid
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source       AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// `app/<nome>/<id>`: a fonte é pelo nome, e um balanceador recriado com o mesmo nome não herda o estado do anterior.
+  loadBalancer String    @db.VarChar(128)
+  version      Int       @db.SmallInt
+  state        Json
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([sourceId, tenantId])
+  @@index([tenantId, updatedAt])
+}
+
+/// Tráfego por país de um balanceador, em intervalos de 5 minutos (o mapa): só contagens, nunca IP nem caminho. Somado na
+/// transação do objeto lido (`WebLogObject`); depois de 48 h, cada hora passa para o `WebTrafficHour` e sai daqui, na mesma
+/// instrução (`weblogs/store/web-traffic-store.ts`). Só o sistema grava.
+model WebTrafficSlot {
+  tenantId     String    @db.Uuid
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// O balanceador (a conta é a da fonte).
+  sourceId     String    @db.Uuid
+  source       AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  slotStart    DateTime  @db.Timestamptz(3)
+  /// ISO 3166-1 alfa-2; `ZZ` é desconhecido.
+  country      String    @db.Char(2)
+  /// `direct`, `proxy` (qualquer CDN ou proxy do cliente), `private` ou `unverified` (sem a lista das CDNs; CHECK).
+  clientClass  String    @db.VarChar(10)
+  requests     BigInt
+  blocked      BigInt
+  clientErrors BigInt
+  serverErrors BigInt
+  /// Linhas que contaram como sonda, ferramenta de ataque ou falha de login.
+  flagged      BigInt
+
+  @@id([tenantId, sourceId, slotStart, country, clientClass])
+  /// O mapa: os últimos 15 minutos e as últimas 24 h do cliente; e a hora mais antiga, na passagem para as horas.
+  @@index([tenantId, slotStart])
+}
+
+/// O mesmo, por hora, de 48 h a 35 dias atrás. Cada contagem está nesta tabela ou na de 5 minutos, nunca nas duas.
+model WebTrafficHour {
+  tenantId     String    @db.Uuid
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sourceId     String    @db.Uuid
+  source       AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  hourStart    DateTime  @db.Timestamptz(3)
+  country      String    @db.Char(2)
+  clientClass  String    @db.VarChar(10)
+  requests     BigInt
+  blocked      BigInt
+  clientErrors BigInt
+  serverErrors BigInt
+  flagged      BigInt
+
+  @@id([tenantId, sourceId, hourStart, country, clientClass])
+  @@index([tenantId, hourStart])
 }

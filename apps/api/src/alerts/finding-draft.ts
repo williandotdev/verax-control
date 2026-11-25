@@ -3,8 +3,11 @@ import { type FindingSeverity, type FindingSource, wazuhAgentRef } from '@verax/
 import type { WazuhAgentAlert } from './agent-alert.js';
 import type { AgentAlertOwner } from './agent-owner.js';
 import type { AlertOwner } from './alert-owner.js';
+import { awsAlertMitre } from './aws-mitre.js';
 import { awsAlertTitle } from './aws-rule-titles.js';
 import type { CloudWatchAlertOwner, WazuhCloudWatchAlert } from './cloudwatch-alert.js';
+import type { WebCorrelation } from '../weblogs/draft.js';
+import type { WebEvidence } from '../weblogs/evidence.js';
 import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
 
 /**
@@ -21,8 +24,9 @@ export interface FindingDraft {
   accountId: string;
   /**
    * Sistema de origem: o Wazuh (contas AWS e agentes nas instâncias do cliente), a própria leitura dos logs da GCP e do
-   * Cloudflare, ou a leitura dos achados da AWS pela API de cada serviço (`aws`: Security Hub, Inspector e Access
-   * Analyzer; o GuardDuty lido pela API sai como `wazuh`, com a mesma chave do que chega pelo bucket).
+   * Cloudflare, ou a leitura da AWS pelo worker (`aws`: os achados do Security Hub, do Inspector e do Access Analyzer,
+   * pela API de cada serviço, e os ataques web vistos nos logs do ALB; o GuardDuty lido pela API sai como `wazuh`, com a
+   * mesma chave do que chega pelo bucket).
    */
   source: 'wazuh' | 'gcp' | 'cloudflare' | 'aws';
   /** Chave do achado na origem: a mesma a cada releitura do mesmo evento (`wazuhFindingKey`, `gcpEventIdFor`). */
@@ -39,8 +43,8 @@ export interface FindingDraft {
    */
   title: string;
   /**
-   * Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `vpc_flow`, `cloudwatch_logs`, `security_hub`,
-   * `inspector`, `access_analyzer`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`.
+   * Fonte de log (`FINDING_SOURCES`): `cloudtrail`, `guardduty`, `waf`, `vpc_flow`, `alb`, `cloudwatch_logs`,
+   * `security_hub`, `inspector`, `access_analyzer`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`.
    */
   logSource: FindingSource;
   eventName: string | null;
@@ -50,6 +54,10 @@ export interface FindingDraft {
   actorType: string | null;
   accessKeyId: string | null;
   sourceIp: string | null;
+  /**
+   * Da regra que casou (Wazuh, GCP, Cloudflare), do tipo do achado (GuardDuty, `aws-mitre.ts`) ou dos tipos do Security
+   * Hub. Vazios quando a origem não diz: vulnerabilidade e postura não são ações de um atacante.
+   */
   mitreTactics: string[];
   mitreTechniques: string[];
   /**
@@ -68,6 +76,19 @@ export interface FindingDraft {
    * e o título (`FindingStore.revise`).
    */
   revision?: { lastSeenAt: string };
+  /**
+   * Subgrupo do alerta dentro do caso (`Finding.caseGroup`): por enquanto, só o pacote vulnerável do Inspector, que é
+   * também parte da chave do caso (`cases/case-key.ts`). Texto da origem, sem caractere de controle; a gravação o corta
+   * sem juntar dois valores.
+   */
+  group?: string;
+  /**
+   * Só nos ataques web pelos logs do ALB (`weblogs/`): a evidência selada, que fica no lugar do evento bruto e é gravada na
+   * transação do achado (`finding-evidence.ts`). Sem ela, a gravação é a de sempre, consulta por consulta.
+   */
+  evidence?: WebEvidence;
+  /** Só neles: as chaves do ataque. Aceito e não gravado: o caso sai das colunas do achado (`cases/case-key.ts`). */
+  correlation?: WebCorrelation;
 }
 
 /**
@@ -169,6 +190,7 @@ export function toFindingDraft(
   owner: Extract<AlertOwner, { owned: true }>,
 ): FindingDraft {
   const recurrence = recurrenceOf(alert, owner.accountId);
+  const mitre = awsAlertMitre(alert);
   return {
     tenantId: owner.tenantId,
     accountId: owner.accountId,
@@ -188,8 +210,8 @@ export function toFindingDraft(
     actorType: alert.actor.identityType ?? null,
     accessKeyId: alert.actor.accessKeyId ?? null,
     sourceIp: alert.actor.ip ?? null,
-    mitreTactics: unique(alert.rule.mitre.tactics),
-    mitreTechniques: unique(alert.rule.mitre.ids),
+    mitreTactics: unique(mitre.tactics),
+    mitreTechniques: unique(mitre.techniques),
     ...(recurrence && { recurrence }),
   };
 }

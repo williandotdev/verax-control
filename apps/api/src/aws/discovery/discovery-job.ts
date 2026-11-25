@@ -6,6 +6,7 @@ import {
   type AwsDiscoveryStatus,
   type AwsInfrastructureSummary,
   type AwsReaderCapability,
+  type AwsSourceFeatures,
   type AwsSourceKind,
   isAwsRegion,
   isAwsTemplateOutdated,
@@ -116,6 +117,8 @@ export interface AwsDiscoveryOptions {
   jitterMs?: number;
   scheduleEveryMs?: number;
   backoff?: Backoff;
+  /** O que o nó tem ligado (`AWS_WEB_LOGS_ENABLED`); sem informar, nada. */
+  features?: Readonly<AwsSourceFeatures>;
   /** Só os testes, que dividem o banco: restringe a execução às contas destes clientes. */
   tenantIds?: readonly string[];
 }
@@ -170,7 +173,7 @@ function failureCode(error: unknown): string {
  * só a descoberta: as outras não estão liberadas, e as fontes pedem a atualização da pilha). Sem as tags lidas ainda, a
  * permissão de cada fonte é sondada. A conta que chega aqui já traz as tags lidas no começo da execução (`withFacts`).
  */
-function targetOf(account: AccountRow): DiscoveryTarget {
+function targetOf(account: AccountRow, features: Readonly<AwsSourceFeatures> | undefined): DiscoveryTarget {
   // As tags lidas dizem as capacidades mesmo quando a da versão não é um número (a versão fica null).
   const capabilities: AwsReaderCapability[] | null =
     account.awsCapabilitiesCheckedAt === null ? null : accountCapabilities(account.awsCapabilities);
@@ -184,6 +187,7 @@ function targetOf(account: AccountRow): DiscoveryTarget {
       guardduty: account.guarddutyBucket,
       waf: account.wafBucket,
     },
+    features,
   };
 }
 
@@ -259,6 +263,7 @@ export class AwsDiscovery {
   private readonly jitterMs: number;
   private readonly scheduleEveryMs: number;
   private readonly backoff: Backoff;
+  private readonly features: Readonly<AwsSourceFeatures> | undefined;
   private readonly tenantIds: readonly string[] | undefined;
   private readonly renewEveryMs: number;
   private scheduledAt: number | null = null;
@@ -280,6 +285,7 @@ export class AwsDiscovery {
       jitterMs = AWS_DISCOVERY_JITTER_MS,
       scheduleEveryMs = AWS_DISCOVERY_SCHEDULE_EVERY_MS,
       backoff = AWS_DISCOVERY_BACKOFF,
+      features,
       tenantIds,
     }: AwsDiscoveryOptions = {},
   ) {
@@ -299,6 +305,7 @@ export class AwsDiscovery {
     this.jitterMs = jitterMs;
     this.scheduleEveryMs = scheduleEveryMs;
     this.backoff = backoff;
+    this.features = features;
     this.tenantIds = tenantIds;
   }
 
@@ -486,7 +493,7 @@ export class AwsDiscovery {
       const facts =
         tags.status === 'read' ? tags.facts : tags.status === 'refused' ? TEMPLATE_V1_FACTS : null;
       const result = await discoverAccount(
-        targetOf(facts === null ? account : withFacts(account, facts, startedAt)),
+        targetOf(facts === null ? account : withFacts(account, facts, startedAt), this.features),
         clients,
         { signal, now: startedAt },
       );
@@ -600,6 +607,7 @@ export class AwsDiscovery {
           sources: result.sources,
           covered: result.covered,
           now,
+          features: this.features,
         });
         // As regiões da conta do console são do console: a descoberta só acrescenta nas do painel.
         const regions =
@@ -771,7 +779,7 @@ export class AwsDiscovery {
       } else {
         known = { ...account, awsCapabilitiesCheckedAt: null };
       }
-      const target = targetOf(known);
+      const target = targetOf(known, this.features);
       return {
         clients,
         templateOutdated: target.templateOutdated,
@@ -779,6 +787,7 @@ export class AwsDiscovery {
           accountId: target.accountId,
           legacyBuckets: target.legacyBuckets,
           capabilities: target.capabilities,
+          features: target.features,
         },
       };
     } catch (error) {
@@ -800,7 +809,7 @@ export class AwsDiscovery {
       if (current === null) return;
       const now = this.now();
       if (reading?.status === 'found') {
-        await applySourceReading(db, current, reading.source, now);
+        await applySourceReading(db, current, reading.source, now, this.features);
         return;
       }
       await db.awsSource.update({

@@ -315,6 +315,7 @@ describe('lista das fontes da AWS para o Wazuh do nó (onboarding self-service)'
       group('grupo com espaço'),
       group('/aws/a,/aws/b'),
       group('/aws/lambda/outra-regiao', { region: 'ap-southeast-6' }),
+      // Um tipo que o Wazuh não lê nem aparece: a linha dele não é desta coleta (`wazuh-isolation.test.ts`).
       source({ kind: 'config', name: 'config', details: { bucket: 'config-da-conta' } }),
     ]);
     expect(outcomes(plan)).toEqual([
@@ -329,7 +330,6 @@ describe('lista das fontes da AWS para o Wazuh do nó (onboarding self-service)'
       ['grupo com espaço', 'unsupported_name'],
       ['/aws/a,/aws/b', 'unsupported_name'],
       ['/aws/lambda/outra-regiao', 'region_unsupported'],
-      ['config', 'invalid_details'],
     ]);
     expect(plan.list.accounts[0]?.s3).toHaveLength(1);
     expect(plan.list.accounts[0]?.logGroups).toEqual([]);
