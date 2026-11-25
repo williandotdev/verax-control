@@ -29,6 +29,7 @@ import type { MockState } from './handlers';
  * - `one`: uma conta (a da migração, quando a tentativa é de uma conta cadastrada): ligada sozinha;
  * - `multi`: três contas, para escolher (uma sem permissão de leitura);
  * - `manual`: o Cloudflare não lista as contas, e o ID é digitado.
+ * Com `legacy`, o nó é anterior ao OAuth: nem a conexão nem as zonas existem (404), e a tela é exatamente a de antes.
  * `localStorage['verax.mock.cloudflare-oauth.expire']` faz a tentativa vencer no retorno (`return`) ou na escolha
  * (`choosing`).
  *
@@ -145,6 +146,8 @@ export function createCloudflareOauthHandlers(state: MockState, admin: AdminStor
     state.cloudflareOauth !== undefined
       ? state.cloudflareOauth
       : (CLOUDFLARE_OAUTH_SCENARIOS.find((value) => value === stored('verax.mock.cloudflare-oauth')) ?? null);
+  const legacy = () =>
+    state.cloudflareOauth === undefined && stored('verax.mock.cloudflare-oauth') === 'legacy';
   const expire = () => state.cloudflareOauthExpire ?? stored('verax.mock.cloudflare-oauth.expire');
 
   type Check = { ok: false; error: Response } | { ok: true; me: Me; tenantId: string };
@@ -224,8 +227,8 @@ export function createCloudflareOauthHandlers(state: MockState, admin: AdminStor
       link(store, attempt, [existing?.accountId ?? DEMO_OAUTH_NEW_ACCOUNT]);
       return;
     }
-    attempt.status = 'choosing';
-    if (expire() === 'choosing') attempt.expiresAt = now;
+    // A escolha que passa do prazo aparece vencida, como na API.
+    attempt.status = expire() === 'choosing' ? 'expired' : 'choosing';
   };
 
   const toAttempt = (attempt: StoredAttempt): CloudflareOauthAttempt => {
@@ -382,6 +385,7 @@ export function createCloudflareOauthHandlers(state: MockState, admin: AdminStor
       return HttpResponse.json(toAttempt(attempt), { status: 202 });
     }),
     http.get(url('/v1/cloud-accounts/:id/cloudflare-connection'), ({ params }) => {
+      if (legacy()) return problem(404, 'Não encontrado');
       const check = scoped('cloud_accounts:read');
       if (!check.ok) return check.error;
       const account = accountsOf(check.tenantId).find((candidate) => candidate.id === params['id']);
@@ -404,6 +408,7 @@ export function createCloudflareOauthHandlers(state: MockState, admin: AdminStor
       return HttpResponse.json(connection);
     }),
     http.get(url('/v1/cloud-accounts/:id/cloudflare-zones'), ({ params }) => {
+      if (legacy()) return problem(404, 'Não encontrado');
       const check = scoped('cloud_accounts:read');
       if (!check.ok) return check.error;
       const account = accountsOf(check.tenantId).find((candidate) => candidate.id === params['id']);
