@@ -1,3 +1,4 @@
+import { type ScopedExceptionSeverity, severityWithin } from '@verax/shared';
 import { boundedCaseGroup } from '../cases/case-key.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
@@ -11,6 +12,11 @@ import { AlertNotices } from '../notifications/finding-notices.js';
 import type { ActiveException } from './exception-match.js';
 import type { FindingDraft } from './finding-draft.js';
 import { type EvidenceOutcome, saveFindingEvidence } from './finding-evidence.js';
+import {
+  type ActiveScopedException,
+  matchingScopedException,
+  type ScopedExceptionSource,
+} from './scoped-exception-match.js';
 
 /**
  * Gravação comum aos syncs de alertas (Wazuh e GCP): o achado (o alerta a validar), o uso da exceção, o aviso por e-mail,
@@ -51,7 +57,16 @@ const SEVERITY_RANK: Readonly<Record<FindingDraft['severity'], number>> = {
   critical: 3,
 };
 
-export function findingRow(draft: FindingDraft, exception: ActiveException | null) {
+/**
+ * A exceção que marca o alerta novo como esperado: a de usuário, IP ou recurso (`exceptionId`) ou, sem ela, a ampla
+ * (`scopedExceptionId`, casos, PR-9). Nunca as duas.
+ */
+export function findingRow(
+  draft: FindingDraft,
+  exception: ActiveException | null,
+  scoped: Pick<ActiveScopedException, 'id'> | null = null,
+) {
+  const wide = exception === null ? scoped : null;
   return {
     tenantId: draft.tenantId,
     accountId: draft.accountId,
@@ -68,7 +83,7 @@ export function findingRow(draft: FindingDraft, exception: ActiveException | nul
     chainKey: draft.recurrence?.chainKey ?? null,
     severity: draft.severity,
     // A exceção marca o achado como esperado já na chegada: ele não entra na fila de triagem.
-    status: exception ? ('legitimate' as const) : ('new' as const),
+    status: exception || wide ? ('legitimate' as const) : ('new' as const),
     ruleId: draft.ruleId,
     ruleLevel: draft.ruleLevel,
     title: draft.title.slice(0, 500),
@@ -82,6 +97,8 @@ export function findingRow(draft: FindingDraft, exception: ActiveException | nul
     mitreTactics: draft.mitreTactics,
     mitreTechniques: draft.mitreTechniques,
     exceptionId: exception?.id ?? null,
+    // Só com a exceção ampla: a imagem anterior do nó, que não conhece a coluna, grava a mesma linha sem ela.
+    ...(wide !== null && { scopedExceptionId: wide.id }),
     caseGroup: draft.group === undefined ? null : boundedCaseGroup(draft.group),
   };
 }
@@ -132,6 +149,18 @@ export class LastEvents {
 export interface FindingStoreOptions {
   /** A evidência foi recusada (schema ou tamanho): o achado foi gravado sem ela. Recebe só o id da regra. */
   onEvidenceRefused?: (ruleId: string) => void;
+  /**
+   * As exceções amplas (casos, PR-9), só com `CASES_MODE=on`. Sem elas, o de sempre. Valem só para o alerta novo (e a
+   * recorrência nova do GuardDuty): o alerta que já existe nunca é marcado por elas.
+   */
+  scopedExceptions?: ScopedExceptionSource;
+}
+
+/** As opções do `FindingStore` que um coletor repassa: só as exceções amplas, quando existem. */
+export function storeOptions(options: {
+  scopedExceptions?: ScopedExceptionSource | undefined;
+}): FindingStoreOptions {
+  return options.scopedExceptions === undefined ? {} : { scopedExceptions: options.scopedExceptions };
 }
 
 export class FindingStore {
@@ -161,21 +190,37 @@ export class FindingStore {
     now: Date,
     authorize?: (tx: Prisma.TransactionClient) => Promise<void>,
   ): Promise<PersistOutcome> {
+    // Fora da transação: a leitura das exceções amplas que falha não aborta a gravação do alerta, que entra na fila.
+    const scoped = exception === null ? await this.scopedFor(draft, now) : null;
     return this.prisma.$transaction(async (tx) => {
       await authorize?.(tx);
       await lockTenantFindings(tx, draft.tenantId);
       const db = scopeToTenant(tx, draft.tenantId);
       const { count } = await db.finding.createMany({
-        data: [findingRow(draft, exception)],
+        data: [findingRow(draft, exception, scoped)],
         skipDuplicates: true,
       });
-      if (count === 1) return this.settle(tx, db, draft, draft.sourceEventId, exception, now);
+      if (count === 1) return this.settle(tx, db, draft, draft.sourceEventId, exception, now, scoped);
       // A chave já existe. Só o GuardDuty traz a versão do achado, que diz se é a mesma ou uma nova.
-      if (draft.recurrence) return this.recur(tx, db, draft, draft.recurrence, exception, now);
+      if (draft.recurrence) return this.recur(tx, db, draft, draft.recurrence, exception, now, scoped);
       // Os achados de estado da API da AWS trazem a versão também, e ela só atualiza o que já existe.
       if (draft.revision) return this.revise(tx, db, draft, draft.revision);
       return 'duplicate' as const;
     });
+  }
+
+  /**
+   * A exceção ampla do alerta, se houver uma que casa e ainda vale agora (conferida no banco: a revogação vale na hora).
+   * Nunca lança.
+   */
+  private async scopedFor(draft: FindingDraft, now: Date): Promise<ActiveScopedException | null> {
+    const source = this.options.scopedExceptions;
+    if (source === undefined) return null;
+    // O relógio de agora, e não o do começo da execução: uma que atravessa o vencimento não segue marcando alertas.
+    const at = new Date(Math.max(now.getTime(), Date.now()));
+    const matched = matchingScopedException(draft, await source.forTenant(draft.tenantId, at), at);
+    if (matched === null) return null;
+    return (await source.stillActive(draft.tenantId, matched.id, at)) ? matched : null;
   }
 
   /** A evidência do achado, se o draft a traz. O `findingId` é de um achado lido no escopo do cliente. */
@@ -220,6 +265,7 @@ export class FindingStore {
         status: true,
         incidentId: true,
         caseId: true,
+        scopedExceptionId: true,
       },
     });
     if (!current) return 'duplicate' as const;
@@ -234,6 +280,14 @@ export class FindingStore {
     }
     const title = draft.title.slice(0, 500);
     const severityChanged = current.severity !== draft.severity;
+    // Marcado por exceção ampla e a severidade passou da máxima dela (ou virou crítica): volta para a fila de validação.
+    // A exceção só é lida no alerta marcado por ela: o caminho de sempre faz as mesmas consultas de antes.
+    const reopened =
+      severityChanged &&
+      current.status === 'legitimate' &&
+      current.scopedExceptionId !== null &&
+      !(await this.stillWithin(db, current.scopedExceptionId, draft.severity));
+    const status = reopened ? ('new' as const) : current.status;
     await db.finding.update({
       where: { id: current.id },
       data: {
@@ -241,14 +295,15 @@ export class FindingStore {
         ...(severityChanged && { severity: draft.severity, ruleLevel: draft.ruleLevel }),
         ...(current.ruleId !== draft.ruleId && { ruleId: draft.ruleId }),
         ...(current.title !== title && { title }),
+        ...(reopened && { status, scopedExceptionId: null }),
         ...eventName,
       },
       select: { id: true },
     });
     await this.saveEvidence(tx, draft, current.id);
     const rose = SEVERITY_RANK[draft.severity] > SEVERITY_RANK[current.severity];
-    if (rose && current.status !== 'legitimate') {
-      const pending = current.status === 'new' || current.status === 'investigating';
+    if (rose && status !== 'legitimate') {
+      const pending = status === 'new' || status === 'investigating';
       await this.notices.enqueue(db, {
         tenantId: draft.tenantId,
         id: current.id,
@@ -258,6 +313,12 @@ export class FindingStore {
       });
     }
     return 'duplicate' as const;
+  }
+
+  /** A severidade nova ainda cabe na exceção ampla que marcou o alerta? Apagada (só à mão), não cabe. */
+  private async stillWithin(db: ScopedDb, id: string, severity: FindingDraft['severity']): Promise<boolean> {
+    const exception = await db.scopedException.findUnique({ where: { id }, select: { maxSeverity: true } });
+    return exception !== null && severityWithin(severity, exception.maxSeverity as ScopedExceptionSeverity);
   }
 
   /**
@@ -271,7 +332,19 @@ export class FindingStore {
     sourceEventId: string,
     exception: ActiveException | null,
     now: Date,
+    scoped: ActiveScopedException | null = null,
   ): Promise<PersistOutcome> {
+    if (exception === null && scoped !== null) {
+      // A contagem da exceção ampla; revogada no meio, a linha continua, e a conta também.
+      await db.scopedException.updateMany({
+        where: { id: scoped.id },
+        data: { matchedCount: { increment: 1 }, lastMatchedAt: now },
+      });
+      if (draft.evidence !== undefined) {
+        await this.saveEvidence(tx, draft, await this.findingId(db, draft.source, sourceEventId));
+      }
+      return 'excepted' as const;
+    }
     if (exception) {
       await db.alertException.update({
         where: { id: exception.id },
@@ -329,6 +402,7 @@ export class FindingStore {
     recurrence: NonNullable<FindingDraft['recurrence']>,
     exception: ActiveException | null,
     now: Date,
+    scoped: ActiveScopedException | null,
   ): Promise<PersistOutcome> {
     const original = await db.finding.findUnique({
       where: { source_sourceEventId: { source: draft.source, sourceEventId: draft.sourceEventId } },
@@ -370,7 +444,7 @@ export class FindingStore {
     const { count } = await db.finding.createMany({
       data: [
         {
-          ...findingRow(draft, exception),
+          ...findingRow(draft, exception, scoped),
           sourceEventId: recurrence.sourceEventId,
           recurrenceOfId: original.id,
         },
@@ -378,7 +452,7 @@ export class FindingStore {
       skipDuplicates: true,
     });
     if (count === 0) return 'duplicate' as const;
-    return this.settle(tx, db, draft, recurrence.sourceEventId, exception, now);
+    return this.settle(tx, db, draft, recurrence.sourceEventId, exception, now, scoped);
   }
 
   /** Na dúvida, o evento não é de ninguém (T5.2): a fila guarda o motivo e o mínimo para a triagem. */

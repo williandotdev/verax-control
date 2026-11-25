@@ -1,4 +1,12 @@
 import {
+  alertExceptionBatchSchema,
+  canWriteScopedExceptions,
+  type CaseExceptionDraft,
+  MAX_ALERT_EXCEPTIONS_PER_REQUEST,
+  type ScopedException,
+  scopedExceptionCreateSchema,
+  scopedExceptionPreviewQuerySchema,
+  severityWithin,
   type CaseDetail,
   CASE_MODES,
   type CaseMode,
@@ -184,6 +192,24 @@ export function createCaseHandlers(
     return scope;
   };
   const query = (request: Request) => Object.fromEntries(new URL(request.url).searchParams);
+  /** As exceções amplas de cada cliente, criadas nesta visita. */
+  const wide = new Map<string, ScopedException[]>();
+  const exceptionScope = (
+    request?: Request,
+    permission: Permission = 'alert_exceptions:write',
+    admin = false,
+  ) => {
+    const scope = scoped(permission);
+    if ('error' in scope) return scope;
+    if (mode !== 'on') return { error: problem(404, 'Não encontrado') } as const;
+    if (admin && !canWriteScopedExceptions(scope.me.role)) {
+      return { error: problem(403, 'Sem permissão') } as const;
+    }
+    if (request && request.headers.get('X-CSRF-Token') === null) {
+      return { error: problem(403, 'CSRF', 'CSRF_INVALID') } as const;
+    }
+    return scope;
+  };
   const page = <T>(items: readonly T[], pageNumber: number, pageSize: number) =>
     HttpResponse.json({
       items: items.slice((pageNumber - 1) * pageSize, pageNumber * pageSize),
@@ -430,7 +456,134 @@ export function createCaseHandlers(
         return refusal(error);
       }
     }),
+
+    // Exceções a partir de um caso (casos, PR-9): com os casos ligados, só quem opera exceções; a ampla, só administradores.
+    http.get(url('/v1/cases/:id/exception-draft'), ({ params }) => {
+      const scope = exceptionScope();
+      if ('error' in scope) return scope.error;
+      const row = scope.cases.byId(String(params['id']));
+      if (!row) return problem(404, 'Caso não encontrado');
+      return HttpResponse.json(exceptionDraft(row.id, scope.cases.findingsOf(row)));
+    }),
+
+    http.post(url('/v1/cases/:id/alert-exceptions'), async ({ params, request }) => {
+      const scope = exceptionScope(request);
+      if ('error' in scope) return scope.error;
+      if (!scope.cases.byId(String(params['id']))) return problem(404, 'Caso não encontrado');
+      const parsed = alertExceptionBatchSchema.safeParse(await request.json());
+      if (!parsed.success) return problem(400, 'Dados inválidos');
+      return HttpResponse.json({ created: parsed.data.values.length, existing: 0 }, { status: 201 });
+    }),
+
+    http.get(url('/v1/scoped-exceptions'), ({ request }) => {
+      const scope = exceptionScope(undefined, 'alert_exceptions:read');
+      if ('error' in scope) return scope.error;
+      const { page: number = '1', pageSize = '20' } = query(request);
+      const now = Date.now();
+      const items = (wide.get(scope.tenantId) ?? []).map((item) => ({
+        ...item,
+        active: item.revokedAt === null && Date.parse(item.expiresAt) > now,
+      }));
+      return page(items, Number(number), Number(pageSize));
+    }),
+
+    http.get(url('/v1/scoped-exceptions/preview'), ({ request }) => {
+      const scope = exceptionScope(undefined, 'alert_exceptions:write', true);
+      if ('error' in scope) return scope.error;
+      const parsed = scopedExceptionPreviewQuerySchema.safeParse(query(request));
+      if (!parsed.success) return problem(400, 'Dados inválidos');
+      const target = parsed.data;
+      const since = Date.now() - 30 * 24 * 3_600_000;
+      const matched = (findings.get(scope.tenantId) ?? []).filter(
+        (finding) =>
+          finding.ruleId === target.ruleId &&
+          finding.source === target.logSource &&
+          finding.accountId === target.accountId &&
+          Date.parse(finding.occurredAt) >= since &&
+          severityWithin(finding.severity, target.maxSeverity) &&
+          (target.eventName === undefined || finding.eventName === target.eventName) &&
+          (target.resourcePrefix === undefined || (finding.resource ?? '').startsWith(target.resourcePrefix)),
+      );
+      return HttpResponse.json({
+        days: 30,
+        matched: matched.length,
+        high: matched.filter((finding) => finding.severity === 'high').length,
+      });
+    }),
+
+    http.post(url('/v1/scoped-exceptions'), async ({ request }) => {
+      const scope = exceptionScope(request, 'alert_exceptions:write', true);
+      if ('error' in scope) return scope.error;
+      const parsed = scopedExceptionCreateSchema.safeParse(await request.json());
+      if (!parsed.success) return problem(400, 'Dados inválidos');
+      const created: ScopedException = {
+        id: crypto.randomUUID(),
+        ...parsed.data,
+        eventName: parsed.data.eventName ?? null,
+        resourcePrefix: parsed.data.resourcePrefix ?? null,
+        active: true,
+        matchedCount: 0,
+        lastMatchedAt: null,
+        createdBy: { id: scope.me.userId, name: 'Você (demonstração)' },
+        createdAt: new Date().toISOString(),
+        revokedAt: null,
+        revokedBy: null,
+      };
+      wide.set(scope.tenantId, [created, ...(wide.get(scope.tenantId) ?? [])]);
+      return HttpResponse.json(created, { status: 201 });
+    }),
+
+    http.post(url('/v1/scoped-exceptions/:id/revoke'), ({ params, request }) => {
+      const scope = exceptionScope(request, 'alert_exceptions:write', true);
+      if ('error' in scope) return scope.error;
+      const found = (wide.get(scope.tenantId) ?? []).find((item) => item.id === String(params['id']));
+      if (!found) return problem(404, 'Exceção não encontrada');
+      if (found.revokedAt !== null) return problem(409, 'Esta exceção já foi revogada');
+      found.revokedAt = new Date().toISOString();
+      found.revokedBy = { id: scope.me.userId, name: 'Você (demonstração)' };
+      found.active = false;
+      return HttpResponse.json(found);
+    }),
   ];
+}
+
+/** O que é constante nos alertas do caso, como a API o calcula. */
+function exceptionDraft(caseId: string, items: readonly FindingDetail[]): CaseExceptionDraft {
+  const targets = new Map<string, CaseExceptionDraft['targets'][number]>();
+  const rank = { critical: 0, high: 1, medium: 2, low: 3 } as const;
+  for (const finding of items) {
+    const key = JSON.stringify([finding.ruleId, finding.source, finding.accountId, finding.eventName]);
+    const known = targets.get(key);
+    if (known) {
+      known.alerts += 1;
+      if (rank[finding.severity] < rank[known.severity]) known.severity = finding.severity;
+    } else {
+      targets.set(key, {
+        ruleId: finding.ruleId,
+        logSource: finding.source,
+        accountId: finding.accountId,
+        eventName: finding.eventName,
+        alerts: 1,
+        severity: finding.severity,
+      });
+    }
+  }
+  const cap = MAX_ALERT_EXCEPTIONS_PER_REQUEST;
+  const values = (all: (string | null)[]) => {
+    const distinct = [...new Set(all.filter((value): value is string => value !== null))].sort();
+    return { values: distinct.slice(0, cap), complete: distinct.length <= cap };
+  };
+  const list = [...targets.values()];
+  return {
+    caseId,
+    targets: list.slice(0, cap),
+    targetsComplete: list.length <= cap,
+    values: {
+      user: values(items.map((finding) => finding.actor.user)),
+      ip: values(items.map((finding) => finding.actor.ip)),
+      resource: values(items.map((finding) => finding.resource)),
+    },
+  };
 }
 
 /** Na medição ninguém opera: a operação aparece sem o que fazer com ela. */

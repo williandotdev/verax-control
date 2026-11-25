@@ -9,7 +9,7 @@ import { AgentDirectory, resolveAgentAlertOwner } from './agent-owner.js';
 import { type AlertSearchClient, type AlertSyncOptions, eventIdOf } from './alert-sync.js';
 import { type ActiveException, matchingException } from './exception-match.js';
 import { toAgentFindingDraft } from './finding-draft.js';
-import { FindingStore, SyncLease, type UnownedRecord } from './finding-store.js';
+import { FindingStore, storeOptions, SyncLease, type UnownedRecord } from './finding-store.js';
 import {
   agentSyncPage,
   cursorFromSort,
@@ -95,7 +95,7 @@ export class AgentAlertSync {
     this.name = options.name ?? AGENT_ALERT_SYNC;
     this.settings = options.settings ?? DEFAULT_AGENT_SYNC_SETTINGS;
     this.maxPages = options.maxPages ?? 100;
-    this.store = new FindingStore(prisma, options.notices);
+    this.store = new FindingStore(prisma, options.notices, storeOptions(options));
     this.lease = new SyncLease(
       prisma,
       this.name,

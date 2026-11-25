@@ -2481,6 +2481,51 @@ limites são os de sempre (5 por pessoa e hora, o resumo da hora com o título e
 severidade). O aviso que deixou de valer é fechado antes, de uma vez (`case_treated`, `superseded_by_incident`, `case_gone`), e
 conferido de novo no envio de cada um e quando o resumo da hora sai: um caso já tratado não vai em e-mail nenhum.
 
+### Exceções a partir de um caso (`apps/api/src/scoped-exceptions/`, PR-9)
+
+Do detalhe de um caso, **Criar exceção** (com `CASES_MODE=on`, para quem tem `alert_exceptions:write`):
+
+- **Usuário, IP ou recurso** (as exceções de sempre, `AlertException`): o painel lê o que é constante nos alertas do caso
+  (`GET /v1/cases/:id/exception-draft`, as combinações de regra, fonte, conta e evento, e os valores de usuário, IP e recurso
+  até 20 cada) e cria uma por valor de uma vez (`POST /v1/cases/:id/alert-exceptions`, até 20; a que já existe fica como
+  estava). Acima de 20 valores, o painel recusa e sugere a ampla. Um registro na auditoria (`alert_exception.create_batch`).
+- **Ampla** (`ScopedException`, só administradores, decisão D8): regra, fonte de log e conta obrigatórias; evento e começo do
+  recurso (o repositório do ECR) opcionais; severidade máxima (padrão média, até alta; crítico nunca); motivo; validade
+  obrigatória de até 90 dias. Antes de salvar, a prévia (`GET /v1/scoped-exceptions/preview`): "teria coberto N alertas nos
+  últimos 30 dias, M altos", contando os alertas que chegaram na janela. O painel só salva com a prévia dos valores de agora.
+  Revogar (`POST /v1/scoped-exceptions/:id/revoke`) não apaga: a exceção para de valer na hora e fica listada, com quem revogou.
+  Auditoria: `alert_exception.scoped_create` e `alert_exception.scoped_revoke` (área `alert_exception`, sem tipo novo no filtro).
+
+**Travas** (`packages/shared/src/scoped-exceptions.ts`, conferidas no zod, de novo no worker e, as de severidade e validade, em
+CHECKs do banco): o evento é obrigatório nas regras que são uma classe (990501, 990502, 990511 e 80300-80309); a ampla não
+existe nas regras de identidade e acesso (100300-100324) nem nos ataques web pelos logs do ALB (990403, 990406, 990407); no
+máximo 50 em vigor por cliente. O prefixo do recurso é texto: na prévia, `%` e `_` são escapados (o `startsWith` do Prisma não
+escapa) e, no worker, a comparação é `String.startsWith`.
+
+**Permissão pelo papel.** Não há permissão nova: a lista de `/v1/me` é um enum fechado no painel, e um valor novo quebraria o
+painel de antes (o teste `web-logs-skew.test.ts` guarda isso). As rotas pedem `alert_exceptions:write` (ou `:read`, na lista), e o
+service recusa com 403 quem não é administrador (`canWriteScopedExceptions`, como `isMassTriageRole`); a recusa vai para a
+trilha. Todas as rotas só existem com `CASES_MODE=on` (`CasesOperableGuard`): com `off` ou `shadow`, 404 para todos.
+
+**Na coleta** (`apps/api/src/alerts/scoped-exception-match.ts`): separada das exceções de sempre e lida à parte. O worker só
+cria a fonte (`ScopedExceptionSource`) com `CASES_MODE=on`; os coletores a repassam ao `FindingStore`. Para cada alerta sem a
+exceção de sempre, a fonte devolve a lista do cliente (guardada por 30 s) e, se uma casa, confere no banco que ela ainda vale
+(a revogação vale na hora). Tudo isso fora da transação do alerta: uma leitura que falha vira lista vazia e um aviso no log, só
+com o tipo do erro, e o alerta entra na fila. Só o alerta **novo** (e a recorrência nova do GuardDuty) é marcado: nasce
+`legitimate`, com `scopedExceptionId`, sem aviso, e a contagem da exceção sobe na mesma transação. O alerta que já existe nunca
+é tocado. Se a origem revisa um alerta marcado e a severidade passa da máxima (ou vira crítica), ele volta para `new`, sem a
+exceção, e avisa como qualquer subida.
+
+**Migration `20261204120000_scoped_exceptions`**, só acrescenta: a tabela, `Finding.scopedExceptionId` (anulável, sem valor
+padrão), a chave estrangeira composta com o cliente (`ON DELETE SET NULL ("scopedExceptionId")`: só a coluna vira nula, nunca o
+`tenantId`; no Prisma fica `NoAction`, porque ele não declara a lista de colunas) e um índice parcial. Nenhum enum muda. A imagem
+anterior do nó grava, triaga e expurga alertas no esquema novo (testado), ignora a tabela, e o alerta que a ampla marcaria volta
+para a fila: o lado seguro.
+
+**No painel:** o diálogo (`features/cases/case-exception-dialog.tsx`) e a seção "Exceções amplas" na tela Exceções
+(`pages/admin/scoped-exceptions-section.tsx`), com a lista e o revogar. Com os casos desligados, ou um nó de antes (404), a tela é
+a de sempre, sem pedido a mais. Tudo o que veio dos logs (evento, recurso, usuário, IP) é texto.
+
 ## Ataques web pelos logs do ALB: o que fica guardado (`apps/api/src/weblogs/`)
 
 _(PR-1, o motor; PR-2, o banco, migration `20261130120000_web_logs`; PR-3, os contratos, e PR-4, a leitura, nas seções

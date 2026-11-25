@@ -56,6 +56,8 @@ const WEB_CONTRACTS_NOTE = 'aws_cost_alb_logs';
 const CASE_NOTICE_INDEX = '20261202120000_notification_case_index';
 /** E a das chaves de acesso nas amostras do caso. */
 const CASE_ACCESS_KEYS = '20261203120000_case_access_keys';
+/** E a das exceções amplas a partir de um caso (`scoped-exceptions-migration.test.ts`). */
+const SCOPED_EXCEPTIONS = '20261204120000_scoped_exceptions';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -113,6 +115,7 @@ describe(`migration ${MIGRATION}`, () => {
       WEB_CONTRACTS,
       CASE_NOTICE_INDEX,
       CASE_ACCESS_KEYS,
+      SCOPED_EXCEPTIONS,
     ]);
     const additive = [
       MIGRATION,
@@ -124,6 +127,7 @@ describe(`migration ${MIGRATION}`, () => {
       NOTICE_INDEX,
       CASE_NOTICE_INDEX,
       CASE_ACCESS_KEYS,
+      SCOPED_EXCEPTIONS,
     ];
     for (const name of additive) {
       const sql = sqlOf(name);

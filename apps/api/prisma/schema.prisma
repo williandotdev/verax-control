@@ -116,6 +116,7 @@ model Tenant {
   cloudAccounts            CloudAccount[]
   protectedResources       ProtectedResource[]
   alertExceptions          AlertException[]
+  scopedExceptions         ScopedException[]
   findings                 Finding[]
   findingComments          FindingComment[]
   incidents                Incident[]
@@ -198,6 +199,8 @@ model User {
   usedTotpCodes              UsedTotpCode[]
   protectedResources         ProtectedResource[]
   alertExceptions            AlertException[]
+  scopedExceptionsCreated    ScopedException[]        @relation("ScopedExceptionAuthor")
+  scopedExceptionsRevoked    ScopedException[]        @relation("ScopedExceptionRevoker")
   findingComments            FindingComment[]
   assignedIncidents          Incident[]              @relation("IncidentAssignee")
   /// Incidentes que a pessoa confirmou (promoveu a partir de alertas).
@@ -592,6 +595,39 @@ enum AlertExceptionField {
   resource
 }
 
+/// Exceção ampla (casos, PR-9; `packages/shared/src/scoped-exceptions.ts`): o alerta novo da regra, na fonte de log e na
+/// conta, com o evento e o começo do recurso se informados, até a severidade máxima, entra como legítimo. Validade
+/// obrigatória de até 90 dias e nunca crítico (CHECKs da migration). Revogar não apaga: a linha fica, com quem revogou.
+/// A imagem anterior do nó não conhece a tabela: os alertas voltam para a fila (o lado seguro).
+model ScopedException {
+  id             String          @id @default(uuid(7)) @db.Uuid
+  tenantId       String          @db.Uuid
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  ruleId         String          @db.VarChar(6)
+  logSource      String          @db.VarChar(32)
+  accountId      String          @db.VarChar(32)
+  eventName      String?         @db.VarChar(256)
+  resourcePrefix String?         @db.VarChar(2048)
+  maxSeverity    FindingSeverity @default(medium)
+  reason         String          @db.VarChar(500)
+  expiresAt      DateTime        @db.Timestamptz(3)
+  /// Quantas vezes a exceção marcou um alerta como esperado (gravado pelo worker, na transação do alerta).
+  matchedCount   Int             @default(0)
+  lastMatchedAt  DateTime?       @db.Timestamptz(3)
+  createdById    String
+  createdBy      User            @relation("ScopedExceptionAuthor", fields: [createdById], references: [id], onDelete: Restrict)
+  revokedAt      DateTime?       @db.Timestamptz(3)
+  revokedById    String?
+  revokedBy      User?           @relation("ScopedExceptionRevoker", fields: [revokedById], references: [id], onDelete: Restrict)
+  createdAt      DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime        @updatedAt @db.Timestamptz(3)
+  findings       Finding[]
+
+  /// Alvo da chave composta do achado: só aponta para exceção do mesmo cliente.
+  @@unique([id, tenantId])
+  @@index([tenantId, expiresAt])
+}
+
 /// Exceção de alerta (T3.5): o sync marca como esperado o achado da regra cujo campo bate com o valor.
 model AlertException {
   id            String              @id @default(uuid(7)) @db.Uuid
@@ -665,6 +701,11 @@ model Finding {
   /// Exceção que marcou o achado como esperado na chegada (T3.5); o achado já nasce "legítimo".
   exceptionId     String?               @db.Uuid
   exception       AlertException?       @relation(fields: [exceptionId], references: [id], onDelete: SetNull)
+  /// Exceção ampla (casos, PR-9) que marcou o achado como esperado na chegada. A chave estrangeira inclui o cliente e, no
+  /// banco, é `ON DELETE SET NULL ("scopedExceptionId")`: só esta coluna vira nula, nunca o `tenantId` (o Prisma não
+  /// declara a lista de colunas do SET NULL; aqui fica `NoAction`, e a migration `20261204120000_scoped_exceptions` manda).
+  scopedExceptionId String?             @db.Uuid
+  scopedException ScopedException?      @relation(fields: [scopedExceptionId, tenantId], references: [id, tenantId], onDelete: NoAction, onUpdate: NoAction)
   /// Incidente em que o alerta foi confirmado (por uma pessoa, pela API), sempre do mesmo cliente.
   incidentId      String?               @db.Uuid
   incident        Incident?             @relation(fields: [incidentId], references: [id], onDelete: SetNull)
