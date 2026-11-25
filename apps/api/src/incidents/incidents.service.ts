@@ -273,7 +273,7 @@ export class IncidentsService {
     const incident = await this.openIncident(db, tenantId, id);
     const finding = await db.finding.findFirst({
       where: { id: findingId, incidentId: id },
-      select: { id: true },
+      select: { id: true, triageOpId: true },
     });
     if (!finding) throw new ApiError(HttpStatus.NOT_FOUND, FINDING_NOT_FOUND);
     if ((await db.finding.count({ where: { incidentId: id } })) <= 1) {
@@ -283,7 +283,17 @@ export class IncidentsService {
         INCIDENT_LAST_FINDING_CODE,
       );
     }
-    await db.finding.update({ where: { id: findingId }, data: { incidentId: null }, select: { id: true } });
+    // Tirado à mão, o alerta deixa de ser da triagem em massa que o pôs aqui: posto de volta por alguém, desfazer a operação
+    // não o tira de novo. A operação que só mudou o status dele continua valendo.
+    const { triageOpId } = finding;
+    const placed =
+      triageOpId !== null &&
+      (await db.triageOperation.count({ where: { id: triageOpId, incidentId: id } })) > 0;
+    await db.finding.update({
+      where: { id: findingId },
+      data: { incidentId: null, ...(placed && { triageOpId: null }) },
+      select: { id: true },
+    });
     const data = await resummarizeIncident(this.prisma.db(), tenantId, id);
     this.audit.describe({
       action: 'incident.detach',

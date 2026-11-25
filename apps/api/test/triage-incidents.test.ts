@@ -99,6 +99,15 @@ describe('triagem em massa: incidentes', () => {
       ),
     );
   const attached = (incidentId: string | null) => prisma.finding.count({ where: { incidentId } });
+  const detach = async (who: Operator, incidentId: string, findingId: string): Promise<void> => {
+    const { default: request } = await import('supertest');
+    await request(app.getHttpServer())
+      .delete(`/v1/incidents/${incidentId}/findings/${findingId}`)
+      .set('Cookie', who.cookie)
+      .set('Origin', 'http://localhost:5173')
+      .set('X-CSRF-Token', who.csrfToken)
+      .expect(200);
+  };
 
   /** O resumo gravado é o que sairia dos alertas do incidente, um por um. */
   async function expectSummary(tenantId: string, incidentId: string | null): Promise<void> {
@@ -408,6 +417,34 @@ describe('triagem em massa: incidentes', () => {
       await post(app, who, `/v1/triage-operations/${made.id}/continue`).expect(404);
     });
 
+    it('a lista de proteção que muda entre a abertura e o anexar vale para o incidente grande inteiro', async () => {
+      const { tenantId, who } = await customer('proteção nova');
+      limits.syncAlerts = 1;
+      const base = await caseWith(prisma, tenantId, [{ severity: 'low' }]);
+      const incidentId = (await operate(app, who, promote({ findingIds: base.ids }, 1))).incidentId as string;
+      const { caseId: bulkCase } = await caseWith(prisma, tenantId, []);
+      await manyFindings(prisma, tenantId, bulkCase, 560, { severity: 'low', resource: 's3:antigo' });
+      await operate(app, who, attach(incidentId, { caseIds: [bulkCase] }, 560), 202);
+      await drain(prisma, [tenantId]);
+      const before = (await incident(who, incidentId)).riskScore;
+      // Só os alertas que já estavam no incidente tocam o recurso que passa a ser protegido.
+      await prisma.protectedResource.create({
+        data: {
+          tenantId,
+          type: 's3_bucket',
+          identifier: 'antigo',
+          reason: 'Dados de clientes',
+          createdById: who.userId,
+        },
+      });
+      const { caseId } = await caseWith(prisma, tenantId, []);
+      await manyFindings(prisma, tenantId, caseId, 30, { severity: 'low', resource: 's3:outro' });
+      await operate(app, who, attach(incidentId, { caseIds: [caseId] }, 30), 202);
+      await drain(prisma, [tenantId]);
+      expect((await incident(who, incidentId)).riskScore).toBeGreaterThan(before);
+      await expectSummary(tenantId, incidentId);
+    });
+
     it('anexar e tirar à mão no meio dos lotes: o resumo fecha', async () => {
       const { tenantId, who } = await customer('à mão');
       limits.syncAlerts = 1;
@@ -422,13 +459,7 @@ describe('triagem em massa: incidentes', () => {
       await job.runOnce();
       await post(app, who, `/v1/incidents/${incidentId}/findings`, { findingIds: [loose] }).expect(200);
       const taken = await prisma.finding.findFirstOrThrow({ where: { id: { in: ids }, incidentId } });
-      const { default: request } = await import('supertest');
-      await request(app.getHttpServer())
-        .delete(`/v1/incidents/${incidentId}/findings/${taken.id}`)
-        .set('Cookie', who.cookie)
-        .set('Origin', 'http://localhost:5173')
-        .set('X-CSRF-Token', who.csrfToken)
-        .expect(200);
+      await detach(who, incidentId, taken.id);
       await expectSummary(tenantId, incidentId);
       await drain(prisma, [tenantId]);
       expect(await operation(app, who, made.id)).toMatchObject({ state: 'done', changed: 60 });
@@ -579,13 +610,7 @@ describe('triagem em massa: incidentes', () => {
       expect((await incident(who, incidentId)).status).toBe('open');
       // De novo, e o alerta da base sai à mão: um dos anexados fica.
       const again = await operate(app, who, attach(incidentId, { caseIds: [caseId] }, 2));
-      const { default: request } = await import('supertest');
-      await request(app.getHttpServer())
-        .delete(`/v1/incidents/${incidentId}/findings/${base.ids[0]}`)
-        .set('Cookie', who.cookie)
-        .set('Origin', 'http://localhost:5173')
-        .set('X-CSRF-Token', who.csrfToken)
-        .expect(200);
+      await detach(who, incidentId, base.ids[0] as string);
       expect(await undo(app, who, again.id)).toMatchObject({ changed: 1, skipped: 1 });
       expect(await attached(incidentId)).toBe(1);
       await expectSummary(tenantId, incidentId);
@@ -623,6 +648,37 @@ describe('triagem em massa: incidentes', () => {
       await drain(prisma, [tenantId], { batch: 8 });
       const after = await prisma.incident.findUniqueOrThrow({ where: { id: incidentId } });
       expect({ ...after, updatedAt: null }).toEqual({ ...before, updatedAt: null });
+    });
+
+    it('tirado e posto de volta à mão, o alerta é de quem o pôs: desfazer não o tira', async () => {
+      const { tenantId, who } = await customer('posto de volta');
+      const base = await caseWith(prisma, tenantId, [{}]);
+      const incidentId = (await operate(app, who, promote({ findingIds: base.ids }, 1))).incidentId as string;
+      const { caseId, ids } = await caseWith(prisma, tenantId, [{}, {}]);
+      const made = await operate(app, who, attach(incidentId, { caseIds: [caseId] }, 2));
+      const [moved, untouched] = ids as [string, string];
+      await detach(who, incidentId, moved);
+      expect((await findingsById(prisma, [moved])).get(moved)).toMatchObject({ triageOpId: null });
+      await post(app, who, `/v1/incidents/${incidentId}/findings`, { findingIds: [moved] }).expect(200);
+      expect(await undo(app, who, made.id)).toMatchObject({ changed: 1, skipped: 1 });
+      const after = await findingsById(prisma, ids);
+      expect(after.get(moved)?.incidentId).toBe(incidentId);
+      expect(after.get(untouched)?.incidentId).toBeNull();
+      await expectSummary(tenantId, incidentId);
+      await expectExactCounters(prisma, [tenantId]);
+    });
+
+    it('entrar e sair de um incidente à mão não tira o alerta da operação que mudou o status dele', async () => {
+      const { tenantId, who } = await customer('entrou e saiu');
+      const base = await caseWith(prisma, tenantId, [{}]);
+      const incidentId = (await operate(app, who, promote({ findingIds: base.ids }, 1))).incidentId as string;
+      const { caseId, ids } = await caseWith(prisma, tenantId, [{}, {}]);
+      const made = await operate(app, who, statusRequest({ caseIds: [caseId] }, 2));
+      await post(app, who, `/v1/incidents/${incidentId}/findings`, { findingIds: [ids[0]] }).expect(200);
+      await detach(who, incidentId, ids[0] as string);
+      expect(await undo(app, who, made.id)).toMatchObject({ changed: 2, skipped: 0 });
+      for (const row of (await findingsById(prisma, ids)).values()) expect(row.status).toBe('new');
+      await expectExactCounters(prisma, [tenantId]);
     });
 
     it('num incidente pequeno, o resumo acompanha cada lote do desfazer', async () => {

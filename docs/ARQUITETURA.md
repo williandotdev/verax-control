@@ -2245,7 +2245,8 @@ Uma pessoa trata muitos alertas de uma vez, com desfazer. Uma operação é um `
   de antes recusaria a resposta inteira. Na fila, até 10 operações por cliente.
 - **O que muda num alerta:** `status`, com a mesma regra de `triagedAt` da triagem de um só (a primeira saída de "novo" marca);
   ou `incidentId` (o status não muda, como ao promover à mão); `triageOpId`; e o `updatedAt`, de propósito: é atividade de uma
-  pessoa, que a retenção lê. `PATCH /v1/findings/:id/status` tira o `triageOpId`: a decisão mais nova vale.
+  pessoa, que a retenção lê. `PATCH /v1/findings/:id/status` tira o `triageOpId`: a decisão mais nova vale. Tirar o alerta do
+  incidente à mão também, se foi a operação que o pôs lá: posto de volta por alguém, desfazer não o tira de novo.
 - **Um lote é uma transação** (até 500 alertas): o lock dos alertas do cliente, a linha da operação, a do incidente, as dos
   alertas (`FOR UPDATE`, todas, por id) e só então, pelos gatilhos, as dos casos. O item e a mudança de cada alerta são o mesmo
   comando. Até 200 alertas, o lote roda na requisição; além disso, no worker, com 100 ms entre dois lotes, um lote por cliente
