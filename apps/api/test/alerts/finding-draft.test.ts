@@ -91,8 +91,9 @@ describe('de alerta a achado (T5.3)', () => {
       actorType: 'AssumedRole',
       accessKeyId: 'ASIAEXEMPLO000000000',
       sourceIp: '198.51.100.7',
+      // Do tipo do achado, e não da regra: a de fábrica não tem MITRE, e o T1078 do alerta de exemplo é inventado.
       mitreTactics: ['Initial Access'],
-      mitreTechniques: ['T1078'],
+      mitreTechniques: ['T1078.004'],
       // Só o GuardDuty: a versão (o `updatedAt`), a chave do achado inteiro (a cadeia, aqui igual à base) e a chave
       // que a versão nova ganha se a cadeia já estiver triada.
       recurrence: {
@@ -108,7 +109,7 @@ describe('de alerta a achado (T5.3)', () => {
     const owner = { owned: true, tenantId: ALFA.tenantId, accountId: ALFA.accountId } as const;
     const alert = alertOf(wafAlert());
     const draft = toFindingDraft(alert, owner);
-    expect(draft).toMatchObject({ actorUser: null, actorType: null, accessKeyId: null, mitreTactics: [] });
+    expect(draft).toMatchObject({ actorUser: null, actorType: null, accessKeyId: null });
     expect(draft).not.toHaveProperty('recurrence');
     // O `updatedAt` fora do formato deixa o achado sem versão, mesmo com o `eventLastSeen` em dia.
     const bare = alertOf(guardDutyAlert({ eventLastSeen: '2026-11-01T09:55:00.000Z', updatedAt: 'ontem' }));

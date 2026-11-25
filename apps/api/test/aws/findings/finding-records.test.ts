@@ -84,8 +84,8 @@ describe('GuardDuty pela API: o mesmo achado do caminho do bucket', () => {
     });
     // O achado lido pela API não tem evento bruto no indexer.
     expect(draft).not.toHaveProperty('rawEventId');
-    // Campo a campo, o que o caminho do bucket grava (menos o horário do alerta do Wazuh, o evento bruto e o MITRE
-    // do alerta de exemplo, que a regra de fábrica não tem).
+    // Campo a campo, o que o caminho do bucket grava (menos o horário do alerta do Wazuh e o evento bruto). O MITRE do
+    // alerta de exemplo, que a regra de fábrica não tem, não conta: nos dois caminhos, ele sai do tipo do achado.
     for (const field of [
       'source',
       'sourceEventId',
@@ -101,10 +101,27 @@ describe('GuardDuty pela API: o mesmo achado do caminho do bucket', () => {
       'actorType',
       'accessKeyId',
       'sourceIp',
+      'mitreTactics',
+      'mitreTechniques',
       'recurrence',
     ] as const) {
       expect(draft?.[field], field).toEqual(viaBucket[field]);
     }
+  });
+
+  it.each([
+    ['UnauthorizedAccess:IAMUser/MaliciousIPCaller', ['Initial Access'], ['T1078.004']],
+    ['CryptoCurrency:EC2/BitcoinTool.B!DNS', ['Impact'], ['T1496']],
+    ['Backdoor:EC2/DenialOfService.Dns', ['Command and Control', 'Impact'], ['T1498']],
+    ['Exfiltration:S3/AnomalousBehavior', ['Exfiltration'], []],
+    ['Policy:IAMUser/RootCredentialUsage', [], []],
+  ])('o MITRE ATT&CK é o mesmo nos dois caminhos: %s', (type, tactics, techniques) => {
+    const [viaApi] = parsed(
+      parseGuardDutyFinding(guardDutyFinding({ account: ACCOUNT, id, severity: 8, type })),
+    ).drafts(OWNER);
+    const viaBucket = wazuhDraft(guardDutyAlert({ account: ACCOUNT, findingId: id, severity: 8, type }));
+    expect(viaApi).toMatchObject({ mitreTactics: tactics, mitreTechniques: techniques });
+    expect(viaBucket).toMatchObject({ mitreTactics: tactics, mitreTechniques: techniques });
   });
 
   it('a severidade crítica (9 ou mais) vem das faixas da AWS, com a regra que o Wazuh daria', () => {
@@ -162,6 +179,8 @@ describe('GuardDuty pela API: o mesmo achado do caminho do bucket', () => {
     expect(drafts.map((draft) => draft.sourceEventId)).toEqual(viaBucket.map((draft) => draft.sourceEventId));
     // A reincidência é do achado inteiro, uma só, nos dois caminhos.
     expect(drafts.map((draft) => draft.recurrence)).toEqual(viaBucket.map((draft) => draft.recurrence));
+    // A sondagem vinda de fora é reconhecimento, em cada item, nos dois caminhos.
+    for (const draft of [...drafts, ...viaBucket]) expect(draft.mitreTactics).toEqual(['Reconnaissance']);
     expect(drafts[0]).toMatchObject({
       severity: 'medium',
       sourceIp: '198.51.100.20',
@@ -380,8 +399,33 @@ describe('Inspector: do achado ao rascunho', () => {
       resource: 'ec2:i-0abc1234def567890',
       occurredAt: '2026-11-22T09:55:00.000Z',
       revision: { lastSeenAt: '2026-11-22T09:55:00.000Z' },
+      // Vulnerabilidade é fraqueza, e não ação de um atacante: sem tática inventada.
+      mitreTactics: [],
+      mitreTechniques: [],
     });
     expect(finding.accounts).toEqual([ACCOUNT]);
+  });
+
+  it('o primeiro pacote vulnerável vira o subgrupo do caso, sem caractere de controle; sem pacote, nenhum', () => {
+    const draftOf = (vulnerablePackages: unknown, overrides: Record<string, unknown> = {}) => {
+      const raw = {
+        ...inspectorFinding({ account: ACCOUNT }),
+        packageVulnerabilityDetails: { vulnerabilityId: 'CVE-2026-0001', source: 'NVD', vulnerablePackages },
+        ...overrides,
+      };
+      return parsed(parseInspectorFinding(raw, NOW)).drafts(OWNER)[0];
+    };
+    expect(draftOf([{ name: 'openssl', version: '3.0.1' }, { name: 'openssl-libs' }])?.group).toBe('openssl');
+    expect(draftOf([{ name: ' open\u0000ssl\n' }])?.group).toBe('open ssl');
+    expect(draftOf([{ name: 'x'.repeat(5_000) }])?.group).toBe('x'.repeat(512));
+    // Sem nome aproveitável, o rascunho nem leva o campo: os outros achados continuam iguais.
+    for (const packages of [[], [{}], [{ name: '' }], [{ name: 7 }], 'openssl', null, undefined]) {
+      expect(draftOf(packages)).not.toHaveProperty('group');
+    }
+    for (const type of ['NETWORK_REACHABILITY', 'CODE_VULNERABILITY']) {
+      const raw = inspectorFinding({ account: ACCOUNT, type });
+      expect(parsed(parseInspectorFinding(raw, NOW)).drafts(OWNER)[0]).not.toHaveProperty('group');
+    }
   });
 
   it('a porta alcançável e a vulnerabilidade no código têm a própria regra', () => {

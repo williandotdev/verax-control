@@ -43,6 +43,22 @@ const APPLIED_SEQ = '20261124170000_cloudwatch_ownership_applied_seq';
 /** As da conexão do Cloudflare por OAuth, de outro trabalho (`cloudflare-oauth-schema.test.ts`). */
 const CLOUDFLARE_OAUTH = '20261125120000_cloudflare_oauth';
 const CLOUDFLARE_OAUTH_CONNECT = '20261126120000_cloudflare_oauth_connect';
+/** A seguinte, de outro trabalho: a base dos casos (`alert-cases-migration.test.ts`). */
+const ALERT_CASES = '20261127120000_alert_cases';
+/** E, de outro trabalho, só índices: os alertas a validar da Torre e os e-mails ao contato de escalonamento na hora. */
+const UNTRIAGED_INDEX = '20261128120000_finding_untriaged_index';
+const NOTICE_INDEX = '20261128120000_notification_escalation_index';
+/** E a do autovacuum da tabela de alertas, que a atribuição dos casos atualiza (`case-assign.test.ts`). */
+const FINDING_AUTOVACUUM = '20261129120000_finding_autovacuum';
+/** E a dos ataques web pelos logs do ALB (`web-logs-migration.test.ts`). */
+const WEB_LOGS = '20261130120000_web_logs';
+/** E a dos contratos deles, com mais uma nota no CHECK da descoberta (`web-logs-contracts-migration.test.ts`). */
+const WEB_CONTRACTS = '20261201120000_web_logs_contracts';
+const WEB_CONTRACTS_NOTE = 'aws_cost_alb_logs';
+/** O índice dos avisos de um caso. */
+const CASE_NOTICE_INDEX = '20261202120000_notification_case_index';
+/** E a das chaves de acesso nas amostras do caso. */
+const CASE_ACCESS_KEYS = '20261203120000_case_access_keys';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -94,8 +110,27 @@ describe(`migration ${MIGRATION}`, () => {
       APPLIED_SEQ,
       CLOUDFLARE_OAUTH,
       CLOUDFLARE_OAUTH_CONNECT,
+      ALERT_CASES,
+      UNTRIAGED_INDEX,
+      NOTICE_INDEX,
+      FINDING_AUTOVACUUM,
+      WEB_LOGS,
+      WEB_CONTRACTS,
+      CASE_NOTICE_INDEX,
+      CASE_ACCESS_KEYS,
     ]);
-    for (const name of [MIGRATION, RETRY_LIMIT, OWNERSHIP, CHOSEN, APPLIED_SEQ]) {
+    const additive = [
+      MIGRATION,
+      RETRY_LIMIT,
+      OWNERSHIP,
+      CHOSEN,
+      APPLIED_SEQ,
+      UNTRIAGED_INDEX,
+      NOTICE_INDEX,
+      CASE_NOTICE_INDEX,
+      CASE_ACCESS_KEYS,
+    ];
+    for (const name of additive) {
       const sql = sqlOf(name);
       expect(sql, name).not.toMatch(/\bDROP\b|DELETE FROM|^\s*UPDATE\b|\bTRUNCATE\b|ALTER COLUMN/im);
       // Os buckets cadastrados continuam nas colunas da conta.
@@ -661,7 +696,7 @@ describe(`migration ${MIGRATION}`, () => {
       await client.query(sqlOf(FLOW_NOTE));
       expect((await sources()).rows).toEqual(before.rows);
       expect(listedAfter(await constraint(client, 'AwsSource_discovery_check'), 'notes <@').sort()).toEqual(
-        [...AWS_SOURCE_NOTES].sort(),
+        AWS_SOURCE_NOTES.filter((value) => value !== WEB_CONTRACTS_NOTE).sort(),
       );
       // Depois, a nota nova cabe, e uma que não existe segue recusada.
       await note('flow_logs_read_together');

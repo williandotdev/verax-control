@@ -9,6 +9,8 @@ import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aw
 import type { AwsReaderCredentials } from './aws/web-identity.js';
 import { WAZUH_CONFIG_INTERVAL_MS, WazuhConfig } from './aws/wazuh-config.js';
 import type { WazuhStallProbe } from './aws/wazuh-source-health.js';
+import { caseNoticeSetup, type CaseNoticeSetup } from './cases/case-notice-setup.js';
+import { caseTasks } from './cases/case-tasks.js';
 import { CELL_COMMANDS_INTERVAL_MS, CELL_COMMANDS_TASK, CellCommands } from './cell/cell-commands.js';
 import { CellReportOutbox } from './cell/cell-report-outbox.js';
 import {
@@ -35,6 +37,7 @@ import {
 } from './control-plane-sync/control-plane-sync-task.js';
 import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
+import { awsSourceFeatures } from './common/config/web-logs.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 import { buildPinoOptions } from './common/logger/logger.options.js';
 import { PrismaService } from './common/prisma/prisma.service.js';
@@ -90,6 +93,7 @@ import {
 } from './usage/aws-volume.js';
 import { WazuhStatsClient } from './usage/wazuh-stats.js';
 import { WAZUH_USAGE_INTERVAL_MS, WAZUH_USAGE_TASK, WazuhUsage } from './usage/wazuh-usage.js';
+import { type WebLogsTasks, webLogsTasks } from './weblogs/collect/web-logs-tasks.js';
 import { type ScheduledTask, Scheduler } from './worker/scheduler.js';
 
 /**
@@ -209,9 +213,14 @@ async function awsConnectionSetup(
  * (a cada 5 min olha as contas; cada conta já verificada é inventariada uma vez por dia, PR-14', e a postura nativa sai
  * da mesma coleta, PR-15'). Com ela, no nó dedicado, entra também a tarefa `aws-discovery` (onboarding self-service): a
  * cada 30 s executa as descobertas pedidas (pelo "Conectar", pelo painel e uma por dia por conta) e responde as
- * sondagens de permissão das fontes. Na célula, a descoberta fica de fora até a coleta da AWS existir lá. Junto com ela
+ * sondagens de permissão das fontes (com `AWS_WEB_LOGS_ENABLED`, também as dos balanceadores).
+ * Na célula, a descoberta fica de fora até a coleta da AWS existir lá. Junto com ela
  * entra a tarefa `aws-findings`: a cada 5 min lê, pela API de cada serviço, os achados das fontes autorizadas do
  * GuardDuty, do Security Hub, do Inspector e do Access Analyzer (`aws/findings/`).
+ *
+ * Com `AWS_WEB_LOGS_ENABLED` (desligada por padrão) e a mesma identidade, fora da célula, entram as dos ataques web pelos logs
+ * do ALB (`weblogs/collect/`): `web-logs` (a cada 2 min) lê do S3 os logs dos balanceadores autorizados, e
+ * `web-logs-estimate` (a cada 30 s) responde às estimativas de volume pedidas no painel.
  *
  * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
  * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos
@@ -235,6 +244,12 @@ async function awsConnectionSetup(
  * (CE-02: no nó dedicado, o `PLAN` e o `PLAN_HISTORY_DAYS`; na célula, o `TenantPlan`): confere a cada 15 min e roda
  * uma vez por dia, depois das 04:00 UTC, por no máximo 10 min.
  *
+ * Com `CASES_MODE` em `shadow` ou `on` (o padrão é `off`), entram as tarefas dos casos: `case-assign` (a cada 10 s dá um
+ * caso a cada alerta pendente que ainda não tem), `case-watch` (a cada minuto mede o atraso da atribuição, no log) e
+ * `case-reconcile` (uma vez por semana confere as contagens dos casos). Só com `on`, `triage-ops` (a cada 5 s executa em
+ * lotes as operações de triagem em massa que não cabem na requisição), e o aviso por e-mail dos alertas passa a ser por
+ * caso, calculado na própria tarefa `notifications` (`cases/case-notice-setup.ts`).
+ *
  * Na célula (`NODE_MODE=cell`, com `CELL_ID`, `CELL_COMMANDS_SUBSCRIPTION` e `CELL_REPORTS_TOPIC`), o canal com o plano
  * de controle (CE-05): `cell-commands` (a cada 10 s) lê os comandos e aplica cada um numa transação, com o relatório na
  * caixa de saída; `cell-reports` (a cada 10 s) publica a caixa de saída no tópico de relatórios; `cell-tenant-status`
@@ -255,6 +270,8 @@ async function main(): Promise<void> {
   let prisma: PrismaService;
   let logger: Logger;
   let aws: AwsConnectionSetup;
+  let caseNotices: CaseNoticeSetup;
+  let webLogs: WebLogsTasks;
   try {
     const loaded = loadWorkerConfig();
     config = loaded;
@@ -264,6 +281,10 @@ async function main(): Promise<void> {
     const plans = new TenantPlanResolver(prisma, config.NODE_MODE, nodePlan(config));
     const intervalMs = config.SYNC_INTERVAL_SECONDS * 1000;
     const agentsTenantId = config.wazuhAgents?.tenantId ?? null;
+    // Casos: com CASES_MODE=on, os coletores não avisam alerta por alerta (os avisos são por caso). Nos outros modos, o de
+    // sempre.
+    caseNotices = caseNoticeSetup(config.CASES_MODE, prisma, logger);
+    const { alertNotices } = caseNotices;
     tasks = config.SYNC_SOURCES.flatMap((source): ScheduledTask[] => {
       if (source === 'wazuh') {
         const indexerConfig = loadIndexerConfig();
@@ -273,13 +294,14 @@ async function main(): Promise<void> {
             name: 'wazuh',
             intervalMs,
             budgetMs: SYNC_BUDGET_MS,
-            run: () => new AlertSync(prisma, indexer).runOnce(),
+            run: () => new AlertSync(prisma, indexer, { notices: alertNotices }).runOnce(),
           },
           {
             name: 'wazuh-agent-alerts',
             intervalMs,
             budgetMs: SYNC_BUDGET_MS,
-            run: () => new AgentAlertSync(prisma, indexer, agentsTenantId).runOnce(),
+            run: () =>
+              new AgentAlertSync(prisma, indexer, agentsTenantId, { notices: alertNotices }).runOnce(),
           },
           // Os alertas dos grupos do CloudWatch Logs que o cliente autorizou (onboarding self-service da AWS). Fora da
           // célula: lá, vários clientes dividem o manager, e o evento não diz de quem é.
@@ -290,7 +312,7 @@ async function main(): Promise<void> {
                   name: CLOUDWATCH_ALERT_SYNC,
                   intervalMs,
                   budgetMs: SYNC_BUDGET_MS,
-                  run: () => new CloudWatchAlertSync(prisma, indexer).runOnce(),
+                  run: () => new CloudWatchAlertSync(prisma, indexer, { notices: alertNotices }).runOnce(),
                 },
               ]),
         ];
@@ -304,6 +326,7 @@ async function main(): Promise<void> {
         const cloudflare = new CloudflareAuditSync(prisma, keyring, {
           auditIntervalMs: loaded.CLOUDFLARE_AUDIT_INTERVAL_SECONDS * 1000,
           logger,
+          notices: alertNotices,
         });
         return [
           {
@@ -325,7 +348,7 @@ async function main(): Promise<void> {
       } else {
         reader = new PubsubRestReader(new MetadataTokenProvider());
       }
-      const sync = new GcpAuditSync(prisma, reader);
+      const sync = new GcpAuditSync(prisma, reader, { notices: alertNotices });
       return [{ name: 'gcp', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => sync.runOnce() }];
     });
     // Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf): a lista que o host exporta do
@@ -358,6 +381,7 @@ async function main(): Promise<void> {
         : { transport: mailTransport(config), webOrigin: config.WEB_ORIGIN as string };
     const notifications = new NotificationDispatcher(prisma, mailer, {
       usage: new UsageNotices(prisma, plans),
+      ...caseNotices.dispatcher,
     });
     tasks.push({
       name: NOTIFICATIONS_TASK,
@@ -382,7 +406,9 @@ async function main(): Promise<void> {
       if (awsOnboarding) {
         const discovery = await import('./aws/discovery/discovery-job.js');
         const { sdkDiscoveryClients } = await import('./aws/discovery/sdk-clients.js');
-        const discover = new discovery.AwsDiscovery(prisma, aws.credentials, sdkDiscoveryClients);
+        const discover = new discovery.AwsDiscovery(prisma, aws.credentials, sdkDiscoveryClients, {
+          features: awsSourceFeatures(loaded),
+        });
         tasks.push({
           name: 'aws-discovery',
           intervalMs: discovery.AWS_DISCOVERY_TICK_MS,
@@ -392,7 +418,9 @@ async function main(): Promise<void> {
         // Achados das fontes autorizadas lidas por API (GuardDuty, Security Hub, Inspector e Access Analyzer): a mesma
         // sessão e os mesmos clientes com a trava de só leitura. Fora da célula, como a descoberta.
         const findings = await import('./aws/findings/findings-job.js');
-        const collect = new findings.AwsFindings(prisma, aws.credentials, sdkDiscoveryClients);
+        const collect = new findings.AwsFindings(prisma, aws.credentials, sdkDiscoveryClients, {
+          notices: alertNotices,
+        });
         tasks.push({
           name: findings.AWS_FINDINGS_SYNC,
           intervalMs: findings.AWS_FINDINGS_TICK_MS,
@@ -401,6 +429,15 @@ async function main(): Promise<void> {
         });
       }
     }
+
+    // Ataques web pelos logs do ALB: só com a linha ligada. Desligada, nada é carregado.
+    webLogs = await webLogsTasks(loaded, {
+      prisma,
+      credentials: aws.credentials,
+      notices: alertNotices,
+      logger,
+    });
+    tasks.push(...webLogs.tasks);
 
     // Wazuh do nó (perfil standard): a geração das contas AWS para o host aplicar no manager, e o estado da coleta que o
     // host devolve, pela pasta dos sinais (sem segredo; quem escreve a configuração do manager é só o gerador).
@@ -485,6 +522,8 @@ async function main(): Promise<void> {
       budgetMs: SYNC_BUDGET_MS,
       run: (signal) => connectAttempts.runOnce(new Date(), signal),
     });
+    // Casos (agrupamento dos alertas): com CASES_MODE=off, o padrão, nenhuma tarefa.
+    tasks.push(...caseTasks(config.CASES_MODE, prisma, logger));
     const keyring = config.credentialsKeyring;
     if (keyring !== null) {
       const rekey = new CredentialRekey(prisma, keyring);
@@ -614,6 +653,7 @@ async function main(): Promise<void> {
       vaultKeyVersion: config.credentialsKeyring?.current ?? null,
       // Só a origem do plano de controle (null com a sincronização desligada), nunca a chave do nó.
       controlPlaneOrigin: config.controlPlaneSync?.origin ?? null,
+      ...(config.CASES_MODE !== 'off' && { casesMode: config.CASES_MODE }),
     },
     'worker iniciado',
   );
@@ -630,9 +670,12 @@ async function main(): Promise<void> {
     );
   }
   await aws.start();
+  await caseNotices.start();
   scheduler.start();
   await stopRequested;
   await scheduler.stop();
+  await caseNotices.finish();
+  await webLogs.close();
   await prisma.$disconnect();
   logger.info('worker encerrado');
 }
