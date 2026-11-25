@@ -2165,7 +2165,7 @@ nenhum endereço sai do nó.
 ## Casos: agrupamento dos alertas (`apps/api/src/cases/`)
 
 _(partes 1 a 8: o banco, a chave, a atribuição, a leitura e a triagem em massa pela API, a tela, o e-mail, e os números na
-Torre, no radar e nos relatórios. Nada muda no painel nem no e-mail enquanto `CASES_MODE` for `off`)_
+Torre, no radar e nos relatórios. Sem a linha no nó vale `shadow`, a medição: só a equipe da Verax vê os casos, e o e-mail não muda)_
 
 Um **caso** (`AlertCase`) reúne os alertas pendentes com a mesma chave (`case-key.ts`). Quem abre e sela caso é o worker
 (a pessoa só divide um que juntou coisas demais); a pessoa trata alertas, um por um ou em massa, e as contagens do caso são
@@ -2174,11 +2174,11 @@ de gatilhos da tabela de alertas.
 - **Interruptor:** `CASES_MODE`, o mesmo valor no ambiente do worker e no da API, conferido na partida (valor fora da
   lista não sobe).
 
-  | Valor    | No worker                                                                                          | Na API                                                                                           |
-  | -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-  | `off`    | Padrão. Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo só confere se há caso a apagar) | Padrão. As rotas dos casos respondem 404, iguais a uma rota que não existe, para todos os papéis |
-  | `shadow` | Os alertas ganham caso (a medição no nó piloto)                                                    | Só a equipe da Verax (`admin_verax`) lê, no cliente escolhido; para os outros papéis, como `off` |
-  | `on`     | O mesmo que `shadow`, mais a fila da triagem em massa (`triage-ops`) e os avisos por caso          | Todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa              |
+  | Valor    | No worker                                                                                  | Na API                                                                                           |
+  | -------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+  | `off`    | Nenhuma tarefa dos casos roda, e nada é gravado (o expurgo só confere se há caso a apagar) | As rotas dos casos respondem 404, iguais a uma rota que não existe, para todos os papéis         |
+  | `shadow` | Os alertas ganham caso (a medição no nó piloto)                                            | Só a equipe da Verax (`admin_verax`) lê, no cliente escolhido; para os outros papéis, como `off` |
+  | `on`     | O mesmo que `shadow`, mais a fila da triagem em massa (`triage-ops`) e os avisos por caso  | Todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa              |
 
   O `start.sh` passa a linha do `node.conf` à API e ao worker; sem ela, vale o padrão da versão. O nó gerenciado já instalado
   não recebe linha nova: nele, quem liga é o padrão da versão (`docs/runbooks/casos.md`). A API lê o que houver no banco: com o worker em `off` e a API em `on`, os casos ficam parados no tempo (a
@@ -2556,6 +2556,51 @@ limites são os de sempre (5 por pessoa e hora, o resumo da hora com o título e
 severidade). O aviso que deixou de valer é fechado antes, de uma vez (`case_treated`, `superseded_by_incident`, `case_gone`), e
 conferido de novo no envio de cada um e quando o resumo da hora sai: um caso já tratado não vai em e-mail nenhum.
 
+### Exceções a partir de um caso (`apps/api/src/scoped-exceptions/`, PR-9)
+
+Do detalhe de um caso, **Criar exceção** (com `CASES_MODE=on`, para quem tem `alert_exceptions:write`):
+
+- **Usuário, IP ou recurso** (as exceções de sempre, `AlertException`): o painel lê o que é constante nos alertas do caso
+  (`GET /v1/cases/:id/exception-draft`, as combinações de regra, fonte, conta e evento, e os valores de usuário, IP e recurso
+  até 20 cada) e cria uma por valor de uma vez (`POST /v1/cases/:id/alert-exceptions`, até 20; a que já existe fica como
+  estava). Acima de 20 valores, o painel recusa e sugere a ampla. Um registro na auditoria (`alert_exception.create_batch`).
+- **Ampla** (`ScopedException`, só administradores, decisão D8): regra, fonte de log e conta obrigatórias; evento e começo do
+  recurso (o repositório do ECR) opcionais; severidade máxima (padrão média, até alta; crítico nunca); motivo; validade
+  obrigatória de até 90 dias. Antes de salvar, a prévia (`GET /v1/scoped-exceptions/preview`): "teria coberto N alertas nos
+  últimos 30 dias, M altos", contando os alertas que chegaram na janela. O painel só salva com a prévia dos valores de agora.
+  Revogar (`POST /v1/scoped-exceptions/:id/revoke`) não apaga: a exceção para de valer na hora e fica listada, com quem revogou.
+  Auditoria: `alert_exception.scoped_create` e `alert_exception.scoped_revoke` (área `alert_exception`, sem tipo novo no filtro).
+
+**Travas** (`packages/shared/src/scoped-exceptions.ts`, conferidas no zod, de novo no worker e, as de severidade e validade, em
+CHECKs do banco): o evento é obrigatório nas regras que são uma classe (990501, 990502, 990511 e 80300-80309); a ampla não
+existe nas regras de identidade e acesso (100300-100324) nem nos ataques web pelos logs do ALB (990403, 990406, 990407); no
+máximo 50 em vigor por cliente. O prefixo do recurso é texto: na prévia, `%` e `_` são escapados (o `startsWith` do Prisma não
+escapa) e, no worker, a comparação é `String.startsWith`.
+
+**Permissão pelo papel.** Não há permissão nova: a lista de `/v1/me` é um enum fechado no painel, e um valor novo quebraria o
+painel de antes (o teste `web-logs-skew.test.ts` guarda isso). As rotas pedem `alert_exceptions:write` (ou `:read`, na lista), e o
+service recusa com 403 quem não é administrador (`canWriteScopedExceptions`, como `isMassTriageRole`); a recusa vai para a
+trilha. Todas as rotas só existem com `CASES_MODE=on` (`CasesOperableGuard`): com `off` ou `shadow`, 404 para todos.
+
+**Na coleta** (`apps/api/src/alerts/scoped-exception-match.ts`): separada das exceções de sempre e lida à parte. O worker só
+cria a fonte (`ScopedExceptionSource`) com `CASES_MODE=on`; os coletores a repassam ao `FindingStore`. Para cada alerta sem a
+exceção de sempre, a fonte devolve a lista do cliente (guardada por 30 s) e, se uma casa, confere no banco que ela ainda vale
+(a revogação vale na hora). Tudo isso fora da transação do alerta: uma leitura que falha vira lista vazia e um aviso no log, só
+com o tipo do erro, e o alerta entra na fila. Só o alerta **novo** (e a recorrência nova do GuardDuty) é marcado: nasce
+`legitimate`, com `scopedExceptionId`, sem aviso, e a contagem da exceção sobe na mesma transação. O alerta que já existe nunca
+é tocado. Se a origem revisa um alerta marcado e a severidade passa da máxima (ou vira crítica), ele volta para `new`, sem a
+exceção, e avisa como qualquer subida.
+
+**Migration `20261204120000_scoped_exceptions`**, só acrescenta: a tabela, `Finding.scopedExceptionId` (anulável, sem valor
+padrão), a chave estrangeira composta com o cliente (`ON DELETE SET NULL ("scopedExceptionId")`: só a coluna vira nula, nunca o
+`tenantId`; no Prisma fica `NoAction`, porque ele não declara a lista de colunas) e um índice parcial. Nenhum enum muda. A imagem
+anterior do nó grava, triaga e expurga alertas no esquema novo (testado), ignora a tabela, e o alerta que a ampla marcaria volta
+para a fila: o lado seguro.
+
+**No painel:** o diálogo (`features/cases/case-exception-dialog.tsx`) e a seção "Exceções amplas" na tela Exceções
+(`pages/admin/scoped-exceptions-section.tsx`), com a lista e o revogar. Com os casos desligados, ou um nó de antes (404), a tela é
+a de sempre, sem pedido a mais. Tudo o que veio dos logs (evento, recurso, usuário, IP) é texto.
+
 ## Ataques web pelos logs do ALB: o que fica guardado (`apps/api/src/weblogs/`)
 
 _(PR-1, o motor; PR-2, o banco, migration `20261130120000_web_logs`; PR-3, os contratos, e PR-4, a leitura, nas seções
@@ -2602,12 +2647,13 @@ original fica no S3 do cliente, pela retenção dele; a evidência aponta o obje
 _(PR-3: os contratos e o isolamento do Wazuh, migration `20261201120000_web_logs_contracts`. Desligado por padrão. A leitura
 está na seção seguinte.)_
 
-Três portões, todos fechados no começo: a linha `AWS_WEB_LOGS_ENABLED` do nó (a API e o worker, o mesmo valor; na célula ela
-não liga nada), a autorização de cada balanceador e o modo `observe`. O `start.sh` passa a linha do `node.conf` à API e ao
+Três portões: a linha `AWS_WEB_LOGS_ENABLED` do nó (a API e o worker, o mesmo valor; na célula ela não liga nada), que desde a
+1.5.0 vem aberta e sozinha não lê nada, a autorização de cada balanceador e o modo `observe`, estes dois fechados no começo.
+O `start.sh` passa a linha do `node.conf` à API e ao
 worker; sem ela, vale o padrão da versão. O nó gerenciado já instalado não recebe linha nova no `node.conf` (a atualização da
 frota não o reescreve): nele, quem liga é o padrão da versão (`docs/runbooks/ataques-web.md`).
 
-**Desligado (o padrão).** O balanceador é o de sempre: só o que tem o log ligado aparece, de qualquer tipo, como "ainda não
+**Desligado.** O balanceador é o de sempre: só o que tem o log ligado aparece, de qualquer tipo, como "ainda não
 coletado" e sem sondagem; nenhuma rota o autoriza (409 `SOURCE_NOT_COLLECTABLE`); tudo em `/v1/web-logs` é 404
 (`WEB_LOGS_DISABLED`, depois de 401 e 403 e antes de olhar o corpo). Desligar vale na hora, sem esperar a descoberta: o que
 ficou gravado de quando estava ligado é mostrado como um nó que nunca os teve mostraria (`gatedSource`), sem mudar nada no

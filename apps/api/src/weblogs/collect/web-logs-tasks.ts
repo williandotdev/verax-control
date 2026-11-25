@@ -1,3 +1,4 @@
+import type { ScopedExceptionSource } from '../../alerts/scoped-exception-match.js';
 import type { WebLogsCredentials } from './web-logs-job.js';
 import { awsSourceFeatures } from '../../common/config/web-logs.js';
 import { errorKind } from '../../common/logger/error-kind.js';
@@ -13,6 +14,8 @@ export interface WebLogsTaskDeps {
   credentials: WebLogsCredentials | null;
   /** O aviso por e-mail dos achados: `undefined` é um por achado; com os casos ligados, quem avisa é o caso. */
   notices: AlertNotices | undefined;
+  /** As exceções amplas (casos, PR-9), só com `CASES_MODE=on`. */
+  scopedExceptions?: ScopedExceptionSource | undefined;
   logger: { warn(fields: object, message: string): void };
 }
 
@@ -30,7 +33,7 @@ const NONE: WebLogsTasks = { tasks: [], close: () => Promise.resolve() };
  */
 export async function webLogsTasks(
   config: Parameters<typeof awsSourceFeatures>[0],
-  { prisma, credentials, notices, logger }: WebLogsTaskDeps,
+  { prisma, credentials, notices, scopedExceptions, logger }: WebLogsTaskDeps,
 ): Promise<WebLogsTasks> {
   if (!awsSourceFeatures(config).webLogs || credentials === null) return NONE;
   const [job, estimate, { sdkDiscoveryClients }, countries] = await Promise.all([
@@ -42,6 +45,7 @@ export async function webLogsTasks(
   const collector = new job.WebLogsCollector(prisma, credentials, sdkDiscoveryClients, {
     countries,
     ...(notices !== undefined && { notices }),
+    ...(scopedExceptions !== undefined && { scopedExceptions }),
     onEvidenceRefused: (ruleId) => {
       logger.warn({ ruleId }, 'evidência de ataque web recusada: o achado foi gravado sem ela');
     },

@@ -2,9 +2,9 @@ import { CASE_MODES, type Role } from '@verax/shared';
 
 /**
  * `CASES_MODE`, a chave dos casos. A mesma no ambiente do worker e no da API, conferida na partida:
- * - `off` (padrão): no worker, nenhuma tarefa dos casos roda, e o nó fica como antes deles; na API, as rotas dos casos
+ * - `off`: no worker, nenhuma tarefa dos casos roda, e o nó fica como antes deles; na API, as rotas dos casos
  *   não existem para ninguém;
- * - `shadow`: os alertas ganham caso, e só a equipe da Verax lê os casos, para conferir a medição no nó piloto;
+ * - `shadow` (padrão): os alertas ganham caso, e só a equipe da Verax lê os casos, para conferir a medição no nó piloto;
  * - `on`: todos os papéis leem os casos do próprio cliente, quem faz triagem opera em massa, e os avisos por e-mail dos
  *   alertas são por caso, e não mais um por alerta.
  */

@@ -70,11 +70,11 @@ export interface CreateAppOptions {
   };
   /** O `API_ORIGIN` do nó dedicado (o endereço do retorno da entrada única); sem informar, `http://localhost:3000`. */
   apiOrigin?: string;
-  /** Casos (`CASES_MODE`); sem informar, `off`, o padrão. */
+  /** Casos (`CASES_MODE`); sem informar, `off` (o padrão da versão é `shadow`). */
   casesMode?: AppConfig['CASES_MODE'];
   /** Onde o nó roda (`NODE_PLATFORM`): `vm`, a VM própria do cliente; sem informar, `gcp` (como sem a linha). */
   nodePlatform?: 'gcp' | 'vm';
-  /** Ataques web pelos logs do ALB (`AWS_WEB_LOGS_ENABLED`); sem informar, a linha não existe (desligados). */
+  /** Ataques web pelos logs do ALB (`AWS_WEB_LOGS_ENABLED`); sem informar, desligados (o padrão da versão é ligado). */
   awsWebLogs?: boolean;
 }
 
@@ -107,8 +107,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
     }),
     ...(options.nodeEgressIps !== undefined && { NODE_EGRESS_IPS: options.nodeEgressIps }),
     ...(options.nodePlatform !== undefined && { NODE_PLATFORM: options.nodePlatform }),
-    ...(options.casesMode !== undefined && { CASES_MODE: options.casesMode }),
-    ...(options.awsWebLogs !== undefined && { AWS_WEB_LOGS_ENABLED: String(options.awsWebLogs) }),
+    CASES_MODE: options.casesMode ?? 'off',
+    AWS_WEB_LOGS_ENABLED: String(options.awsWebLogs ?? false),
     ...(options.awsReader?.serviceAccountId !== undefined && {
       NODE_SA_UNIQUE_ID: options.awsReader.serviceAccountId,
     }),

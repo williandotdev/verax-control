@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 import { isCloudflareBlockingError } from '@verax/shared';
 import { z } from 'zod';
 import { type ActiveException, matchingException } from '../alerts/exception-match.js';
-import { FindingStore, LastEvents, SyncLease } from '../alerts/finding-store.js';
+import { FindingStore, storeOptions, LastEvents, SyncLease } from '../alerts/finding-store.js';
 import { type CollectorCursor, CollectorCursors, type CursorKey } from '../collectors/collector-cursor.js';
 import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
@@ -18,6 +18,7 @@ import type { VaultKeyring } from '../credentials/credential-keys.js';
 import { lockCredential } from '../credentials/credential-rekey.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import type { AlertNotices } from '../notifications/finding-notices.js';
+import type { ScopedExceptionSource } from '../alerts/scoped-exception-match.js';
 import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
 import { UsageMeter, utf8Bytes } from '../usage/usage-meter.js';
 import { cloudflareEventId, invalidEntryId, isCloudflareAccountId, parseAuditEntry } from './audit-entry.js';
@@ -120,6 +121,8 @@ export interface CloudflareAuditSyncOptions {
   tenantIds?: readonly string[];
   /** Avisos por e-mail do alerta (os testes trocam por um que falha, para provar que nada fica pela metade). */
   notices?: AlertNotices;
+  /** As exceções amplas (casos, PR-9), só com `CASES_MODE=on`. */
+  scopedExceptions?: ScopedExceptionSource;
   /** Os eventos de segurança (GraphQL) e os limites deles; `false` desliga o fluxo (os testes só da auditoria). */
   securityEvents?: false | CloudflareSecurityEventsOptions;
 }
@@ -333,7 +336,7 @@ export class CloudflareAuditSync {
       throw new RangeError('página da auditoria de 1 a 1000 entradas e ao menos uma página por execução');
     }
     this.tenantIds = options.tenantIds;
-    this.store = new FindingStore(prisma, options.notices);
+    this.store = new FindingStore(prisma, options.notices, storeOptions(options));
     this.lease = new SyncLease(
       prisma,
       this.name,

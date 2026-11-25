@@ -7720,6 +7720,59 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
 - **Atribuição, divisão e leitura:** as três passam a gravar e a conferir a chave.
 - **Limite conhecido, o mesmo das outras amostras:** além dos 20 primeiros valores do caso, o valor protegido não é visto.
 
+## Casos, parte 9: exceções a partir de um caso (PR-9 do desenho de 24/11/2026, atrás de `CASES_MODE=on`)
+
+- **O que foi feito:** do detalhe de um caso, "Criar exceção": as de usuário, IP ou recurso preenchidas com o que é constante nos
+  alertas do caso (até 20 de uma vez) e a exceção ampla (`ScopedException`: regra, fonte, conta, evento e começo do recurso
+  opcionais, severidade até média por padrão ou alta, nunca crítico, validade obrigatória de até 90 dias, só administradores),
+  com a prévia "teria coberto N alertas nos últimos 30 dias, M altos" antes de salvar. Seção "Exceções amplas" na tela Exceções,
+  com a lista e o revogar. A comparação na coleta fica em `alerts/scoped-exception-match.ts`, lida à parte, fora da transação do
+  alerta: a leitura que falha não para a coleta, e o alerta entra na fila. Detalhes em `docs/ARQUITETURA.md`, "Exceções a partir
+  de um caso".
+- **Arquivos:** migration `20261204120000_scoped_exceptions`; `schema.prisma`; `packages/shared/src/scoped-exceptions.ts` (e
+  teste); `apps/api/src/scoped-exceptions/` (controller, service, module); `apps/api/src/alerts/scoped-exception-match.ts` (e
+  teste); `finding-store.ts`; os coletores e `worker.ts` (só repassam a fonte); `tenant-scope.ts`; `app.module.ts`; testes
+  `scoped-exceptions.test.ts`, `scoped-exceptions-migration.test.ts`, `aws-onboarding-migration.test.ts` e
+  `alert-cases-migration.test.ts` (as listas de migrations e colunas); no painel, `features/cases/case-exception-dialog.tsx`,
+  `case-exception-text.ts` (e teste), `case-exceptions-api.ts`, `case-detail.tsx`, `pages/admin/scoped-exceptions-section.tsx`,
+  `exceptions-page.tsx`, `features/audit/labels.ts`, `mocks/cases-handlers.ts` e `e2e/casos-excecoes.mock.spec.ts`.
+- **Decisões:** permissão pelo papel (`canWriteScopedExceptions`), sem valor novo na lista de `/v1/me` (enum fechado no painel de
+  antes); a lista das amplas é de quem lê exceções, e prévia, criar e revogar são dos administradores. Auditoria na área
+  `alert_exception` (sem tipo novo no filtro). Revogar não apaga. Só com `CASES_MODE=on` (404 nos outros modos, e o worker nem cria
+  a fonte). Teto de 50 amplas em vigor por cliente. A lista do worker vale 30 s, mas a exceção que casa é conferida no banco a cada
+  alerta (a revogação vale na hora). Alerta marcado cuja severidade passa da máxima volta para `new` e avisa.
+- **Dependências novas:** nenhuma.
+- **Testes:** `pnpm lint` (max-warnings 0) e `pnpm typecheck` sem erros. Contrato: 36 arquivos, 647 testes. API num PostgreSQL 18
+  descartável (contêiner próprio, senha): suíte inteira 5.159 passaram; os 8 arquivos que falharam (5 com o worker do Vitest
+  morto, código 3221226505, e 3 por tempo esgotado com a máquina carregada) passaram ao rodar de novo só eles (183 testes, e
+  `cases-gaps.test.ts` 18 de 18 numa terceira rodada, depois de outra morte do worker). Os novos: 14 de integração (API e coleta,
+  com isolamento entre clientes), 5 da migration (imagem anterior grava, triaga, lê as exceções de sempre e expurga no esquema
+  novo; o SET NULL não anula o cliente; FK composta; CHECKs) e 4 unitários. Painel: 85 arquivos, 1.259 testes (o
+  `world-map-lazy.test.tsx` estourou o prazo com a suíte da API rodando junto e passou sozinho). Navegador (portas 5361/5362): 10 de
+  10, com axe nos dois temas em 360, 768 e 1280 px.
+- **Achado no caminho:** o `startsWith` do Prisma não escapa `%` nem `_` no `LIKE`; a prévia escapa o prefixo (testado).
+- **Teste manual:** num nó com `CASES_MODE=on`, como administrador do cliente: abrir um caso de vulnerabilidade, criar a ampla com o
+  CVE, conferir a prévia contra a lista; esperar o próximo alerta igual entrar como legítimo e a contagem subir; revogar e ver o
+  seguinte entrar na fila. Como analista: só as de usuário, IP ou recurso. Com `off`: a tela Exceções é a de sempre.
+- **Riscos e dúvidas:**
+  - A Torre conta como "esperados por exceção" só os de `exceptionId`; os da ampla não entram nessa conta (fora do escopo).
+  - Uma exceção nova vale para a coleta em até 30 s (a lista guardada); a revogação vale na hora.
+  - A decisão de uma pessoa sobre o alerta solta a exceção ampla (`scopedExceptionId` nulo): a severidade que sobe depois não a
+    desfaz.
+  - Não rodou num nó de verdade nem o e2e `fullstack`.
+
+## Casos: a medição vira o padrão da versão (25/11/2026)
+
+- Sem a linha `CASES_MODE`, o nó passa a calcular os casos (`shadow`). Só a equipe da Verax os vê, ninguém trata em massa, e os e-mails não
+  mudam. Vale 48 horas antes de qualquer decisão sobre o `on` (portão em `docs/runbooks/casos.md`).
+- Nó com a linha no `node.conf` continua com o valor dela; `off` desliga.
+
+## Ataques web pelos logs do ALB: disponíveis por padrão na versão (pedido do responsável de 25/11/2026)
+
+- Sem a linha `AWS_WEB_LOGS_ENABLED`, o nó dedicado oferece os balanceadores no painel. **Nada é lido até alguém do cliente autorizar cada
+  um**, com a estimativa de volume; todo balanceador começa só observando, por 72 horas. `false` desliga; a célula continua sem.
+- A versão 1.4.0 já saiu com os contratos. Depois de existir achado `alb`, não se volta para antes dela.
+
 ## Cloudflare por OAuth: painel e documentação (CF-8 e CF-9, 25/11/2026)
 
 - **O que mudou (CF-8, painel):** o "Conectar com Cloudflare" na tela. Só aparece com `GET /v1/cloudflare-oauth/options`

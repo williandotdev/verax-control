@@ -23,6 +23,7 @@ import { fieldErrors } from '@/features/admin/forms';
 import { EXCEPTION_FIELD_LABELS } from '@/features/admin/labels';
 import { useMe } from '@/features/session/session';
 import { formatRelative, plural } from '@/lib/format';
+import { ScopedExceptionsSection } from './scoped-exceptions-section';
 
 const NEW = 'nova';
 const FIELD_OPTIONS = ALERT_EXCEPTION_FIELDS.map((field) => ({
@@ -132,6 +133,7 @@ export function ExceptionsPage() {
         emptyTitle="Nenhuma exceção"
         emptyDescription="Ao marcar um alerta como legítimo, o painel oferece criar a exceção."
       />
+      <ScopedExceptionsSection scope={scope} role={me?.role ?? null} />
       <Sheet
         open={open === NEW || selected !== null}
         onOpenChange={(value) => {

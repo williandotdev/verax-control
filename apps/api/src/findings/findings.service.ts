@@ -232,8 +232,14 @@ export class FindingsService {
     const firstTriage = before.status === 'new' && input.status !== 'new' && before.triagedAt === null;
     await db.finding.update({
       where: { id },
-      // A decisão de agora vale no lugar da triagem em massa: desfazer a operação não mexe mais neste alerta.
-      data: { status: input.status, triageOpId: null, ...(firstTriage && { triagedAt: new Date() }) },
+      // A decisão de agora vale no lugar da triagem em massa (desfazer a operação não mexe mais neste alerta) e da exceção
+      // ampla que marcou o alerta: a severidade que sobe depois não desfaz o que uma pessoa decidiu.
+      data: {
+        status: input.status,
+        triageOpId: null,
+        scopedExceptionId: null,
+        ...(firstTriage && { triagedAt: new Date() }),
+      },
       select: { id: true },
     });
     let commentId: string | undefined;

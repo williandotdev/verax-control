@@ -2,6 +2,7 @@ export const PRODUCT_NAME = 'Verax Control' as const;
 
 export * from './agents.js';
 export * from './alert-exceptions.js';
+export * from './scoped-exceptions.js';
 export * from './audit.js';
 export * from './cases.js';
 export * from './cell-protocol.js';

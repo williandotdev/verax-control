@@ -529,7 +529,11 @@ describe(`migration ${MIGRATION}`, () => {
     });
 
     it('as colunas que a imagem anterior conhece são as do model de hoje, menos as novas', () => {
-      const today = Object.keys(Prisma.FindingScalarFieldEnum).sort();
+      // Menos as colunas de migrations posteriores (a da exceção ampla, `scoped-exceptions-migration.test.ts`).
+      const later = new Set(['scopedExceptionId']);
+      const today = Object.keys(Prisma.FindingScalarFieldEnum)
+        .filter((name) => !later.has(name))
+        .sort();
       expect([...(previousColumns['Finding'] ?? []), 'caseGroup', 'caseId', 'triageOpId'].sort()).toEqual(
         today,
       );
