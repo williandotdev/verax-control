@@ -33,8 +33,13 @@ export function useReport<K extends ReportKind>(kind: K, range: ReportRange, ena
     },
     enabled: enabled && !(changes && loading),
     // Ao trocar só a janela, os números anteriores ficam na tela (marcados como desatualizados) até os novos
-    // chegarem. Ao trocar de relatório ou de cliente, não: o formato ou o dono dos dados é outro.
+    // chegarem. Ao trocar de relatório ou de cliente, ou com os casos ligados ou desligados no meio, não: o formato, o
+    // dono ou o que os números contam é outro.
     placeholderData: (previous, previousQuery) =>
-      previousQuery?.queryKey[1] === scope && previousQuery.queryKey[2] === kind ? previous : undefined,
+      previousQuery?.queryKey[1] === scope &&
+      previousQuery.queryKey[2] === kind &&
+      previousQuery.queryKey[4] === cases
+        ? previous
+        : undefined,
   });
 }
