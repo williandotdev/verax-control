@@ -76,31 +76,6 @@ const authorized = (source: AwsSource): AwsSource => ({
 });
 
 describe('fontes de log: os grupos da tela', () => {
-  it('o balanceador que o nó coleta aparece sem a caixa de autorizar, e o NLB diz por que não serve', async () => {
-    const alb = (name: string, overrides: Partial<AwsSource> = {}) =>
-      sourceFixture('elb_logs', { name, collectable: true, ...overrides });
-    open([
-      sourceFixture('cloudtrail', { name: 'trilha' }),
-      alb('loja', { notes: ['high_volume'], details: { internetFacing: true } }),
-      alb('semlog', { availability: 'no_destination', notes: ['aws_cost_alb_logs'] }),
-      alb('rede', { availability: 'unsupported_format' }),
-    ]);
-    const region = await sourcesRegion();
-    const available = group(region, /^Disponíveis para coletar \(2\)$/);
-    expect(within(available).getAllByRole('checkbox')).toHaveLength(1);
-    expect(within(available).getByRole('checkbox', { name: /trilha/ })).not.toBeChecked();
-    expect(available).toHaveTextContent('Balanceador (log de acesso) · loja');
-    expect(available).toHaveTextContent(
-      'A autorização deste tipo de fonte ainda não está disponível nesta tela.',
-    );
-    expect(group(region, /^Não habilitadas na AWS \(1\)$/)).toHaveTextContent(
-      'Ligar o log de acesso do balanceador tem custo na AWS, pelo volume gravado no S3.',
-    );
-    const unsupported = group(region, /^Em destino ou formato que o Verax não lê \(1\)$/);
-    expect(unsupported).toHaveTextContent('Não é um balanceador de aplicação (ALB)');
-    expect(unsupported).not.toHaveTextContent('Parquet');
-  });
-
   it('cada fonte aparece no grupo dela, com a contagem e a explicação', async () => {
     open([
       sourceFixture('cloudtrail', {

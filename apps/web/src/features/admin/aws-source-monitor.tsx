@@ -21,6 +21,7 @@ import {
 import { awsAuthorizedSourceAnchor, groupAwsSources } from '@/features/admin/aws-sources';
 import { awsConnectionErrorHint } from '@/features/admin/labels';
 import { ScrollTable, Section, Tag, ToneBadge } from '@/features/admin/aws-ui';
+import { webAttacksAnchor } from '@/features/web-attacks/anchors';
 import { formatGb } from '@/features/plan/plan-format';
 import { formatDay, formatDuration, formatRelative } from '@/lib/format';
 
@@ -163,6 +164,17 @@ export function AwsSourceMonitor({
                     {source.collectFrom !== null && (
                       <p className="text-xs text-muted-foreground">
                         Coleta desde {formatDay(source.collectFrom)}
+                      </p>
+                    )}
+                    {source.kind === 'elb_logs' && source.collectable && (
+                      <p className="text-xs">
+                        <a
+                          href={`#${webAttacksAnchor(source.id)}`}
+                          className="underline"
+                          aria-label={`Ver em Ataques web: ${name}`}
+                        >
+                          Ver em Ataques web
+                        </a>
                       </p>
                     )}
                   </th>

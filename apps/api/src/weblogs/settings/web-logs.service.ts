@@ -6,6 +6,7 @@ import {
   isTrustedExpiryValid,
   type VolumeAllowance,
   WEB_ESTIMATE_REQUEST_INTERVAL_MS,
+  WEB_HEALTH_WINDOW_MS,
   WEB_ROUTES_LIMIT,
   WEB_TRUSTED_LIMIT,
   webLoadBalancerSchema,
@@ -19,6 +20,9 @@ import {
   type WebRouteList,
   type WebRouteMethod,
   type WebRouteUpdate,
+  webObservationSchema,
+  type WebSourceHealth,
+  webSourceHealthSchema,
   type WebSourceMode,
   type WebSourceSettings,
   type WebSourceSettingsUpdate,
@@ -39,6 +43,10 @@ import { toPaginated, toPrismaPage } from '../../common/http/pagination.js';
 import { PrismaService } from '../../common/prisma/prisma.service.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { PlanService } from '../../plan/plan.service.js';
+import { SLOT_MS } from '../limits.js';
+import { observedSince } from '../observed-since.js';
+import { ENGINE_STATE_VERSION, readWebEngineView, type WebEngineView } from '../store/web-engine-state.js';
+import type { WebLogObjectStatus } from '../store/web-object-ledger.js';
 import { ESTIMATE_SELECT, type EstimateRow, toEstimate } from './estimate.js';
 
 const SOURCE_NOT_FOUND = 'Balanceador não encontrado';
@@ -135,6 +143,37 @@ function toRoute(row: RouteRow): WebRoute {
 
 function refusal(status: HttpStatus, message: string, code: WebLogsErrorCode): ApiError {
   return new ApiError(status, message, code);
+}
+
+/**
+ * O que a memória do motor diz desta autorização e deste balanceador. O formato de outra versão, o balanceador trocado e o que
+ * ficou de uma autorização anterior não dizem nada do de agora; o pedaço fora do formato é como se não existisse.
+ */
+function engineView(
+  source: SourceRow,
+  settings: SettingsRow | null,
+  state: WebEngineView | null,
+  since: Date,
+): Pick<WebSourceHealth, 'observation' | 'suppressed' | 'notes' | 'stateAt'> {
+  const none = { observation: null, suppressed: [], notes: [], stateAt: null };
+  if (state === null || state.version !== ENGINE_STATE_VERSION) return none;
+  if (!isAuthorizedRow(source) || source.authorizedAt === null) return none;
+  if (state.loadBalancer !== parseLoadBalancerArn(sourceDetails(source.details).arn)?.loadBalancer)
+    return none;
+  if (state.updatedAt < source.authorizedAt) return none;
+  const observation = webObservationSchema.safeParse(state.observation);
+  const suppressed = webSourceHealthSchema.shape.suppressed.safeParse(state.suppressed);
+  const notes = webSourceHealthSchema.shape.notes.safeParse(state.notes);
+  return {
+    observation:
+      observation.success &&
+      observation.data.since === observedSince(settings?.observeUntil, source.authorizedAt)
+        ? observation.data
+        : null,
+    suppressed: suppressed.success ? suppressed.data.filter((item) => new Date(item.lastSeenAt) > since) : [],
+    notes: notes.success ? notes.data : [],
+    stateAt: state.updatedAt.toISOString(),
+  };
 }
 
 const isDuplicate = (error: unknown): boolean =>
@@ -297,6 +336,67 @@ export class WebLogsService {
       after: { sourceId, requestedAt: (before?.requestedAt ?? now).toISOString() },
     });
     return this.source(auth, sourceId);
+  }
+
+  // --- A saúde da leitura ---
+
+  /**
+   * A leitura das últimas 24 h e o que a observação contou. As contagens são as mesmas da saúde da fonte (o volume pelo horário
+   * do tráfego; o recusado e a lacuna, por quando foram tratados). Da memória do motor, só a observação, o calado e as notas, e
+   * só se forem desta autorização e deste balanceador: do resumo do dia, que tem endereços, nada é lido.
+   */
+  async health(sourceId: string, now = new Date()): Promise<WebSourceHealth> {
+    const source = await this.findSource(sourceId);
+    const db = this.prisma.scoped();
+    const since = new Date(now.getTime() - WEB_HEALTH_WINDOW_MS);
+    const [groups, settings, state] = await Promise.all([
+      db.webLogObject.groupBy({
+        by: ['status'],
+        where: {
+          sourceId,
+          OR: [
+            { status: { in: ['read', 'late'] }, slotStart: { gte: since } },
+            { status: { in: ['quarantined', 'gap'] }, readAt: { gt: since } },
+          ],
+        },
+        _count: { _all: true },
+        _sum: { lines: true, bytes: true, malformed: true, oversize: true, foreign: true },
+        _min: { slotStart: true },
+        _max: { slotStart: true },
+      }),
+      this.findSettings(sourceId),
+      readWebEngineView(this.prisma.db(), { sourceId, tenantId: this.prisma.scopeTenantId() }),
+    ]);
+    const of = (status: WebLogObjectStatus) => groups.find((group) => group.status === status);
+    const analysed = groups.filter((group) => group.status === 'read' || group.status === 'late');
+    const sum = (field: 'lines' | 'bytes' | 'malformed' | 'oversize' | 'foreign') =>
+      analysed.reduce((total, group) => total + Number(group._sum[field] ?? 0), 0);
+    const [malformed, oversize, foreign] = [sum('malformed'), sum('oversize'), sum('foreign')];
+    const gap = of('gap');
+    const [from, to] = [gap?._min.slotStart ?? null, gap?._max.slotStart ?? null];
+    return webSourceHealthSchema.parse({
+      sourceId,
+      since: since.toISOString(),
+      objects: {
+        read: of('read')?._count._all ?? 0,
+        late: of('late')?._count._all ?? 0,
+        quarantined: of('quarantined')?._count._all ?? 0,
+        gap: gap?._count._all ?? 0,
+      },
+      lines: {
+        analysed: Math.max(0, sum('lines') - malformed - oversize - foreign),
+        malformed,
+        oversize,
+        foreign,
+      },
+      bytes: sum('bytes'),
+      gap:
+        from === null || to === null
+          ? null
+          : // O `slotStart` é o começo do intervalo de 5 minutos: a lacuna vai até o fim do último.
+            { from: from.toISOString(), to: new Date(to.getTime() + SLOT_MS).toISOString() },
+      ...engineView(source, settings, state, since),
+    });
   }
 
   // --- Fontes confiáveis ---

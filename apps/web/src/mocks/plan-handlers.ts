@@ -23,6 +23,7 @@ import {
   projectedOverageUnits,
   type ResolvedPlan,
   resolvePlan,
+  type VolumeAllowance,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
@@ -116,6 +117,13 @@ export const DEMO_FRANCHISE_GB_PER_DAY = 3;
 function demoPlatform(state: Pick<MockState, 'platform'>): boolean {
   if (state.platform !== undefined) return state.platform;
   return typeof window !== 'undefined' && window.localStorage.getItem(MOCK_PLAN_STORAGE_KEY) === 'plataforma';
+}
+
+/** O volume que o plano da demonstração inclui, contra o que a estimativa de um balanceador é projetada. */
+export function demoVolumeAllowance(state: Pick<MockState, 'platform' | 'historyDays'>): VolumeAllowance {
+  return demoPlatform(state)
+    ? { monthlyGib: null, franchiseGbPerDay: DEMO_FRANCHISE_GB_PER_DAY }
+    : { monthlyGib: demoNodePlan(state).limits.monthlyGib, franchiseGbPerDay: null };
 }
 
 /**

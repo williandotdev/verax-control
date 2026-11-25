@@ -70,7 +70,7 @@ describe('fontes da conta AWS: em que grupo cada uma aparece', () => {
     expect(isAuthorizableSource(authorizedSourceFixture('guardduty', 'source_missing'))).toBe(true);
   });
 
-  it('o balanceador num nó que o coleta: cada um no seu grupo, os da internet primeiro, e nenhum na autorização ainda', () => {
+  it('o balanceador num nó que o coleta: cada um no seu grupo, os da internet primeiro, e o disponível pode ser autorizado', () => {
     const alb = (name: string, overrides: Partial<AwsSource> = {}) =>
       sourceFixture('elb_logs', { name, collectable: true, notes: ['high_volume'], ...overrides });
     const facing = { details: { internetFacing: true } };
@@ -78,8 +78,12 @@ describe('fontes da conta AWS: em que grupo cada uma aparece', () => {
     expect(awsSourceGroup(alb('loja', { permission: 'missing' }))).toBe('needs_permission');
     expect(awsSourceGroup(alb('loja', { availability: 'no_destination' }))).toBe('not_enabled');
     expect(awsSourceGroup(alb('rede', { availability: 'unsupported_format' }))).toBe('unsupported');
-    // O pedido desta tela não leva a ciência da estimativa, e a API o recusaria inteiro.
-    expect(isAuthorizableSource(alb('loja'))).toBe(false);
+    // Quem confere a estimativa é a lista (`usableEstimate`): aqui, o que existe e o Verax lê.
+    expect(isAuthorizableSource(alb('loja'))).toBe(true);
+    expect(isAuthorizableSource(alb('loja', { permission: 'missing' }))).toBe(false);
+    expect(isAuthorizableSource(alb('loja', { availability: 'no_destination' }))).toBe(false);
+    // Num nó com os ataques web desligados, o tipo não é coletado.
+    expect(isAuthorizableSource(alb('loja', { collectable: false }))).toBe(false);
     expect(isHighVolumeSource(alb('loja'))).toBe(true);
     const { groups } = groupAwsSources([
       alb('a-interno', { details: { internetFacing: false } }),

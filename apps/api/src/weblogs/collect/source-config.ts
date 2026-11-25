@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { WEB_OBSERVE_MS } from '@verax/shared';
 import type { PrismaService } from '../../common/prisma/prisma.service.js';
+import { observedSince } from '../observed-since.js';
 import { MAX_ROUTES, type WebRoute, webRouteSchema } from '../routes.js';
 import { MAX_TRUSTED, type WebTrustedSource } from '../trusted-sources.js';
 
@@ -52,15 +52,11 @@ export async function loadSourceConfig(
       },
     }),
   ]);
-  const since =
-    settings?.observeUntil == null
-      ? source.authorizedAt
-      : new Date(settings.observeUntil.getTime() - WEB_OBSERVE_MS);
   return {
     // Sem a linha da configuração (que a autorização cria), só observa.
     mode: settings?.mode === 'alert' ? 'alert' : 'observe',
     multiplier: settings?.thresholdMultiplier ?? 1,
-    observedSince: since.toISOString(),
+    observedSince: observedSince(settings?.observeUntil, source.authorizedAt),
     trusted: trusted.map((row) => ({
       ...row,
       kind: row.kind as WebTrustedSource['kind'],

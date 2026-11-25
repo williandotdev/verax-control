@@ -186,6 +186,82 @@ export const WEB_SOURCE_STATE_CODES = [
 ] as const;
 export type WebSourceStateCode = (typeof WEB_SOURCE_STATE_CODES)[number];
 
+// --- A saúde da leitura e a observação ---
+
+/** As contagens da saúde da leitura são das últimas 24 h. */
+export const WEB_HEALTH_WINDOW_MS = DAY_MS;
+/** Tetos da resposta: regras e níveis da observação, o que as fontes confiáveis calaram e as notas do motor. */
+export const WEB_HEALTH_RULES_LIMIT = 64;
+export const WEB_HEALTH_SUPPRESSED_LIMIT = 100;
+export const WEB_HEALTH_NOTES_LIMIT = 32;
+
+const counter = z.int().min(0).max(Number.MAX_SAFE_INTEGER);
+/** Uma regra dos ataques web (`990405`). */
+const webRuleId = z.string().regex(/^\d{6}$/);
+
+/** O que teria virado achado enquanto o balanceador só observa. Só contagens. */
+export const webObservationSchema = z.strictObject({
+  /** O começo da observação: o da autorização, ou o de quando o balanceador foi trocado. */
+  since: z.iso.datetime(),
+  /** Por regra e nível. */
+  rules: z
+    .array(
+      z.strictObject({
+        ruleId: webRuleId,
+        level: z.int().min(0).max(15),
+        findings: z.int().min(1).max(Number.MAX_SAFE_INTEGER),
+        firstSeenAt: z.iso.datetime(),
+        lastSeenAt: z.iso.datetime(),
+      }),
+    )
+    .max(WEB_HEALTH_RULES_LIMIT),
+  /** Os números são um piso. */
+  truncated: z.boolean(),
+});
+export type WebObservation = z.infer<typeof webObservationSchema>;
+
+/** O que uma fonte confiável calou nas últimas 24 h: quantos endereços, na última avaliação em que houve algum. */
+export const webSuppressedSchema = z.strictObject({
+  /** O ID da fonte confiável (`WebTrustedSource`); ela pode já ter sido tirada. */
+  trustedId: z.string().min(1).max(64),
+  ruleId: webRuleId,
+  clients: counter,
+  lastSeenAt: z.iso.datetime(),
+});
+export type WebSuppressed = z.infer<typeof webSuppressedSchema>;
+
+/**
+ * `GET /v1/web-logs/sources/:sourceId/health`: as contagens da leitura de um balanceador nas últimas 24 h e o resumo da
+ * observação. O atraso e a última leitura são os da fonte (`AwsSource.health`, no onboarding). Nunca um endereço, um caminho
+ * ou um host: o resumo do dia do motor, o único lugar com IP fora dos achados, não sai daqui.
+ *
+ * Estrito nos campos e nos tetos, aberto nos códigos (regras e notas): um código novo do nó não derruba a tela de antes.
+ */
+export const webSourceHealthSchema = z.strictObject({
+  sourceId: awsSourceIdSchema,
+  /** O começo da janela das contagens. */
+  since: z.iso.datetime(),
+  /**
+   * Os arquivos: lidos na hora, lidos depois de a janela fechar, recusados e deixados sem leitura. Os dois primeiros, pelo
+   * horário do tráfego; os dois últimos, por quando foram tratados.
+   */
+  objects: z.strictObject({ read: counter, late: counter, quarantined: counter, gap: counter }),
+  /** As linhas dos arquivos lidos: as analisadas e as deixadas de fora (tortas, grandes demais, de outro balanceador). */
+  lines: z.strictObject({ analysed: counter, malformed: counter, oversize: counter, foreign: counter }),
+  /** Os bytes descompactados dos arquivos lidos: os que contam no plano. */
+  bytes: counter,
+  /** O intervalo do tráfego que ficou sem leitura; null sem lacuna, ou se os arquivos não dizem o horário. */
+  gap: z.strictObject({ from: z.iso.datetime(), to: z.iso.datetime() }).nullable(),
+  /** Null sem observação guardada: nunca lido, sem autorização, ou o balanceador é outro. */
+  observation: webObservationSchema.nullable(),
+  suppressed: z.array(webSuppressedSchema).max(WEB_HEALTH_SUPPRESSED_LIMIT),
+  /** As notas do motor (`behind_proxy`, `truncated`...). */
+  notes: z.array(z.string().regex(/^[a-z0-9_]{1,32}$/)).max(WEB_HEALTH_NOTES_LIMIT),
+  /** Quando o motor gravou a observação e as notas; null se nunca. */
+  stateAt: z.iso.datetime().nullable(),
+});
+export type WebSourceHealth = z.infer<typeof webSourceHealthSchema>;
+
 // --- A configuração de um balanceador ---
 
 /** `observe`: só conta, sem achado. `alert`: abre achado. */

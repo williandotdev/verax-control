@@ -5,6 +5,14 @@ export function formatTimestamp(value: string | Date): string {
   return Number.isNaN(date.getTime()) ? '—' : formatter.format(date);
 }
 
+const minuteFormatter = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+
+/** A data e a hora, sem os segundos: "04/11/2026, 14:32". */
+export function formatMinute(value: string | Date): string {
+  const date = typeof value === 'string' ? new Date(value) : value;
+  return Number.isNaN(date.getTime()) ? '—' : minuteFormatter.format(date);
+}
+
 const dateFormatter = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short' });
 
 /** Só a data: "04/11/2026". */
