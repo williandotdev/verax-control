@@ -208,12 +208,13 @@ describe('triage-ops', () => {
         }).runOnce();
         let killed = 0;
         for (let tries = 0; killed === 0 && tries < 400; tries += 1) {
-          const { rows } = await killer.query<{ pid: number; query: string }>(
-            'SELECT pid, query FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))',
-            [self[0]?.pid],
+          // O texto do comando e quem espera por quem são lidos em instantes diferentes: só vale quem já está no comando esperado.
+          const { rows } = await killer.query<{ pid: number }>(
+            `SELECT pid FROM pg_stat_activity
+             WHERE $1::int = ANY(pg_blocking_pids(pid)) AND position($2::text in query) > 0`,
+            [self[0]?.pid, '"TriageOperationItem"'],
           );
           for (const waiting of rows) {
-            expect(waiting.query).toContain('"TriageOperationItem"');
             await killer.query('SELECT pg_terminate_backend($1::int)', [waiting.pid]);
             killed += 1;
           }
