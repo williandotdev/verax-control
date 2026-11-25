@@ -146,6 +146,78 @@ describe('bootstrap dos papéis de banco (T8.2)', () => {
     });
   });
 
+  it('a evidência, o tráfego por país e as cascatas deles funcionam com o papel da aplicação', async () => {
+    const [tenantId, accountId, sourceId, findingId] = [
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    ];
+    await asRole(app, async (client) => {
+      const rows = async (table: string) =>
+        (
+          await client.query(`SELECT 1 FROM ${client.escapeIdentifier(table)} WHERE "tenantId" = $1`, [
+            tenantId,
+          ])
+        ).rowCount;
+      await client.query(
+        `INSERT INTO "Tenant" ("id", "name", "updatedAt") VALUES ($1, 'Cliente Demo A (papéis, web)', now())`,
+        [tenantId],
+      );
+      try {
+        await client.query(
+          `INSERT INTO "CloudAccount" ("id", "tenantId", "provider", "accountId", "regions", "updatedAt")
+           VALUES ($1, $2, 'aws', $3, '{sa-east-1}', now())`,
+          [accountId, tenantId, String(100_000_000_000 + Math.floor(Math.random() * 8e11))],
+        );
+        await client.query(
+          `INSERT INTO "AwsSource" ("id", "tenantId", "cloudAccountId", "kind", "region", "resourceId", "name", "method",
+             "availability", "state", "updatedAt")
+           VALUES ($1, $2, $3, 'elb_logs', 'sa-east-1', 'loja', 'loja', 's3', 'available', 'available', now())`,
+          [sourceId, tenantId, accountId],
+        );
+        await client.query(
+          `INSERT INTO "Finding" ("id", "tenantId", "accountId", "source", "sourceEventId", "logSource", "occurredAt",
+             "severity", "ruleId", "ruleLevel", "title", "mitreTactics", "mitreTechniques", "updatedAt")
+           VALUES ($1, $2, '111111111111', 'aws', $3, 'waf', now(), 'high', '990405', 10, 'Alerta', '{}', '{}', now())`,
+          [findingId, tenantId, `papeis-${randomUUID()}`],
+        );
+        await client.query(
+          `INSERT INTO "FindingEvidence" ("findingId", "tenantId", "version", "data", "firstSeenAt", "lastSeenAt", "updatedAt")
+           VALUES ($1, $2, 1, '{"version": 1}', now(), now(), now())`,
+          [findingId, tenantId],
+        );
+        await client.query(`UPDATE "FindingEvidence" SET "samplesPurgedAt" = now() WHERE "findingId" = $1`, [
+          findingId,
+        ]);
+        for (const [table, column] of [
+          ['WebTrafficSlot', 'slotStart'],
+          ['WebTrafficHour', 'hourStart'],
+        ]) {
+          await client.query(
+            `INSERT INTO "${table}" ("tenantId", "sourceId", "${column}", "country", "clientClass", "requests", "blocked",
+               "clientErrors", "serverErrors", "flagged")
+             VALUES ($1, $2, date_trunc('hour', now(), 'UTC'), 'BR', 'direct', 1, 0, 0, 0, 0)`,
+            [tenantId, sourceId],
+          );
+        }
+        await client.query('DELETE FROM "WebTrafficSlot" WHERE "tenantId" = $1', [tenantId]);
+        // As cascatas rodam com o papel do dono das tabelas.
+        await client.query('DELETE FROM "Finding" WHERE "id" = $1', [findingId]);
+        expect(await rows('FindingEvidence')).toBe(0);
+        await client.query('DELETE FROM "CloudAccount" WHERE "id" = $1', [accountId]);
+        expect(await rows('WebTrafficHour')).toBe(0);
+      } finally {
+        for (const table of ['Finding', 'CloudAccount']) {
+          await client.query(`DELETE FROM ${client.escapeIdentifier(table)} WHERE "tenantId" = $1`, [
+            tenantId,
+          ]);
+        }
+        await client.query('DELETE FROM "Tenant" WHERE "id" = $1', [tenantId]);
+      }
+    });
+  });
+
   it('a aplicação não cria nem altera objetos', async () => {
     await asRole(app, async (client) => {
       await expect(client.query('CREATE TABLE invasora (id int)')).rejects.toThrow(/permission denied/);

@@ -47,6 +47,11 @@ const UNTRIAGED_INDEX = '20261128120000_finding_untriaged_index';
 const NOTICE_INDEX = '20261128120000_notification_escalation_index';
 /** E a do autovacuum da tabela de alertas, que a atribuição dos casos atualiza (`case-assign.test.ts`). */
 const FINDING_AUTOVACUUM = '20261129120000_finding_autovacuum';
+/** E a dos ataques web pelos logs do ALB (`web-logs-migration.test.ts`). */
+const WEB_LOGS = '20261130120000_web_logs';
+/** E a dos contratos deles, com mais uma nota no CHECK da descoberta (`web-logs-contracts-migration.test.ts`). */
+const WEB_CONTRACTS = '20261201120000_web_logs_contracts';
+const WEB_CONTRACTS_NOTE = 'aws_cost_alb_logs';
 /** O índice dos avisos de um caso. */
 const CASE_NOTICE_INDEX = '20261202120000_notification_case_index';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
@@ -102,6 +107,8 @@ describe(`migration ${MIGRATION}`, () => {
       UNTRIAGED_INDEX,
       NOTICE_INDEX,
       FINDING_AUTOVACUUM,
+      WEB_LOGS,
+      WEB_CONTRACTS,
       CASE_NOTICE_INDEX,
     ]);
     const additive = [
@@ -680,7 +687,7 @@ describe(`migration ${MIGRATION}`, () => {
       await client.query(sqlOf(FLOW_NOTE));
       expect((await sources()).rows).toEqual(before.rows);
       expect(listedAfter(await constraint(client, 'AwsSource_discovery_check'), 'notes <@').sort()).toEqual(
-        [...AWS_SOURCE_NOTES].sort(),
+        AWS_SOURCE_NOTES.filter((value) => value !== WEB_CONTRACTS_NOTE).sort(),
       );
       // Depois, a nota nova cabe, e uma que não existe segue recusada.
       await note('flow_logs_read_together');
