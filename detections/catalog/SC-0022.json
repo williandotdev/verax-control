@@ -1,0 +1,18 @@
+{
+  "id": "SC-0022",
+  "title": "Achados do Security Hub",
+  "goal": "Repassar ao painel os controles de segurança reprovados e os achados de produtos integrados ao Security Hub. A detecção é da AWS e dos produtos integrados; a Verax responde pelo repasse completo e pela severidade da origem.",
+  "logSources": ["security_hub"],
+  "rules": ["990501", "990502"],
+  "providerDetection": true,
+  "mitre": {
+    "tactics": [],
+    "techniques": []
+  },
+  "severity": "from_source",
+  "expectedResponse": "Corrigir o controle reprovado conforme a orientação do Security Hub, ou registrar a exceção quando o desvio for aceito. Para achados de produtos integrados, seguir a orientação do produto.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

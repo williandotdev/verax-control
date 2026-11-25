@@ -1,0 +1,18 @@
+{
+  "id": "SC-0015",
+  "title": "Varredura e reconhecimento",
+  "goal": "Detectar varreduras vindas da internet: varredura de rede nos flow logs, rajadas de bloqueio do WAF da AWS e do Cloudflare, desafios resolvidos em excesso, ferramentas de ataque pelo User-Agent, sondagem de caminhos sensíveis e enumeração de rotas no balanceador.",
+  "logSources": ["vpc_flow", "waf", "cloudflare_waf", "alb"],
+  "rules": ["100400", "80443", "990330", "990335", "990400", "990401", "990402", "990404"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Reconnaissance"],
+    "techniques": ["T1046", "T1595", "T1595.002", "T1595.003"]
+  },
+  "severity": "high",
+  "expectedResponse": "Em geral é ruído da internet: conferir se a origem já está bloqueada e se algum pedido teve sucesso. Escalar quando a mesma origem aparecer também em tentativas de exploração ou de login.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

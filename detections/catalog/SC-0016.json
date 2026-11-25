@@ -1,0 +1,18 @@
+{
+  "id": "SC-0016",
+  "title": "Exploração de aplicação web",
+  "goal": "Detectar tentativas de explorar a aplicação: ataques barrados pelo WAF gerenciado do Cloudflare vindos de um mesmo endereço e caminho sensível respondido com conteúdo no balanceador (possível exposição de arquivo ou painel).",
+  "logSources": ["cloudflare_waf", "alb"],
+  "rules": ["990331", "990403"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Reconnaissance", "Initial Access"],
+    "techniques": ["T1190", "T1595.002"]
+  },
+  "severity": "high",
+  "expectedResponse": "Verificar se o caminho respondido expõe dado ou configuração e, se expõe, retirá-lo do ar. Para os ataques barrados, conferir se algum passou e se a aplicação tem a vulnerabilidade visada.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

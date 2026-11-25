@@ -1,0 +1,18 @@
+{
+  "id": "SC-0001",
+  "title": "Uso da conta root da AWS",
+  "goal": "Detectar o uso da conta root: login no console (com ou sem MFA), chave de acesso criada para ela ou por ela, e alterações na própria conta feitas com ela. A root não deve ser usada no dia a dia; qualquer uso fora de um procedimento combinado indica credencial comprometida ou prática de risco.",
+  "logSources": ["cloudtrail"],
+  "rules": ["100300", "100301", "100303", "100304", "100324"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": [],
+    "techniques": ["T1078.004", "T1098.001"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Confirmar com o responsável pela conta se o uso foi planejado. Se não foi: trocar a senha da root, revogar as chaves de acesso criadas, conferir o MFA e revisar no CloudTrail tudo o que a root fez na janela do alerta.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": true,
+  "evidence": []
+}

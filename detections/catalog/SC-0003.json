@@ -1,0 +1,18 @@
+{
+  "id": "SC-0003",
+  "title": "Autenticação enfraquecida",
+  "goal": "Detectar login no console da AWS sem MFA e a retirada de proteções de autenticação no Cloudflare (exigência de dois fatores desligada, aplicação ou política do Cloudflare Access apagada ou aberta para todos).",
+  "logSources": ["cloudtrail", "cloudflare_audit"],
+  "rules": ["100302", "990314", "990315"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Persistence", "Defense Evasion", "Credential Access"],
+    "techniques": ["T1078.004", "T1556", "T1556.006"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Confirmar quem fez a mudança e se ela foi autorizada. Reativar o MFA ou a exigência de dois fatores e restaurar a política de acesso. Se a mudança não foi autorizada, tratar a conta que a fez como comprometida.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

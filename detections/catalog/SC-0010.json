@@ -1,0 +1,18 @@
+{
+  "id": "SC-0010",
+  "title": "Dados expostos ao público",
+  "goal": "Detectar recursos com dados abertos para qualquer pessoa: bucket S3 público, snapshot ou imagem compartilhada publicamente na AWS e acesso público (allUsers ou allAuthenticatedUsers) numa política de IAM da GCP.",
+  "logSources": ["cloudtrail", "gcp_audit"],
+  "rules": ["100314", "100319", "990103"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Collection", "Exfiltration"],
+    "techniques": ["T1530", "T1537"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Fechar o acesso público, salvo se o recurso for público por desenho. Avaliar se houve leitura dos dados durante a exposição e, se houver dado pessoal, acionar o processo de incidente com dados.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

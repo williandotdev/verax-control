@@ -7682,3 +7682,46 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
   - A decisão de uma pessoa sobre o alerta solta a exceção ampla (`scopedExceptionId` nulo): a severidade que sobe depois não a
     desfaz.
   - Não rodou num nó de verdade nem o e2e `fullstack`.
+
+## Cobertura de detecção, UC-1: contratos, catálogo inicial e validação (25/11/2026)
+
+- **O que foi feito:** os contratos da Cobertura de detecção em `packages/shared` (schemas zod estritos do cenário e da
+  evidência, os cinco estados, os rótulos, os estados que o cliente vê e a função pura `effectiveScenarioState`); o catálogo
+  inicial em `detections/catalog/` (24 cenários agrupados por objetivo, 168 regras, todos em `em_teste`, sem evidência); as
+  fingerprints das regras (`apps/api/src/detection-coverage/rule-fingerprints.ts`); e o teste que confere o catálogo contra as
+  regras do repositório. Sem rota, sem tela, sem console, sem infra. Seção nova em `docs/ARQUITETURA.md`, "Cobertura de
+  detecção: o catálogo de cenários (UC-1)".
+- **Arquivos:** `packages/shared/src/detection-coverage.ts` (e teste), `index.ts`; `detections/catalog/SC-0001.json` a
+  `SC-0024.json`; `apps/api/src/detection-coverage/rule-fingerprints.ts`; `apps/api/test/detection-coverage/catalog.test.ts` e
+  `repository-rules.ts`; `apps/api/src/cases/case-key.ts` (só o `export` de `HOST_LOGIN_RULES`, para o inventário);
+  `docs/ARQUITETURA.md`.
+- **Decisões:** do responsável (25/11/2026): cenários por objetivo; nome "Cobertura de detecção" (a aba "Cobertura das fontes"
+  fica como está); o cliente vê `homologado` e `em_teste`, só leitura; sem sugestão do cliente; homologar exige evidência do CI
+  (positiva e negativa); a de laboratório é opcional; os achados do provedor entram com `providerDetection: true` e severidade
+  `from_source`; nada vai do nó ao plano de controle. Minhas: ID `SC-0001` (cenário) no lugar do `UC-0001` do desenho; cada
+  regra em exatamente um cenário; o MITRE do cenário é a união do que o código mapeia para as regras dele (o XML só traz
+  técnica, então cenários só com regra XML ficam sem tática; GuardDuty sem MITRE, porque ele sai do tipo de cada achado); dono
+  "Equipe SOC da Verax"; o maior nível das regras do ALB, que fica na contagem e não na tabela, copiado no inventário do teste
+  só para conferir a severidade. O lugar do catálogo na imagem da API não foi decidido: o UC-1 não precisa.
+- **Dependências novas:** nenhuma (o `typescript` já é dependência de desenvolvimento da API).
+- **Testes:** `pnpm lint` (max-warnings 0), `pnpm format:check` e `pnpm typecheck` sem erros. Contrato: 37 arquivos, 663 testes
+  (16 novos). API, sem banco (configuração temporária do Vitest sem o `globalSetup`, não versionada, porque esta cópia não tem
+  `TEST_DATABASE_URL`): o teste novo (13) e os que tocam `case-key.ts` e os títulos das regras, 7 arquivos, 259 testes. Mutação
+  à mão, todas acusadas: regra tirada de um cenário, regra inexistente, regra de nível 0, ID repetido, técnica inventada, conta
+  de 12 algarismos, e-mail num arquivo de evidência; na função do estado, fingerprint ignorada, negativa não exigida e falha
+  ignorada; na fingerprint, atributos fora da forma canônica, comentários mantidos (o teste foi reforçado com um comentário que
+  tem marcação dentro da regra, porque a primeira versão não acusava), mãe local ignorada e fecho de imports desligado; no
+  inventário, nível mínimo ignorado.
+- **Teste manual:** nenhum na interface (não há tela). Revisar o texto dos 24 cenários (título, objetivo, resposta esperada) e o
+  agrupamento.
+- **O que falta (fora do UC-1):** o script de build que grava `rule-fingerprints.json` e o artefato na versão do nó (UC-6); o
+  corredor de evidências no CI e o `test-rules.sh` lendo `detections/evidence/` (UC-2); a API e a situação por cliente (UC-3); a
+  tela (UC-5). Na fingerprint: o `<group>` e os `if_group` das regras XML não entram; os imports de pacote (`@verax/shared`)
+  não entram no fecho do worker; a correção de MITRE da 80443 em `aws-mitre.ts` não entra na fingerprint da regra XML.
+- **Riscos e dúvidas:**
+  - Fora do catálogo: as regras genéricas do Wazuh no CloudWatch Logs e as regras de fábrica dos agentes que o código não cita
+    por ID (como as do detector de vulnerabilidades, 23501 a 23508, cujo nível o repositório não fixa). Viram achado, mas não
+    há lista fechada para conferir.
+  - As regras de login nas instâncias (`HOST_LOGIN_RULES`) entram só com a fonte `wazuh_agent`; as mesmas regras podem disparar
+    num grupo do CloudWatch Logs.
+  - O teste da API roda no `pnpm test` da API, que exige o banco; ele mesmo não usa banco.

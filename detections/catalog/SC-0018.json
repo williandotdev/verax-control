@@ -1,0 +1,18 @@
+{
+  "id": "SC-0018",
+  "title": "Desvio de tráfego e persistência na borda",
+  "goal": "Detectar mudanças no Cloudflare que podem desviar o tráfego ou manter acesso: redirecionamento criado, Worker publicado, certificado enviado ou emitido, túnel criado e ação feita pela equipe do Cloudflare na conta.",
+  "logSources": ["cloudflare_audit"],
+  "rules": ["990316", "990317", "990318", "990320", "990324"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Resource Development", "Initial Access", "Persistence", "Command and Control", "Impact"],
+    "techniques": ["T1199", "T1491.002", "T1505", "T1572", "T1588.004"]
+  },
+  "severity": "medium",
+  "expectedResponse": "Confirmar com o responsável pela zona se a mudança era esperada. Se não era, remover o redirecionamento, o Worker, o certificado ou o túnel e revisar a credencial usada.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

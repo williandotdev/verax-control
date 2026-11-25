@@ -1,0 +1,18 @@
+{
+  "id": "SC-0008",
+  "title": "Rede aberta para a internet",
+  "goal": "Detectar grupos de segurança da AWS e regras de firewall da GCP abertos para qualquer endereço da internet, em especial em todas as portas, em administração remota (SSH, RDP) ou em banco de dados, e regras de firewall apagadas na GCP.",
+  "logSources": ["cloudtrail", "gcp_audit"],
+  "rules": ["100315", "100316", "100317", "100318", "990108", "990109", "990110"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Defense Evasion"],
+    "techniques": ["T1562.007"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Confirmar se a abertura é intencional (por exemplo, um balanceador público). Se não for, restringir a origem ao necessário e verificar nos flow logs e nos logs da instância se houve acesso pela porta aberta.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}
