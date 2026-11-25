@@ -1,6 +1,6 @@
 import { agentIdOfRef, type DetectionRow, type Finding, type Incident } from '@verax/shared';
 import { ChevronRight } from 'lucide-react';
-import { type ReactNode, useId, useState } from 'react';
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { Pagination } from '@/components/data-table';
 import { SeverityBadge } from '@/components/security/severity-badge';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
@@ -33,6 +33,11 @@ export interface ListPage<T> {
 
 export const HEAD = 'px-3 py-2 text-left font-medium';
 export const CELL = 'px-3 py-2 align-top';
+/**
+ * Ao lado do radar ou do detalhe (`data-fill`, em `detections-page.tsx`), a lista ocupa a altura do quadro da esquerda: cada
+ * elemento entre a coluna e a tabela leva esta classe, e só a tabela rola.
+ */
+export const FILL_COLUMN = 'in-data-[fill=true]:flex in-data-[fill=true]:grow in-data-[fill=true]:flex-col';
 /** Coluna que sai com o painel aberto ao lado (o detalhe mostra o mesmo). */
 export const OPTIONAL = 'group-data-[compact=true]:hidden';
 /** Coluna que, ao lado do radar, vira uma linha embaixo do título (`DenseMeta`). */
@@ -106,6 +111,11 @@ export function Frame<T>({
   header: ReactNode;
   children: (rows: T[]) => ReactNode;
 }) {
+  // A tabela que rola por dentro começa do topo na página seguinte.
+  const region = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (region.current) region.current.scrollTop = 0;
+  }, [page.page]);
   let body: ReactNode;
   if (page.error) body = <ErrorState error={page.error} onRetry={page.onRetry} />;
   else if (!page.rows) body = <LoadingState rows={5} label="Carregando as detecções" />;
@@ -115,12 +125,18 @@ export function Frame<T>({
     body = (
       // Rola por dentro quando não cabe: o foco pelo teclado deixa ler as colunas da direita sem mouse.
       <div
+        ref={region}
         data-tour="deteccoes-lista"
         role="region"
         aria-label={label}
         tabIndex={0}
         // `relative`: os textos só para leitor de tela (posição absoluta) ficam presos à área que rola, e não alargam a página.
-        className="relative overflow-x-auto rounded-lg border focus-visible:outline-2 focus-visible:outline-ring"
+        className={cn(
+          'relative overflow-x-auto rounded-lg border focus-visible:outline-2 focus-visible:outline-ring',
+          // A altura vem do quadro ao lado, e não das linhas; num quadro baixo, há um mínimo para ler.
+          'in-data-[fill=true]:h-0 in-data-[fill=true]:min-h-96 in-data-[fill=true]:shrink-0 in-data-[fill=true]:grow in-data-[fill=true]:basis-0',
+          'in-data-[fill=true]:overflow-y-auto in-data-[fill=true]:rounded-none in-data-[fill=true]:border-0',
+        )}
         aria-busy={page.loading}
       >
         <table
@@ -133,7 +149,7 @@ export function Frame<T>({
           )}
         >
           <caption className="sr-only">{caption}</caption>
-          <thead className="bg-foreground/[0.03] text-xs text-muted-foreground">
+          <thead className="bg-foreground/[0.03] text-xs text-muted-foreground in-data-[fill=true]:sticky in-data-[fill=true]:top-0 in-data-[fill=true]:z-10 in-data-[fill=true]:bg-surface">
             <tr>{header}</tr>
           </thead>
           <tbody className="tabular-nums">{children(page.rows)}</tbody>
@@ -141,15 +157,23 @@ export function Frame<T>({
       </div>
     );
   return (
-    <div className="space-y-3">
+    <div
+      data-list-frame=""
+      className={cn(
+        FILL_COLUMN,
+        'space-y-3 in-data-[fill=true]:space-y-0 in-data-[fill=true]:overflow-hidden in-data-[fill=true]:rounded-xl in-data-[fill=true]:border in-data-[fill=true]:bg-surface',
+      )}
+    >
       {body}
-      <Pagination
-        page={page.page}
-        pageSize={page.pageSize}
-        total={page.total}
-        onPageChange={page.onPageChange}
-        busy={page.loading}
-      />
+      <div className="in-data-[fill=true]:mt-auto in-data-[fill=true]:border-t in-data-[fill=true]:px-3 in-data-[fill=true]:py-2">
+        <Pagination
+          page={page.page}
+          pageSize={page.pageSize}
+          total={page.total}
+          onPageChange={page.onPageChange}
+          busy={page.loading}
+        />
+      </div>
     </div>
   );
 }

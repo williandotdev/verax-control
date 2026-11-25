@@ -429,7 +429,7 @@ test.describe('casos (modo mock): os fluxos', () => {
     await bulk.getByRole('button', { name: 'Colocar 1 alerta em análise' }).click();
     await expect(bulk.getByRole('alert')).toContainText('agora são 61 alertas');
     await bulk.getByRole('button', { name: 'Colocar 61 alertas em análise' }).click();
-    await expect(page.getByText('61 alertas mudaram.')).toBeVisible();
+    await expect(page.getByText('61 alertas mudaram.', { exact: true })).toBeVisible();
   });
 
   test('a cota do analista: acima de 2.000 nem pede; quem administra digita a quantidade', async ({

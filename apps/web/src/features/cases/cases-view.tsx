@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/components/ui/button-variants';
-import type { ListPage } from '@/features/detections/detection-list';
+import { FILL_COLUMN, type ListPage } from '@/features/detections/detection-list';
 import {
   type CaseUrlState,
   type DetectionSelection,
@@ -48,7 +48,7 @@ export function CasesView({ view, ...given }: ViewProps & { view: 'cases' | 'vul
   const narrow = useMediaQuery(NARROW_LIST_QUERY);
   const props = { ...given, dense: given.dense || narrow, compact: given.compact || narrow };
   return (
-    <div className="space-y-3">
+    <div className={cn(FILL_COLUMN, 'space-y-3')}>
       <CasesNotice />
       {isGrouped(view, props.cases) ? <GroupedView {...props} /> : <ListView view={view} {...props} />}
       <p className="text-xs text-muted-foreground">
