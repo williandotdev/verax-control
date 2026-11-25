@@ -855,6 +855,20 @@ render() {
         "padrão do template." >&2
     fi
   fi
+  # Ataques web pelos logs do ALB (AWS_WEB_LOGS_ENABLED): a linha do node.conf é a escolha deste nó, o mesmo valor na API
+  # e no worker. Sem ela, nada entra nos arquivos, que saem como antes, e vale o padrão da versão instalada. Fora do
+  # formato (a linha vazia também), desliga, com o aviso: quem mexeu na linha queria mudar alguma coisa, e o lado seguro é
+  # não ler log nenhum. Na célula, a API e o worker não os ligam com valor nenhum.
+  local web_logs=()
+  case ${AWS_WEB_LOGS_ENABLED-sem linha} in
+    'sem linha') ;;
+    true | false) web_logs=("AWS_WEB_LOGS_ENABLED=$AWS_WEB_LOGS_ENABLED") ;;
+    *)
+      echo "AVISO: AWS_WEB_LOGS_ENABLED fora do formato em /etc/verax/node.conf (true ou false): o nó sobe com os" \
+        "ataques web pelos logs do ALB desligados." >&2
+      web_logs=(AWS_WEB_LOGS_ENABLED=false)
+      ;;
+  esac
   # Sincronização com o plano de controle: no modo cliente, nas duas plataformas, nunca na célula (que tem o canal
   # dela). A origem vem do node.conf só no formato (a origem https, sem caminho); fora dele ou sem a linha, o worker usa
   # a de produção. Sem a identidade, o nó sobe sem a sincronização, com o aviso: nos nós da GCP, o NODE_SA_UNIQUE_ID
@@ -944,6 +958,7 @@ render() {
     "${sink_topic[@]}" \
     "${egress[@]}" \
     "${aws_reader[@]}" \
+    "${web_logs[@]}" \
     "${turnstile[@]}" \
     "${agents_api[@]}" \
     "${vault_api[@]}" \
@@ -961,6 +976,7 @@ render() {
     "${indexer[@]}" \
     "${egress[@]}" \
     "${aws_reader[@]}" \
+    "${web_logs[@]}" \
     "${wazuh_worker[@]}" \
     "${agents_worker[@]}" \
     "${vault_worker[@]}" \

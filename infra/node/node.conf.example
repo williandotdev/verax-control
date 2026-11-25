@@ -60,6 +60,11 @@ NODE_EGRESS_IPS=
 # Wazuh entra no papel com ele. Sem a linha, vale o padrão do template; troque só num nó que precise de outro, porque a
 # pilha de todo cliente do nó precisa ter o mesmo valor.
 # AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader
+# Ataques web pelos logs de acesso do ALB (opcional; docs/runbooks/ataques-web.md). Sem a linha, vale o padrão da versão
+# instalada; com true ou false, a escolha deste nó, na API e no worker. Ligar não lê log nenhum: cada balanceador só é lido
+# depois de autorizado no painel, e começa só observando. Só ponha a linha com o nó já numa versão que a conhece. Outro
+# valor vale como false, com aviso na partida; na célula, não liga nada.
+# AWS_WEB_LOGS_ENABLED=true
 # Cloudflare Turnstile no login e no "esqueci minha senha" do painel (opcional). A chave do site (pública) fica aqui e
 # é o interruptor: sem a linha, nada muda. Com ela, o start.sh lê a chave secreta do cofre `<prefixo>-turnstile-secret-key`
 # (criado pelo Terraform com `turnstile_secret = true`); enquanto o cofre estiver vazio, o nó sobe sem o desafio e avisa.
