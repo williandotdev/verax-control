@@ -6800,3 +6800,43 @@ tactic-share.ts}` (novos, com testes), `features/reports/{labels.ts,report-views
   antes de ligar a fonte. No pior caso (todo país e toda classe em todo intervalo), o tráfego de 2 balanceadores ocupa cerca
   de 265 MB; um site comum fica bem abaixo. Sem a passagem de hora em hora (PR-4), os intervalos de 5 minutos ficam até 72 h
   (o expurgo é diário).
+
+## Mapa de origens: componente do painel, dados e catálogo (24/11/2026)
+
+- **O que faz:** um mapa-múndi com um ponto por país de onde vieram as requisições, pedido do responsável pelo produto. Só o
+  componente, os dados e os testes, no `/catalogo`: nada na tela Detecções, nenhuma rota, chamada ou contrato novo. Ele entra
+  na tela quando o coletor dos logs do ALB existir.
+- **Desenho:** a terra num caminho SVG de 17.399 bytes, sem fronteiras, do Natural Earth 5.1.2 (domínio público): Robinson
+  centrada em 11° L, recortada de 83,7° N a 57° S, 2,44 por 1. `scripts/update-world-map.mjs` gera o arquivo offline, confere a
+  entrada e dá sempre a mesma saída. Preferido o 1:110 milhões ao 1:50 milhões (dissolvido e simplificado, 28,9 KB): a
+  diferença na tela é pequena, e o arquivo, 40% menor.
+- **Pontos:** 246 dos 250 códigos. Sem ponto, só na lista e na tabela: `AQ` (fora do recorte), `BV`, `GI` e `UM` (não estão no
+  arquivo). Dez territórios saem do pedaço deles dentro de outro país; cinco rótulos no mar (GQ, GS, IO, NZ, ST) vão para a
+  maior ilha; cinco (AG, MO, TT, VA, VC) valem dentro da tolerância de 0,25°. `MF` e `SX` dividem a ilha e o lugar.
+- **Leitura:** raio pelo volume (log, três décadas, de 3 a 10 px num mapa de 1.280 px); comum em círculo na tinta neutra,
+  suspeito em octógono com anel na cor do crítico; onda só em quem teve requisição nos últimos minutos, no máximo 60. Ao lado,
+  as dez principais origens e uma linha do que não está no mapa (desconhecida, endereço interno, CDN e proxy); embaixo, a
+  tabela inteira. Cada requisição está num grupo só, e o percentual é sobre a soma de todos.
+- **Animação:** CSS de `transform` e `opacity`, 2,4 s, 12 fases (cada volta de animação acorda a página para o
+  `animationiteration`, que o React escuta; com 60 fases eram 8 a 10% da thread principal, com 12, 3 a 4%). Botão de pausa
+  lembrado por pessoa; com menos movimento pedido, começa parada, e ligar vale só daquela vez. Fonte parada ou atualização que
+  falhou: nada pulsa.
+- **Decisões tomadas aqui, a conferir:** "suspeita" é o nome de `flagged`; o percentual é sobre tudo, não só sobre o que tem
+  país; abaixo de 560 px a dica fica num lugar reservado embaixo do mapa; o mapa para de crescer em 1.168 px (480 px de
+  altura); `refreshFailed` no lugar de `tableDataStale`, e `lastLogAt` novo, para o "sem logs novos desde".
+- **Arquivos:** `apps/web/src/components/security/world-map*` (componente, modelo, preferência, esqueleto, carga sob demanda e
+  dados), `apps/web/src/pages/catalog/` (demonstração e seletor de estado), `apps/web/src/index.css` (três tokens, a onda),
+  `apps/web/e2e/world-map.catalog.spec.ts`, `scripts/update-world-map.mjs`, `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma. Sem mudança em API, contratos, `infra/`, `.github/` nem no módulo `auth`.
+- **Contraste (calculado das cores que o navegador usa):** escuro, terra sobre mar 1,32; crítico 3,97 no mar e 3,01 na terra;
+  tinta neutra 12,06 e 9,15; anel do foco 8,45 e 6,41. Claro, 1,33; crítico 6,13 e 4,62; neutra 6,41 e 4,83; foco 4,03 e 3,04.
+- **Testes:** 80 de unidade e componente em quatro arquivos (831 no painel inteiro, 61 arquivos); 17 de navegador (axe nos dois
+  temas em 360, 768 e 1.280 px, sem rolagem horizontal de 320 a 1.920, pausa, menos movimento, teclado, mouse e toque). 133
+  mutações de unidade: 121 mortas de primeira, 9 depois de testes novos; duas eram equivalentes (o código redundante saiu) e
+  uma estava mal escrita, refeita e morta. 14 no navegador, todas mortas (2 depois de apertar o teste). 19 entradas hostis no
+  gerador, todas recusadas sem escrever nada. `pnpm lint`, `typecheck`, `format:check` e o build com a varredura limpos.
+- **Pacote:** em produção nada muda (o catálogo não existe lá). Num build de teste, o mapa fica num arquivo à parte, de 42 KB (16
+  KB com gzip), e o caminho da terra só nele. Sob a CSP estrita (`style-src 'self'`), nenhum erro.
+- **Riscos e sugestões:** a lista de códigos do gerador é cópia da de `apps/api/src/geo/country-codes.ts` (outra branch): quando
+  as duas estiverem na `main`, um teste pode comparar. Não foi conferido em leitor de tela de verdade, nem no Firefox e no
+  Safari.

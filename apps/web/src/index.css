@@ -27,6 +27,12 @@
  * Texto em vermelho (erro de formulário, valor de risco): `--critical-text`, nunca a cor da severidade. No escuro, o
  * vermelho da severidade fica em ~3,1-3,6:1 sobre as superfícies; o do texto passa de 5,5:1 em todas (no claro, é o
  * mesmo da severidade, >= 6,1:1).
+ *
+ * Mapa de origens: `--map-ocean`, `--map-land` e `--map-coast` são só o fundo dele. A terra fica visível sobre o mar
+ * (>= 1,3:1) e escura (ou clara) o bastante para o crítico, a tinta neutra dos pontos e o anel do foco passarem de 3:1 sobre
+ * os dois, nos dois temas. No escuro, o crítico (#d32f2f, 3,01:1 na terra) limita o quanto a terra pode clarear, e a linha
+ * da costa ajuda no contorno; no claro, o limite é o anel do foco (3,04:1).
+ * As contas estão no teste (`e2e/world-map.catalog.spec.ts`).
  */
 
 @custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *, .brand-surface, .brand-surface *));
@@ -48,6 +54,10 @@
   --primary-foreground: #ffffff;
   --ring: #426dff;
   --brand: #09152c;
+
+  --map-ocean: #f5f7fb;
+  --map-land: #d0d9e7;
+  --map-coast: #aab8ce;
 
   --severity-critical: #b42318;
   --critical-text: #b42318;
@@ -74,6 +84,10 @@
   --primary-hover: #a9c2ff;
   --primary-foreground: #09152c;
   --ring: #86a7ff;
+
+  --map-ocean: #040a1a;
+  --map-land: #1a273d;
+  --map-coast: #33466b;
 
   --severity-critical: #d32f2f;
   --critical-text: #f87171;
@@ -107,6 +121,9 @@
   --color-primary-foreground: var(--primary-foreground);
   --color-ring: var(--ring);
   --color-brand: var(--brand);
+  --color-map-ocean: var(--map-ocean);
+  --color-map-land: var(--map-land);
+  --color-map-coast: var(--map-coast);
 
   --color-critical: var(--severity-critical);
   --color-critical-text: var(--critical-text);
@@ -154,6 +171,12 @@
       animation-duration: 0.01ms !important;
       transition-duration: 0.01ms !important;
     }
+
+    /* O mapa de origens começa parado para quem pediu menos movimento, e a onda nem é desenhada. Ela só existe aqui se a
+       pessoa ligar a animação no botão do mapa; aí vale o período de sempre (encurtada, viraria um pisca-pisca). */
+    .world-map-pulse {
+      animation-duration: 2.4s !important;
+    }
   }
 }
 
@@ -196,6 +219,33 @@
     transform-box: fill-box;
     transform-origin: center;
     animation: radar-pulse 1.8s ease-out 1 both;
+  }
+}
+
+/*
+ * Onda do mapa de origens (`components/security/world-map.tsx`): um anel que cresce e some, só com `transform` e `opacity`
+ * (a placa de vídeo anima; nada é redesenhado). O período é o `PULSE_PERIOD_MS` do componente, e cada país entra num ponto
+ * próprio dele: menos de meia piscada por segundo em cada um.
+ */
+@layer components {
+  .world-map-pulse {
+    opacity: 0;
+    animation: world-map-pulse 2.4s ease-out infinite;
+  }
+}
+
+@keyframes world-map-pulse {
+  0% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  12% {
+    opacity: 0.9;
+  }
+  75%,
+  100% {
+    opacity: 0;
+    transform: scale(1);
   }
 }
 
