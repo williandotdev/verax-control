@@ -173,8 +173,10 @@ describe('diferença de versão: o que não mudou', () => {
     expect(keysOf(radarDetectionSchema)).toEqual(
       ['id', 'incident', 'occurredAt', 'severity', 'source', 'status', 'title'].sort(),
     );
+    // `cases` só vem para quem o pede (`towerQuerySchema`): o painel de antes não pede.
     expect(keysOf(towerSummarySchema)).toEqual(
       [
+        'cases',
         'coverage',
         'generatedAt',
         'light',

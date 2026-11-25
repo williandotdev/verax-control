@@ -1,4 +1,6 @@
 import {
+  CASE_QUEUES,
+  type CaseQueueName,
   type CloudAccountConnection,
   type CloudProvider,
   COLLECTION_SOURCES,
@@ -7,9 +9,11 @@ import {
   type FindingSeverity,
   type PendingDecisionKind,
   PULSE_HOURS,
+  type TowerCases,
   type TrafficLight,
   type TrafficLightReason,
 } from '@verax/shared';
+import type { PendingCases } from '../cases/case-summary-store.js';
 
 // Os tipos do resumo vêm do contrato compartilhado com o painel (`packages/shared/src/tower.ts`).
 export type { PendingDecisionKind, TrafficLight, TrafficLightReason };
@@ -29,6 +33,10 @@ export type { PendingDecisionKind, TrafficLight, TrafficLightReason };
  * motivos vão junto, para a tela dizer por que a cor é aquela. Os alertas para validar não viram um motivo novo: a
  * contagem já vai em `pendingDecisions` (`untriaged_finding`), e um valor novo na lista fechada de motivos derrubaria o
  * painel de uma versão anterior, que recusa o resumo inteiro. O amarelo pode, então, vir sem motivo nenhum.
+ *
+ * **Com os casos ligados, a regra não muda**, nem a conta dela: o semáforo continua olhando os alertas, todos, em caso ou
+ * não, dentro ou fora de incidente. O que muda é como as decisões os contam (`pendingDecisions`): um caso com um alerta
+ * crítico em "novo" e mil baixos é uma decisão, e não mil. A cor é a mesma em qualquer modo (o teste compara).
  */
 
 /** Prazos da saúde de uma fonte: sem dado novo há mais que o primeiro, atrasada; há mais que o segundo, parada. */
@@ -98,7 +106,10 @@ export function trafficLight(
     postureScore: number | null;
     /** As fontes com a coleta parada (`stalledSources`); sem informar, nenhuma. */
     stalledSources?: readonly CollectionSource[];
-    /** Alertas altos ou críticos ainda em "novo" (a decisão `untriaged_finding`); sem informar, nenhum. */
+    /**
+     * Alertas altos ou críticos ainda em "novo" (a decisão `untriaged_finding`; com os casos, as três que a dividem); sem
+     * informar, nenhum.
+     */
     untriagedFindings?: number;
   },
   thresholds: TowerThresholds = DEFAULT_TOWER_THRESHOLDS,
@@ -364,17 +375,78 @@ export interface PendingDecision {
   count: number;
 }
 
+/** O que falta validar, contado pelos casos (`caseValidation`). */
+export interface CaseValidation {
+  /** Casos de detecção e de postura com algum alerta alto ou crítico em "novo", fora de incidente. */
+  cases: number;
+  /** Os da fila de vulnerabilidades. */
+  vulnerabilityCases: number;
+  /** Os alertas altos ou críticos em "novo" que nenhum desses casos cobre: ainda sem caso, ou dentro de um incidente. */
+  uncovered: number;
+}
+
+/**
+ * O que falta validar, pelos casos. Cada alerta que o semáforo olha está num lugar só: num caso contado ou em `uncovered`.
+ * Assim, o amarelo sem motivo sempre tem uma decisão que o explica; se a contagem de um caso estiver errada (a conferência
+ * semanal a corrige) e nada o explicasse, valem os alertas.
+ */
+export function caseValidation({ queues, untriagedFindings, uncovered }: PendingCases): CaseValidation {
+  let cases = 0;
+  let vulnerabilityCases = 0;
+  for (const row of queues) {
+    if (row.queue === 'vulnerability') vulnerabilityCases += row.untriaged;
+    else cases += row.untriaged;
+  }
+  const explained = cases + vulnerabilityCases + uncovered > 0;
+  return { cases, vulnerabilityCases, uncovered: explained ? uncovered : untriagedFindings };
+}
+
+/** Os casos pendentes por fila e pior severidade, e a abertura do mais antigo de cada fila. */
+export function towerCases({ queues }: PendingCases): TowerCases {
+  const rowOf = (queue: CaseQueueName) => queues.find((row) => row.queue === queue);
+  const counts = (queue: CaseQueueName) => {
+    const row = rowOf(queue);
+    return {
+      critical: row?.critical ?? 0,
+      high: row?.high ?? 0,
+      medium: row?.medium ?? 0,
+      low: row?.low ?? 0,
+    };
+  };
+  const oldestAt = (queue: CaseQueueName) => {
+    const row = rowOf(queue);
+    return row === undefined ? null : new Date(row.oldestAt).toISOString();
+  };
+  const each = <T>(of: (queue: CaseQueueName) => T) =>
+    Object.fromEntries(CASE_QUEUES.map((queue) => [queue, of(queue)])) as Record<CaseQueueName, T>;
+  return { ...each(counts), oldestPendingAt: each(oldestAt) };
+}
+
 /**
  * Decisões pendentes (premissa aprovada): incidente aberto sem responsável, alerta alto ou crítico em "novo" para
- * validar (dentro ou fora de incidente, desde 17/11/2026) e, só para `admin_verax`, alertas sem dono. Só entram as que existem, nessa ordem de prioridade.
+ * validar (dentro ou fora de incidente, desde 17/11/2026) e, só para `admin_verax`, alertas sem dono. Só entram as que
+ * existem, nessa ordem de prioridade. Com os casos ligados e pedidos (`validation`), os alertas a validar são contados
+ * pelos casos deles.
  */
 export function pendingDecisions(
-  counts: { unassignedIncidents: number; untriagedFindings: number; unownedAlerts: number },
+  counts: {
+    unassignedIncidents: number;
+    untriagedFindings: number;
+    unownedAlerts: number;
+    validation?: CaseValidation;
+  },
   options: { includeUnowned: boolean },
 ): PendingDecision[] {
+  const { validation } = counts;
   const decisions: PendingDecision[] = [
     { kind: 'unassigned_incident', count: counts.unassignedIncidents },
-    { kind: 'untriaged_finding', count: counts.untriagedFindings },
+    ...(validation === undefined
+      ? [{ kind: 'untriaged_finding' as const, count: counts.untriagedFindings }]
+      : [
+          { kind: 'untriaged_case' as const, count: validation.cases },
+          { kind: 'untriaged_vulnerability_case' as const, count: validation.vulnerabilityCases },
+          { kind: 'untriaged_finding' as const, count: validation.uncovered },
+        ]),
   ];
   if (options.includeUnowned) decisions.push({ kind: 'unowned_alert', count: counts.unownedAlerts });
   return decisions.filter((decision) => decision.count > 0);

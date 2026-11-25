@@ -143,6 +143,8 @@ function BulkForm({
   const mustType = needsTypedConfirmation(count);
   const typedWrong = mustType && !typedMatches(typed, count);
   const incidentMissing = action === 'attach' && chosenIncident === '';
+  const protectedTitles = scope.protectedTitles ?? [];
+  const protectedCount = scope.protectedTitles?.length ?? scope.protectedCases ?? 0;
   // O problema que veio da API fica até a pessoa mudar alguma coisa do pedido (ou tentar de novo).
   const ready =
     action !== null &&
@@ -322,29 +324,33 @@ function BulkForm({
         </label>
       )}
 
-      {scope.protectedTitles !== null && scope.protectedTitles.length > 0 && (
+      {protectedCount > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-medium/70 bg-medium/15 p-3 text-sm">
           <ShieldAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
           <div className="min-w-0">
             <p className="font-medium">
-              {plural(
-                scope.protectedTitles.length,
-                'caso toca a lista de proteção',
-                'casos tocam a lista de proteção',
-              )}
+              {plural(protectedCount, 'caso toca a lista de proteção', 'casos tocam a lista de proteção')}
             </p>
-            <ul className="text-xs text-muted-foreground">
-              {scope.protectedTitles.slice(0, 5).map((title, index) => (
-                <li key={`${index}:${title}`} className="wrap-anywhere">
-                  {title}
-                </li>
-              ))}
-              {scope.protectedTitles.length > 5 && <li>e mais {scope.protectedTitles.length - 5}</li>}
-            </ul>
+            {scope.protectedTitles === null && (
+              <p className="text-xs text-muted-foreground">
+                Na lista, {protectedCount === 1 ? 'ele aparece' : 'eles aparecem'} com a marca &quot;Item
+                protegido&quot;.
+              </p>
+            )}
+            {protectedTitles.length > 0 && (
+              <ul className="text-xs text-muted-foreground">
+                {protectedTitles.slice(0, 5).map((title, index) => (
+                  <li key={`${index}:${title}`} className="wrap-anywhere">
+                    {title}
+                  </li>
+                ))}
+                {protectedTitles.length > 5 && <li>e mais {protectedTitles.length - 5}</li>}
+              </ul>
+            )}
           </div>
         </div>
       )}
-      {scope.protectedTitles === null && scope.cases !== null && (
+      {scope.protectedTitles === null && scope.cases !== null && scope.protectedCases == null && (
         <p className="text-xs text-muted-foreground">
           O filtro pode incluir casos que tocam a lista de proteção: eles aparecem na lista com a marca
           &quot;Item protegido&quot;.

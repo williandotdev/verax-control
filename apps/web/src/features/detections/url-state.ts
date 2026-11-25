@@ -296,6 +296,20 @@ export function viewParam(view: DetectionView, mode: CaseMode): string | null {
   }
 }
 
+/** O endereço da lista de casos sem os filtros de agora, para os atalhos da situação. */
+export function casesSearch(
+  mode: CaseMode,
+  options: { state?: CaseState; queue?: CasesQueue; period?: FindingPeriod } = {},
+): string {
+  const text = withChanges(new URLSearchParams(), {
+    view: viewParam('cases', mode),
+    caseState: CASE_STATE_SLUGS[options.state ?? 'pending'],
+    queue: CASE_QUEUE_SLUGS[options.queue ?? 'detection'],
+    period: options.period ?? null,
+  }).toString();
+  return text ? `?${text}` : '';
+}
+
 /** Os filtros que a pessoa escolheu nos casos: o "Limpar filtros" tira estes (a fila e o agrupamento ficam). */
 export const CASE_FILTER_KEYS = [
   'period',

@@ -108,6 +108,12 @@ export const caseStatusSchema = z.strictObject({
 });
 export type CaseStatus = z.infer<typeof caseStatusSchema>;
 
+/**
+ * `cases=true` na Torre e nos relatórios: quem pede quer também os campos dos casos. O formato das respostas é estrito, e um
+ * painel que não os conhece recusaria a resposta inteira: sem o pedido, elas são as de sempre.
+ */
+export const casesRequestShape = { cases: z.literal('true').optional() };
+
 // ---------------------------------------------------------------------------------------------------
 // Lista
 // ---------------------------------------------------------------------------------------------------
@@ -204,6 +210,11 @@ export const caseSummarySchema = z.strictObject({
   sealReason: z.enum(CASE_SEAL_REASONS).nullable(),
   /** Quantas vezes a chave já voltou (o caso anterior está no detalhe). */
   recurrence: count,
+  /**
+   * Delas, quantas foram depois de o caso anterior ter sido tratado por inteiro (as outras são da janela de tempo da fila de
+   * detecção, por exemplo). Conta os anteriores ainda guardados. Opcional: um nó de antes não manda.
+   */
+  recurrenceTreated: count.optional(),
   openedAt: z.iso.datetime(),
   /** O primeiro e o último alerta, pelo horário do evento, e a chegada do último, pelo relógio do servidor. */
   firstSeenAt: z.iso.datetime(),
@@ -283,6 +294,18 @@ export const triageOperationSchema = z.strictObject({
   undoOfId: z.uuid().nullable(),
 });
 export type TriageOperationView = z.infer<typeof triageOperationSchema>;
+
+/** O que quem está vendo pode fazer com uma operação agora. Quem decide é a API, em cada rota. */
+export const triageCanSchema = z.strictObject({
+  cancel: z.boolean(),
+  continue: z.boolean(),
+  undo: z.boolean(),
+});
+export type TriageCan = z.infer<typeof triageCanSchema>;
+
+/** Uma operação no detalhe do caso. `can` é o mesmo de `GET /v1/triage-operations`; opcional: um nó de antes não manda. */
+export const caseOperationSchema = triageOperationSchema.extend({ can: triageCanSchema.optional() });
+export type CaseOperation = z.infer<typeof caseOperationSchema>;
 
 /** `GET /v1/findings/:id/triage`: as operações que mexeram num alerta. */
 export const MAX_FINDING_OPERATIONS = 20;
@@ -371,8 +394,10 @@ export const caseDetailSchema = caseSummarySchema.extend({
     )
     .max(MAX_CASE_INCIDENTS + 1),
   /** As operações em vigor nos alertas lidos (a última de cada um) e as que elas desfizeram, da mais recente para trás. */
-  operations: z.array(triageOperationSchema).max(MAX_CASE_OPERATIONS),
-  /** O que quem está vendo pode fazer com o caso. Quem decide é a API, em cada operação. */
+  operations: z.array(caseOperationSchema).max(MAX_CASE_OPERATIONS),
+  /**
+   * O que quem está vendo pode fazer com o caso (com os casos só na medição, nada). Quem decide é a API, em cada operação.
+   */
   can: z.strictObject({ triage: z.boolean(), promote: z.boolean() }),
 });
 export type CaseDetail = z.infer<typeof caseDetailSchema>;

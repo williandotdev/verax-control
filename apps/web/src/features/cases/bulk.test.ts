@@ -153,6 +153,22 @@ describe('as contas do alvo', () => {
       severityFiltered: true,
     });
     expect(scopeOfFilter({ state: 'pending', q: 'ana' }, 'x', preview).severityFiltered).toBe(false);
+    // Um nó de antes não diz os novos por severidade nem os protegidos.
+    expect(scopeOfFilter({ state: 'pending', q: 'ana' }, 'x', preview)).toMatchObject({
+      fresh: null,
+      protectedCases: null,
+      protectedTitles: null,
+    });
+    const told = {
+      ...preview,
+      protectedCases: 2,
+      byStatus: { new: pending(1, 6, 0, 0), investigating: pending(0, 2, 0, 0) },
+    };
+    expect(scopeOfFilter({ state: 'pending', q: 'ana' }, 'x', told)).toMatchObject({
+      fresh: pending(1, 6, 0, 0),
+      protectedCases: 2,
+      protectedTitles: null,
+    });
   });
 });
 
@@ -173,6 +189,18 @@ describe('quantos alertas a pessoa confirma', () => {
     expect(expectedCount(scope({ investigating: 0 }), false, 'investigating')).toEqual({
       count: 4,
       exact: true,
+    });
+  });
+
+  it('com os novos por severidade (a prévia de um filtro), a conta de "em análise" é exata', () => {
+    const told = scope({ pending: pending(2, 3, 1, 0), investigating: 3, fresh: pending(1, 1, 1, 0) });
+    expect(expectedCount(told, false, 'investigating')).toEqual({ count: 2, exact: true });
+    expect(expectedCount(told, true, 'investigating')).toEqual({ count: 3, exact: true });
+    // As outras ações tiram da fila também quem já está em análise.
+    expect(expectedCount(told, false, 'resolved')).toEqual({ count: 4, exact: true });
+    expect(expectedCount({ ...told, fresh: null }, false, 'investigating')).toEqual({
+      count: 4,
+      exact: false,
     });
   });
 

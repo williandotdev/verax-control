@@ -108,7 +108,11 @@ const collisions = (page: Page) =>
 
 test.describe('gráfico do MITRE ATT&CK (modo mock)', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'analista_cliente'));
+    // Com os casos desligados, o gráfico conta alertas; com eles, está em `casos-torre.mock.spec.ts`.
+    await page.addInitScript(() => {
+      window.localStorage.setItem('verax.mock.role', 'analista_cliente');
+      window.localStorage.setItem('verax.mock.cases', 'off');
+    });
     await skipDemoTour(page);
   });
 

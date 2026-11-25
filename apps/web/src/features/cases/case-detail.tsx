@@ -1,4 +1,11 @@
-import { type CaseAnalysis, type CaseDetail, type CaseTimeline, isMassTriageRole } from '@verax/shared';
+import {
+  type CaseAnalysis,
+  type CaseDetail,
+  type CaseOperation,
+  type CaseTimeline,
+  isMassTriageRole,
+  type TriageCan,
+} from '@verax/shared';
 import { type ReactNode, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { MiniBars } from '@/components/charts/mini-bars';
@@ -23,6 +30,7 @@ import { CaseBadges, SeverityCounts } from './case-badges';
 import { useCaseTimeline } from './cases-api';
 import { useCasesContext } from './cases-context';
 import { alertCount, groupingText, keyPartRows, QUEUE_LABELS, sealLabel } from './labels';
+import { OperationActions } from './operation-outcome';
 import { OPERATION_STATE_LABELS, operationTitle } from './operation-text';
 import { SplitDialog, type SplitTarget } from './split-dialog';
 
@@ -456,27 +464,39 @@ function Incidents({ detail }: { detail: CaseDetail }) {
   );
 }
 
-function Operations({ detail }: { detail: CaseDetail }) {
-  const { openUndo, canTriage, canPromote, role, userId } = useCasesContext();
+/**
+ * O que a pessoa pode fazer com uma operação do caso: o que a API diz. De um nó de antes, que não diz, só o desfazer, pela
+ * mesma regra (quem decide é a rota).
+ */
+function useOperationCan(): (operation: CaseOperation) => TriageCan {
+  const { canTriage, canPromote, role, userId } = useCasesContext();
   // O render não lê o relógio: o prazo é conferido pela API, e o botão só some quando o caso é relido.
   const [openedAt] = useState(() => Date.now());
+  return (operation) => {
+    if (operation.can) return operation.can;
+    const incident = operation.action === 'promote' || operation.action === 'attach';
+    const manages =
+      canTriage &&
+      (canPromote || !incident) &&
+      ((role !== null && isMassTriageRole(role)) || operation.author?.id === userId);
+    const undo =
+      manages &&
+      (operation.action === 'status' || incident) &&
+      (operation.state === 'done' || operation.state === 'partial' || operation.state === 'canceled') &&
+      operation.changed > 0 &&
+      operation.undoUntil !== null &&
+      Date.parse(operation.undoUntil) > openedAt;
+    return { cancel: false, continue: false, undo };
+  };
+}
+
+function Operations({ detail }: { detail: CaseDetail }) {
+  const canOf = useOperationCan();
   if (detail.operations.length === 0) return null;
   return (
     <Section title="Operações em massa" hint="As que valem nos alertas deste caso, e as que elas desfizeram.">
       <ul className="divide-y rounded-md border text-sm">
         {detail.operations.map((operation) => {
-          const incident = operation.action === 'promote' || operation.action === 'attach';
-          const manages =
-            canTriage &&
-            (canPromote || !incident) &&
-            ((role !== null && isMassTriageRole(role)) || operation.author?.id === userId);
-          const undoable =
-            manages &&
-            (operation.action === 'status' || incident) &&
-            (operation.state === 'done' || operation.state === 'partial' || operation.state === 'canceled') &&
-            operation.changed > 0 &&
-            operation.undoUntil !== null &&
-            Date.parse(operation.undoUntil) > openedAt;
           return (
             <li key={operation.id} className="space-y-1 px-3 py-2">
               <p>
@@ -489,21 +509,7 @@ function Operations({ detail }: { detail: CaseDetail }) {
               {operation.reason !== null && (
                 <p className="wrap-anywhere whitespace-pre-wrap">{operation.reason}</p>
               )}
-              {undoable && (
-                <p className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="max-md:h-11"
-                    onClick={() => openUndo(operation)}
-                  >
-                    Desfazer<span className="sr-only">: {operationTitle(operation)}</span>
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    até {formatTimestamp(operation.undoUntil ?? '')}
-                  </span>
-                </p>
-              )}
+              <OperationActions operation={{ ...operation, can: canOf(operation) }} />
             </li>
           );
         })}

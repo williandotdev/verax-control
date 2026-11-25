@@ -40,7 +40,7 @@ export function CaseBadges({
   row,
   treatedBefore,
 }: {
-  row: Pick<CaseSummary, 'protected' | 'counts' | 'queue' | 'recurrence'>;
+  row: Pick<CaseSummary, 'protected' | 'counts' | 'queue' | 'recurrence' | 'recurrenceTreated'>;
   /** No detalhe: quantos dos casos anteriores foram tratados. */
   treatedBefore?: number;
 }) {

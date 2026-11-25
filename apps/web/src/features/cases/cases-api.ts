@@ -22,9 +22,10 @@ import {
   findingTriageSchema,
   INVALID_CASE_CURSOR_CODE,
 } from '@verax/shared';
+import type { z } from 'zod';
 import { toSearch } from '@/features/detections/detections-api';
 import { api } from '@/lib/api';
-import { ApiRequestError } from '@/lib/api-client';
+import { ApiRequestError, UnexpectedResponseError } from '@/lib/api-client';
 
 const id = (value: string) => encodeURIComponent(value);
 
@@ -55,6 +56,22 @@ export function useCaseMode(scope: string | null, enabled = true): CaseModeState
   const gone = status.error instanceof ApiRequestError && status.error.status === 404;
   const data = gone ? undefined : status.data;
   return { mode: data?.mode ?? 'off', loading: status.isPending, status: data ?? null };
+}
+
+/**
+ * A Torre e os relatórios, com os campos dos casos (`cases`) ou sem eles. As respostas são fechadas, então os campos só vêm
+ * para quem os pede. Um nó que tem casos e ainda não conhece o pedido responde 400; um mais novo pode mandar algo que este
+ * painel não conhece: nos dois, vale a resposta de sempre.
+ */
+export async function getWithCases<T>(path: string, schema: z.ZodType<T>, cases: boolean): Promise<T> {
+  if (!cases) return api.get(path, schema);
+  try {
+    return await api.get(`${path}${path.includes('?') ? '&' : '?'}cases=true`, schema);
+  } catch (error) {
+    const refused = error instanceof ApiRequestError && error.status === 400;
+    if (refused || error instanceof UnexpectedResponseError) return api.get(path, schema);
+    throw error;
+  }
 }
 
 /** A lista que passou a responder 404: os casos foram desligados no nó com a tela aberta. Pergunta a situação de novo. */

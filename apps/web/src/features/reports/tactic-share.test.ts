@@ -1,6 +1,6 @@
 import { MITRE_TACTICS, type MitreTactic } from '@verax/shared';
 import { describe, expect, it } from 'vitest';
-import { formatPart, rankedTactics, spokenPart, tacticShares } from './tactic-share';
+import { formatPart, rankedTactics, shareBasis, spokenPart, tacticShares } from './tactic-share';
 
 /** As 14 táticas, com os alertas na ordem da cadeia (o que faltar fica zerado). */
 const tactics = (...findings: number[]): MitreTactic[] =>
@@ -87,5 +87,43 @@ describe('percentual escrito', () => {
       expect(text).not.toBe('0%');
       expect(text).not.toBe('100%');
     }
+  });
+});
+
+describe('participação por casos', () => {
+  /** [alertas, casos] de cada tática, na ordem da cadeia. */
+  const cased = (...values: [number, number][]): MitreTactic[] =>
+    tactics(...values.map(([findings]) => findings)).map((tactic, index) => ({
+      ...tactic,
+      cases: values[index]?.[1] ?? 0,
+    }));
+
+  it('com os casos, conta casos: 20 mil alertas de um caso só pesam um', () => {
+    const list = cased([20_000, 1], [30, 3]);
+    expect(shareBasis(list)).toBe('cases');
+    const shares = tacticShares(list);
+    expect(shares.slice(0, 2).map((item) => item.share)).toEqual([0.25, 0.75]);
+    expect(rankedTactics(shares).map((item) => item.tactic.id)).toEqual(['TA0042', 'TA0043']);
+  });
+
+  it('sem os casos (um nó de antes, ou desligados), conta alertas', () => {
+    expect(shareBasis(tactics(5, 1))).toBe('findings');
+    expect(tacticShares(tactics(5, 1))[0]?.share).toBeCloseTo(5 / 6);
+  });
+
+  it('se nenhum alerta do período tem caso, conta alertas: a teia não some', () => {
+    const list = cased([5, 0], [5, 0]);
+    expect(shareBasis(list)).toBe('findings');
+    expect(tacticShares(list)[0]?.share).toBe(0.5);
+    expect(shareBasis([])).toBe('findings');
+  });
+
+  it('a tática só com alertas sem caso continua na lista, por último, com 0%', () => {
+    const shares = tacticShares(cased([900, 0], [1, 2], [7, 2], [40, 0]));
+    const ranked = rankedTactics(shares);
+    // Empatadas nos casos, a de mais alertas primeiro.
+    expect(ranked.map((item) => item.tactic.findings)).toEqual([7, 1, 900, 40]);
+    expect(ranked.at(-1)?.share).toBe(0);
+    expect(formatPart(ranked.at(-1)?.share ?? 1)).toBe('0%');
   });
 });

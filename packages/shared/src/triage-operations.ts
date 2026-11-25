@@ -4,11 +4,13 @@ import {
   caseFilterShape,
   checkCaseFilter,
   exactText,
+  triageCanSchema,
   triageOperationSchema,
 } from './cases.js';
 import { FINDING_STATUSES } from './findings.js';
 import { paginatedSchema, withPagination } from './pagination.js';
 import type { Role } from './permissions.js';
+import { authorSchema } from './protected-resources.js';
 
 /**
  * Triagem em massa: uma pessoa trata muitos alertas de uma vez (muda o status, promove a incidente ou anexa a um), com
@@ -178,6 +180,8 @@ export type TriageOperationCreate = z.infer<typeof triageOperationCreateSchema>;
 export const triageUndoSchema = z.strictObject({ requestId: z.uuid(), reason: reasonText.optional() });
 export type TriageUndo = z.infer<typeof triageUndoSchema>;
 
+const severityCounts = z.strictObject({ critical: count, high: count, medium: count, low: count });
+
 /**
  * `GET /v1/triage-operations/preview`, com o filtro da lista: quantos casos e alertas pendentes ele alcança agora, para
  * a pessoa confirmar. `alerts` inclui os críticos, que só entram com `includeCritical`.
@@ -187,7 +191,14 @@ export const triagePreviewSchema = z.strictObject({
   alerts: count,
   new: count,
   investigating: count,
-  pending: z.strictObject({ critical: count, high: count, medium: count, low: count }),
+  pending: severityCounts,
+  /** Dos casos, os que tocam a lista de proteção (a marca da lista). Opcional: um nó de antes não manda. */
+  protectedCases: count.optional(),
+  /**
+   * Os pendentes por status e severidade: cada um soma `new` e `investigating`, e os dois, `pending`. Opcional: um nó de
+   * antes não manda, e a conta que passa do prazo do banco também fica de fora.
+   */
+  byStatus: z.strictObject({ new: severityCounts, investigating: severityCounts }).optional(),
 });
 export type TriagePreview = z.infer<typeof triagePreviewSchema>;
 
@@ -250,8 +261,7 @@ export const triageOperationDetailSchema = triageOperationSchema.extend({
   /** A operação que desfaz (ou desfez) esta, a mais recente. */
   undoId: z.uuid().nullable(),
   warnings: z.array(z.enum(TRIAGE_WARNINGS)).max(TRIAGE_WARNINGS.length),
-  /** O que quem está vendo pode fazer agora. Quem decide é a API, em cada rota. */
-  can: z.strictObject({ cancel: z.boolean(), continue: z.boolean(), undo: z.boolean() }),
+  can: triageCanSchema,
 });
 export type TriageOperationDetail = z.infer<typeof triageOperationDetailSchema>;
 
@@ -264,6 +274,21 @@ export const triageOperationListQuerySchema = withPagination({
   authorId: z.string().min(1).max(64).optional(),
 });
 export type TriageOperationListQuery = z.infer<typeof triageOperationListQuerySchema>;
+
+/** Os autores das operações: de quantos dias para cá e quantos, no máximo. */
+export const TRIAGE_AUTHORS_DAYS = 30;
+export const MAX_TRIAGE_AUTHORS = 100;
+
+/**
+ * `GET /v1/triage-operations/authors`: quem pediu operações neste cliente nos últimos 30 dias, do pedido mais recente para
+ * trás, para o filtro do histórico. Um nó de antes recusa (o caminho é lido como um id).
+ */
+export const triageAuthorsSchema = z.strictObject({
+  items: z.array(authorSchema).max(MAX_TRIAGE_AUTHORS),
+  /** Há mais pessoas que o teto. */
+  truncated: z.boolean(),
+});
+export type TriageAuthors = z.infer<typeof triageAuthorsSchema>;
 
 // ---------------------------------------------------------------------------------------------------
 // Dividir um caso

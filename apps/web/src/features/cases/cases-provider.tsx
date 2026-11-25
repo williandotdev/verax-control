@@ -31,7 +31,7 @@ export function CasesProvider({
   // Cada diálogo aberto começa do zero, mesmo sobre o mesmo alvo.
   const [opened, setOpened] = useState(0);
 
-  const { mode, status } = cases;
+  const { mode, loading, status } = cases;
   const role = me?.role ?? null;
   const userId = me?.userId ?? null;
   const canTriage = mode === 'on' && me?.permissions.includes('findings:triage') === true;
@@ -43,6 +43,7 @@ export function CasesProvider({
     };
     return {
       mode,
+      loading,
       status,
       canTriage,
       canPromote,
@@ -56,7 +57,7 @@ export function CasesProvider({
         memory.current.set(caseId, { ...(memory.current.get(caseId) ?? NO_MEMORY), ...change });
       },
     };
-  }, [mode, status, canTriage, canPromote, role, userId]);
+  }, [mode, loading, status, canTriage, canPromote, role, userId]);
 
   const close = () => setDialog(null);
   return (

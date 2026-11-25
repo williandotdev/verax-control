@@ -19,7 +19,7 @@ import {
   resultText,
   targetText,
 } from './operation-text';
-import { OPERATIONS_PAGE, useRefreshWhenFinished, useTriageOperations } from './triage-api';
+import { OPERATIONS_PAGE, useRefreshWhenFinished, useTriageAuthors, useTriageOperations } from './triage-api';
 
 const ALL_AUTHORS = '';
 
@@ -46,10 +46,11 @@ export function OperationsPanel() {
   const operations = latest.data?.items ?? [];
   useRefreshWhenFinished(operations);
 
-  // As pessoas das operações mais recentes, e quem está vendo.
-  const authors = new Map<string, Author>();
+  // As pessoas dos últimos 30 dias, as das operações à vista e quem está vendo.
+  const known = useTriageAuthors(expanded && operations.length > 0);
+  const authors = new Map<string, Author>((known.data?.items ?? []).map((author) => [author.id, author]));
   for (const { author } of [...operations, ...(listed.data?.items ?? [])]) {
-    if (author) authors.set(author.id, author);
+    if (author && !authors.has(author.id)) authors.set(author.id, author);
   }
   const chosen = authors.get(authorId);
 

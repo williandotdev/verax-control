@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { FINDING_SEVERITIES, FINDING_SOURCES, FINDING_STATUSES } from './findings.js';
 import { mitreTactics } from './reports.js';
 import {
+  PENDING_DECISION_KINDS,
+  RADAR_CASES_LIMIT,
   RADAR_DETECTIONS_LIMIT,
   RADAR_SECTORS,
   RADAR_WINDOW_HOURS,
   radarSectorOf,
   type TowerSummary,
+  towerCasesSchema,
+  towerQuerySchema,
+  towerRadarCasesSchema,
   towerRadarSchema,
   towerSummarySchema,
 } from './tower.js';
@@ -291,5 +296,133 @@ describe('radar de detecções', () => {
   it('cada fonte de log cai num setor do radar, e todo setor tem fonte', () => {
     const sectors = new Set(FINDING_SOURCES.map(radarSectorOf));
     expect([...sectors].sort()).toEqual([...RADAR_SECTORS].sort());
+  });
+});
+
+describe('casos no resumo da Torre', () => {
+  const counts = { critical: 1, high: 2, medium: 0, low: 0 };
+  const cases = {
+    detection: counts,
+    vulnerability: counts,
+    posture: { critical: 0, high: 0, medium: 0, low: 0 },
+    oldestPendingAt: {
+      detection: '2026-11-01T13:00:00.000Z',
+      vulnerability: '2026-10-01T13:00:00.000Z',
+      posture: null,
+    },
+  };
+  const item = {
+    id: '018f2c1e-0000-7000-8000-00000000ca5e',
+    title: 'Atividade suspeita na conta da AWS',
+    severity: 'critical',
+    sources: ['cloudtrail'],
+    sector: 'aws',
+    total: 20_000,
+    pending: 12,
+    recent: 4,
+    lastActivityAt: '2026-11-02T12:40:00.000Z',
+    incident: null,
+  } as const;
+  const radarCases = { total: 1, alerts: 4, limit: RADAR_CASES_LIMIT, items: [item] };
+  const radar = {
+    since: '2026-11-01T13:00:00.000Z',
+    windowHours: RADAR_WINDOW_HOURS,
+    limit: RADAR_DETECTIONS_LIMIT,
+    total: 0,
+    bySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+    bySector: { aws: 0, gcp: 0, cloudflare: 0, agents: 0 },
+    detections: [],
+  };
+  const withCases = {
+    ...summary,
+    pendingDecisions: [
+      { kind: 'untriaged_case', count: 3 },
+      { kind: 'untriaged_vulnerability_case', count: 2 },
+      { kind: 'untriaged_finding', count: 1 },
+    ],
+    radar: { ...radar, cases: radarCases },
+    cases,
+    mitre: { ...summary.mitre, tactics: summary.mitre.tactics.map((tactic) => ({ ...tactic, cases: 2 })) },
+  };
+
+  it('o pedido: `cases=true`, e nada mais', () => {
+    expect(towerQuerySchema.parse({})).toEqual({});
+    expect(towerQuerySchema.parse({ cases: 'true' })).toEqual({ cases: 'true' });
+    for (const query of [
+      { cases: 'false' },
+      { cases: '1' },
+      { cases: true },
+      { cases: ['true', 'true'] },
+      { x: '1' },
+    ]) {
+      expect(towerQuerySchema.safeParse(query).success, JSON.stringify(query)).toBe(false);
+    }
+  });
+
+  it('versões diferentes: sem os campos (um nó de antes), o resumo continua válido; com eles, também', () => {
+    expect(towerSummarySchema.parse(summary)).toEqual(summary);
+    expect(towerSummarySchema.parse({ ...summary, radar })).toEqual({ ...summary, radar });
+    expect(towerSummarySchema.parse(withCases)).toEqual(withCases);
+  });
+
+  it('um painel de antes recusa a resposta inteira pelos campos novos: por isso só vêm para quem os pede', () => {
+    const before = towerSummarySchema.omit({ cases: true });
+    expect(before.safeParse(summary).success).toBe(true);
+    expect(before.safeParse({ ...summary, cases }).success).toBe(false);
+  });
+
+  it('as decisões, na ordem, todas de uma vez', () => {
+    const all = PENDING_DECISION_KINDS.map((kind) => ({ kind, count: 1 }));
+    expect(all.map(({ kind }) => kind)).toEqual([
+      'unassigned_incident',
+      'untriaged_case',
+      'untriaged_vulnerability_case',
+      'untriaged_finding',
+      'unowned_alert',
+    ]);
+    expect(towerSummarySchema.safeParse({ ...summary, pendingDecisions: all }).success).toBe(true);
+    expect(
+      towerSummarySchema.safeParse({ ...summary, pendingDecisions: [{ kind: 'untriaged_case', count: 0 }] })
+        .success,
+    ).toBe(false);
+  });
+
+  it.each([
+    ['fila a mais', { ...cases, other: counts }],
+    ['fila que falta', { ...cases, posture: undefined }],
+    ['contagem negativa', { ...cases, detection: { ...counts, low: -1 } }],
+    ['contagem quebrada', { ...cases, detection: { ...counts, low: 0.5 } }],
+    [
+      'o mais antigo fora do formato',
+      { ...cases, oldestPendingAt: { ...cases.oldestPendingAt, posture: 'ontem' } },
+    ],
+  ])('os casos pendentes recusam %s', (_name, value) => {
+    expect(towerCasesSchema.safeParse(value).success).toBe(false);
+  });
+
+  it('o radar: o caso sem nada pendente não tem severidade, e o de fonte desconhecida não tem fonte', () => {
+    const treated = {
+      ...item,
+      severity: null,
+      pending: 0,
+      sources: [],
+      incident: { id: item.id, open: false, severity: 'low' },
+    };
+    expect(towerRadarCasesSchema.safeParse({ ...radarCases, items: [treated] }).success).toBe(true);
+  });
+
+  it.each([
+    ['mais casos que o total', { ...radarCases, total: 0 }],
+    ['outro teto', { ...radarCases, limit: 50 }],
+    ['além do teto', { ...radarCases, total: 500, items: Array.from({ length: 101 }, () => item) }],
+    [
+      'incidente sem a gravidade',
+      { ...radarCases, items: [{ ...item, incident: { id: item.id, open: true } }] },
+    ],
+    ['setor desconhecido', { ...radarCases, items: [{ ...item, sector: 'azure' }] }],
+    ['campo a mais', { ...radarCases, items: [{ ...item, actors: ['alguém'] }] }],
+    ['título longo demais', { ...radarCases, items: [{ ...item, title: 'a'.repeat(201) }] }],
+  ])('o radar recusa %s', (_name, value) => {
+    expect(towerRadarCasesSchema.safeParse(value).success).toBe(false);
   });
 });

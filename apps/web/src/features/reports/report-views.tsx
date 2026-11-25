@@ -4,6 +4,7 @@ import {
   type FindingStatus,
   type MitreTactic,
   type ReportWindowPeriod,
+  type SummaryReport,
 } from '@verax/shared';
 import { type ReactNode, useContext } from 'react';
 import { Link } from 'react-router';
@@ -24,7 +25,7 @@ import { MitreRadar } from './mitre-radar';
 import { ReportContext } from './report-context';
 import { ReportSection, ReportTable } from './report-table';
 import { type ReportRange, useReport } from './reports-api';
-import { formatPart, tacticShares } from './tactic-share';
+import { formatPart, type TacticShare, tacticShares } from './tactic-share';
 
 /**
  * As análises que vieram do menu Relatórios para a tela Detecções, na janela do filtro de período da tela: o resumo
@@ -148,6 +149,17 @@ export function MitreReportView({
                 cell: ({ tactic, label }) => `${tactic.id} · ${label}`,
                 csv: ({ tactic }) => `${tactic.id} ${tactic.name}`,
               },
+              // Só com os casos: sem eles, a tabela e o CSV são os de sempre.
+              ...(data.tactics.some((tactic) => tactic.cases !== undefined)
+                ? [
+                    {
+                      header: 'Casos',
+                      cell: ({ tactic }: TacticShare) => formatCount(tactic.cases ?? 0),
+                      csv: ({ tactic }: TacticShare) => tactic.cases,
+                      align: 'right' as const,
+                    },
+                  ]
+                : []),
               {
                 header: 'Alertas',
                 cell: ({ tactic }) => formatCount(tactic.findings),
@@ -248,6 +260,33 @@ function Kpi({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+/**
+ * Os casos abertos no período e em que pé estão agora. A mediana, e não a média: tratar milhares de alertas de uma vez
+ * distorce a média por alerta que fica no topo.
+ */
+function CasesSummary({ cases }: { cases: NonNullable<SummaryReport['cases']> }) {
+  return (
+    <ReportSection
+      caption="Casos abertos no período"
+      file="casos-do-periodo"
+      rows={[cases]}
+      csv={[
+        { header: 'Casos abertos', csv: (row) => row.opened },
+        { header: 'Tratados', csv: (row) => row.treated },
+        { header: 'Pendentes', csv: (row) => row.pending },
+        { header: 'Mediana até tratar (minutos)', csv: (row) => row.medianMinutesToTreat },
+      ]}
+    >
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Kpi label="Casos abertos" value={formatCount(cases.opened)} />
+        <Kpi label="Já tratados" value={formatCount(cases.treated)} />
+        <Kpi label="Ainda pendentes" value={formatCount(cases.pending)} />
+        <Kpi label="Tempo mediano até tratar" value={formatDuration(cases.medianMinutesToTreat)} />
+      </div>
+    </ReportSection>
+  );
+}
+
 /** O resumo do período: os números do topo, os alertas por severidade, status (pizza) e fonte, e por dia (linhas). */
 export function SummaryReportView({ range }: { range: ReportRange }) {
   const report = useReport('summary', range, true);
@@ -262,6 +301,7 @@ export function SummaryReportView({ range }: { range: ReportRange }) {
             <Kpi label="Tempo médio até a validação" value={formatDuration(data.meanTimeToTriageMinutes)} />
             <Kpi label="Tempo médio até a resolução" value={formatDuration(data.meanTimeToResolveMinutes)} />
           </div>
+          {data.cases && <CasesSummary cases={data.cases} />}
           <div className="grid gap-6 lg:grid-cols-3">
             <ReportTable
               caption="Alertas por severidade"

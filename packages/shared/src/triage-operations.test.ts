@@ -5,9 +5,12 @@ import { meSchema } from './session.js';
 import {
   caseSplitSchema,
   isMassTriageRole,
+  MAX_TRIAGE_AUTHORS,
+  triageAuthorsSchema,
   triageFilterSchema,
   triageOperationCreateSchema,
   triageOperationDetailSchema,
+  triagePreviewSchema,
   triageScopeChanged,
   triageTargetSchema,
   triageUndoSchema,
@@ -238,5 +241,45 @@ describe('a operação', () => {
     expect(ok(triageOperationDetailSchema, { ...operation, ids: [] })).toBe(false);
     expect(ok(triageOperationDetailSchema, { ...operation, target: { kind: 'cases', ids: [] } })).toBe(false);
     expect(ok(triageOperationDetailSchema, { ...operation, stop: 'outro' })).toBe(false);
+  });
+});
+
+describe('prévia e autores', () => {
+  const counts = { critical: 1, high: 2, medium: 0, low: 0 };
+  const preview = { cases: 2, alerts: 3, new: 3, investigating: 0, pending: counts };
+
+  it('a prévia: os protegidos e o status por severidade são opcionais (um nó de antes não manda)', () => {
+    expect(triagePreviewSchema.parse(preview)).toEqual(preview);
+    const full = {
+      ...preview,
+      protectedCases: 1,
+      byStatus: { new: counts, investigating: { critical: 0, high: 0, medium: 0, low: 0 } },
+    };
+    expect(triagePreviewSchema.parse(full)).toEqual(full);
+    for (const change of [
+      { protectedCases: -1 },
+      { byStatus: { new: counts } },
+      { byStatus: { ...full.byStatus, resolved: counts } },
+      { titles: [] },
+    ]) {
+      expect(triagePreviewSchema.safeParse({ ...full, ...change }).success, JSON.stringify(change)).toBe(
+        false,
+      );
+    }
+  });
+
+  it('os autores: só o id e o nome, até cem', () => {
+    const person = { id: 'pessoa-1', name: 'Pessoa Demo' };
+    expect(triageAuthorsSchema.safeParse({ items: [person], truncated: false }).success).toBe(true);
+    expect(
+      triageAuthorsSchema.safeParse({ items: [{ ...person, email: 'a@b.example' }], truncated: false })
+        .success,
+    ).toBe(false);
+    expect(
+      triageAuthorsSchema.safeParse({
+        items: Array.from({ length: MAX_TRIAGE_AUTHORS + 1 }, () => person),
+        truncated: true,
+      }).success,
+    ).toBe(false);
   });
 });

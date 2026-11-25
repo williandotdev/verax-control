@@ -16,6 +16,7 @@ import {
   type CaseSplitResult,
   caseSplitSchema,
   type Paginated,
+  type TriageAuthors,
   type TriageFilter,
   triageFilterSchema,
   type TriageOperationCreate,
@@ -60,7 +61,13 @@ export class TriageOperationsController {
     return this.operations.list(request.auth as RequestAuth, query);
   }
 
-  // Antes de `:id`, para "preview" não ser lido como id.
+  // Antes de `:id`, para "authors" e "preview" não serem lidos como id.
+  @Get('authors')
+  @RequirePermission('findings:read')
+  authors(): Promise<TriageAuthors> {
+    return this.operations.authors();
+  }
+
   @Get('preview')
   @RequirePermission('findings:triage')
   async preview(@Query({ schema: triageFilterSchema }) filter: TriageFilter): Promise<TriagePreview> {

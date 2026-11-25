@@ -2,6 +2,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import {
   type CaseSplit,
   caseSplitResultSchema,
+  triageAuthorsSchema,
   type TriageFilter,
   type TriageOperationDetail,
   triageOperationDetailSchema,
@@ -51,6 +52,16 @@ export function useTriageOperations(
   });
 }
 
+/** Quem pediu operações nos últimos 30 dias, para o filtro. Um nó de antes recusa: o filtro fica só com quem se vê. */
+export function useTriageAuthors(enabled: boolean) {
+  return useQuery({
+    queryKey: ['triage-authors'],
+    queryFn: () => api.get('/v1/triage-operations/authors', triageAuthorsSchema),
+    enabled,
+    retry: false,
+  });
+}
+
 /** Na fila, em curso ou sendo desfeita: o estado ainda muda sozinho. */
 const isMoving = (operation: TriageOperationDetail): boolean =>
   isActive(operation) || operation.state === 'undoing';
@@ -88,7 +99,10 @@ function useAfterRequest() {
   return (operation: TriageOperationDetail) => {
     queryClient.setQueryData(['triage-operation', operation.id], operation);
     void queryClient.invalidateQueries({ queryKey: ['triage-operations'] });
+    void queryClient.invalidateQueries({ queryKey: ['triage-authors'] });
     if (!isActive(operation)) invalidateAfterTriage(queryClient);
+    // Na fila, os alertas ainda não mudaram; o que se pode fazer com a operação no detalhe do caso, sim.
+    else void queryClient.invalidateQueries({ queryKey: ['case'] });
   };
 }
 

@@ -1,4 +1,4 @@
-import type { TriageOperationDetail } from '@verax/shared';
+import type { TriageCan, TriageOperationDetail, TriageOperationView } from '@verax/shared';
 import { useEffect, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { ErrorState } from '@/components/states';
@@ -68,7 +68,7 @@ export function OperationActions({
   onUndo,
   className,
 }: {
-  operation: TriageOperationDetail;
+  operation: TriageOperationView & { can: TriageCan };
   onUndo?: (() => void) | undefined;
   className?: string;
 }) {
