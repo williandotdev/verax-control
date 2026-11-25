@@ -5,7 +5,8 @@ import { CASE_MODES, type Role } from '@verax/shared';
  * - `off` (padrão): no worker, nenhuma tarefa dos casos roda, e o nó fica como antes deles; na API, as rotas dos casos
  *   não existem para ninguém;
  * - `shadow`: os alertas ganham caso, e só a equipe da Verax lê os casos, para conferir a medição no nó piloto;
- * - `on`: todos os papéis leem os casos do próprio cliente (os avisos por caso vêm depois).
+ * - `on`: todos os papéis leem os casos do próprio cliente, e quem faz triagem opera em massa (os avisos por caso vêm
+ *   depois).
  */
 export const CASES_MODES = CASE_MODES;
 export type CasesMode = (typeof CASES_MODES)[number];
@@ -16,4 +17,12 @@ export type CasesMode = (typeof CASES_MODES)[number];
  */
 export function casesVisibleTo(mode: CasesMode, role: Role): boolean {
   return mode === 'on' || (mode === 'shadow' && role === 'admin_verax');
+}
+
+/**
+ * As escritas dos casos (triagem em massa, dividir um caso) existem? Só com `on`: na medição (`shadow`) ninguém opera, nem
+ * a equipe da Verax, e o worker não roda a fila delas.
+ */
+export function casesOperable(mode: CasesMode): boolean {
+  return mode === 'on';
 }

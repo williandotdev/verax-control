@@ -72,7 +72,7 @@ const count = z.number().int().min(0);
 const text = z.string().max(CASE_TEXT_MAX);
 
 /** Um texto comparado por inteiro com o gravado: sem cortar espaços, e sem o que o banco não guarda. */
-const exactText = (max: number) =>
+export const exactText = (max: number) =>
   z
     .string()
     .min(1)
@@ -117,10 +117,8 @@ export type CaseStatus = z.infer<typeof caseStatusSchema>;
  * e `accountId`: pelas amostras do caso. `q`: no título, nas partes da chave e nas amostras (nunca nos alertas).
  * `groupBy` com `group`: um grupo de `GET /v1/cases/groups`; `groupBy` sozinho: os casos sem esse valor.
  */
-export const caseListQuerySchema = withPagination({
-  ...casePage,
+export const caseFilterShape = {
   queue: z.enum(CASE_QUEUES).optional(),
-  state: z.enum(CASE_STATES).default('pending'),
   severity: z.enum(FINDING_SEVERITIES).optional(),
   source: z.enum(FINDING_SOURCES).optional(),
   accountId: findingOriginSchema.optional(),
@@ -131,21 +129,43 @@ export const caseListQuerySchema = withPagination({
   q: findingFilterShape.q,
   groupBy: z.enum(CASE_GROUPINGS).optional(),
   group: exactText(CASE_TEXT_MAX).optional(),
+};
+
+export const caseFilterSchema = z.strictObject(caseFilterShape);
+export type CaseFilterFields = z.infer<typeof caseFilterSchema>;
+
+/** O que vale entre os campos do filtro, na lista e na triagem em massa por filtro. */
+export function checkCaseFilter(
+  value: {
+    severity?: unknown;
+    state: CaseState;
+    groupBy?: unknown;
+    group?: unknown;
+    period?: unknown;
+    from?: string | undefined;
+    to?: string | undefined;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  checkCustomRange(value, ctx);
+  if (value.severity !== undefined && (value.state === 'treated' || value.state === 'all')) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'a severidade é a do que está pendente: use com os casos pendentes ou em análise',
+      path: ['severity'],
+    });
+  }
+  if (value.group !== undefined && value.groupBy === undefined) {
+    ctx.addIssue({ code: 'custom', message: 'informe por onde os casos são agrupados', path: ['groupBy'] });
+  }
+}
+
+export const caseListQuerySchema = withPagination({
+  ...casePage,
+  ...caseFilterShape,
+  state: z.enum(CASE_STATES).default('pending'),
   sort: z.enum(CASE_SORTS).default('priority'),
-})
-  .superRefine(checkCustomRange)
-  .superRefine((value, ctx) => {
-    if (value.severity !== undefined && (value.state === 'treated' || value.state === 'all')) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'a severidade é a do que está pendente: use com os casos pendentes ou em análise',
-        path: ['severity'],
-      });
-    }
-    if (value.group !== undefined && value.groupBy === undefined) {
-      ctx.addIssue({ code: 'custom', message: 'informe por onde os casos são agrupados', path: ['groupBy'] });
-    }
-  });
+}).superRefine(checkCaseFilter);
 export type CaseListQuery = z.infer<typeof caseListQuerySchema>;
 
 /** Uma parte da chave: o que os alertas do caso têm em comum. O valor pode ter vindo do evento. */
@@ -226,7 +246,7 @@ export const caseGroupPageSchema = paginatedSchema(caseGroupSchema);
 export type CaseGroupPage = z.infer<typeof caseGroupPageSchema>;
 
 // ---------------------------------------------------------------------------------------------------
-// Operações de triagem (nenhuma rota as cria ainda)
+// Operações de triagem, no histórico (as rotas delas estão em `triage-operations.ts`)
 // ---------------------------------------------------------------------------------------------------
 
 export const TRIAGE_ACTIONS = ['status', 'promote', 'attach', 'undo', 'undo_all_of'] as const;

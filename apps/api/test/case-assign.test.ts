@@ -392,9 +392,11 @@ describe('case-assign', () => {
         const running = assignAll(prisma, [tenantId]);
         let waiting: string[] = [];
         for (let tries = 0; waiting.length === 0 && tries < 400; tries += 1) {
+          // O texto do comando e quem espera por quem são lidos em instantes diferentes: só vale quem já está no comando esperado.
           const { rows } = await watcher.query<{ query: string }>(
-            'SELECT query FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))',
-            [pid],
+            `SELECT query FROM pg_stat_activity
+             WHERE $1::int = ANY(pg_blocking_pids(pid)) AND position($2::text in query) > 0`,
+            [pid, 'pg_advisory_xact_lock'],
           );
           waiting = rows.map((row) => row.query);
           if (waiting.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -1134,12 +1136,13 @@ describe('case-assign', () => {
         );
         let killed = 0;
         for (let tries = 0; killed === 0 && tries < 400; tries += 1) {
-          const { rows } = await killer.query<{ pid: number; query: string }>(
-            `SELECT pid, query FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))`,
-            [pid],
+          // O texto do comando e quem espera por quem são lidos em instantes diferentes: só vale quem já está no comando esperado.
+          const { rows } = await killer.query<{ pid: number }>(
+            `SELECT pid FROM pg_stat_activity
+             WHERE $1::int = ANY(pg_blocking_pids(pid)) AND position($2::text in query) > 0`,
+            [pid, 'UPDATE "Finding"'],
           );
           for (const waiting of rows) {
-            expect(waiting.query).toContain('UPDATE "Finding"');
             await killer.query('SELECT pg_terminate_backend($1::int)', [waiting.pid]);
             killed += 1;
           }
@@ -1535,7 +1538,7 @@ describe('case-assign', () => {
       expect(await casesOf(prisma, tenantId)).toEqual([]);
     });
 
-    it('shadow e on criam as mesmas três tarefas', () => {
+    it('shadow cria três tarefas, e on, as mesmas e mais a fila da triagem em massa', () => {
       const logger = { warn: () => undefined, error: () => undefined };
       const shape = (mode: 'shadow' | 'on') =>
         caseTasks(mode, prisma, logger).map(({ name, intervalMs, budgetMs }) => ({
@@ -1548,7 +1551,10 @@ describe('case-assign', () => {
         { name: 'case-watch', intervalMs: 60_000, budgetMs: 60_000 },
         { name: 'case-reconcile', intervalMs: 3_600_000, budgetMs: 300_000 },
       ]);
-      expect(shape('on')).toEqual(shape('shadow'));
+      expect(shape('on')).toEqual([
+        ...shape('shadow'),
+        { name: 'triage-ops', intervalMs: 5_000, budgetMs: 180_000 },
+      ]);
     });
   });
 

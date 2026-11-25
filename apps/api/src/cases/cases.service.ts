@@ -1,6 +1,5 @@
 import { HttpStatus, Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import {
-  type Author,
   CASE_PREVIEW_SAMPLES,
   CASE_SEAL_REASONS,
   type CaseAnalysis,
@@ -13,7 +12,6 @@ import {
   type CaseStatus,
   type CaseSummary,
   type CaseTimeline,
-  filterWindow,
   type FindingSeverity,
   type FindingTriage,
   hasPermission,
@@ -25,8 +23,6 @@ import {
   MAX_PREVIOUS_CASES,
   MAX_RARE_VALUES,
   type Paginated,
-  TRIAGE_ACTIONS,
-  TRIAGE_STATES,
   type TriageOperationView,
 } from '@verax/shared';
 import type { RequestAuth } from '../common/auth/request-auth.js';
@@ -41,6 +37,7 @@ import { protectedItemsOf } from '../incidents/incident-summary.js';
 import { CASE_ASSIGN_TASK } from './case-assign-job.js';
 import { CASE_CURSOR_START, caseCursorScope, decodeCaseCursor, encodeCaseCursor } from './case-cursor.js';
 import { sqlStateOf } from './case-errors.js';
+import { caseSetFilter } from './case-filter.js';
 import { firstCharacters } from './case-key.js';
 import { SAMPLE_VALUE_MAX } from './case-plan.js';
 import {
@@ -54,10 +51,11 @@ import {
   timelineCounts,
   timelineRange,
 } from './case-read-store.js';
-import { caseSourceFilter, sourcesOfCase } from './case-sources.js';
+import { sourcesOfCase } from './case-sources.js';
 import { partsOf } from './case-store.js';
 import { fillTimeline, timelineCap, timelineWindow } from './case-timeline.js';
 import { casesVisibleTo } from './cases-mode.js';
+import { known, operationSelect, toOperation } from './triage-view.js';
 
 /** Os tetos da leitura dos alertas de um caso: um com milhões deles não prende o banco. */
 export interface CaseReadLimits {
@@ -118,24 +116,8 @@ const caseSelect = {
   incidentId: true,
 } as const satisfies Prisma.AlertCaseSelect;
 
-const operationSelect = {
-  id: true,
-  action: true,
-  status: true,
-  state: true,
-  reason: true,
-  matched: true,
-  changed: true,
-  skipped: true,
-  createdAt: true,
-  undoUntil: true,
-  undoOfId: true,
-  createdBy: { select: { id: true, name: true } },
-} as const satisfies Prisma.TriageOperationSelect;
-
 type CaseRow = Prisma.AlertCaseGetPayload<{ select: typeof caseSelect }>;
 type CountRow = Prisma.AlertCaseGetPayload<{ select: typeof countSelect }>;
-type OperationRow = Prisma.TriageOperationGetPayload<{ select: typeof operationSelect }>;
 
 const countsOf = (row: CountRow): CaseSummary['counts'] => ({
   total: row.total,
@@ -151,11 +133,6 @@ function worstPending(row: CaseRow): FindingSeverity | null {
   if (row.pendingHigh > 0) return 'high';
   if (row.pendingMedium > 0) return 'medium';
   return row.pendingLow > 0 ? 'low' : null;
-}
-
-/** O valor, se é um dos que esta versão conhece: a coluna é texto com CHECK, e uma versão seguinte pode ter outros. */
-function known<T extends string>(values: readonly T[], value: string | null): T | null {
-  return values.find((candidate) => candidate === value) ?? null;
 }
 
 const head = (values: readonly string[]): string[] => values.slice(0, CASE_PREVIEW_SAMPLES);
@@ -200,28 +177,6 @@ function toCaseSummary(row: CaseRow, protectedItems: ReadonlySet<string>): CaseS
   };
 }
 
-/** A operação, ou nada se ela é de um tipo que esta versão não conhece. */
-function toOperation(row: OperationRow): TriageOperationView | null {
-  const action = known(TRIAGE_ACTIONS, row.action);
-  const state = known(TRIAGE_STATES, row.state);
-  if (action === null || state === null) return null;
-  const author: Author | null = row.createdBy;
-  return {
-    id: row.id,
-    action,
-    status: row.status,
-    state,
-    reason: row.reason,
-    author,
-    createdAt: row.createdAt.toISOString(),
-    matched: row.matched,
-    changed: row.changed,
-    skipped: row.skipped,
-    undoUntil: row.undoUntil?.toISOString() ?? null,
-    undoOfId: row.undoOfId,
-  };
-}
-
 function toAnalysis(row: CaseAnalysisRow, total: number, limit: number): CaseAnalysis {
   const rare = (distinct: number, values: CaseAnalysisRow['rareIps']) => ({
     distinct,
@@ -248,8 +203,8 @@ function toAnalysis(row: CaseAnalysisRow, total: number, limit: number): CaseAna
 }
 
 /**
- * A leitura dos casos do cliente da sessão. Só lê: quem abre e sela caso é o worker, e a pessoa trata alertas, noutra
- * parte.
+ * A leitura dos casos do cliente da sessão. Só lê: quem abre e sela caso é o worker, e a pessoa trata alertas, um por um ou
+ * em massa (`triage-operations.service.ts`).
  *
  * Todo id que sai para a tela é lido pelo escopo do cliente (`scoped()`); as contas e a ordem em SQL
  * (`case-read-store.ts`) levam o cliente da sessão em cada comando. Caso ou alerta de outro cliente é 404, igual a um que
@@ -288,21 +243,9 @@ export class CasesService {
   async list(query: CaseListQuery, now = new Date()): Promise<Paginated<CaseSummary>> {
     const db = this.prisma.scoped();
     const protectedItems = await this.protectedItems(db);
-    const window = filterWindow(query, now);
     const { skip, take } = toPrismaPage(query);
     const { total, ids } = await caseListPage(this.prisma.db(), this.prisma.scopeTenantId(), {
-      queue: query.queue ?? null,
-      state: query.state,
-      severity: query.severity ?? null,
-      source: query.source === undefined ? null : caseSourceFilter(query.source),
-      accountId: query.accountId ?? null,
-      tactic: query.tactic ?? null,
-      technique: query.technique ?? null,
-      from: window.from,
-      to: window.to,
-      pattern: query.q === undefined ? null : `%${escapeLike(query.q)}%`,
-      groupBy: query.groupBy ?? null,
-      group: query.group ?? null,
+      ...caseSetFilter(query, now),
       sort: query.sort,
       protectedItems: [...protectedItems],
       limit: take,

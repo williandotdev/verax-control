@@ -1,5 +1,5 @@
 import type { CaseGrouping, CaseListQuery, CaseState, FindingSeverity, FindingStatus } from '@verax/shared';
-import type { Prisma } from '../generated/prisma/client.js';
+import { Prisma } from '../generated/prisma/client.js';
 import type { CaseCursorPosition } from './case-cursor.js';
 import type { CaseSourceFilter } from './case-sources.js';
 import type { TimelineCounts, TimelineWindow } from './case-timeline.js';
@@ -19,7 +19,8 @@ const iso = (at: Date | null): string | null => at?.toISOString() ?? null;
 // Lista
 // ---------------------------------------------------------------------------------------------------
 
-export interface CaseListFilter {
+/** Quais casos: os filtros da lista, sem a ordem e a página. */
+export interface CaseSetFilter {
   queue: CaseListQuery['queue'] | null;
   state: CaseState;
   severity: FindingSeverity | null;
@@ -34,6 +35,9 @@ export interface CaseListFilter {
   groupBy: CaseGrouping | null;
   /** Null com `groupBy`: os casos sem esse valor. */
   group: string | null;
+}
+
+export interface CaseListFilter extends CaseSetFilter {
   sort: CaseListQuery['sort'];
   /** A lista de proteção do cliente, no tamanho das amostras. */
   protectedItems: readonly string[];
@@ -42,10 +46,8 @@ export interface CaseListFilter {
 }
 
 /**
- * Os ids de uma página da lista, na ordem, e quantos casos batem com os filtros.
- *
- * Uma leitura só dos casos do cliente (pelo índice `(tenantId, queue, pending)`, quando há fila): as contagens não têm
- * índice de propósito (mudariam a cada alerta), então a ordem é feita em memória, só com as chaves dela.
+ * O `WHERE` dos casos de um filtro (o caso é `c`), com tudo em parâmetro. É um só para a lista e para a triagem em massa
+ * por filtro (`triage-store.ts`): o que a pessoa vê na lista é o que a operação alcança.
  *
  * A janela vale pelo horário do evento ou pelo da chegada no servidor: o horário do log é de quem escreve o log, e um
  * caso que acabou de receber alertas não pode sumir do "últimas 24 horas" porque eles vieram com data antiga.
@@ -53,26 +55,12 @@ export interface CaseListFilter {
  * A busca junta os textos do caso num só, separados por quebra de linha (que a busca não aceita, então nada casa na
  * emenda), e compara com a regra de maiúsculas do próprio Postgres (`pg_c_utf8`): metade do tempo da do sistema.
  */
-export async function caseListPage(
-  db: Db,
-  tenantId: string,
-  filter: CaseListFilter,
-): Promise<{ total: number; ids: string[] }> {
+export function caseSetWhere(tenantId: string, filter: CaseSetFilter): Prisma.Sql {
   const { source, groupBy, group } = filter;
   const byPart = groupBy === 'package' || groupBy === 'resource' ? groupBy : null;
   const part =
     byPart === null ? null : JSON.stringify([{ name: byPart, ...(group !== null && { value: group }) }]);
-  const [row] = await db.$queryRaw<{ total: number; ids: string[] }[]>`
-    WITH matched AS MATERIALIZED (
-      SELECT c."id", c."lastAlertAt", c."total", c."newCount" + c."investigatingCount" AS waiting,
-        CASE WHEN c."pendingCritical" > 0 THEN 4 WHEN c."pendingHigh" > 0 THEN 3 WHEN c."pendingMedium" > 0 THEN 2
-          WHEN c."pendingLow" > 0 THEN 1 ELSE 0 END AS severity,
-        (${filter.sort}::text = 'priority' AND cardinality(${[...filter.protectedItems]}::text[]) > 0 AND EXISTS (
-          SELECT 1 FROM unnest(c."resources" || c."actors" || c."ips") AS s(value)
-          WHERE s.value = ANY(${[...filter.protectedItems]}::text[])
-        )) AS protected
-      FROM "AlertCase" AS c
-      WHERE c."tenantId" = ${tenantId}::uuid
+  return Prisma.sql`c."tenantId" = ${tenantId}::uuid
         AND c."total" > 0
         AND (${filter.queue}::text IS NULL OR c."queue" = ${filter.queue}::text::"CaseQueue")
         AND (${filter.state}::text NOT IN ('pending', 'investigating') OR c."pending")
@@ -103,7 +91,31 @@ export async function caseListPage(
               c."ruleIds" || c."accounts" || c."actors" || c."ips" || c."resources", chr(10)
             )) ILIKE ${filter.pattern}::text COLLATE "pg_c_utf8"
           OR (SELECT string_agg(p.value ->> 'value', chr(10)) FROM jsonb_array_elements(c."keyParts") AS p(value))
-            ILIKE ${filter.pattern}::text COLLATE "pg_c_utf8")
+            ILIKE ${filter.pattern}::text COLLATE "pg_c_utf8")`;
+}
+
+/**
+ * Os ids de uma página da lista, na ordem, e quantos casos batem com os filtros.
+ *
+ * Uma leitura só dos casos do cliente (pelo índice `(tenantId, queue, pending)`, quando há fila): as contagens não têm
+ * índice de propósito (mudariam a cada alerta), então a ordem é feita em memória, só com as chaves dela.
+ */
+export async function caseListPage(
+  db: Db,
+  tenantId: string,
+  filter: CaseListFilter,
+): Promise<{ total: number; ids: string[] }> {
+  const [row] = await db.$queryRaw<{ total: number; ids: string[] }[]>`
+    WITH matched AS MATERIALIZED (
+      SELECT c."id", c."lastAlertAt", c."total", c."newCount" + c."investigatingCount" AS waiting,
+        CASE WHEN c."pendingCritical" > 0 THEN 4 WHEN c."pendingHigh" > 0 THEN 3 WHEN c."pendingMedium" > 0 THEN 2
+          WHEN c."pendingLow" > 0 THEN 1 ELSE 0 END AS severity,
+        (${filter.sort}::text = 'priority' AND cardinality(${[...filter.protectedItems]}::text[]) > 0 AND EXISTS (
+          SELECT 1 FROM unnest(c."resources" || c."actors" || c."ips") AS s(value)
+          WHERE s.value = ANY(${[...filter.protectedItems]}::text[])
+        )) AS protected
+      FROM "AlertCase" AS c
+      WHERE ${caseSetWhere(tenantId, filter)}
     )
     SELECT (SELECT count(*)::integer FROM matched) AS total,
       ARRAY(

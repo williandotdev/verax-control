@@ -17,6 +17,8 @@ export class ApiError extends HttpException {
     publicMessage: string,
     /** Código estável para o painel decidir o que fazer (ex.: `MFA_REQUIRED`). */
     readonly code?: string,
+    /** Números que o painel mostra junto da mensagem (a contagem nova de um pedido que mudou de tamanho). Só números. */
+    readonly details?: Readonly<Record<string, number>>,
   ) {
     super(publicMessage, status);
   }
