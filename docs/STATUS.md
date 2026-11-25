@@ -7719,3 +7719,73 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
 - **Migration** `20261203120000_case_access_keys`: só a coluna `AlertCase.accessKeys`, com padrão vazio e teto de 20. Não sai na API.
 - **Atribuição, divisão e leitura:** as três passam a gravar e a conferir a chave.
 - **Limite conhecido, o mesmo das outras amostras:** além dos 20 primeiros valores do caso, o valor protegido não é visto.
+
+## Cloudflare por OAuth: painel e documentação (CF-8 e CF-9, 25/11/2026)
+
+- **O que mudou (CF-8, painel):** o "Conectar com Cloudflare" na tela. Só aparece com `GET /v1/cloudflare-oauth/options`
+  respondendo `oauth`; no nó sem OAuth ou anterior (404), Contas cloud fica exatamente como antes.
+  - **Botão** ao lado de "Cadastrar conta" (permissão `cloud_credentials:write`): começa a tentativa e navega só para a
+    URL de autorização do Cloudflare (conferida pelo contrato também no painel).
+  - **Retorno** `/conexao-cloudflare` (`CLOUDFLARE_OAUTH_PANEL_PATH`, o mesmo que o plano de controle usa no repasse),
+    fora do `RequireSession`: lê o fragmento uma vez, apaga da barra de endereço antes de chamar a API, aceita só os
+    campos exatos (o `iss` junto do erro é descartado), conclui, troca o endereço por `?tentativa=<id>` e acompanha.
+    Sem sessão, o retorno é descartado. Código, `state` e tokens não vão para armazenamento, log nem cache de mutações.
+  - **Estados:** conferindo, escolha das contas (nome e ID como texto, ambiente do Verax, conta sem permissão desligada,
+    ID digitado quando o Cloudflare não lista), pronta (lembrete de apagar o token antigo), falha (texto fixo por código)
+    e vencida, com "Começar de novo"; a mensagem de cada estado recebe o foco.
+  - **Detalhe da conta:** a conexão por OAuth (situação, renovação, escopos, contas na mesma autorização, "Conectar de
+    novo"), a **migração** da conta com token colado ("Migrar para Conectar com Cloudflare") e o que é desconectar
+    (desativar ou excluir, que soltam a concessão). A **saúde das zonas** (auditoria, todas ou lista, zonas além do limite
+    nomeadas, situação de cada zona, "Monitorar todas as zonas"); no nó sem OAuth, só aparece com os dados já lidos.
+  - **Demonstração:** `mocks/cloudflare-oauth.ts`, desligada por padrão (`verax.mock.cloudflare-oauth`: `one`, `multi`,
+    `manual` ou `legacy`).
+- **O que mudou (CF-9, documentação):** `docs/ARQUITETURA.md` (seção "Conectar com Cloudflare (OAuth, CF-1 a CF-9)") e
+  `docs/runbooks/cloudflare-oauth.md` (registro do app e 22 conferências de homologação, HC-01 a HC-22, sem ID ou segredo
+  real).
+- **Arquivos:** novos `apps/web/src/features/cloudflare/{cloudflare-oauth-api.ts,connect-button.tsx,
+cloudflare-oauth-steps.tsx,zone-health.tsx,labels.ts,oauth-return.ts,oauth-return.test.ts}`,
+  `apps/web/src/pages/cloudflare-return-page{.tsx,.test.tsx}`, `apps/web/src/mocks/cloudflare-oauth.ts`,
+  `apps/web/e2e/cloudflare-oauth.mock.spec.ts`, `docs/runbooks/cloudflare-oauth.md`; alterados
+  `apps/web/src/pages/admin/cloud-accounts-page.tsx`, `apps/web/src/routes/router.tsx`, `apps/web/src/mocks/handlers.ts`,
+  `docs/ARQUITETURA.md`. **Sem mudança na API** (o CF-4 e o CF-7 já dão tudo o que a tela usa), sem migration, sem
+  `infra/`, `.github/`, `auth` ou `.claude/`.
+- **Dependências:** nenhuma.
+- **Testes:** painel (vitest), 86 arquivos e 1277 testes (21 novos: leitura do fragmento e a página de retorno, com a
+  URL limpa antes da chamada, uma chamada só, sem sessão nada enviado, recusa única, nomes como texto, reconexão e o nó
+  sem OAuth). Navegador (projeto `mock`, portas 5381/5382), 11 de 11: retorno com sucesso, recusa, vencido no retorno e na
+  escolha, `state` de outra tentativa, emissor errado, repetição do mesmo fragmento, fragmento alterado sem chamada à
+  API, escolha pelo teclado, ID digitado, migração e nó anterior; acessibilidade (WCAG 2.2 AA) nos dois temas em 360, 768
+  e 1280 px. `pnpm lint` (sem aviso) e `pnpm typecheck`, limpos.
+- **Teste manual:** `pnpm --filter @verax/web dev:mock` com `localStorage['verax.mock.cloudflare-oauth'] = 'multi'`, como
+  administrador do cliente: Contas cloud, "Conectar com Cloudflare" (sem o Cloudflare de mentira, o navegador vai ao
+  Cloudflare de verdade e para lá), e o detalhe da conta do Cloudflare da Alfa (migração e zonas).
+- **O que continua sem conferência (não existe app registrado no Cloudflare):** nada do fluxo foi exercitado contra o
+  Cloudflare. Pontos do desenho em aberto, cada um com a conferência do runbook:
+  1. nomes dos escopos e se cobrem auditoria v2, zonas e `firewallEventsAdaptiveGroups`; escopo só de `Audit Logs Read`
+     (HC-01);
+  2. Bearer OAuth aceito no REST e no GraphQL; formato e tamanho dos tokens (HC-03);
+  3. renovação com o método `none`; rotação; reuso; prazo do refresh; `expires_in` (HC-04, HC-05);
+  4. `/accounts` e `/zones` limitados às contas escolhidas no consentimento (HC-07);
+  5. `iss` sempre presente (com código e com erro), `response_mode=form_post`, validade do código, `error` possíveis
+     (HC-06); o painel aceita o `iss` ausente só no erro e recusa o código sem ele;
+  6. reconsentimento: cria, troca ou invalida a concessão anterior; a revogação afeta as outras do mesmo usuário (HC-13,
+     HC-14);
+  7. limite de requisições por token ou por usuário (HC-16);
+  8. a perda do filtro de IP do token (HC-17);
+  9. o que a autorização gera na auditoria do cliente (regra 990311) e o que ocorre quando quem autorizou sai da conta
+     (HC-18);
+  10. "Public OAuth App access" desligado pelo administrador do cliente: qual erro chega (HC-19);
+  11. o nome do menu e os campos de registro do app no painel do Cloudflare (seção 2 do runbook), e se o app sem segredo
+      recebe a renovação;
+  12. o retorno pelo navegador real, com o repasse do plano de controle (o e2e usa um Cloudflare de mentira que devolve o
+      fragmento direto ao painel).
+- **Pendência que bloqueia ligar para cliente (fora deste escopo, `infra/`):** a exclusão do log de requisição do Cloud Run
+  para `/v1/public/cloudflare/callback` (desenho 1.2) não existe em `infra/gcp/envs/control-plane`; sem ela ou sem
+  `form_post`, o `code` fica 185 dias no log de requisição. O runbook manda parar antes do primeiro clique.
+- **Riscos e dúvidas:**
+  - Sem sessão, o cliente HTTP leva ao login (como em todo o painel), e a página não chega a dizer "comece de novo": o
+    retorno é descartado e a pessoa recomeça pela tela de contas.
+  - A tela de "pronta" não sabe se a tentativa era uma migração (o contrato não diz): o lembrete de apagar o token aparece
+    sempre, como condicional.
+  - A escolha de contas não mostra o nome das contas depois de ligadas (a tentativa só devolve os IDs internos): os links
+    levam ao detalhe, que mostra o ID do Cloudflare.
