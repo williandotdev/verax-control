@@ -524,6 +524,35 @@ describe('leitura dos casos', () => {
       expect(Object.values(await protectedOf(b))).toEqual([false, false, false]);
     });
 
+    it('a chave de acesso protegida marca o caso e o põe na frente, só no próprio cliente, e não sai na lista', async () => {
+      const a = await reader('chave protegida A');
+      const b = await reader('chave protegida B');
+      const createdById = (await createUser(app, { role: 'admin_cliente', tenantId: a.tenantId })).id;
+      const key = 'DEMOCHAVEDEACESSO2';
+      await prisma.protectedResource.create({
+        data: { tenantId: a.tenantId, type: 'access_key', identifier: key, reason: 'teste', createdById },
+      });
+      for (const fx of [a, b]) {
+        const withKey = await caseWith(fx.tenantId, {
+          accessKeys: [key],
+          ips: [],
+          actors: [],
+          resources: [],
+        });
+        await caseWith(fx.tenantId, {
+          accessKeys: ['DEMOCHAVEDEACESSO3'],
+          ips: [],
+          actors: [],
+          resources: [],
+        });
+        const rows = await fx.list('sort=priority');
+        const own = fx === a;
+        expect(rows.filter((row) => row.protected).map((row) => row.id)).toEqual(own ? [withKey] : []);
+        if (own) expect(rows[0]?.id).toBe(withKey);
+        expect(JSON.stringify(rows)).not.toContain(key);
+      }
+    });
+
     it('a ordem é total: com tudo igual, o id decide, e as páginas não repetem nem pulam', async () => {
       const { tenantId, cookie, ids } = await reader('páginas');
       const at = new Date();

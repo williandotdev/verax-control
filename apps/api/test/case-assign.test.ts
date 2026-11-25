@@ -984,6 +984,16 @@ describe('case-assign', () => {
       );
     });
 
+    it('a chave de acesso entra nas amostras ao abrir o caso e ao juntar outro alerta', async () => {
+      const tenantId = await customer('chaves');
+      await insert(tenantId, { accessKeyId: 'DEMOCHAVE1' });
+      await assignAll(prisma, [tenantId], { now: () => at(HOUR_MS) });
+      expect(only(await casesOf(prisma, tenantId)).accessKeys).toEqual(['DEMOCHAVE1']);
+      await insert(tenantId, { accessKeyId: 'DEMOCHAVE2', createdAt: at(1_000) });
+      await assignAll(prisma, [tenantId], { now: () => at(HOUR_MS) });
+      expect(only(await casesOf(prisma, tenantId)).accessKeys).toEqual(['DEMOCHAVE1', 'DEMOCHAVE2']);
+    });
+
     it('com 40 casos na fila, a chave média ou baixa nova vai para um caso por fonte; a alta, a crítica e a protegida, não', async () => {
       const tenantId = await customer('teto');
       const createdById = await person(tenantId);

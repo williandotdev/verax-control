@@ -113,6 +113,7 @@ const caseSelect = {
   ruleIds: true,
   accounts: true,
   actors: true,
+  accessKeys: true,
   ips: true,
   resources: true,
   mitreTactics: true,
@@ -136,7 +137,9 @@ const head = (values: readonly string[]): string[] => values.slice(0, CASE_PREVI
 
 /** O caso toca a lista de proteção, pelo que está nas amostras. */
 function touchesProtectedSample(row: CaseRow, protectedItems: ReadonlySet<string>): boolean {
-  return [...row.resources, ...row.actors, ...row.ips].some((value) => protectedItems.has(value));
+  return [...row.resources, ...row.actors, ...row.accessKeys, ...row.ips].some((value) =>
+    protectedItems.has(value),
+  );
 }
 
 function toCaseSummary(

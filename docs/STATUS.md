@@ -7632,3 +7632,12 @@ source-monitor,source-parts,sources,onboarding-labels,onboarding-section}`; `lib
   - O relatório de Resumo continua lendo todos os alertas do período em JS (4 s nesta carga); os casos somam cerca de 0,4 s.
   - A parte dos avisos por caso mexe nos mesmos `url-state.ts`, `detections-cases.test.tsx`, `ARQUITETURA.md` e `STATUS.md`: quem
     entrar depois resolve os conflitos, que são de linhas vizinhas.
+
+## Casos: a chave de acesso protegida (25/11/2026)
+
+Revisão do conjunto (#211): o caso que só toca a lista de proteção pela chave de acesso não aparecia como protegido na lista, na ordem por
+prioridade nem na prévia da triagem em massa, porque as amostras não guardavam a chave.
+
+- **Migration** `20261203120000_case_access_keys`: só a coluna `AlertCase.accessKeys`, com padrão vazio e teto de 20. Não sai na API.
+- **Atribuição, divisão e leitura:** as três passam a gravar e a conferir a chave.
+- **Limite conhecido, o mesmo das outras amostras:** além dos 20 primeiros valores do caso, o valor protegido não é visto.

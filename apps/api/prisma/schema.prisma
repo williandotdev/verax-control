@@ -788,6 +788,8 @@ model AlertCase {
   ruleIds            String[]         @default([])
   accounts           String[]         @default([])
   actors             String[]         @default([])
+  /// Só para conferir a lista de proteção: não sai na API.
+  accessKeys         String[]         @default([])
   ips                String[]         @default([])
   resources          String[]         @default([])
   mitreTactics       String[]         @default([])

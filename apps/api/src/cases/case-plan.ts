@@ -36,6 +36,7 @@ export const SAMPLE_LIMITS = {
   ruleIds: 20,
   accounts: 50,
   actors: 20,
+  accessKeys: 20,
   ips: 20,
   resources: 20,
   mitreTactics: 20,
@@ -337,6 +338,7 @@ class Planner {
     addSample(live.ruleIds, finding.ruleId, SAMPLE_LIMITS.ruleIds);
     addSample(live.accounts, finding.accountId, SAMPLE_LIMITS.accounts);
     addSample(live.actors, finding.actorUser, SAMPLE_LIMITS.actors);
+    addSample(live.accessKeys, finding.accessKeyId, SAMPLE_LIMITS.accessKeys);
     addSample(live.ips, finding.sourceIp, SAMPLE_LIMITS.ips);
     addSample(live.resources, finding.resource, SAMPLE_LIMITS.resources);
     for (const tactic of finding.mitreTactics) {
@@ -353,6 +355,7 @@ function samplesOf(from: CaseSamples): CaseSamples {
     ruleIds: [...from.ruleIds],
     accounts: [...from.accounts],
     actors: [...from.actors],
+    accessKeys: [...from.accessKeys],
     ips: [...from.ips],
     resources: [...from.resources],
     mitreTactics: [...from.mitreTactics],
@@ -365,6 +368,7 @@ function emptySamples(): CaseSamples {
     ruleIds: [],
     accounts: [],
     actors: [],
+    accessKeys: [],
     ips: [],
     resources: [],
     mitreTactics: [],

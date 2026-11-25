@@ -78,6 +78,7 @@ const OPEN_CASE_SELECT = {
   ruleIds: true,
   accounts: true,
   actors: true,
+  accessKeys: true,
   ips: true,
   resources: true,
   mitreTactics: true,
@@ -252,18 +253,19 @@ async function insertCases(
       "id", "tenantId", "queue", "keyVersion", "groupKey", "openKey", "family", "title", "keyParts",
       "previousCaseId", "recurrence", "anchorFindingId", "openedAt", "sealedAt", "sealReason",
       "firstSeenAt", "lastSeenAt", "lastAlertAt", "noticedSeverity",
-      "ruleIds", "accounts", "actors", "ips", "resources", "mitreTactics", "mitreTechniques"
+      "ruleIds", "accounts", "actors", "accessKeys", "ips", "resources", "mitreTactics", "mitreTechniques"
     )
     SELECT v."id", ${tenantId}::uuid, v."queue"::"CaseQueue", v."keyVersion", v."groupKey", v."openKey", v."family",
       v."title", v."keyParts", v."previousCaseId", v."recurrence", v."anchorFindingId", v."openedAt", v."sealedAt",
       v."sealReason", v."firstSeenAt", v."lastSeenAt", v."lastAlertAt", v."noticedSeverity"::"FindingSeverity",
-      v."ruleIds", v."accounts", v."actors", v."ips", v."resources", v."mitreTactics", v."mitreTechniques"
+      v."ruleIds", v."accounts", v."actors", v."accessKeys", v."ips", v."resources", v."mitreTactics",
+      v."mitreTechniques"
     FROM jsonb_to_recordset(${rows}::jsonb) AS v(
       "id" uuid, "queue" text, "keyVersion" smallint, "groupKey" text, "openKey" text, "family" text, "title" text,
       "keyParts" jsonb, "previousCaseId" uuid, "recurrence" integer, "anchorFindingId" uuid, "openedAt" timestamptz,
       "sealedAt" timestamptz, "sealReason" text, "firstSeenAt" timestamptz, "lastSeenAt" timestamptz,
       "lastAlertAt" timestamptz, "noticedSeverity" text, "ruleIds" text[], "accounts" text[], "actors" text[],
-      "ips" text[], "resources" text[], "mitreTactics" text[], "mitreTechniques" text[]
+      "accessKeys" text[], "ips" text[], "resources" text[], "mitreTactics" text[], "mitreTechniques" text[]
     )`;
 }
 
@@ -278,12 +280,13 @@ async function updateTouched(
     UPDATE "AlertCase" AS c
     SET "firstSeenAt" = v."firstSeenAt", "lastSeenAt" = v."lastSeenAt", "lastAlertAt" = v."lastAlertAt",
       "noticedSeverity" = v."noticedSeverity"::"FindingSeverity",
-      "ruleIds" = v."ruleIds", "accounts" = v."accounts", "actors" = v."actors", "ips" = v."ips",
+      "ruleIds" = v."ruleIds", "accounts" = v."accounts", "actors" = v."actors",
+      "accessKeys" = v."accessKeys", "ips" = v."ips",
       "resources" = v."resources", "mitreTactics" = v."mitreTactics", "mitreTechniques" = v."mitreTechniques"
     FROM jsonb_to_recordset(${rows}::jsonb) AS v(
       "id" uuid, "firstSeenAt" timestamptz, "lastSeenAt" timestamptz, "lastAlertAt" timestamptz,
-      "noticedSeverity" text, "ruleIds" text[], "accounts" text[], "actors" text[], "ips" text[],
-      "resources" text[], "mitreTactics" text[], "mitreTechniques" text[]
+      "noticedSeverity" text, "ruleIds" text[], "accounts" text[], "actors" text[], "accessKeys" text[],
+      "ips" text[], "resources" text[], "mitreTactics" text[], "mitreTechniques" text[]
     )
     WHERE c."id" = v."id" AND c."tenantId" = ${tenantId}::uuid`;
   if (updated !== touched.length) throw new CaseBatchError('caso aberto que sumiu no lote');

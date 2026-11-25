@@ -78,7 +78,7 @@ export async function refreshCaseFacts(tx: Tx, tenantId: string, caseId: string)
   await tx.$executeRaw`
     WITH rows AS MATERIALIZED (
       SELECT f."id", f."createdAt", f."occurredAt", f."lastSeenAt", f."ruleId", f."accountId", f."actorUser",
-        f."sourceIp", f."resource", f."mitreTactics", f."mitreTechniques"
+        f."accessKeyId", f."sourceIp", f."resource", f."mitreTactics", f."mitreTechniques"
       FROM "Finding" AS f
       WHERE f."tenantId" = ${tenantId}::uuid AND f."caseId" = ${caseId}::uuid
     ), facts AS (
@@ -91,6 +91,7 @@ export async function refreshCaseFacts(tx: Tx, tenantId: string, caseId: string)
         SELECT 'rule' AS kind, r."ruleId" AS value, r."createdAt" AS at FROM rows AS r
         UNION ALL SELECT 'account', r."accountId", r."createdAt" FROM rows AS r
         UNION ALL SELECT 'actor', r."actorUser", r."createdAt" FROM rows AS r
+        UNION ALL SELECT 'access_key', r."accessKeyId", r."createdAt" FROM rows AS r
         UNION ALL SELECT 'ip', r."sourceIp", r."createdAt" FROM rows AS r
         UNION ALL SELECT 'resource', r."resource", r."createdAt" FROM rows AS r
         UNION ALL SELECT 'tactic', t.value, r."createdAt" FROM rows AS r CROSS JOIN unnest(r."mitreTactics") AS t(value)
@@ -112,6 +113,8 @@ export async function refreshCaseFacts(tx: Tx, tenantId: string, caseId: string)
         ORDER BY s.at, s.value LIMIT ${limit.accounts}::integer),
       "actors" = ARRAY(SELECT s.value FROM samples AS s WHERE s.kind = 'actor'
         ORDER BY s.at, s.value LIMIT ${limit.actors}::integer),
+      "accessKeys" = ARRAY(SELECT s.value FROM samples AS s WHERE s.kind = 'access_key'
+        ORDER BY s.at, s.value LIMIT ${limit.accessKeys}::integer),
       "ips" = ARRAY(SELECT s.value FROM samples AS s WHERE s.kind = 'ip'
         ORDER BY s.at, s.value LIMIT ${limit.ips}::integer),
       "resources" = ARRAY(SELECT s.value FROM samples AS s WHERE s.kind = 'resource'
