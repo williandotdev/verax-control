@@ -110,6 +110,8 @@ const pick = <T extends string>(allowed: readonly T[], value: string | null): T 
   allowed.find((candidate) => candidate === value);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** O id de um item na URL; null sem ele ou fora do formato. */
+const itemId = (value: string | null): string | null => (value !== null && UUID.test(value) ? value : null);
 /** AAAA-MM-DD, conferido caractere a caractere (sem expressão regular sobre a URL). */
 function isDay(value: string): boolean {
   if (value.length !== 10) return false;
@@ -172,8 +174,8 @@ export function readDetectionState(params: URLSearchParams, mode: CaseMode = 'of
   const account = findingFilterShape.accountId.safeParse(get('accountId') ?? undefined);
   const technique = get('technique')?.trim().toUpperCase();
   const q = findingFilterShape.q.safeParse(get('q') ?? undefined);
-  const incident = get('incident');
-  const finding = get('finding') ?? params.get(LEGACY_FINDING_PARAM);
+  const incident = itemId(get('incident'));
+  const finding = itemId(get('finding') ?? params.get(LEGACY_FINDING_PARAM));
   const openCase = caseIdOf(params);
   const analysisParam = get('analysis');
   return {
@@ -197,9 +199,9 @@ export function readDetectionState(params: URLSearchParams, mode: CaseMode = 'of
     // Um item por vez: o alerta, se os dois vierem (o link de um alerta dentro do incidente); o caso por último (o
     // alerta aberto de dentro dele).
     selection:
-      finding && UUID.test(finding)
+      finding !== null
         ? { kind: 'finding', id: finding }
-        : incident && UUID.test(incident)
+        : incident !== null
           ? { kind: 'incident', id: incident }
           : mode !== 'off' && openCase !== null
             ? { kind: 'case', id: openCase }
@@ -209,8 +211,7 @@ export function readDetectionState(params: URLSearchParams, mode: CaseMode = 'of
 
 /** O caso aberto no painel, ou o que está por trás do alerta aberto a partir dele. */
 function caseIdOf(params: URLSearchParams): string | null {
-  const id = params.get(DETECTION_PARAMS.case);
-  return id !== null && UUID.test(id) ? id : null;
+  return itemId(params.get(DETECTION_PARAMS.case));
 }
 
 /** O caso para onde o "Voltar ao caso" leva: o do alerta (ou do incidente) aberto a partir dele. */
