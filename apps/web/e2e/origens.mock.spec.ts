@@ -10,8 +10,8 @@ import { skipDemoTour } from './demo-tour';
  */
 
 const FINDING = '018f2c1e-0000-7000-8000-000000001001';
-const USER = 'demo-analista_cliente';
-const CHOICE = `verax:deteccoes:origens:${USER}`;
+const VIEWER_ID = 'demo-analista_cliente';
+const CHOICE = `verax:deteccoes:origens:${VIEWER_ID}`;
 
 async function prepare(page: Page, options: { traffic?: string; theme?: string; choice?: string } = {}) {
   await skipDemoTour(page);
