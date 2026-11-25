@@ -73,9 +73,13 @@ async function colorOf(
   const text = await locator
     .first()
     .evaluate((element, name) => getComputedStyle(element)[name as 'fill'], property);
-  const [, red, green, blue] = /^rgb\((\d+), (\d+), (\d+)\)$/.exec(text) ?? [];
-  expect(blue, `${property}: ${text}`).toBeDefined();
-  return [Number(red), Number(green), Number(blue)];
+  // `rgb(1, 2, 3)`: a cor com transparência (`rgba`, ou um quarto número) não serve para a conta.
+  expect(text.startsWith('rgb('), `${property}: ${text}`).toBe(true);
+  const channels = text.slice('rgb('.length, -1).split(',').map(Number);
+  expect(channels, `${property}: ${text}`).toHaveLength(3);
+  expect(channels.every(Number.isInteger), `${property}: ${text}`).toBe(true);
+  const [red = 0, green = 0, blue = 0] = channels;
+  return [red, green, blue];
 }
 
 for (const theme of THEMES) {
