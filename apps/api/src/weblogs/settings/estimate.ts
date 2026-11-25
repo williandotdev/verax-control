@@ -10,7 +10,7 @@ import type { Prisma } from '../../generated/prisma/client.js';
 
 /**
  * A estimativa de volume de um balanceador (`WebSourceEstimate`): o que a API devolve dela e o que ela exige antes da
- * autorização. Quem a calcula é o worker (PR-4), que é quem fala com a AWS; aqui só se lê o que está gravado. O número do
+ * autorização. Quem a calcula é o worker (`web-logs-estimate`), que é quem fala com a AWS; aqui só se lê o que está gravado. O número do
  * pedido nunca vale por si: é conferido com o gravado.
  */
 

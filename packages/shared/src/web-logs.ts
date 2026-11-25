@@ -168,6 +168,24 @@ export const webEstimateSchema = z.strictObject({
 });
 export type WebEstimate = z.infer<typeof webEstimateSchema>;
 
+// --- O estado da leitura ---
+
+/**
+ * Os motivos de estado que só a leitura dos logs do ALB grava na fonte (`AwsSource.stateCode`); os outros são os de sempre
+ * (`throttled`, o nome do erro da AWS, o motivo da permissão):
+ * - `web_gap` (`ingestion_error`): nas últimas 24 h, arquivos com mais de 24 h ficaram sem leitura;
+ * - `web_unread` (`stalled`): há arquivo novo, e nada é lido há mais de 2 h;
+ * - `web_quarantined` (`collecting`): nas últimas 24 h, algum arquivo foi recusado (quebrado ou grande demais);
+ * - `web_prefix_unsupported` (`ingestion_error`): o prefixo do bucket tem um caractere que a leitura não aceita.
+ */
+export const WEB_SOURCE_STATE_CODES = [
+  'web_gap',
+  'web_unread',
+  'web_quarantined',
+  'web_prefix_unsupported',
+] as const;
+export type WebSourceStateCode = (typeof WEB_SOURCE_STATE_CODES)[number];
+
 // --- A configuração de um balanceador ---
 
 /** `observe`: só conta, sem achado. `alert`: abre achado. */

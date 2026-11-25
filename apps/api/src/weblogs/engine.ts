@@ -29,13 +29,14 @@ import {
   type WindowView,
 } from './rules.js';
 import { type ClientRef, type LineOutcome, type Slot, type TallyCounters, WebTally } from './tally.js';
+import type { CountryLookup, ObjectTraffic } from './traffic.js';
 import { TrustedSources, type WebTrustedSource } from './trusted-sources.js';
 
 /**
  * Motor de detecção de ataques web pelos logs de acesso do ALB (PR-1 do desenho de 24/11/2026): puro, sem banco, sem AWS e
- * sem relógio próprio. Um motor por balanceador. A tarefa (PR-4) abre um objeto (`openObject`), passa as linhas
+ * sem relógio próprio. Um motor por balanceador. A tarefa `web-logs` (`collect/`) abre um objeto (`openObject`), passa as linhas
  * (`ingest`), e a cada passo chama `evaluate(agora)`, que devolve os achados prontos (`draft.ts`) e os contadores.
- * Não está ligado a nada.
+ * Desligado por padrão (`AWS_WEB_LOGS_ENABLED`).
  *
  * **Determinismo:** a mesma sequência de linhas, o mesmo `agora` e a mesma chave de hash dão o mesmo resultado. Reavaliar
  * não soma duas vezes: a chave do achado é a mesma, e quem dedupica é o `FindingStore`.
@@ -101,6 +102,8 @@ export interface EngineOptions {
   limits?: WebLimits;
   routes?: readonly WebRoute[];
   trusted?: readonly WebTrustedSource[];
+  /** A tabela de países (`geo/ip-country.ts`); sem ela, o tráfego sai com o país desconhecido. */
+  countries?: CountryLookup | null;
   /** Só os testes: as faixas das CDNs no lugar das vendorizadas. */
   ranges?: readonly ProviderRanges[];
 }
@@ -111,6 +114,12 @@ export interface EvaluateInput {
   wafCollecting?: boolean;
   /** Mediana de falhas por 15 min nos 7 dias anteriores, por `baselineKey` (PR-9). */
   baselines?: ReadonlyMap<string, number>;
+  /**
+   * O multiplicador do cliente (`WebSourceSettings.thresholdMultiplier`, de 0,5 a 10): vale para os mesmos limites de
+   * contagem que o da rota declarada, e os dois se multiplicam. Razões, famílias e a quantidade de endereços da 990407 não
+   * mudam, e a 990403 não tem limite.
+   */
+  multiplier?: number;
 }
 
 export const ENGINE_NOTES = [
@@ -139,7 +148,7 @@ export interface EvaluateResult {
 }
 
 export type OpenResult =
-  | { ok: true; late: boolean; slot: Slot; key: string }
+  | { ok: true; late: boolean; slot: Slot; key: string; traffic: ObjectTraffic | null }
   | { ok: false; reason: 'bad_key' | 'foreign_key' | 'future' | 'late_backlog' };
 
 /** Objetos atrasados guardados até a próxima avaliação. */
@@ -174,6 +183,7 @@ export class WebLogEngine {
       limits,
       routes: new RouteTable(options.routes ?? []),
       classifier: this.classifier,
+      countries: options.countries ?? null,
     });
     this.digest = new NoiseDigest(limits.maxDayClients);
   }
@@ -217,9 +227,10 @@ export class WebLogEngine {
 
   /**
    * Abre um objeto pela chave dele. O slot é o do fim do arquivo, arredondado para cima. Um arquivo com fim no futuro é
-   * recusado; o de um slot já fechado é avaliado sozinho (`late`), e a contagem dele é um piso.
+   * recusado; o de um slot já fechado é avaliado sozinho (`late`), e a contagem dele é um piso. `traffic` recebe a conta por
+   * país; o objeto relido (já contado) vem sem ela.
    */
-  openObject(key: string, now: number): OpenResult {
+  openObject(key: string, now: number, traffic: ObjectTraffic | null = null): OpenResult {
     const parsed = parseAlbKey(key);
     if (parsed === null) return { ok: false, reason: 'bad_key' };
     const expected = {
@@ -236,12 +247,17 @@ export class WebLogEngine {
     if (late && !this.tally.late.has(index) && this.tally.late.size >= MAX_LATE_SLOTS) {
       return { ok: false, reason: 'late_backlog' };
     }
-    return { ok: true, late, slot: this.tally.slot(index, late), key };
+    return { ok: true, late, slot: this.tally.slot(index, late), key, traffic };
   }
 
   /** Uma linha do objeto aberto. */
   ingest(object: Extract<OpenResult, { ok: true }>, line: string): LineOutcome {
-    return this.tally.ingest(object.slot, object.key, line);
+    return this.tally.ingest(object.slot, object.key, line, object.traffic);
+  }
+
+  /** Uma linha que este motor já contou (a leitura do objeto foi interrompida): só o tráfego por país. */
+  recount(object: Extract<OpenResult, { ok: true }>, line: string): LineOutcome {
+    return this.tally.ingest(object.slot, object.key, line, object.traffic, true);
   }
 
   private viewAt(index: number): WindowView {
@@ -277,6 +293,7 @@ export class WebLogEngine {
     const context = {
       wafCollecting: input.wafCollecting ?? false,
       baselines: input.baselines ?? new Map<string, number>(),
+      multiplier: input.multiplier ?? 1,
       tagOf: (client: ClientRef): number => this.tally.tagOf(client),
     };
     const open = [...this.tally.slots.keys()]
@@ -492,7 +509,7 @@ export class WebLogEngine {
     this.digest.prune(now);
   }
 
-  /** O que a tarefa guarda entre reinícios, para o resumo do dia não encolher (PR-4). */
+  /** O que a tarefa guarda entre reinícios, para o resumo do dia não encolher. */
   snapshot(): DigestState {
     return this.digest.snapshot();
   }

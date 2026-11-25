@@ -149,9 +149,18 @@ export class FindingStore {
    *
    * O achado que traz a própria evidência (`draft.evidence`, só os ataques web pelos logs do ALB) a grava na mesma
    * transação. Sem ela, nenhuma consulta a mais.
+   *
+   * `authorize` (só deles) confere, na mesma transação e antes de qualquer gravação, se a fonte ainda pode ser lida, e lança
+   * se não pode: nada é gravado. Sem ele, as consultas são as de sempre.
    */
-  async persist(draft: FindingDraft, exception: ActiveException | null, now: Date): Promise<PersistOutcome> {
+  async persist(
+    draft: FindingDraft,
+    exception: ActiveException | null,
+    now: Date,
+    authorize?: (tx: Prisma.TransactionClient) => Promise<void>,
+  ): Promise<PersistOutcome> {
     return this.prisma.$transaction(async (tx) => {
+      await authorize?.(tx);
       await lockTenantFindings(tx, draft.tenantId);
       const db = scopeToTenant(tx, draft.tenantId);
       const { count } = await db.finding.createMany({

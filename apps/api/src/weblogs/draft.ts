@@ -16,8 +16,8 @@ import { UA_FAMILIES, type UaFamily } from './user-agent.js';
 
 /**
  * De detecção a achado. O formato é o do `FindingDraft`, com a fonte `alb` (`FINDING_SOURCES`), a
- * evidência (que o `FindingStore` grava com o achado) e a correlação (aceita, gravada só com os casos). Nada liga isto ao
- * `FindingStore` ainda.
+ * evidência (que o `FindingStore` grava com o achado) e a correlação (aceita, gravada só com os casos). Quem grava é a
+ * tarefa `web-logs` (`collect/source-reader.ts`), só no modo `alert`.
  *
  * **Chave:** `aws/<conta>/alb:<sha40(regra|balanceador|cliente|host|rota|nível)>`; a versão é a hora cheia (UTC) da última
  * atividade, como nas correlações dos flow logs da VPC: um achado em aberto por atacante, e no máximo uma reincidência por

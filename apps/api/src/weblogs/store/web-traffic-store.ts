@@ -1,7 +1,17 @@
 import type { PrismaService } from '../../common/prisma/prisma.service.js';
 import type { Prisma } from '../../generated/prisma/client.js';
-import type { ClientClass } from '../client-class.js';
 import { MINUTE_MS, SLOT_MS } from '../limits.js';
+import { TRAFFIC_COUNTERS, type TrafficClass, type TrafficCounter, type TrafficDelta } from '../traffic.js';
+
+export {
+  TRAFFIC_CLASSES,
+  TRAFFIC_COUNTERS,
+  type TrafficClass,
+  trafficClassOf,
+  type TrafficCounter,
+  type TrafficDelta,
+  UNKNOWN_COUNTRY,
+} from '../traffic.js';
 
 /**
  * O tráfego por país de cada balanceador (o mapa): contagens por intervalo de 5 minutos (`WebTrafficSlot`, 48 h) e por hora
@@ -16,51 +26,17 @@ import { MINUTE_MS, SLOT_MS } from '../limits.js';
  * soma as duas tabelas numa instrução só, sem marca d'água nem relógio: o total não muda durante a passagem.
  *
  * Quem chama escolhe o cliente: o worker, o da fonte; a API, o da sessão. Nenhum método aceita um id vindo do request.
- * Nada usa isto ainda: a tarefa é da PR-4, e a rota do mapa, da PR do mapa.
+ * Quem soma e passa para as horas é a tarefa `web-logs` (`collect/web-logs-job.ts`); a rota do mapa ainda não existe.
  */
 
 /** Quanto ficam os intervalos de 5 minutos, antes de passarem para as horas. */
 export const TRAFFIC_SLOT_RETENTION_MS = 48 * 60 * MINUTE_MS;
 export const TRAFFIC_HOUR_RETENTION_DAYS = 35;
-/** País desconhecido. */
-export const UNKNOWN_COUNTRY = 'ZZ';
 
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 /** Linhas por comando. */
 const CHUNK = 1_000;
-
-/**
- * `proxy` é qualquer CDN ou proxy do cliente: o país é o da borda, não o do visitante. `unverified` é o endereço público
- * sem a lista das CDNs: pode ser uma coisa ou outra.
- */
-export const TRAFFIC_CLASSES = ['direct', 'proxy', 'private', 'unverified'] as const;
-export type TrafficClass = (typeof TRAFFIC_CLASSES)[number];
-
-const CLASS_OF: Readonly<Record<ClientClass, TrafficClass>> = {
-  direct: 'direct',
-  customer_proxy: 'proxy',
-  cloudflare: 'proxy',
-  cloudfront: 'proxy',
-  private: 'private',
-  unverified: 'unverified',
-};
-
-export const trafficClassOf = (cls: ClientClass): TrafficClass => CLASS_OF[cls];
-
-export const TRAFFIC_COUNTERS = ['requests', 'blocked', 'clientErrors', 'serverErrors', 'flagged'] as const;
-export type TrafficCounter = (typeof TRAFFIC_COUNTERS)[number];
-
-export interface TrafficDelta extends Record<TrafficCounter, number> {
-  tenantId: string;
-  /** A fonte (`AwsSource`) do balanceador. */
-  sourceId: string;
-  /** O começo do intervalo de 5 minutos, alinhado. */
-  slotStart: Date;
-  /** ISO 3166-1 alfa-2, maiúsculo, ou `UNKNOWN_COUNTRY`. */
-  country: string;
-  clientClass: TrafficClass;
-}
 
 export interface CountryTraffic extends Record<TrafficCounter, bigint> {
   country: string;
@@ -203,7 +179,7 @@ export class WebTrafficStore {
     return rows[0]?.moved ?? 0;
   }
 
-  /** Passa para as horas tudo o que tem mais de 48 h (a tarefa da PR-4 chama; o expurgo diário faz o mesmo em lotes). */
+  /** Passa para as horas tudo o que tem mais de 48 h (a tarefa `web-logs` chama de hora em hora; o expurgo diário faz o mesmo em lotes). */
   async rollup(now: Date, tenantIds?: readonly string[], signal?: AbortSignal): Promise<number> {
     const cutoff = trafficSlotCutoff(now);
     let moved = 0;
