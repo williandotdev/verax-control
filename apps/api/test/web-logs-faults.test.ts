@@ -459,6 +459,35 @@ describe('tarefa web-logs: falhas do S3, arquivos hostis e limites', () => {
       expect(await task.runOnce()).toMatchObject({ deferred: 0, notDue: 1, objects: 2 });
     });
 
+    it('com mais balanceadores cheios do que partes do orçamento, quem ficou sem vez abre a passagem seguinte', async () => {
+      const tenantId = await h.newTenant('rodízio');
+      const sites: Site[] = [];
+      for (let i = 0; i < 6; i += 1)
+        sites.push(await h.newSite(`rodízio ${i}`, { tenantId, lb: `app/r${i}/000000000000000${i}` }));
+      const { task, s3, clock } = h.newTask([tenantId], {
+        // Quatro partes de 2 objetos: quatro balanceadores comem a execução inteira.
+        amounts: { ...WEB_LOGS_RUN_AMOUNTS, objects: 8 },
+        concurrency: 1,
+      });
+      for (const site of sites)
+        for (let i = 0; i < 12; i += 1)
+          deliver(s3, site.balancer, NOON - i * SLOT, visits(NOON - i * SLOT, 1));
+      const read = () => Promise.all(sites.map((site) => h.requests(site)));
+      expect(await task.runOnce()).toMatchObject({ objects: 8, capped: 6 });
+      expect((await read()).filter((count) => count === 0)).toHaveLength(2);
+      clock.advance(2 * MINUTE);
+      await task.runOnce();
+      expect(Math.min(...(await read()))).toBeGreaterThan(0);
+      for (let run = 0; run < 4; run += 1) {
+        clock.advance(2 * MINUTE);
+        await task.runOnce();
+      }
+      // Seis execuções de 8 objetos, seis balanceadores: ninguém fica mais de uma parte atrás de ninguém.
+      const counts = await read();
+      expect(counts.reduce((sum, count) => sum + count, 0)).toBe(48);
+      expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(2);
+    });
+
     it('um balanceador cheio não come a vez dos outros', async () => {
       const tenantId = await h.newTenant('vez');
       const heavy = await h.newSite('cheio', { tenantId, lb: 'app/cheio/0000000000000001' });

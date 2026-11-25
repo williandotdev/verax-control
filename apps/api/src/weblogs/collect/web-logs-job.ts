@@ -289,7 +289,7 @@ const analysed = (object: Candidate): boolean => object.status === 'read' || obj
  * **Quem entra:** a fonte `elb_logs` autorizada e não retirada, num estado de coleta, de conta ativa já verificada que entra
  * no papel, de cliente coletado. A permissão gravada não decide: quem prova é a leitura.
  *
- * **Uma passagem** (a cada 5 min por balanceador, dois ao mesmo tempo, o mais atrasado primeiro), em duas fases:
+ * **Uma passagem** (a cada 5 min por balanceador, dois ao mesmo tempo, primeiro quem está há mais tempo sem vez), em duas fases:
  * 1. ao vivo: os objetos dos últimos 70 minutos que o motor ainda não leu, em ordem. No primeiro uso (ou depois de um
  *    reinício), os já registrados são relidos para refazer as janelas, sem contar de novo;
  * 2. com o que sobrou do orçamento: o que ficou da fase 1; a lacuna (mais de 24 h); a conferência de hora em hora das pastas
@@ -335,6 +335,9 @@ export class WebLogsCollector {
   private readonly renewEveryMs: number;
   private readonly memories = new Map<string, SourceMemory>();
   private readonly backlogs = new Set<string>();
+  /** A ordem da última vez de cada balanceador: havia orçamento quando ela chegou. */
+  private readonly turns = new Map<string, number>();
+  private turn = 0;
   private rolledAt: number | null = null;
   /** Em quantas partes a memória do motor está dividida. */
   private share = 1;
@@ -493,7 +496,10 @@ export class WebLogsCollector {
     }
   }
 
-  /** Os balanceadores na hora de ler, o mais atrasado primeiro. */
+  /**
+   * Os balanceadores na hora de ler, em rodízio: primeiro quem teve a vez há mais tempo (ou nunca). Com mais
+   * balanceadores cheios do que partes do orçamento, o que sobra de uma execução abre a seguinte: ninguém fica sem leitura.
+   */
   private async selectItems(context: RunContext, now: Date): Promise<Item[]> {
     const { report } = context;
     const rows = await this.prisma.awsSource.findMany({
@@ -530,6 +536,7 @@ export class WebLogsCollector {
     report.sources = selected.length;
     const kept = new Set(selected.map(({ source }) => source.id));
     for (const sourceId of this.memories.keys()) if (!kept.has(sourceId)) this.forget(sourceId);
+    for (const sourceId of this.turns.keys()) if (!kept.has(sourceId)) this.turns.delete(sourceId);
     // Em potências de dois: cada balanceador a mais não refaz todos os motores.
     this.share = 2 ** Math.ceil(Math.log2(Math.max(1, selected.length)));
 
@@ -554,7 +561,10 @@ export class WebLogsCollector {
       items.push({ account, source, key, cursor, pass: null });
     }
     report.waiting = refused.size;
-    return items.sort((a, b) => a.cursor.nextRunAt.getTime() - b.cursor.nextRunAt.getTime());
+    const last = ({ source }: Item): number => this.turns.get(source.id) ?? 0;
+    return items.sort(
+      (a, b) => last(a) - last(b) || a.cursor.nextRunAt.getTime() - b.cursor.nextRunAt.getTime(),
+    );
   }
 
   private async collect(items: readonly Item[], context: RunContext): Promise<void> {
@@ -669,6 +679,8 @@ export class WebLogsCollector {
       report.deferred += 1;
       return;
     }
+    // Antes de qualquer passo: a vez de quem falha também conta, e não volta na frente dos outros.
+    if (!context.budget.exhausted) this.turns.set(source.id, ++this.turn);
     const target = albTargetOf(account.accountId, source.region, sourceDetails(source.details));
     if (typeof target === 'string') {
       this.forget(source.id);
