@@ -101,7 +101,7 @@ describe('a virada dos avisos por caso', () => {
       for (const mode of ['off', 'shadow'] as const) {
         const setup = caseNoticeSetup(mode, prisma, silent);
         expect(setup.alertNotices).toBeUndefined();
-        expect(setup.dispatcher.caseMail).toBeNull();
+        expect(setup.dispatcher.caseMail).toBeInstanceOf(CaseNoticeMail);
       }
       expect(caseTasks('off', prisma, silent)).toEqual([]);
       const on = caseNoticeSetup('on', prisma, silent);
@@ -940,6 +940,37 @@ describe('a virada dos avisos por caso', () => {
         [`finding:${id}`, `finding:${vulnerability}`].sort(),
       );
     });
+
+    it.each(['off', 'shadow'] as const)(
+      '%s: o agregado que estava na fila sai com todos os casos; o de um caso, como o do alerta dele',
+      async (mode) => {
+        const tenantId = await customer(prisma);
+        const person = await member(prisma, tenantId);
+        const made = on([tenantId], at(-DAY_MS));
+        await made.activate();
+        made.clock.now = T0;
+        const packages = ['openssl', 'curl', 'zlib'];
+        for (const caseGroup of packages)
+          await insertVulnerability(prisma, tenantId, {
+            caseGroup,
+            createdAt: T0,
+            title: `CVE-2026-0001 - ${caseGroup}`,
+          });
+        const alert = await insertFinding(prisma, tenantId, { createdAt: T0, severity: 'high' });
+        expect(await made.step()).toMatchObject({ critical: 1, opened: 1 });
+        const mail = new MemoryMailTransport();
+        const setup = caseNoticeSetup(mode, prisma, silent);
+        const { caseMail } = setup.dispatcher;
+        await plainDispatcher(prisma, mail, () => at0(1), { caseMail: caseMail ?? null }).runOnce();
+        const texts = mail.to(person.email).map((message) => message.text);
+        expect(texts).toHaveLength(2);
+        const aggregate = texts.find((text) => text.includes('visao=vulnerabilidades')) ?? '';
+        expect(aggregate).toMatch(/3 casos/);
+        expect(aggregate.split('?caso=')).toHaveLength(packages.length + 1);
+        // Sem a tela dos casos, o aviso do caso leva ao alerta.
+        expect(texts.filter((text) => text.includes(`?alerta=${alert}`))).toHaveLength(1);
+      },
+    );
 
     it('o caso já avisado que cresceu não avisa na devolução', async () => {
       const tenantId = await customer(prisma);

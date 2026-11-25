@@ -253,8 +253,8 @@ export interface NotificationDispatcherOptions {
   /** Os avisos por caso (`CASES_MODE=on`), ou a volta deles ao aviso por alerta nos outros modos. */
   cases?: CaseNoticeSource | null;
   /**
-   * O conteúdo dos avisos de caso, só com `CASES_MODE=on`. Sem ele, um aviso de caso que sobrou na fila sai como o do alerta
-   * dele (o mesmo que a versão anterior do nó faz).
+   * O conteúdo dos avisos de caso (`CASES_MODE=on`); nos outros modos, só o dos agregados que sobraram na fila. Sem ele, um
+   * aviso de caso que sobrou na fila sai como o do alerta dele (o mesmo que a versão anterior do nó faz).
    */
   caseMail?: CaseNoticeMail | null;
   now?: () => Date;

@@ -2391,7 +2391,8 @@ responsável pelo produto).
   os críticos dão lugar ao aviso imediato; os altos da fila saem como antes.
 - **Voltar** (`off` ou `shadow`): a tarefa `notifications` vê que os avisos por caso valiam e devolve o que ficou no meio, uma vez: o
   alerta sem caso avisa alerta por alerta, o caso ainda não avisado avisa uma vez (como um aviso de alerta, sem ler o caso), e a
-  vulnerabilidade crítica, alerta por alerta. Depois grava `cursorId = off`. No nó que nunca ligou, é uma leitura por minuto.
+  vulnerabilidade crítica, alerta por alerta. O aviso imediato e o resumo diário que estavam na fila saem inteiros, com todos os
+  casos (`CaseNoticeMail` com `aggregatesOnly`); só a versão anterior do nó os mandaria como o de um alerta. Depois grava `cursorId = off`. No nó que nunca ligou, é uma leitura por minuto.
 - **Voltar a versão do nó:** na parada, o worker faz uma última passagem (até 5 s) que dá caso e aviso ao que acabou de chegar, e a
   versão anterior envia o que achar na fila. Só uma queda sem parada, seguida da versão anterior, deixa sem aviso os alertas do
   último minuto, e eles avisam quando os casos voltam.

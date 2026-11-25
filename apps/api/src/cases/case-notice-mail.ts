@@ -22,9 +22,19 @@ export type CaseNoticeContents = ReadonlyMap<string, NoticeMail | null>;
 /**
  * O lado da entrega dos avisos por caso (`CASES_MODE=on`): o conteúdo do e-mail sai do caso na hora do envio, com o título
  * do dicionário e as contagens, e o aviso que deixou de valer não sai. Nada vem do evento.
+ *
+ * Com `aggregatesOnly` (`off` e `shadow`), só o aviso imediato e o resumo diário que sobraram na fila: cada um fala de muitos
+ * casos, e sair como o aviso de um alerta só calaria os outros. O aviso de um caso sai como o do alerta dele.
  */
 export class CaseNoticeMail {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly aggregatesOnly: boolean;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    { aggregatesOnly = false }: { aggregatesOnly?: boolean } = {},
+  ) {
+    this.aggregatesOnly = aggregatesOnly;
+  }
 
   /** Fecha os avisos de caso da fila que deixaram de valer (todos, ou só os dados). Devolve quantos. */
   async skipStale(
@@ -32,6 +42,7 @@ export class CaseNoticeMail {
     ids: readonly string[] | null = null,
   ): Promise<{ sent: number; skipped: number }> {
     const total = { sent: 0, skipped: 0 };
+    if (this.aggregatesOnly) return total;
     for (let batches = 0; batches < STALE_BATCHES; batches += 1) {
       const closed = await skipStaleCaseNotices(this.prisma, now, { ids, limit: STALE_BATCH });
       for (const { status } of closed) total[status] += 1;
@@ -48,7 +59,7 @@ export class CaseNoticeMail {
   ): Promise<CaseNoticeContents> {
     const contents = new Map<string, NoticeMail | null>();
     const caseIds = new Set<string>();
-    for (const { caseId } of rows) if (caseId !== null) caseIds.add(caseId);
+    for (const { caseId } of rows) if (caseId !== null && !this.aggregatesOnly) caseIds.add(caseId);
     const cases = new Map(
       caseIds.size === 0
         ? []
@@ -70,6 +81,7 @@ export class CaseNoticeMail {
         contents.set(row.id, null);
         continue;
       }
+      if (this.aggregatesOnly) continue;
       const found = row.caseId === null ? undefined : cases.get(row.caseId);
       const critical = found?.pendingCritical ?? 0;
       const high = found?.pendingHigh ?? 0;

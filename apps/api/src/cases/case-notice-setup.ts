@@ -46,7 +46,11 @@ export function caseNoticeSetup(
     const notices = new CaseNotices(prisma, { logger });
     return {
       alertNotices: undefined,
-      dispatcher: { cases: { check: (now, signal) => notices.handBack(now, signal) }, caseMail: null },
+      dispatcher: {
+        cases: { check: (now, signal) => notices.handBack(now, signal) },
+        // O aviso agregado que ficou na fila continua a falar de todos os casos dele.
+        caseMail: new CaseNoticeMail(prisma, { aggregatesOnly: true }),
+      },
       start: () => Promise.resolve(),
       finish: () => Promise.resolve(),
     };
