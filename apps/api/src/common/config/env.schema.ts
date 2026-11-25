@@ -520,6 +520,9 @@ export function requiresVerifiedTls(databaseUrl: string): boolean {
   }
 }
 
+/** `CASES_MODE`, igual na API e no worker. */
+const casesModeFromEnv = z.enum(CASES_MODES, { error: 'use off, shadow ou on' }).default('off');
+
 /**
  * Variáveis de ambiente da API. A API não sobe se alguma obrigatória faltar ou for inválida.
  * Cada task que precisar de configuração nova acrescenta o campo aqui e no .env.example.
@@ -599,6 +602,9 @@ const apiEnvSchema = z
     // Verax, com PLAN=interno): a origem do console, o cliente e a chave pública fixada, e os interruptores da equipe
     // (`./sso.ts`).
     ...ssoEnvShape,
+    // Casos (agrupamento dos alertas), o mesmo valor do worker: `off` (padrão), as rotas deles não existem; `shadow`, só a
+    // equipe da Verax lê; `on`, todos os papéis leem os do próprio cliente (`cases/cases-mode.ts`).
+    CASES_MODE: casesModeFromEnv,
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
@@ -824,9 +830,9 @@ const workerEnvObjectSchema = z
     // `control-plane-sync` conta o que o nó aplicou e traz as fontes de log que a Verax cadastrou no console. Na VM
     // própria, a chave do nó vem por arquivo (`common/config/control-plane-sync.ts`).
     ...controlPlaneSyncEnvShape,
-    // Casos (agrupamento dos alertas): `off` (padrão), nenhuma tarefa deles roda; `shadow`, os alertas ganham caso e nada
-    // usa os casos; `on`, o mesmo por enquanto (`cases/cases-mode.ts`).
-    CASES_MODE: z.enum(CASES_MODES, { error: 'use off, shadow ou on' }).default('off'),
+    // Casos (agrupamento dos alertas): `off` (padrão), nenhuma tarefa deles roda; `shadow` e `on`, os alertas ganham caso
+    // (`cases/cases-mode.ts`).
+    CASES_MODE: casesModeFromEnv,
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);

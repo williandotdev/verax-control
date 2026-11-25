@@ -5,6 +5,7 @@ import { AgentsModule } from './agents/agents.module.js';
 import { AlertExceptionsModule } from './alert-exceptions/alert-exceptions.module.js';
 import { AuditTrailModule } from './audit-trail/audit-trail.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { CasesModule } from './cases/cases.module.js';
 import { CloudAccountsModule } from './cloud-accounts/cloud-accounts.module.js';
 import { AuditInterceptor } from './common/audit/audit.interceptor.js';
 import { RequestContextInterceptor } from './common/context/request-context.interceptor.js';
@@ -60,6 +61,7 @@ export class AppModule {
         FindingsModule.register(options.rawEvents),
         IncidentsModule,
         DetectionsModule,
+        CasesModule,
         PostureModule,
         AssetsModule,
         TowerModule,
