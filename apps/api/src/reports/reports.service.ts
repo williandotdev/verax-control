@@ -5,15 +5,18 @@ import {
   exceptionsFold,
   type FindingsFold,
   incidentsReport,
+  type MitreCount,
   type MitreReport,
-  mitreFold,
+  mitreReportFromCounts,
   type ReportFinding,
   type ReportIncident,
   type ReportKind,
   type ReportWindow,
   rulesFold,
   summaryFold,
+  type SummaryReport,
 } from '@verax/shared';
+import { caseOutcomes, mitreWithCases } from '../cases/case-summary-store.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 
@@ -56,14 +59,6 @@ const incidentSelect = {
   assignee: { select: { id: true, name: true } },
 } as const satisfies Prisma.IncidentSelect;
 
-/** Só o que o cálculo do MITRE usa, mais o id da paginação. */
-const mitreSelect = {
-  id: true,
-  occurredAt: true,
-  mitreTactics: true,
-  mitreTechniques: true,
-} as const satisfies Prisma.FindingSelect;
-
 /** Do mais recente para trás, com o id como desempate: a ordem da paginação por chave. */
 const KEYSET_ORDER = [
   { occurredAt: 'desc' },
@@ -104,23 +99,25 @@ export class ReportsService {
   ) {}
 
   /**
-   * Lê os achados que começaram no período, do mais recente para trás, em lotes de `batchSize`, e entrega cada linha
-   * a `onRow`. A paginação é por chave (data e id): nenhum achado fica de fora nem conta duas vezes, mesmo com datas
-   * iguais na virada do lote. O cursor também vira o limite de cima do intervalo, para o Postgres começar a varredura
-   * do índice nele, em vez de reler a cada lote tudo o que já passou.
+   * Passa pelo cálculo todos os achados que começaram no período, do mais recente para trás, em lotes de `batchSize`. A
+   * paginação é por chave (data e id): nenhum achado fica de fora nem conta duas vezes, mesmo com datas iguais na virada
+   * do lote. O cursor também vira o limite de cima do intervalo, para o Postgres começar a varredura do índice nele, em
+   * vez de reler a cada lote tudo o que já passou.
    */
-  private async scanFindings<T extends { id: string; occurredAt: Date }>(
-    window: Pick<ReportWindow, 'from' | 'to'>,
-    read: (where: Prisma.FindingWhereInput, take: number) => Promise<T[]>,
-    onRow: (row: T) => void,
-  ): Promise<void> {
+  async foldFindings<R>(window: Pick<ReportWindow, 'from' | 'to'>, fold: FindingsFold<R>): Promise<R> {
+    const db = this.prisma.scoped();
     const from = new Date(window.from);
     let where: Prisma.FindingWhereInput = { occurredAt: { gte: from, lte: new Date(window.to) } };
     for (;;) {
-      const rows = await read(where, this.batchSize);
-      for (const row of rows) onRow(row);
+      const rows = await db.finding.findMany({
+        where,
+        select: { id: true, ...findingSelect },
+        orderBy: KEYSET_ORDER,
+        take: this.batchSize,
+      });
+      for (const row of rows) fold.add(toReportFinding(row));
       const last = rows.at(-1);
-      if (last === undefined || rows.length < this.batchSize) return;
+      if (last === undefined || rows.length < this.batchSize) return fold.result();
       where = {
         occurredAt: { gte: from, lte: last.occurredAt },
         OR: [{ occurredAt: { lt: last.occurredAt } }, { id: { lt: last.id } }],
@@ -128,36 +125,43 @@ export class ReportsService {
     }
   }
 
-  /** Passa pelo cálculo todos os achados que começaram no período. */
-  async foldFindings<R>(window: Pick<ReportWindow, 'from' | 'to'>, fold: FindingsFold<R>): Promise<R> {
-    const db = this.prisma.scoped();
-    await this.scanFindings(
-      window,
-      (where, take) =>
-        db.finding.findMany({ where, select: { id: true, ...findingSelect }, orderBy: KEYSET_ORDER, take }),
-      (row) => fold.add(toReportFinding(row)),
-    );
-    return fold.result();
+  /**
+   * Resumo MITRE ATT&CK do período (o relatório, e a Torre em toda tela aberta): o banco conta os achados por combinação
+   * de táticas e técnicas (algumas dezenas, e não centenas de milhares de linhas), e o cálculo é o mesmo de sempre, com
+   * a contagem no lugar do achado. O cliente é o da sessão. Com `cases`, a mesma leitura conta também os casos por tática.
+   */
+  async mitre(window: ReportWindow, { cases = false }: { cases?: boolean } = {}): Promise<MitreReport> {
+    const tenantId = this.prisma.scopeTenantId();
+    const from = new Date(window.from);
+    const to = new Date(window.to);
+    const read = cases ? await mitreWithCases(this.prisma.db(), tenantId, { from, to }) : null;
+    const counts =
+      read?.counts ??
+      (await this.prisma.db().$queryRaw<MitreCount[]>`
+      SELECT "mitreTactics", COALESCE("mitreTechniques", '{}') AS "mitreTechniques", count(*)::int AS count
+      FROM "Finding"
+      WHERE "tenantId" = ${tenantId}::uuid
+        AND "occurredAt" BETWEEN ${from} AND ${to}
+        AND cardinality("mitreTactics") > 0
+      GROUP BY 1, 2`);
+    const incidents = await this.prisma.scoped().incident.findMany({
+      where: { firstSeenAt: { gte: from, lte: to } },
+      select: { mitreTactics: true },
+    });
+    const byTactic = read === null ? undefined : new Map(read.cases.map((row) => [row.tactic, row.cases]));
+    return mitreReportFromCounts(counts, incidents, window, byTactic);
   }
 
-  /**
-   * Resumo MITRE ATT&CK do período (a Torre pede a cada minuto): lê só as três colunas que o cálculo usa, em vez do
-   * achado inteiro.
-   */
-  async mitre(window: ReportWindow): Promise<MitreReport> {
-    const db = this.prisma.scoped();
-    const fold = mitreFold(await this.incidentsSince(new Date(window.from)), window);
-    await this.scanFindings(
-      window,
-      (where, take) => db.finding.findMany({ where, select: mitreSelect, orderBy: KEYSET_ORDER, take }),
-      (row) =>
-        fold.add({
-          occurredAt: row.occurredAt.toISOString(),
-          mitreTactics: row.mitreTactics,
-          mitreTechniques: row.mitreTechniques,
-        }),
-    );
-    return fold.result();
+  /** O resumo do período. Com `cases`, leva também os casos abertos nele. */
+  private async summary(window: ReportWindow, cases: boolean): Promise<SummaryReport> {
+    const from = new Date(window.from);
+    const summary = await this.foldFindings(window, summaryFold(await this.incidentsSince(from), window));
+    if (!cases) return summary;
+    const outcomes = await caseOutcomes(this.prisma.db(), this.prisma.scopeTenantId(), {
+      from,
+      to: new Date(window.to),
+    });
+    return { ...summary, cases: outcomes };
   }
 
   /** Incidentes que importam no período: os que começaram ou foram resolvidos nele, e todos os abertos. */
@@ -173,13 +177,13 @@ export class ReportsService {
   }
 
   /** O relatório pedido, na janela do pedido (um período até agora ou um intervalo personalizado). */
-  async report(kind: ReportKind, window: ReportWindow) {
+  async report(kind: ReportKind, window: ReportWindow, { cases = false }: { cases?: boolean } = {}) {
     const from = new Date(window.from);
     switch (kind) {
       case 'summary':
-        return this.foldFindings(window, summaryFold(await this.incidentsSince(from), window));
+        return this.summary(window, cases);
       case 'mitre':
-        return this.mitre(window);
+        return this.mitre(window, { cases });
       case 'rules':
         return this.foldFindings(window, rulesFold(window));
       case 'entities':

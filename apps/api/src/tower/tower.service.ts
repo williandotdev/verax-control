@@ -1,12 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   FINDING_SEVERITIES,
   FINDING_SOURCES,
   type FindingSeverity,
   type FindingSource,
   hasPermission,
+  type MitreTactic,
   PULSE_EVENT_SOURCES,
   type PulseEventSource,
+  RADAR_CASES_LIMIT,
   RADAR_DETECTIONS_LIMIT,
   RADAR_SECTORS,
   RADAR_WINDOW_HOURS,
@@ -14,10 +16,17 @@ import {
   REPORT_PERIOD_DAYS,
   reportWindow,
   type TowerPulse,
+  type TowerQuery,
   type TowerRadar,
+  type TowerRadarCases,
   type TowerSummary,
 } from '@verax/shared';
+import { radarCaseSelect, toRadarCase } from '../cases/case-radar.js';
+import { pendingCases, radarCases } from '../cases/case-summary-store.js';
+import { casesOperable, casesVisibleTo } from '../cases/cases-mode.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
+import { TenantCache } from '../common/cache/tenant-cache.js';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { combinedScore, PostureService } from '../posture/posture.service.js';
 import { ReportsService } from '../reports/reports.service.js';
@@ -26,6 +35,7 @@ import { WAZUH_COUNTER_ID } from '../usage/wazuh-usage.js';
 import {
   type AccountActivity,
   awsLogsStalledSince,
+  caseValidation,
   collectionHealth,
   coverage,
   DEFAULT_TOWER_THRESHOLDS,
@@ -35,11 +45,20 @@ import {
   pendingDecisions,
   pulseSince,
   stalledSources,
+  towerCases,
   trafficLight,
 } from './tower-rules.js';
 
 /** O resumo MITRE ATT&CK da Torre olha os últimos 30 dias, com as mesmas contas do relatório MITRE desse período. */
 const MITRE_PERIOD = '30d';
+/**
+ * Por quanto tempo o resumo MITRE da Torre vale para o mesmo cliente: todo painel aberto o pede a cada 60 s, e ele é o
+ * cálculo mais caro da Torre (30 dias de achados). Com isto, são no máximo dois por minuto e por cliente, com qualquer
+ * número de painéis; um painel só o recebe novo a cada pedido. O relatório MITRE não passa por aqui.
+ */
+export const TOWER_MITRE_TTL_MS = 30_000;
+/** Clientes guardados por processo (a célula serve muitos): cada resumo tem no máximo 14 táticas de 10 técnicas. */
+export const TOWER_MITRE_TENANTS = 500;
 
 /** A fila sem dono que conta na Torre: os alertas dos últimos 7 dias. */
 const UNOWNED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -81,15 +100,29 @@ function windowCounts(
  */
 @Injectable()
 export class TowerService {
+  private readonly mitreByTenant = new TenantCache<MitreTactic[]>({
+    ttlMs: TOWER_MITRE_TTL_MS,
+    maxTenants: TOWER_MITRE_TENANTS,
+  });
+  /** O mesmo resumo, com os casos de cada tática. À parte: quem não pede os casos nunca os recebe. */
+  private readonly mitreCasesByTenant = new TenantCache<MitreTactic[]>({
+    ttlMs: TOWER_MITRE_TTL_MS,
+    maxTenants: TOWER_MITRE_TENANTS,
+  });
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly posture: PostureService,
     private readonly reports: ReportsService,
+    @Inject(APP_CONFIG) private readonly config: Pick<AppConfig, 'CASES_MODE'>,
   ) {}
 
-  async summary(auth: RequestAuth, now = new Date()): Promise<TowerSummary> {
+  async summary(auth: RequestAuth, query: TowerQuery = {}, now = new Date()): Promise<TowerSummary> {
     const db = this.prisma.scoped();
     const thresholds = DEFAULT_TOWER_THRESHOLDS;
+    // A mesma regra de `GET /v1/cases/status`: na medição (`shadow`), só a equipe da Verax vê os casos.
+    const mode = this.config.CASES_MODE;
+    const withCases = query.cases === 'true' && casesVisibleTo(mode, auth.role);
 
     const bySeverity = await db.incident.groupBy({
       by: ['severity'],
@@ -152,7 +185,7 @@ export class TowerService {
             _max: { collectedAt: true },
           }),
       this.findingsPulse(now),
-      this.radar(now),
+      this.radar(now, withCases),
     ]);
     const sources = collectionHealth(
       {
@@ -167,10 +200,13 @@ export class TowerService {
     );
 
     const includeUnowned = hasPermission(auth.role, 'unowned_alerts:read');
-    const [unassignedIncidents, untriagedFindings, unownedAlerts] = await Promise.all([
+    const [unassignedIncidents, untriaged, unownedAlerts] = await Promise.all([
       db.incident.count({ where: { status: { not: 'resolved' }, assigneeId: null } }),
       // Todos os alertas altos ou críticos ainda em "novo", dentro ou fora de incidente: cada um é uma validação pendente.
-      db.finding.count({ where: { status: 'new', severity: { in: ['critical', 'high'] } } }),
+      // Com os casos, a mesma conta vem junto da deles, do mesmo retrato do banco.
+      withCases
+        ? pendingCases(this.prisma.db(), this.prisma.scopeTenantId())
+        : db.finding.count({ where: { status: 'new', severity: { in: ['critical', 'high'] } } }),
       // A fila sem dono não é de cliente nenhum: só a equipe da Verax vê, e só ela recebe a contagem.
       includeUnowned
         ? this.prisma.db().unownedAlert.count({
@@ -179,9 +215,15 @@ export class TowerService {
         : Promise.resolve(0),
     ]);
 
-    // Achados e incidentes que começaram nos últimos 30 dias, pelas mesmas contas do relatório MITRE.
-    const { tactics } = await this.reports.mitre(reportWindow(MITRE_PERIOD, now));
-    const mitre = { periodDays: REPORT_PERIOD_DAYS[MITRE_PERIOD], tactics };
+    const pending = typeof untriaged === 'number' ? null : untriaged;
+    const untriagedFindings = typeof untriaged === 'number' ? untriaged : untriaged.untriagedFindings;
+    // As decisões só passam a contar casos com eles ligados: na medição, ninguém decide por caso.
+    const validation = pending !== null && casesOperable(mode) ? caseValidation(pending) : undefined;
+
+    const mitre = {
+      periodDays: REPORT_PERIOD_DAYS[MITRE_PERIOD],
+      tactics: await this.mitreTactics(now, withCases),
+    };
 
     // O medidor da AWS parado por mais de um cliente no Wazuh do nó é do nó, não de um cliente: só a equipe da Verax vê
     // (como a fila sem dono), e o aviso não cita cliente nenhum.
@@ -193,14 +235,14 @@ export class TowerService {
       : null;
 
     const { light, reasons } = trafficLight(
-      { openIncidents, postureScore, stalledSources: stalledSources(sources) },
+      { openIncidents, postureScore, stalledSources: stalledSources(sources), untriagedFindings },
       thresholds,
     );
     return {
       light,
       reasons,
       pendingDecisions: pendingDecisions(
-        { unassignedIncidents, untriagedFindings, unownedAlerts },
+        { unassignedIncidents, untriagedFindings, unownedAlerts, ...(validation && { validation }) },
         { includeUnowned },
       ),
       openIncidents,
@@ -220,9 +262,22 @@ export class TowerService {
         monthEvents: await this.monthEvents(now),
       },
       radar,
+      ...(pending !== null && { cases: towerCases(pending) }),
       mitre,
       generatedAt: now.toISOString(),
     };
+  }
+
+  /**
+   * Achados e incidentes que começaram nos últimos 30 dias, pelas mesmas contas do relatório MITRE, de até
+   * `TOWER_MITRE_TTL_MS` atrás. A chave é o cliente da sessão, o mesmo de onde o cálculo lê.
+   */
+  private mitreTactics(now: Date, cases: boolean): Promise<MitreTactic[]> {
+    const cache = cases ? this.mitreCasesByTenant : this.mitreByTenant;
+    return cache.get(this.prisma.scopeTenantId(), async () => {
+      const { tactics } = await this.reports.mitre(reportWindow(MITRE_PERIOD, now), { cases });
+      return tactics;
+    });
   }
 
   /**
@@ -231,7 +286,7 @@ export class TowerService {
    * aberto (não resolvido). O total da janela é contado à parte. Só fontes conhecidas: o sync não grava outras, e uma
    * fora da lista (dado corrompido) fica de fora do radar em vez de derrubar a Torre.
    */
-  private async radar(now: Date): Promise<TowerRadar> {
+  private async radar(now: Date, withCases: boolean): Promise<TowerRadar> {
     const db = this.prisma.scoped();
     const since = new Date(now.getTime() - RADAR_WINDOW_HOURS * HOUR_MS);
     const where = {
@@ -282,6 +337,7 @@ export class TowerService {
       windowHours: RADAR_WINDOW_HOURS,
       limit: RADAR_DETECTIONS_LIMIT,
       ...counts,
+      ...(withCases && { cases: await this.radarCases(since, now, counts.total) }),
       detections: rows.map((row) => ({
         id: row.id,
         severity: row.severity,
@@ -294,6 +350,53 @@ export class TowerService {
             ? { id: row.incidentId, open: openById.get(row.incidentId) === true }
             : null,
       })),
+    };
+  }
+
+  /**
+   * Os casos de detecção do radar: os ativos na janela, os mais graves primeiro, até `RADAR_CASES_LIMIT`. O total e os
+   * alertas são de todos. As linhas saem do escopo do cliente; um caso que sumiu entre as duas leituras só fica de fora.
+   */
+  private async radarCases(since: Date, now: Date, alertsInWindow: number): Promise<TowerRadarCases> {
+    const db = this.prisma.scoped();
+    const { total, alerts, shown } = await radarCases(this.prisma.db(), this.prisma.scopeTenantId(), {
+      since,
+      now,
+      limit: RADAR_CASES_LIMIT,
+    });
+    const rows =
+      shown.length === 0
+        ? []
+        : await db.alertCase.findMany({
+            where: { id: { in: shown.map(({ id }) => id) } },
+            select: radarCaseSelect,
+          });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const incidentIds = [
+      ...new Set([
+        ...rows.flatMap(({ incidentId }) => incidentId ?? []),
+        ...shown.flatMap(({ openIncidentId }) => openIncidentId ?? []),
+      ]),
+    ];
+    const found =
+      incidentIds.length === 0
+        ? []
+        : await db.incident.findMany({
+            where: { id: { in: incidentIds } },
+            select: { id: true, status: true, severity: true },
+          });
+    const incidents = new Map(
+      found.map(({ id, status, severity }) => [id, { open: status !== 'resolved', severity }]),
+    );
+    return {
+      total,
+      // As duas contas são de comandos seguidos: um alerta que chegou no meio não passa do total do radar.
+      alerts: Math.min(alerts, alertsInWindow),
+      limit: RADAR_CASES_LIMIT,
+      items: shown.flatMap(({ id, recent, openIncidentId }) => {
+        const row = byId.get(id);
+        return row === undefined ? [] : [toRadarCase(row, { recent, openIncidentId, since, now, incidents })];
+      }),
     };
   }
 
