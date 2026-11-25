@@ -7781,9 +7781,9 @@ cloudflare-oauth-steps.tsx,zone-health.tsx,labels.ts,oauth-return.ts,oauth-retur
       recebe a renovação;
   12. o retorno pelo navegador real, com o repasse do plano de controle (o e2e usa um Cloudflare de mentira que devolve o
       fragmento direto ao painel).
-- **Pendência que bloqueia ligar para cliente (fora deste escopo, `infra/`):** a exclusão do log de requisição do Cloud Run
-  para `/v1/public/cloudflare/callback` (desenho 1.2) não existe em `infra/gcp/envs/control-plane`; sem ela ou sem
-  `form_post`, o `code` fica 185 dias no log de requisição. O runbook manda parar antes do primeiro clique.
+- **`infra/` (revisão linha a linha):** `google_logging_project_exclusion.cloudflare_callback` tira do Cloud Logging só o log de
+  requisição de `/v1/public/cloudflare/callback` (a URL traz o `code`). O registro de acesso continua no log do serviço, sem a query.
+  `terraform test`: 69 de 69. Ainda não aplicada; o runbook manda conferir antes do primeiro clique.
 - **Riscos e dúvidas:**
   - Sem sessão, o cliente HTTP leva ao login (como em todo o painel), e a página não chega a dizer "comece de novo": o
     retorno é descartado e a pessoa recomeça pela tela de contas.

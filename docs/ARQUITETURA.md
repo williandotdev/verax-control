@@ -1992,8 +1992,8 @@ liga (`one`, `multi` ou `manual`) ou simula o nó anterior (`legacy`). O Cloudfl
 (`apps/web/e2e/cloudflare-oauth.mock.spec.ts`), que intercepta a navegação para a autorização e devolve o fragmento.
 
 **O que falta para ligar para um cliente** (detalhe em `docs/STATUS.md`, CF-8 e CF-9): a homologação com um app
-registrado (escopos, renovação sem segredo, `iss`, listas de contas e zonas, limites) e a exclusão do log de requisição
-do caminho do retorno no Cloud Run do plano de controle (ou `response_mode=form_post`), que ainda não existe em `infra/`.
+registrado (escopos, renovação sem segredo, `iss`, listas de contas e zonas, limites) e aplicar a exclusão do log de
+requisição do caminho do retorno (`cloudflare-oauth-callback`, em `infra/gcp/envs/control-plane/logging.tf`).
 
 ## Agentes nas instâncias do cliente
 
