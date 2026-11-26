@@ -62,6 +62,7 @@ export function ExceptionsPage() {
   const columns: Column<AlertException>[] = [
     {
       key: 'regra',
+      card: 'title',
       header: 'Regra',
       cell: (row) => (
         <button type="button" className="font-mono text-sm hover:underline" onClick={() => setOpen(row.id)}>

@@ -160,6 +160,7 @@ export function CloudAccountsPage() {
   const columns: Column<CloudAccount>[] = [
     {
       key: 'conta',
+      card: 'title',
       header: 'Conta',
       cell: (row) => (
         <button type="button" className="text-left hover:underline" onClick={() => setOpen(row.id)}>
@@ -181,8 +182,11 @@ export function CloudAccountsPage() {
     },
     {
       key: 'conexao',
+      card: 'status',
       header: 'Conexão',
       cell: (row) => <ConnectionCell account={row} attention={attention?.get(row.id) ?? null} />,
+      cardCell: (row) => <ConnectionBadge account={row} />,
+      cardDetail: (row) => <ConnectionDetail account={row} attention={attention?.get(row.id) ?? null} />,
     },
     {
       key: 'evento',
@@ -198,6 +202,8 @@ export function CloudAccountsPage() {
     {
       key: 'status',
       header: 'Status',
+      // No cartão do celular, "Ativa" é o normal e não ocupa espaço; "Inativa" aparece.
+      cardOmit: (row) => row.status === 'active',
       cell: (row) =>
         row.status === 'active' ? 'Ativa' : <span className="text-muted-foreground">Inativa</span>,
     },
@@ -313,24 +319,33 @@ const numberFormat = new Intl.NumberFormat('pt-BR');
  * contagem (num nó de antes), só o selo.
  */
 function ConnectionCell({ account, attention }: { account: CloudAccount; attention: number | null }) {
-  const hint = connectionListHint(account);
-  const { icon: WarnIcon, tone } = SEVERITY_STYLES.medium;
   return (
     <span className="block space-y-0.5">
       <ConnectionBadge account={account} />
-      {hint && <span className="block max-w-80 text-xs text-muted-foreground">{hint}</span>}
-      {account.provider === 'aws' &&
-        account.connection === 'connected' &&
-        attention !== null &&
-        attention > 0 && (
-          <span className="flex items-center gap-1 text-xs">
-            <WarnIcon aria-hidden className={cn('size-3.5 shrink-0', tone)} />
-            {attention === 1
-              ? '1 fonte precisa de atenção'
-              : `${numberFormat.format(attention)} fontes precisam de atenção`}
-          </span>
-        )}
+      <ConnectionDetail account={account} attention={attention} />
     </span>
+  );
+}
+
+/** O que vem abaixo do selo: o motivo curto e, na conta AWS conectada, quantas fontes pedem atenção. No cartão do celular, na largura toda. */
+function ConnectionDetail({ account, attention }: { account: CloudAccount; attention: number | null }) {
+  const hint = connectionListHint(account);
+  const { icon: WarnIcon, tone } = SEVERITY_STYLES.medium;
+  const flagged =
+    account.provider === 'aws' && account.connection === 'connected' && attention !== null && attention > 0;
+  if (!hint && !flagged) return null;
+  return (
+    <>
+      {hint && <span className="block max-w-80 text-xs text-muted-foreground">{hint}</span>}
+      {flagged && (
+        <span className="flex items-center gap-1 text-xs">
+          <WarnIcon aria-hidden className={cn('size-3.5 shrink-0', tone)} />
+          {attention === 1
+            ? '1 fonte precisa de atenção'
+            : `${numberFormat.format(attention ?? 0)} fontes precisam de atenção`}
+        </span>
+      )}
+    </>
   );
 }
 

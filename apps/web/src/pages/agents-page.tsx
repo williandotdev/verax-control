@@ -453,6 +453,7 @@ function AgentList({ action }: { action: ReactNode }) {
   const columns: Column<Agent>[] = [
     {
       key: 'nome',
+      card: 'title',
       header: 'Nome',
       cell: (row) => (
         <>
@@ -483,6 +484,7 @@ function AgentList({ action }: { action: ReactNode }) {
     },
     {
       key: 'situacao',
+      card: 'status',
       header: 'Situação',
       cell: (row) => {
         const status = AGENT_STATUS_LABELS[row.status];

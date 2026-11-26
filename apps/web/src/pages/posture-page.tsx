@@ -129,11 +129,13 @@ export function PosturePage() {
   const columns: Column<PostureCheck>[] = [
     {
       key: 'severidade',
+      card: 'status',
       header: 'Gravidade',
       cell: (row) => <PostureSeverityBadge severity={row.severity} />,
     },
     {
       key: 'checagem',
+      card: 'title',
       header: 'Checagem',
       className: 'min-w-64',
       cell: (row) => (

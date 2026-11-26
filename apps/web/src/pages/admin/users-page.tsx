@@ -64,6 +64,7 @@ export function UsersPage() {
   const columns: Column<User>[] = [
     {
       key: 'nome',
+      card: 'title',
       header: 'Usuário',
       cell: (row) => (
         <button type="button" className="text-left hover:underline" onClick={() => setOpen(row.id)}>
@@ -75,6 +76,7 @@ export function UsersPage() {
     { key: 'papel', header: 'Papel', cell: (row) => ROLE_LABELS[row.role] },
     {
       key: 'status',
+      card: 'status',
       header: 'Status',
       cell: (row) => (
         <>
