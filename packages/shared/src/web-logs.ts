@@ -30,7 +30,12 @@ export const WEB_LOGS_DISABLED_CODE = 'WEB_LOGS_DISABLED';
  * - `WEB_TRUSTED_EXPIRY_INVALID`: validade no passado, ou além de 365 dias;
  * - `WEB_ESTIMATE_RATE_LIMITED`: estimativa do mesmo balanceador pedida há menos de 5 min;
  * - `SOURCE_NOT_AVAILABLE` e `SOURCE_PERMISSION_MISSING`: não dá para estimar um balanceador sem log ou sem permissão;
- * - `ACCOUNT_NOT_CONNECTED`: a conta não está conectada.
+ * - `ACCOUNT_NOT_CONNECTED`: a conta não está conectada;
+ * - `WEB_ALB_LOGGING_PENDING`: já há um pedido de ligar ou desligar o log deste balanceador esperando o worker;
+ * - `WEB_ALB_LOGGING_ALREADY_ON`: a descoberta já vê o log ligado (ou a Verax já o ligou): nada a ligar;
+ * - `WEB_ALB_LOGGING_NOT_ALB`: só o log de um ALB é ligado pelo painel;
+ * - `WEB_ALB_LOGGING_NOT_VERAX`: desligar só vale para o log que a Verax ligou;
+ * - `WEB_ALB_LOGGING_SOURCE_AUTHORIZED`: retire a autorização do balanceador antes de desligar o log dele.
  */
 export const WEB_LOGS_ERROR_CODES = [
   'SOURCE_NOT_AUTHORIZED',
@@ -44,6 +49,11 @@ export const WEB_LOGS_ERROR_CODES = [
   'WEB_ROUTE_LIMIT_REACHED',
   'WEB_ROUTE_DUPLICATE',
   'WEB_ESTIMATE_RATE_LIMITED',
+  'WEB_ALB_LOGGING_PENDING',
+  'WEB_ALB_LOGGING_ALREADY_ON',
+  'WEB_ALB_LOGGING_NOT_ALB',
+  'WEB_ALB_LOGGING_NOT_VERAX',
+  'WEB_ALB_LOGGING_SOURCE_AUTHORIZED',
 ] as const;
 export type WebLogsErrorCode = (typeof WEB_LOGS_ERROR_CODES)[number];
 

@@ -41,7 +41,8 @@ import {
   repeatsHighVolumeNote,
 } from '@/features/admin/aws-sources';
 import { Notice, Section, Tag } from '@/features/admin/aws-ui';
-import { AlbLoggingSteps, UnsupportedBalancerReason } from '@/features/web-attacks/alb-logging-steps';
+import { AlbLoggingControl, AlbLoggingOwned } from '@/features/web-attacks/alb-logging-control';
+import { UnsupportedBalancerReason } from '@/features/web-attacks/alb-logging-steps';
 import {
   acknowledgementOf,
   acknowledgementText,
@@ -290,7 +291,7 @@ const ESTIMATE_CLOCK_MS = 30_000;
  * "Fontes de log": o que a descoberta achou e ainda não está autorizado, em grupos: as disponíveis para coletar (com a
  * caixa de marcar e o "Autorizar selecionadas"), os grupos do CloudWatch Logs (a lista com busca), as que precisam de
  * permissão adicional (com a correção exata de cada uma e o "Verificar de novo"), as não habilitadas na AWS (com o
- * aviso de custo: ligar é decisão do cliente, e a Verax nunca liga nada), as que gravam onde o Verax não lê e as ainda
+ * aviso de custo: ligar é decisão do cliente; o log do ALB, a Verax liga só a pedido), as que gravam onde o Verax não lê e as ainda
  * não coletadas. Nada é marcado de antemão, e a autorização só vale quando a API responde com o estado novo.
  *
  * O balanceador só pode ser marcado com a estimativa de volume que vale: até lá, a linha dele mostra o passo da estimativa.
@@ -485,6 +486,9 @@ export function AwsSourceGroups({
                   {balancer && (
                     <EstimateStep source={source} web={webById.get(source.id)} canWrite={canAuthorize} />
                   )}
+                  {balancer && web.data != null && (
+                    <AlbLoggingOwned source={source} canWrite={canAuthorize} />
+                  )}
                   {source.authorization.revokedAt !== null && (
                     <p className="text-xs text-muted-foreground">
                       Autorização retirada em {formatDate(source.authorization.revokedAt)}. Pode ser
@@ -600,7 +604,7 @@ export function AwsSourceGroups({
       <SourceGroup
         title="Não habilitadas na AWS"
         count={groups.not_enabled.length}
-        description='Ligar um destes serviços tem custo na AWS, e a decisão é sua: o Verax nunca liga nada na sua conta. Se você ligar um deles, clique em Descobrir de novo, em "O que encontramos": a fonte passa a aparecer entre as disponíveis.'
+        description='Ligar um destes serviços tem custo na AWS, e a decisão é sua: o Verax só liga, a seu pedido, o log de acesso de um balanceador, e nada mais. Se você ligar um deles, clique em Descobrir de novo, em "O que encontramos": a fonte passa a aparecer entre as disponíveis.'
       >
         <SourceList label="Fontes não habilitadas na AWS">
           {groups.not_enabled.map((source) => (
@@ -611,7 +615,12 @@ export function AwsSourceGroups({
               </p>
               <SourceNotes source={source} omit={source.notes.filter((note) => !isAwsCostNote(note))} />
               {source.kind === 'elb_logs' && source.availability === 'no_destination' && (
-                <AlbLoggingSteps source={source} account={account} />
+                <AlbLoggingControl
+                  source={source}
+                  account={account}
+                  onboarding={onboarding}
+                  canWrite={canWrite}
+                />
               )}
             </li>
           ))}

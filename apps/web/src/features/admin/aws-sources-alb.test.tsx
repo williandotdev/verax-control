@@ -468,7 +468,8 @@ describe('balanceadores: os que não dá para ler', () => {
     const region = await screen.findByRole('region', { name: /^Não habilitadas na AWS \(1\)/ });
     expect(region).toHaveTextContent('O log de acesso está desligado.');
     expect(region).toHaveTextContent('tem custo na AWS, pelo volume gravado no S3');
-    await user.click(within(region).getByText('Como ligar o log de acesso do site-alb'));
+    // O nó de antes (sem a rota do log ligado pelo painel): a tela de antes, depois da leitura que volta 404.
+    await user.click(await within(region).findByText('Como ligar o log de acesso do site-alb'));
     expect(region).toHaveTextContent('na região sa-east-1');
     expect(region).toHaveTextContent('SSE-S3');
     expect(region).toHaveTextContent('sem prefixo');

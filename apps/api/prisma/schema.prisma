@@ -161,6 +161,7 @@ model Tenant {
   /// Ataques web pelos logs do ALB: a configuração do cliente, os objetos lidos, a evidência, o estado e o tráfego.
   webSourceSettings        WebSourceSettings[]
   webSourceEstimates       WebSourceEstimate[]
+  webAlbLoggings           WebAlbLogging[]
   webTrustedSources        WebTrustedSource[]
   webRoutes                WebRoute[]
   webLogObjects            WebLogObject[]
@@ -647,6 +648,7 @@ model AwsSource {
   /// Ataques web pelos logs do ALB: o que só existe por este balanceador (`elb_logs`).
   webSettings     WebSourceSettings?
   webEstimate     WebSourceEstimate?
+  webAlbLogging   WebAlbLogging?
   webTrusted      WebTrustedSource[]
   webRoutes       WebRoute[]
   webLogObjects   WebLogObject[]
@@ -1950,6 +1952,48 @@ model WebSourceSettings {
 
   @@id([sourceId, tenantId])
   @@index([tenantId])
+}
+
+/// O log de acesso de um ALB ligado pelo painel (a pilha com `EnableAlbAccessLogs`): o pedido (`pending`, que o worker desfaz
+/// ao responder), o último resultado e, enquanto o log que a Verax ligou continua como ela deixou (`enabledByVerax`), o que
+/// ela mudou e o estado de antes. O "Desligar" só vale para o que a Verax ligou. Sai com a fonte.
+model WebAlbLogging {
+  sourceId        String    @db.Uuid
+  tenantId        String    @db.Uuid
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source          AwsSource @relation(fields: [sourceId, tenantId], references: [id, tenantId], onDelete: Cascade, onUpdate: Restrict)
+  /// `enable` ou `disable` (CHECK), pedido e ainda não respondido; null sem pedido pendente.
+  pending         String?   @db.VarChar(8)
+  requestedAt     DateTime? @db.Timestamptz(3)
+  requestedBy     String?   @db.VarChar(64)
+  /// A ação do último resultado (`enable` ou `disable`).
+  lastAction      String?   @db.VarChar(8)
+  /// `enabled`, `already_enabled`, `disabled`, `released` ou `failed` (CHECK); null antes do primeiro resultado.
+  status          String?   @db.VarChar(16)
+  /// O motivo, só no `failed`.
+  errorCode       String?   @db.VarChar(32)
+  completedAt     DateTime? @db.Timestamptz(3)
+  /// O log está ligado no bucket da pilha, como a Verax o deixou: só então o "Desligar" do painel vale.
+  enabledByVerax  Boolean   @default(false)
+  /// O balanceador (ARN) e o destino em que a Verax ligou o log; no `already_enabled`, o destino que já existia.
+  loadBalancerArn String?   @db.VarChar(256)
+  bucket          String?   @db.VarChar(63)
+  prefix          String?   @db.VarChar(512)
+  enabledAt       DateTime? @db.Timestamptz(3)
+  enabledBy       String?   @db.VarChar(64)
+  /// Os atributos do log como a Verax os leu antes de ligar.
+  previousEnabled Boolean?
+  previousBucket  String?   @db.VarChar(63)
+  previousPrefix  String?   @db.VarChar(512)
+  disabledAt      DateTime? @db.Timestamptz(3)
+  disabledBy      String?   @db.VarChar(64)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([sourceId, tenantId])
+  @@index([tenantId])
+  /// Os pedidos pendentes, do mais antigo.
+  @@index([requestedAt])
 }
 
 /// A estimativa de volume de um balanceador, antes da autorização: o pedido do painel (`requestedAt`, que o worker desfaz ao

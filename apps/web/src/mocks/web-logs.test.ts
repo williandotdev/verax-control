@@ -5,6 +5,7 @@ import {
   findingSchema,
   paginatedSchema,
   type Role,
+  webAlbLoggingSchema,
   WEB_OBSERVE_MS,
   WEB_ROUTES_LIMIT,
   type WebLogSource,
@@ -25,7 +26,12 @@ import { acknowledgementOf, usableEstimate } from '@/features/web-attacks/estima
 import { DEMO_AWS_COLLECTOR_MS } from './aws-onboarding';
 import { demoMe } from './fixtures';
 import { createHandlers, type MockState } from './handlers';
-import { DEMO_ALBS, DEMO_WEB_ESTIMATE_DELAY_MS } from './web-logs';
+import {
+  DEMO_ALB_LOGGING_DELAY_MS,
+  DEMO_ALBS,
+  DEMO_WEB_ESTIMATE_DELAY_MS,
+  MOCK_ALB_LOGS_STORAGE_KEY,
+} from './web-logs';
 
 /** Os ataques web na demonstração: as mesmas regras da API, e os estados que as telas precisam mostrar. */
 
@@ -185,6 +191,55 @@ describe('as regras, como as da API', () => {
     expect(
       (await api.post(path(source, '/estimate'), undefined, webLogSourceSchema)).estimate?.requestedAt,
     ).not.toBeNull();
+  });
+
+  it('o log do ALB ligado pelo painel: o pedido, a resposta do "worker", as recusas e o nó de antes', async () => {
+    start();
+    const site = await byName(DEMO_ALBS.noLogs);
+    const read = () => api.get(path(site, '/access-logs'), webAlbLoggingSchema);
+    expect(await read()).toMatchObject({ pending: null, status: null, enabledByVerax: false });
+    expect(await refused(api.post(path(site, '/access-logs/enable'), {}))).toMatchObject({ status: 400 });
+    const asked = await api.post(path(site, '/access-logs/enable'), { confirm: true }, webAlbLoggingSchema);
+    expect(asked.pending).toBe('enable');
+    expect(await refused(api.post(path(site, '/access-logs/enable'), { confirm: true }))).toMatchObject({
+      code: 'WEB_ALB_LOGGING_PENDING',
+    });
+    pass(DEMO_ALB_LOGGING_DELAY_MS);
+    expect(await read()).toMatchObject({ pending: null, status: 'enabled', enabledByVerax: true });
+    // Desligar só o que o Verax ligou; o balanceador que já tinha log não se liga de novo.
+    expect(
+      await refused(
+        api.post(path(await byName(DEMO_ALBS.alerting), '/access-logs/disable'), { confirm: true }),
+      ),
+    ).toMatchObject({ code: 'WEB_ALB_LOGGING_NOT_VERAX' });
+    expect(
+      await refused(
+        api.post(path(await byName(DEMO_ALBS.alerting), '/access-logs/enable'), { confirm: true }),
+      ),
+    ).toMatchObject({ code: 'WEB_ALB_LOGGING_ALREADY_ON' });
+    // Quem só lê não pede.
+    start('leitura');
+    expect(await refused(api.post(path(site, '/access-logs/disable'), { confirm: true }))).toMatchObject({
+      status: 403,
+    });
+  });
+
+  it('o "worker" da pilha sem a opção, e o nó de antes sem as rotas', async () => {
+    start();
+    const site = await byName(DEMO_ALBS.noLogs);
+    window.localStorage.setItem(MOCK_ALB_LOGS_STORAGE_KEY, 'stack');
+    try {
+      await api.post(path(site, '/access-logs/enable'), { confirm: true }, webAlbLoggingSchema);
+      pass(DEMO_ALB_LOGGING_DELAY_MS);
+      expect(await api.get(path(site, '/access-logs'), webAlbLoggingSchema)).toMatchObject({
+        status: 'failed',
+        errorCode: 'stack_update_required',
+      });
+      window.localStorage.setItem(MOCK_ALB_LOGS_STORAGE_KEY, 'old');
+      expect(await refused(api.get(path(site, '/access-logs')))).toEqual({ status: 404, code: undefined });
+    } finally {
+      window.localStorage.removeItem(MOCK_ALB_LOGS_STORAGE_KEY);
+    }
   });
 
   it('o balanceador que não dá para ler não é estimado', async () => {

@@ -108,12 +108,15 @@ describe('ataques web pelos logs do ALB: desligados', () => {
       own,
       `${own}/health`,
       `${own}/routes`,
+      `${own}/access-logs`,
       '/v1/web-logs/trusted-sources',
       '/v1/web-logs/traffic',
     ];
     const writes: ['post' | 'patch' | 'delete', string][] = [
       ['patch', `${own}/settings`],
       ['post', `${own}/estimate`],
+      ['post', `${own}/access-logs/enable`],
+      ['post', `${own}/access-logs/disable`],
       ['post', `${own}/routes`],
       ['patch', `${own}/routes/${id}`],
       ['delete', `${own}/routes/${id}`],

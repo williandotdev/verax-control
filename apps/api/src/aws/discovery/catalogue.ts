@@ -569,7 +569,7 @@ export function analyzerSource(analyzer: AnalyzerFact, region: string): Discover
 
 // --- Serviço desligado ---
 
-/** O aviso de custo de ligar cada serviço. A Verax nunca liga: só avisa. */
+/** O aviso de custo de ligar cada serviço. A Verax só avisa (o log do ALB, ela liga só a pedido no painel). */
 const COST_NOTE: Partial<Record<AwsSourceKind, AwsSourceNote>> = {
   cloudtrail: 'aws_cost_new_trail',
   vpc_flow_logs: 'aws_cost_flow_logs',
@@ -742,7 +742,8 @@ export function parseLoadBalancerArn(
  * Com eles ligados:
  * - o ALB com o log ligado pode ser autorizado (volume alto: conta no plano), e o prefixo antes de `AWSLogs/` pede o bucket
  *   nos adicionais, como nas outras fontes;
- * - o ALB com o log desligado aparece sem destino, com o aviso de custo de ligá-lo (a Verax nunca liga);
+ * - o ALB com o log desligado aparece sem destino, com o aviso de custo de ligá-lo (a Verax só liga a pedido no painel,
+ *   com a pilha com `EnableAlbAccessLogs`: `weblogs/alb-logging/`);
  * - o NLB e o GWLB, com ou sem log, não servem: o log do NLB é só de TLS e não tem a URL, e o GWLB não tem log;
  * - o que não teve os atributos lidos continua fora: não dá para dizer se o log está ligado.
  */

@@ -752,7 +752,7 @@ export const AWS_SOURCE_NOTE_TEXTS: Readonly<Record<AwsSourceNote, string>> = {
   not_collected_yet: 'Encontrada, ainda não coletada nesta versão.',
 };
 
-/** As notas de custo: ligar o serviço é decisão do cliente, e a Verax nunca liga nada. */
+/** As notas de custo: ligar o serviço é decisão do cliente (o log do ALB, a Verax só liga a pedido no painel). */
 export const AWS_COST_NOTES = [
   'aws_cost_guardduty',
   'aws_cost_security_hub',

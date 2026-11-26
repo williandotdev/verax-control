@@ -4,6 +4,8 @@ import {
   WEB_OBSERVE_MS,
   WEB_ROUTES_LIMIT,
   WEB_TRUSTED_LIMIT,
+  type WebAlbLogging,
+  webAlbLoggingSchema,
   type WebEstimate,
   webEstimateSchema,
   type WebLogSource,
@@ -33,6 +35,27 @@ import {
 
 const HOUR = 3_600_000;
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
+
+/** O log de acesso ligado pelo painel, sem pedido nem resultado (o balanceador que nunca teve o log ligado pelo Verax). */
+export function albLoggingFixture(sourceId: string, overrides: Partial<WebAlbLogging> = {}): WebAlbLogging {
+  return webAlbLoggingSchema.parse({
+    sourceId,
+    pending: null,
+    requestedAt: null,
+    lastAction: null,
+    status: null,
+    errorCode: null,
+    completedAt: null,
+    enabledByVerax: false,
+    bucket: null,
+    enabledAt: null,
+    enabledBy: null,
+    disabledAt: null,
+    disabledBy: null,
+    previous: null,
+    ...overrides,
+  });
+}
 
 /** Um ALB com o log ligado, que o Verax lê, num nó com os ataques web. */
 export function albFixture(name: string, overrides: Partial<AwsSource> = {}): AwsSource {
@@ -181,6 +204,8 @@ export interface WebLogsState {
   health: Map<string, WebSourceHealth>;
   routes: Map<string, WebRoute[]>;
   trusted: WebTrustedSource[];
+  /** O log de acesso ligado pelo painel, por balanceador; sem a entrada, 404 (o nó de antes). */
+  albLogging: Map<string, WebAlbLogging>;
 }
 
 export interface WebLogsApi {
@@ -207,7 +232,14 @@ export function webLogsDisabled(code: string | null = 'WEB_LOGS_DISABLED'): Requ
 }
 
 export function webLogsApi(initial: Partial<WebLogsState> = {}, pageSize?: number): WebLogsApi {
-  const state: WebLogsState = { sources: [], health: new Map(), routes: new Map(), trusted: [], ...initial };
+  const state: WebLogsState = {
+    sources: [],
+    health: new Map(),
+    routes: new Map(),
+    trusted: [],
+    albLogging: new Map(),
+    ...initial,
+  };
   const calls: WebLogsCall[] = [];
   const replies: {
     prefix: string;
@@ -235,6 +267,18 @@ export function webLogsApi(initial: Partial<WebLogsState> = {}, pageSize?: numbe
         pageSize: size,
         total: state.sources.length,
       });
+    }
+    if (first === 'sources' && rest === 'access-logs') {
+      const logging = state.albLogging.get(id);
+      if (logging === undefined) return missing();
+      if (call.method === 'GET') return json(logging);
+      const next = webAlbLoggingSchema.parse({
+        ...logging,
+        pending: item === 'disable' ? 'disable' : 'enable',
+        requestedAt: iso(0),
+      });
+      state.albLogging.set(id, next);
+      return json(next, 202);
     }
     if (first === 'sources') {
       const source = state.sources.find((candidate) => candidate.id === id);

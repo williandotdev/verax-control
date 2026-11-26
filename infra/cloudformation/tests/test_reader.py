@@ -235,6 +235,27 @@ ALLOWED_ACTIONS = frozenset(
         "wafv2:ListWebACLs",
     }
 )
+# A única escrita do papel, só com EnableAlbAccessLogs (o padrão é não): os atributos de um ALB desta região, para o
+# painel ligar o log de acesso a pedido do cliente. Fica fora da lista de leitura e é conferida inteira, à parte.
+ALB_LOGS_SID = "LigarLogDosAlb"
+ALB_LOGS_ACTION = "elasticloadbalancing:ModifyLoadBalancerAttributes"
+ALB_LOGS_RESOURCE = {
+    "Fn::Sub": "arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*"
+}
+ALB_LOGS_STATEMENT = {
+    "Sid": ALB_LOGS_SID,
+    "Effect": "Allow",
+    "Action": ALB_LOGS_ACTION,
+    "Resource": ALB_LOGS_RESOURCE,
+}
+ALB_LOGS_TAG = {
+    "Fn::If": [
+        "ManagesAlbLogs",
+        {"Key": "verax-control:alb-logs-bucket", "Value": {"Fn::Sub": "${AWS::Region}/${AlbLogsBucket}"}},
+        {"Ref": "AWS::NoValue"},
+    ]
+}
+ALB = f"arn:aws:elasticloadbalancing:sa-east-1:{ACCOUNT}:loadbalancer/app/loja/0123456789abcdef"
 # Verbos que nunca aparecem numa ação liberada, nem com o nome certo na lista acima (segunda trava).
 WRITE_VERB = re.compile(
     r":(Accept|Add|Apply|Archive|Associate|Attach|Cancel|Create|Delete|Detach|Disable|Disassociate|Enable|Import|"
@@ -427,15 +448,32 @@ def wildcard(pattern, value):
     return re.fullmatch(regex, value, re.DOTALL) is not None
 
 
+def default_actions(statement):
+    """A declaração com cada Fn::If da lista de ações no ramo falso, o do padrão (as opções desligadas). Só a negação
+    do balanceador usa isso: com EnableAlbAccessLogs, o elasticloadbalancing:Modify* sai da lista."""
+    actions = statement.get("Action")
+    if not isinstance(actions, list) or not any(isinstance(a, dict) for a in actions):
+        return statement
+    resolved = []
+    for action in actions:
+        if isinstance(action, dict):
+            _, _, when_false = action["Fn::If"]
+            if when_false != {"Ref": "AWS::NoValue"}:
+                resolved.append(when_false)
+        else:
+            resolved.append(action)
+    return {**statement, "Action": resolved}
+
+
 def statements(document):
     """Declarações de uma política do template, com as condicionais (Fn::If) no ramo em que existem."""
     for item in document["Statement"]:
         if isinstance(item, dict) and "Fn::If" in item:
             _, when_true, when_false = item["Fn::If"]
             assert when_false == {"Ref": "AWS::NoValue"}, "o ramo falso de uma declaração deve ser NoValue"
-            yield when_true
+            yield default_actions(when_true)
         else:
-            yield item
+            yield default_actions(item)
 
 
 def conditional_statements(document):
@@ -607,6 +645,10 @@ def problems_read_only(template):
         if "NotAction" in statement or "NotResource" in statement:
             found.append(f"{sid}: NotAction ou NotResource num Allow")
             continue
+        if sid == ALB_LOGS_SID or ALB_LOGS_ACTION in as_list(statement["Action"]):
+            if statement != ALB_LOGS_STATEMENT:
+                found.append(f"{sid}: a escrita do ALB diferente da esperada")
+            continue
         if sid in EXPECTED_CAPABILITY_STATEMENTS and statement != EXPECTED_CAPABILITY_STATEMENTS[sid]:
             found.append(f"{sid}: diferente da declaração esperada da autorização")
         resources = as_list(statement["Resource"])
@@ -641,6 +683,13 @@ def problems_capabilities(template):
     for sid in ALWAYS_SIDS:
         if by_sid.get(sid, "ausente") is not None:
             found.append(f"{sid}: a descoberta não pode depender de uma condição")
+    if by_sid.get(ALB_LOGS_SID, "ausente") != "ManagesAlbLogs":
+        found.append(f"{ALB_LOGS_SID}: a escrita do ALB precisa depender de EnableAlbAccessLogs")
+    spec = template["Parameters"].get("EnableAlbAccessLogs", {})
+    if (spec.get("Type"), spec.get("AllowedValues"), spec.get("Default")) != ("String", ["true", "false"], "false"):
+        found.append("EnableAlbAccessLogs: não é um parâmetro true/false desligado por padrão")
+    if template.get("Conditions", {}).get("ManagesAlbLogs") != {"Fn::Equals": [{"Ref": "EnableAlbAccessLogs"}, "true"]}:
+        found.append("ManagesAlbLogs: não é o parâmetro EnableAlbAccessLogs igual a true")
     for parameter, capability in CAPABILITIES.items():
         spec = template["Parameters"].get(parameter, {})
         if (spec.get("Type"), spec.get("AllowedValues"), spec.get("Default")) != ("String", ["true", "false"], "true"):
@@ -658,6 +707,7 @@ def problems_capabilities(template):
     if tags != [
         {"Key": "verax-control:template", "Value": TEMPLATE_VERSION},
         {"Key": "verax-control:capabilities", "Value": {"Fn::Join": ["", pieces]}},
+        ALB_LOGS_TAG,
     ]:
         found.append("papel sem as etiquetas do modelo e do que foi autorizado")
     return found
@@ -998,15 +1048,18 @@ class ReaderTemplateTest(unittest.TestCase):
         for name, resource in self.resources.items():
             if name not in stack.resources:
                 with self.subTest(resource=name):
-                    self.assertIn(resource["Condition"], {"CreatesTrail", "ExportsGuardDuty", "CreatesLogBucket"})
+                    self.assertIn(
+                        resource["Condition"], {"CreatesTrail", "ExportsGuardDuty", "CreatesLogBucket", "ManagesAlbLogs"}
+                    )
         self.assertEqual(self.parameters["CreateTrail"]["Default"], "false")
         self.assertEqual(self.parameters["EnableGuardDutyExport"]["Default"], "false")
+        self.assertEqual(self.parameters["EnableAlbAccessLogs"]["Default"], "false")
 
     def test_no_user_key_or_secret_anywhere(self):
         self.assertEqual(problems_no_user_or_key(self.template), [])
         self.assertEqual(
             set(self.template["Outputs"]),
-            {"RoleArn", "TrailBucketArn", "GuardDutyBucketArn", "LogsKeyArn", "AccessLogsBucketArn"},
+            {"RoleArn", "TrailBucketArn", "GuardDutyBucketArn", "LogsKeyArn", "AccessLogsBucketArn", "AlbLogsBucketName"},
         )
         self.assertFalse([name for name, spec in self.parameters.items() if spec.get("NoEcho")])
 
@@ -1312,8 +1365,14 @@ class ReaderTemplateTest(unittest.TestCase):
                     self.assertFalse(stack.allows(action, f"arn:aws:iam::{ACCOUNT}:{other}"))
 
     def test_no_allowed_call_is_cancelled_by_an_unconditional_deny(self):
+        # A escrita do ALB fica de fora: no padrão (opção desligada), a negação dela é justamente o que vale.
         denied = {a for s in all_statements(self.template) if is_unconditional_deny(s) for a in as_list(s["Action"])}
-        allowed = {a for s in all_statements(self.template) if s["Effect"] == "Allow" for a in as_list(s["Action"])}
+        allowed = {
+            a
+            for s in all_statements(self.template)
+            if s["Effect"] == "Allow" and s.get("Sid") != ALB_LOGS_SID
+            for a in as_list(s["Action"])
+        }
         clashes = {action for action in allowed if matches(action, denied)}
         self.assertFalse(clashes, f"ações liberadas e negadas ao mesmo tempo: {sorted(clashes)}")
         self.assertTrue(WAZUH_CALLS | POSTURE_CALLS | VALIDATION_CALLS | DISCOVERY_CALLS <= allowed)
@@ -1324,7 +1383,9 @@ class ReaderTemplateTest(unittest.TestCase):
         # Nos dois sentidos: nada liberado fora da lista, e nada na lista que o template não use (uma ação tirada do
         # template sai da lista também). Nenhum curinga numa ação liberada, e nenhum verbo de escrita.
         allowed = {a for s in all_statements(self.template) if s["Effect"] == "Allow" for a in as_list(s["Action"])}
-        self.assertEqual(allowed, set(ALLOWED_ACTIONS))
+        self.assertEqual(allowed - {ALB_LOGS_ACTION}, set(ALLOWED_ACTIONS))
+        self.assertIn(ALB_LOGS_ACTION, allowed)
+        allowed -= {ALB_LOGS_ACTION}
         self.assertFalse({action for action in allowed if "*" in action or "?" in action})
         self.assertFalse({action for action in allowed if WRITE_VERB.search(action)})
         self.assertEqual(
@@ -1335,11 +1396,16 @@ class ReaderTemplateTest(unittest.TestCase):
             | DISCOVERY_CALLS
             | set().union(*(capability["actions"] for capability in CAPABILITIES.values())),
         )
-        # O mesmo na pilha montada, com tudo ligado: o que a política de leitura diz é o que a lista diz.
+        # O mesmo na pilha montada, com tudo ligado: o que a política de leitura diz é o que a lista diz (com a escrita
+        # do ALB só quando ela é pedida).
         stack = self.stack(CreateTrail="true", EnableGuardDutyExport="true", GuardDutyDetectorId="a" * 32)
         document = stack.policy_document("ReaderPolicy")
         self.assertEqual({s["Effect"] for s in document["Statement"]}, {"Allow"})
         self.assertEqual({a for s in document["Statement"] for a in as_list(s["Action"])}, set(ALLOWED_ACTIONS))
+        with_alb = self.stack(EnableAlbAccessLogs="true").policy_document("ReaderPolicy")
+        self.assertEqual(
+            {a for s in with_alb["Statement"] for a in as_list(s["Action"])}, set(ALLOWED_ACTIONS) | {ALB_LOGS_ACTION}
+        )
         # A política de negação não libera nada.
         self.assertEqual({s["Effect"] for s in stack.policy_document("GuardrailsPolicy")["Statement"]}, {"Deny"})
 
@@ -1702,7 +1768,10 @@ class ReaderTemplateTest(unittest.TestCase):
             with self.subTest(parameter=name):
                 self.assertEqual(self.parameters[name]["Type"], kind)
                 self.assertEqual(self.parameters[name].get("Default"), default)
-        self.assertEqual(set(self.parameters) - set(CAPABILITIES), {name for name, _, _ in first_template})
+        # Depois do modelo 2, só um parâmetro novo, desligado por padrão: a pilha atualizada não ganha nada sem pedir.
+        self.assertEqual(
+            set(self.parameters) - set(CAPABILITIES) - {"EnableAlbAccessLogs"}, {name for name, _, _ in first_template}
+        )
 
     # --- O que o papel nunca faz ---
 
@@ -1944,7 +2013,7 @@ class ReaderTemplateTest(unittest.TestCase):
 
     def test_created_buckets_are_private_encrypted_versioned_and_retained(self):
         buckets = {name: r for name, r in self.resources.items() if r["Type"] == "AWS::S3::Bucket"}
-        self.assertEqual(set(buckets), {"AccessLogsBucket", "TrailBucket", "GuardDutyBucket"})
+        self.assertEqual(set(buckets), {"AccessLogsBucket", "TrailBucket", "GuardDutyBucket", "AlbLogsBucket"})
         logs_key = {"Fn::GetAtt": ["LogsKey", "Arn"]}
         for name, bucket in buckets.items():
             with self.subTest(bucket=name):
@@ -1965,8 +2034,8 @@ class ReaderTemplateTest(unittest.TestCase):
                     props["LifecycleConfiguration"]["Rules"][0]["ExpirationInDays"], {"Ref": "LogRetentionDays"}
                 )
                 encryption = props["BucketEncryption"]["ServerSideEncryptionConfiguration"][0]
-                if name == "AccessLogsBucket":
-                    # O log de acesso do S3 só é entregue com SSE-S3.
+                if name in {"AccessLogsBucket", "AlbLogsBucket"}:
+                    # O log de acesso do S3 e o do ALB só são entregues com SSE-S3.
                     self.assertEqual(encryption["ServerSideEncryptionByDefault"], {"SSEAlgorithm": "AES256"})
                 else:
                     self.assertEqual(
@@ -1990,6 +2059,105 @@ class ReaderTemplateTest(unittest.TestCase):
                 self.assertEqual(len(denies), 1)
         self.assertTrue(self.resources["LogsKey"]["Properties"]["EnableKeyRotation"])
         self.assertEqual(self.resources["LogsKey"]["DeletionPolicy"], "Retain")
+
+    def test_alb_logs_are_off_by_default_and_nothing_of_the_balancer_changes(self):
+        stack = self.stack()
+        self.assertNotIn("AlbLogsBucket", stack.resources)
+        self.assertNotIn(ALB_LOGS_SID, {s.get("Sid") for s in stack.policy_document("ReaderPolicy")["Statement"]})
+        tags = {tag["Key"] for tag in stack.properties("ReaderRole")["Tags"]}
+        self.assertNotIn("verax-control:alb-logs-bucket", tags)
+        for action in ("elasticloadbalancing:ModifyLoadBalancerAttributes", "elasticloadbalancing:ModifyListener"):
+            with self.subTest(action=action):
+                self.assertFalse(stack.allows(action, ALB))
+                # Nem com uma política de administrador anexada: a negação vale.
+                self.assertFalse(stack.allows(action, ALB, extra=[ADMIN]))
+
+    def test_alb_logs_only_change_the_attributes_of_an_alb_of_this_region(self):
+        stack = self.stack(EnableAlbAccessLogs="true")
+        self.assertTrue(stack.allows(ALB_LOGS_ACTION, ALB))
+        # De fora do IP do nó, de outra região, de outra conta, num NLB ou em outro recurso do balanceador: não.
+        self.assertFalse(stack.allows(ALB_LOGS_ACTION, ALB, source_ip=OTHER_IP))
+        for resource in (
+            ALB.replace("sa-east-1", "us-east-1"),
+            ALB.replace(ACCOUNT, "222222222222"),
+            ALB.replace("/app/", "/net/"),
+            f"arn:aws:elasticloadbalancing:sa-east-1:{ACCOUNT}:listener/app/loja/0123456789abcdef/0123456789abcdef",
+            f"arn:aws:elasticloadbalancing:sa-east-1:{ACCOUNT}:targetgroup/alvos/0123456789abcdef",
+        ):
+            with self.subTest(resource=resource):
+                self.assertFalse(stack.allows(ALB_LOGS_ACTION, resource))
+        # Nenhuma outra ação do balanceador, nem com uma política de administrador anexada (limite e negações).
+        for action in (
+            "elasticloadbalancing:ModifyListener",
+            "elasticloadbalancing:ModifyListenerAttributes",
+            "elasticloadbalancing:ModifyRule",
+            "elasticloadbalancing:ModifyTargetGroup",
+            "elasticloadbalancing:ModifyTargetGroupAttributes",
+            "elasticloadbalancing:ModifyCapacityReservation",
+            "elasticloadbalancing:ModifyIpPools",
+            "elasticloadbalancing:DeleteLoadBalancer",
+            "elasticloadbalancing:SetSecurityGroups",
+            "elasticloadbalancing:CreateListener",
+        ):
+            with self.subTest(action=action):
+                self.assertFalse(stack.allows(action, ALB))
+        for action in ("elasticloadbalancing:ModifyCapacityReservation", "elasticloadbalancing:ModifyIpPools"):
+            with self.subTest(action=action, admin=True):
+                self.assertFalse(stack.allows(action, ALB, extra=[ADMIN]))
+        self.assertFalse(
+            stack.allows(
+                "elasticloadbalancing:ModifyListener",
+                f"arn:aws:elasticloadbalancing:sa-east-1:{ACCOUNT}:listener/app/loja/0123456789abcdef/0123456789abcdef",
+                extra=[ADMIN],
+            )
+        )
+        # As negações de sempre continuam (o S3 e o próprio papel), e os logs nunca são apagados.
+        for action in ("s3:DeleteObject", "s3:PutBucketPolicy", "s3:PutLifecycleConfiguration", "iam:UpdateRole"):
+            with self.subTest(action=action):
+                self.assertFalse(stack.allows(action, "*", extra=[ADMIN]))
+
+    def test_alb_logs_bucket_is_private_readable_by_the_role_and_written_only_by_the_elb(self):
+        stack = Stack(self.template, **NODE, **ALL_OFF, EnableAlbAccessLogs="true")
+        bucket = stack.attribute("AlbLogsBucket", "Arn")
+        self.assertNotIn("LogsKey", stack.resources)
+        self.assertTrue(stack.allows("s3:ListBucket", bucket))
+        self.assertTrue(stack.allows("s3:GetBucketLocation", bucket))
+        self.assertTrue(stack.allows("s3:GetObject", f"{bucket}/AWSLogs/{ACCOUNT}/elasticloadbalancing/x.log.gz"))
+        self.assertFalse(stack.allows("s3:PutObject", f"{bucket}/AWSLogs/{ACCOUNT}/x"))
+        self.assertFalse(stack.allows("s3:DeleteObject", f"{bucket}/AWSLogs/{ACCOUNT}/x"))
+        # Com prefixos nos buckets adicionais, o bucket do ALB continua legível.
+        prefixed = self.stack(EnableAlbAccessLogs="true", LogObjectPrefix=f"logs-centrais/AWSLogs/{ACCOUNT}/")
+        bucket = prefixed.attribute("AlbLogsBucket", "Arn")
+        self.assertTrue(prefixed.allows("s3:GetObject", f"{bucket}/AWSLogs/{ACCOUNT}/elasticloadbalancing/x.log.gz"))
+        # A política: só TLS, e só a entrega do ELB (o principal de serviço, a política atual da AWS para toda região),
+        # na pasta desta conta e dos balanceadores desta região e conta.
+        statements = stack.policy_document("AlbLogsBucketPolicy")["Statement"]
+        self.assertEqual([s["Sid"] for s in statements], ["SomenteTLS", "EntregaDoLogDosAlb"])
+        delivery = statements[1]
+        self.assertEqual(
+            delivery,
+            {
+                "Sid": "EntregaDoLogDosAlb",
+                "Effect": "Allow",
+                "Principal": {"Service": "logdelivery.elasticloadbalancing.amazonaws.com"},
+                "Action": "s3:PutObject",
+                "Resource": f"{stack.attribute('AlbLogsBucket', 'Arn')}/AWSLogs/{ACCOUNT}/*",
+                "Condition": {
+                    "ArnLike": {"aws:SourceArn": f"arn:aws:elasticloadbalancing:sa-east-1:{ACCOUNT}:loadbalancer/*"}
+                },
+            },
+        )
+        # Bucket e política ficam na conta se a opção for desligada: nenhum ALB perde o log.
+        for name in ("AlbLogsBucket", "AlbLogsBucketPolicy"):
+            resource = self.resources[name]
+            self.assertEqual((resource["DeletionPolicy"], resource["UpdateReplacePolicy"]), ("Retain", "Retain"))
+        lifecycle = self.resources["AlbLogsBucket"]["Properties"]["LifecycleConfiguration"]["Rules"][0]
+        self.assertEqual(lifecycle["ExpirationInDays"], {"Ref": "LogRetentionDays"})
+        # A etiqueta do papel diz ao nó a região e o bucket; a saída, o nome.
+        tags = {tag["Key"]: tag["Value"] for tag in stack.properties("ReaderRole")["Tags"]}
+        self.assertEqual(tags["verax-control:alb-logs-bucket"], f"sa-east-1/{stack.ref('AlbLogsBucket')}")
+        self.assertTrue(IAM_TAG_VALUE.fullmatch(tags["verax-control:alb-logs-bucket"]))
+        self.assertEqual(stack.resolve(self.template["Outputs"]["AlbLogsBucketName"]["Value"]), stack.ref("AlbLogsBucket"))
 
     def test_created_trail_is_multi_region_validated_and_encrypted(self):
         trail = self.resources["Trail"]["Properties"]
@@ -2296,6 +2464,36 @@ class MutationTest(unittest.TestCase):
             if isinstance(item, dict) and "Fn::If" in item and item["Fn::If"][1].get("Sid") == "DecifrarSoPeloS3":
                 del item["Fn::If"][1]["Condition"]
         self.assertTrue(problems_read_only(template))
+
+    def test_alb_write_loosened(self):
+        def alb_statement(template):
+            return next(
+                item["Fn::If"][1]
+                for item in template["Resources"]["ReaderPolicy"]["Properties"]["PolicyDocument"]["Statement"]
+                if isinstance(item, dict) and "Fn::If" in item and item["Fn::If"][1].get("Sid") == ALB_LOGS_SID
+            )
+
+        for change in (
+            lambda s: s.update(Resource="*"),
+            lambda s: s.update(Action="elasticloadbalancing:Modify*"),
+            lambda s: s.update(Action=[ALB_LOGS_ACTION, "elasticloadbalancing:ModifyListener"]),
+            lambda s: s.update(
+                Resource={"Fn::Sub": "arn:${AWS::Partition}:elasticloadbalancing:*:${AWS::AccountId}:loadbalancer/*"}
+            ),
+        ):
+            template = self.mutated()
+            change(alb_statement(template))
+            self.assertTrue(problems_read_only(template))
+        # Sem depender do parâmetro: a escrita valeria em toda pilha.
+        template = self.mutated()
+        for item in template["Resources"]["ReaderPolicy"]["Properties"]["PolicyDocument"]["Statement"]:
+            if isinstance(item, dict) and "Fn::If" in item and item["Fn::If"][1].get("Sid") == ALB_LOGS_SID:
+                item["Fn::If"][0] = "ReadsServiceLogs"
+        self.assertTrue(problems_capabilities(template))
+        # Ligado por padrão: não.
+        template = self.mutated()
+        template["Parameters"]["EnableAlbAccessLogs"]["Default"] = "true"
+        self.assertTrue(problems_capabilities(template))
 
     def test_trust_without_each_condition(self):
         attacks = {

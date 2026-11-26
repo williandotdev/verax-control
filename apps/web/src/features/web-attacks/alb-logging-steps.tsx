@@ -17,9 +17,19 @@ import {
 
 /**
  * Como ligar o log de acesso de um ALB, para o cliente fazer na conta dele: o bucket na mesma região, só com SSE-S3, a política
- * que deixa a AWS entregar os logs, sem prefixo, e os atributos do balanceador. O Verax nunca faz nada disto: só mostra.
+ * que deixa a AWS entregar os logs, sem prefixo, e os atributos do balanceador. Daqui o Verax só mostra os passos: o botão
+ * "Ligar logs" (`alb-logging-control.tsx`) é o outro caminho, e com ele estes passos ficam como alternativa (`manual`).
  */
-export function AlbLoggingSteps({ source, account }: { source: AwsSource; account: CloudAccount }) {
+export function AlbLoggingSteps({
+  source,
+  account,
+  manual = false,
+}: {
+  source: AwsSource;
+  account: CloudAccount;
+  /** Ao lado do botão "Ligar logs": a alternativa de quem prefere fazer na própria conta. */
+  manual?: boolean;
+}) {
   const target = albTarget(source, account.accountId);
   const [bucket, setBucket] = useState(() => suggestedLogBucket(account.accountId, source.region));
   const name = awsSourceName(source);
@@ -32,12 +42,16 @@ export function AlbLoggingSteps({ source, account }: { source: AwsSource; accoun
   return (
     <details className="rounded-md border text-sm">
       <summary className="cursor-pointer px-3 py-2 font-medium wrap-anywhere">
-        Como ligar o log de acesso do {name}
+        {manual
+          ? 'Prefere fazer você mesmo? Os passos na sua conta AWS'
+          : `Como ligar o log de acesso do ${name}`}
       </summary>
       <div className="space-y-4 border-t p-3">
         <p>
-          Estes passos são seus, na sua conta AWS: o Verax só lê, e nunca liga nem altera nada. Depois deles,
-          clique em Descobrir de novo, em &ldquo;O que encontramos&rdquo;.
+          {manual
+            ? 'Se você não quer dar ao Verax a permissão de ligar o log, faça você mesmo, na sua conta AWS, com um bucket seu.'
+            : 'Estes passos são seus, na sua conta AWS: o Verax só lê, e nunca liga nem altera nada.'}{' '}
+          Depois deles, clique em Descobrir de novo, em &ldquo;O que encontramos&rdquo;.
         </p>
         <Notice tone="medium" title="Tem custo na AWS.">
           <p>

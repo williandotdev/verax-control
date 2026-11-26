@@ -15,10 +15,12 @@
       ReadAwsServiceLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
       ReadSecurityFindings: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
       ReadTaggedLogGroups: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+      EnableAlbAccessLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'false' }
     Conditions:
       ReadsServiceLogs: { Fn::Equals: [{ Ref: ReadAwsServiceLogs }, 'true'] }
       ReadsFindings: { Fn::Equals: [{ Ref: ReadSecurityFindings }, 'true'] }
       ReadsLogGroups: { Fn::Equals: [{ Ref: ReadTaggedLogGroups }, 'true'] }
+      ManagesAlbLogs: { Fn::Equals: [{ Ref: EnableAlbAccessLogs }, 'true'] }
     Resources:
       ReaderPolicy:
         Type: AWS::IAM::ManagedPolicy
@@ -121,6 +123,14 @@
                     Resource: { Ref: LogKmsKeyArns }
                     Condition: { StringLike: { kms:ViaService: s3.*.amazonaws.com } }
                   - { Ref: AWS::NoValue }
+              - Fn::If:
+                  - ManagesAlbLogs
+                  - Sid: LigarLogDosAlb
+                    Effect: Allow
+                    Action: elasticloadbalancing:ModifyLoadBalancerAttributes
+                    Resource:
+                      Fn::Sub: 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*'
+                  - { Ref: AWS::NoValue }
       GuardrailsPolicy:
         Type: AWS::IAM::ManagedPolicy
         Properties:
@@ -152,6 +162,11 @@
                     - Fn::If: [ReadsServiceLogs, ' service-logs', '']
                     - Fn::If: [ReadsFindings, ' findings', '']
                     - Fn::If: [ReadsLogGroups, ' log-groups', '']
+            - Fn::If:
+                - ManagesAlbLogs
+                - Key: 'verax-control:alb-logs-bucket'
+                  Value: { Fn::Sub: '${AWS::Region}/${AlbLogsBucket}' }
+                - { Ref: AWS::NoValue }
           AssumeRolePolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -187,6 +202,7 @@
       achados_so_com_leitura: PASS
       grupos_de_log_so_com_a_etiqueta: PASS
       etiquetas_do_papel: PASS
+      escrita_do_alb_exata: PASS
       waf_e_guardduty_intocados: PASS
 
 # --- Usuário, chave e segredo ---
@@ -1936,3 +1952,103 @@
   expectations:
     rules:
       etiquetas_do_papel: FAIL
+
+# --- A escrita do ALB (EnableAlbAccessLogs) ---
+
+- name: escrita do ALB em qualquer recurso
+  input:
+    Parameters:
+      EnableAlbAccessLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'false' }
+    Conditions:
+      ManagesAlbLogs: { Fn::Equals: [{ Ref: EnableAlbAccessLogs }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ManagesAlbLogs
+                  - Sid: LigarLogDosAlb
+                    Effect: Allow
+                    Action: elasticloadbalancing:ModifyLoadBalancerAttributes
+                    Resource: '*'
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      escrita_do_alb_exata: FAIL
+
+- name: escrita do ALB com outra ação do balanceador
+  input:
+    Parameters:
+      EnableAlbAccessLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'false' }
+    Conditions:
+      ManagesAlbLogs: { Fn::Equals: [{ Ref: EnableAlbAccessLogs }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ManagesAlbLogs
+                  - Sid: LigarLogDosAlb
+                    Effect: Allow
+                    Action: elasticloadbalancing:Modify*
+                    Resource:
+                      Fn::Sub: 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*'
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      escrita_do_alb_exata: FAIL
+      leitura_so_le: PASS
+
+- name: escrita do ALB ligada por padrão
+  input:
+    Parameters:
+      EnableAlbAccessLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'true' }
+    Conditions:
+      ManagesAlbLogs: { Fn::Equals: [{ Ref: EnableAlbAccessLogs }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - ManagesAlbLogs
+                  - Sid: LigarLogDosAlb
+                    Effect: Allow
+                    Action: elasticloadbalancing:ModifyLoadBalancerAttributes
+                    Resource:
+                      Fn::Sub: 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*'
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      escrita_do_alb_exata: FAIL
+
+- name: escrita do ALB fora do interruptor (sempre na política)
+  input:
+    Parameters:
+      EnableAlbAccessLogs: { Type: String, AllowedValues: ['true', 'false'], Default: 'false' }
+    Conditions:
+      ManagesAlbLogs: { Fn::Equals: [{ Ref: EnableAlbAccessLogs }, 'true'] }
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Sid: LigarLogDosAlb
+                Effect: Allow
+                Action: elasticloadbalancing:ModifyLoadBalancerAttributes
+                Resource:
+                  Fn::Sub: 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*'
+  expectations:
+    rules:
+      escrita_do_alb_exata: FAIL
+      leitura_so_le: FAIL

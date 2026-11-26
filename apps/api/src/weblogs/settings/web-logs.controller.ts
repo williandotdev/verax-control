@@ -14,6 +14,9 @@ import {
 } from '@nestjs/common';
 import {
   awsSourceIdSchema,
+  type WebAlbLogging,
+  type WebAlbLoggingRequest,
+  webAlbLoggingRequestSchema,
   type WebLogSource,
   type WebLogSourceList,
   type WebLogSourceListQuery,
@@ -38,6 +41,7 @@ import type { Request } from 'express';
 import { z } from 'zod';
 import { RequirePermission } from '../../auth/decorators.js';
 import type { RequestAuth } from '../../common/auth/request-auth.js';
+import { WebAlbLoggingService } from './web-alb-logging.service.js';
 import { WebLogsEnabledGuard } from './web-logs-enabled.guard.js';
 import { WebLogsService } from './web-logs.service.js';
 
@@ -50,7 +54,10 @@ const idSchema = z.uuid();
 @Controller('web-logs')
 @UseGuards(WebLogsEnabledGuard)
 export class WebLogsController {
-  constructor(private readonly webLogs: WebLogsService) {}
+  constructor(
+    private readonly webLogs: WebLogsService,
+    private readonly albLogging: WebAlbLoggingService,
+  ) {}
 
   @Get('sources')
   @RequirePermission('cloud_accounts:read')
@@ -97,6 +104,37 @@ export class WebLogsController {
     @Param('sourceId', { schema: awsSourceIdSchema }) sourceId: string,
   ): Promise<WebLogSource> {
     return this.webLogs.requestEstimate(request.auth as RequestAuth, sourceId);
+  }
+
+  /** O log de acesso ligado pelo painel: o pedido pendente, o último resultado e o que a Verax ligou. */
+  @Get('sources/:sourceId/access-logs')
+  @RequirePermission('cloud_accounts:read')
+  accessLogs(@Param('sourceId', { schema: awsSourceIdSchema }) sourceId: string): Promise<WebAlbLogging> {
+    return this.albLogging.state(sourceId);
+  }
+
+  /** Pede ao worker que ligue o log de acesso do ALB no bucket da pilha (202); o painel acompanha pela leitura. */
+  @Post('sources/:sourceId/access-logs/enable')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @RequirePermission('cloud_accounts:write')
+  enableAccessLogs(
+    @Req() request: Request,
+    @Param('sourceId', { schema: awsSourceIdSchema }) sourceId: string,
+    @Body({ schema: webAlbLoggingRequestSchema }) _body: WebAlbLoggingRequest,
+  ): Promise<WebAlbLogging> {
+    return this.albLogging.requestEnable(request.auth as RequestAuth, sourceId);
+  }
+
+  /** Pede ao worker que desligue o log que a Verax ligou (202). */
+  @Post('sources/:sourceId/access-logs/disable')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @RequirePermission('cloud_accounts:write')
+  disableAccessLogs(
+    @Req() request: Request,
+    @Param('sourceId', { schema: awsSourceIdSchema }) sourceId: string,
+    @Body({ schema: webAlbLoggingRequestSchema }) _body: WebAlbLoggingRequest,
+  ): Promise<WebAlbLogging> {
+    return this.albLogging.requestDisable(request.auth as RequestAuth, sourceId);
   }
 
   @Get('sources/:sourceId/routes')

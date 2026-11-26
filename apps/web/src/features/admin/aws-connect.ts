@@ -123,6 +123,7 @@ export type AwsStackAccount = Pick<
 export function awsStackValues(
   account: AwsStackAccount,
   choice: AwsAuthorizationChoice,
+  options: AwsStackOptions = {},
 ): AwsReaderStackValues {
   return {
     nodeServiceAccountId: account.nodeServiceAccountId,
@@ -130,7 +131,13 @@ export function awsStackValues(
     audience: account.webIdentityAudience ?? AWS_READER_AUDIENCE,
     buckets: logBucketNames(account.buckets),
     capabilities: capabilitiesOfChoice(choice),
+    ...(options.albLogs === true && { albLogs: true }),
   };
+}
+
+/** O que a pilha leva além das autorizações: o log de acesso dos ALB ligado pelo painel (`EnableAlbAccessLogs`). */
+export interface AwsStackOptions {
+  albLogs?: boolean;
 }
 
 /** O arquivo preenchido, ou por que ele não pôde ser montado (só o código, nunca o valor recusado). */
@@ -145,11 +152,12 @@ export function prefilledReaderTemplate(
   templateText: string,
   account: AwsStackAccount,
   choice: AwsAuthorizationChoice,
+  options: AwsStackOptions = {},
 ): PrefilledTemplate {
   try {
     return {
       ok: true,
-      text: prefillReaderTemplate(templateText, awsStackValues(account, choice)),
+      text: prefillReaderTemplate(templateText, awsStackValues(account, choice, options)),
       fileName: awsReaderPrefilledFileName(account.accountId),
     };
   } catch (error) {
@@ -182,9 +190,10 @@ export function awsDeployCommand(
   account: AwsStackAccount,
   choice: AwsAuthorizationChoice,
   templateFile: string | null = null,
+  options: AwsStackOptions = {},
 ): string {
   return awsReaderDeployCommand(
-    awsStackValues(account, choice),
+    awsStackValues(account, choice, options),
     templateFile === null ? {} : { templateFile },
   );
 }

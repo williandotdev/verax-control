@@ -63,6 +63,8 @@ const CASE_ACCESS_KEYS = '20261203120000_case_access_keys';
 const SCOPED_EXCEPTIONS = '20261204120000_scoped_exceptions';
 /** Alerta-explicado: a alteração registrada no achado. */
 const FINDING_CHANGE = '20261205120000_finding_change';
+/** O log de acesso do ALB ligado pelo painel. */
+const WEB_ALB_LOGGING = '20261205130000_web_alb_logging';
 const migrationsDir = fileURLToPath(new URL('../prisma/migrations', import.meta.url));
 const migrations = readdirSync(migrationsDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -124,6 +126,7 @@ describe(`migration ${MIGRATION}`, () => {
       CASE_ACCESS_KEYS,
       SCOPED_EXCEPTIONS,
       FINDING_CHANGE,
+      WEB_ALB_LOGGING,
     ]);
     const additive = [
       MIGRATION,
@@ -137,6 +140,7 @@ describe(`migration ${MIGRATION}`, () => {
       CASE_ACCESS_KEYS,
       SCOPED_EXCEPTIONS,
       FINDING_CHANGE,
+      WEB_ALB_LOGGING,
     ];
     for (const name of additive) {
       const sql = sqlOf(name);

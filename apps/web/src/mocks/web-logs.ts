@@ -14,6 +14,9 @@ import {
   WEB_OBSERVE_MS,
   WEB_ROUTES_LIMIT,
   WEB_TRUSTED_LIMIT,
+  type WebAlbLogging,
+  webAlbLoggingRequestSchema,
+  webAlbLoggingSchema,
   type WebEstimate,
   type WebEstimateStatus,
   webLogSourceListQuerySchema,
@@ -49,6 +52,22 @@ export const MOCK_WEB_LOGS_STORAGE_KEY = 'verax.mock.web-logs';
 
 /** Quanto o "worker" da demonstração leva para responder a uma estimativa. */
 export const DEMO_WEB_ESTIMATE_DELAY_MS = 6_000;
+
+/**
+ * O log do ALB ligado pelo painel, na demonstração: `localStorage['verax.mock.alb-logs']` escolhe a resposta do "worker".
+ * Sem nada, ele liga; `stack`, a pilha sem a opção (`stack_update_required`); `old`, o nó de antes, sem as rotas (404 sem
+ * código), que mostra os passos de antes.
+ */
+export const MOCK_ALB_LOGS_STORAGE_KEY = 'verax.mock.alb-logs';
+export const DEMO_ALB_LOGGING_DELAY_MS = 3_000;
+const DEMO_ALB_BUCKET = 'verax-control-reader-alblogsbucket-1a2b3c4d5e6f';
+type DemoAlbMode = 'ok' | 'stack' | 'old';
+
+function demoAlbMode(): DemoAlbMode {
+  if (typeof window === 'undefined') return 'ok';
+  const value = window.localStorage.getItem(MOCK_ALB_LOGS_STORAGE_KEY);
+  return value === 'stack' || value === 'old' ? value : 'ok';
+}
 
 export function demoWebLogsEnabled(state: { webLogs?: boolean }): boolean {
   if (state.webLogs !== undefined) return state.webLogs;
@@ -102,6 +121,8 @@ export interface WebLogsStore {
   routes: Map<string, WebRoute[]>;
   /** A leitura dos balanceadores da demonstração; os outros saem da saúde da fonte. */
   health: Map<string, (now: number) => Omit<WebSourceHealth, 'sourceId' | 'since'>>;
+  /** O log de acesso ligado pelo painel, por balanceador. */
+  albLogging: Map<string, WebAlbLogging>;
 }
 
 let sequence = 0;
@@ -140,7 +161,59 @@ function emptyStore(): WebLogsStore {
     trusted: new Map(),
     routes: new Map(),
     health: new Map(),
+    albLogging: new Map(),
   };
+}
+
+const emptyAlbLogging = (sourceId: string): WebAlbLogging => ({
+  sourceId,
+  pending: null,
+  requestedAt: null,
+  lastAction: null,
+  status: null,
+  errorCode: null,
+  completedAt: null,
+  enabledByVerax: false,
+  bucket: null,
+  enabledAt: null,
+  enabledBy: null,
+  disabledAt: null,
+  disabledBy: null,
+  previous: null,
+});
+
+/** O "worker" da demonstração responde aos pedidos de ligar e desligar o log, alguns segundos depois. */
+function answerAlbLogging(store: WebLogsStore, mode: DemoAlbMode, now: number): void {
+  for (const [id, state] of store.albLogging) {
+    if (state.pending === null || state.requestedAt === null) continue;
+    if (now - Date.parse(state.requestedAt) < DEMO_ALB_LOGGING_DELAY_MS) continue;
+    const done = { pending: null, requestedAt: null, lastAction: state.pending, completedAt: iso(now) };
+    if (state.pending === 'disable') {
+      store.albLogging.set(id, {
+        ...state,
+        ...done,
+        status: 'disabled',
+        errorCode: null,
+        enabledByVerax: false,
+        disabledAt: iso(now),
+        disabledBy: DEMO_ADMIN,
+      });
+    } else if (mode === 'stack') {
+      store.albLogging.set(id, { ...state, ...done, status: 'failed', errorCode: 'stack_update_required' });
+    } else {
+      store.albLogging.set(id, {
+        ...state,
+        ...done,
+        status: 'enabled',
+        errorCode: null,
+        enabledByVerax: true,
+        bucket: DEMO_ALB_BUCKET,
+        enabledAt: iso(now),
+        enabledBy: DEMO_ADMIN,
+        previous: { enabled: false, bucket: null, prefix: null },
+      });
+    }
+  }
 }
 
 const NO_STATE = { observation: null, suppressed: [], notes: [], stateAt: null };
@@ -512,7 +585,73 @@ export function createWebLogsHandlers({ store, enabled, scoped, accountsOf, allo
   const body = (request: Request): Promise<unknown> => request.json().catch(() => undefined);
   const notFound = () => problem(404, 'Balanceador não encontrado');
 
+  const albView = (sourceId: string): WebAlbLogging => {
+    answerAlbLogging(store, demoAlbMode(), Date.now());
+    return webAlbLoggingSchema.parse(store.albLogging.get(sourceId) ?? emptyAlbLogging(sourceId));
+  };
+  /** O nó de antes não tem as rotas: 404 sem código. */
+  const oldNode = () => (demoAlbMode() === 'old' ? problem(404, 'Cannot GET') : null);
+  const requestAlbLogging = async (
+    params: Record<string, unknown>,
+    request: Request,
+    action: 'enable' | 'disable',
+  ) => {
+    const old = oldNode();
+    if (old !== null) return old;
+    const scope = open('cloud_accounts:write', request);
+    if (!scope.ok) return scope.error;
+    if (!webAlbLoggingRequestSchema.safeParse(await body(request)).success)
+      return problem(400, 'Dados inválidos');
+    const found = find(scope.tenantId, params['id']);
+    if (found === null) return notFound();
+    const { account, source } = found;
+    const before = albView(source.id);
+    if (before.pending !== null) {
+      return problem(409, 'Já há um pedido para o log deste balanceador.', 'WEB_ALB_LOGGING_PENDING');
+    }
+    if (account.status !== 'active' || account.connection !== 'connected') {
+      return problem(409, 'Conecte a conta antes de ligar o log.', 'ACCOUNT_NOT_CONNECTED');
+    }
+    if (action === 'enable') {
+      if (!(source.details.arn ?? '').includes(':loadbalancer/app/')) {
+        return problem(409, 'Só o log de um ALB.', 'WEB_ALB_LOGGING_NOT_ALB');
+      }
+      if (source.availability !== 'no_destination' || before.enabledByVerax) {
+        return problem(
+          409,
+          'O log de acesso deste balanceador já está ligado.',
+          'WEB_ALB_LOGGING_ALREADY_ON',
+        );
+      }
+    } else {
+      if (!before.enabledByVerax) {
+        return problem(409, 'O Verax só desliga o log que ele mesmo ligou.', 'WEB_ALB_LOGGING_NOT_VERAX');
+      }
+      if (isAuthorized(source)) {
+        return problem(409, 'Retire a autorização antes.', 'WEB_ALB_LOGGING_SOURCE_AUTHORIZED');
+      }
+    }
+    const next = { ...before, pending: action, requestedAt: iso(Date.now()) };
+    store.albLogging.set(source.id, next);
+    return HttpResponse.json(webAlbLoggingSchema.parse(next), { status: 202 });
+  };
+
   return [
+    http.get(url('/v1/web-logs/sources/:id/access-logs'), ({ params }) => {
+      const old = oldNode();
+      if (old !== null) return old;
+      const scope = open('cloud_accounts:read');
+      if (!scope.ok) return scope.error;
+      const found = find(scope.tenantId, params['id']);
+      return found === null ? notFound() : HttpResponse.json(albView(found.source.id));
+    }),
+    http.post(url('/v1/web-logs/sources/:id/access-logs/enable'), ({ params, request }) =>
+      requestAlbLogging(params, request, 'enable'),
+    ),
+    http.post(url('/v1/web-logs/sources/:id/access-logs/disable'), ({ params, request }) =>
+      requestAlbLogging(params, request, 'disable'),
+    ),
+
     http.get(url('/v1/web-logs/sources'), ({ request }) => {
       const scope = open('cloud_accounts:read');
       if (!scope.ok) return scope.error;
