@@ -1430,6 +1430,10 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Nova exceção' }));
     const sheet = await screen.findByRole('dialog', { name: 'Nova exceção' });
+    // O caminho mais fácil vem antes do número da regra.
+    expect(sheet).toHaveTextContent(
+      'O caminho mais fácil é criar a exceção a partir de um alerta ou de um caso',
+    );
     await userEvent.type(within(sheet).getByLabelText(/^Regra/), '80254');
     await userEvent.selectOptions(within(sheet).getByLabelText('Comparar por'), 'ip');
     await userEvent.type(within(sheet).getByLabelText(/^Valor/), 'não-é-ip');
@@ -1442,8 +1446,13 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
     await waitFor(async () => expect(await rowsOf('Exceções de alerta do cliente')).toHaveLength(4));
 
     // Exceção vencida: mudar só o motivo salva, sem reenviar a validade no passado.
-    await userEvent.click(screen.getByRole('button', { name: '80250' }));
-    const expired = await screen.findByRole('dialog', { name: 'Exceção da regra 80250' });
+    // E-09: o botão de cada exceção diz o título da regra e, abaixo, o número.
+    await userEvent.click(
+      await screen.findByRole('button', { name: (name) => name.endsWith('Regra 80250') }),
+    );
+    const expired = await screen.findByRole('dialog', {
+      name: (name) => name.startsWith('Exceção da regra 80250: '),
+    });
     await userEvent.clear(within(expired).getByLabelText('Motivo'));
     await userEvent.type(within(expired).getByLabelText('Motivo'), 'Troca de senha concluída.');
     await userEvent.click(within(expired).getByRole('button', { name: 'Salvar' }));
@@ -1453,14 +1462,39 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
     ) as HTMLElement;
     expect(expiredRow).toHaveTextContent('Vencida em');
 
-    await userEvent.click(screen.getByRole('button', { name: '80202' }));
-    const edit = await screen.findByRole('dialog', { name: 'Exceção da regra 80202' });
+    await userEvent.click(screen.getByRole('button', { name: (name) => name.endsWith('Regra 80202') }));
+    const edit = await screen.findByRole('dialog', {
+      name: (name) => name.startsWith('Exceção da regra 80202'),
+    });
     expect(edit).toHaveTextContent('48 alertas marcados por esta exceção');
     await userEvent.clear(within(edit).getByLabelText('Motivo'));
     await userEvent.type(within(edit).getByLabelText('Motivo'), 'Correção do job em andamento.');
     await userEvent.click(within(edit).getByRole('button', { name: 'Salvar' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(await screen.findByText('Correção do job em andamento.')).toBeInTheDocument();
+  });
+
+  it('E-09: o título da regra no lugar do número; num nó de antes (404), só o número', async () => {
+    renderAt('/cadastros/excecoes', undefined, undefined, [
+      http.get(`${API_URL}/v1/alert-exceptions/rule-titles`, ({ request }) => {
+        expect(new URL(request.url).searchParams.get('ruleIds')).toBe('80202,80250,80270');
+        return HttpResponse.json({ items: [{ ruleId: '80270', title: 'Bucket com leitura pública' }] });
+      }),
+    ]);
+    const button = await screen.findByRole('button', { name: 'Bucket com leitura públicaRegra 80270' });
+    expect(button).toBeInTheDocument();
+    // A regra sem título continua pelo número.
+    expect(screen.getByRole('button', { name: '80202' })).toBeInTheDocument();
+  });
+
+  it('E-09: num nó de antes, a rota não existe e a lista mostra só o número', async () => {
+    renderAt('/cadastros/excecoes', undefined, undefined, [
+      http.get(`${API_URL}/v1/alert-exceptions/rule-titles`, () =>
+        HttpResponse.json({ message: 'Não encontrado' }, { status: 404 }),
+      ),
+    ]);
+    expect(await screen.findByRole('button', { name: '80270' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '80250' })).toBeInTheDocument();
   });
 
   // Duas telas em sequência: no runner da CI, sob carga, a lista ainda carregava ao fim da espera padrão (3 s).

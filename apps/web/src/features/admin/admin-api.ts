@@ -1,6 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   type AlertExceptionCreate,
+  alertExceptionRuleTitlesSchema,
   alertExceptionSchema,
   type AlertExceptionUpdate,
   type CloudAccount,
@@ -264,6 +265,27 @@ export const useDeleteProtected = (id: string) =>
   useWrite(['admin-protected'], () => api.delete(`/v1/protected-resources/${encodeURIComponent(id)}`));
 
 // --- Exceções (T3.5) ---
+/**
+ * O título das regras de uma página de exceções (E-09), pelo número. Null enquanto não chega, num nó de antes (404) ou
+ * com erro: a lista mostra então só o número, como antes.
+ */
+export function useExceptionRuleTitles(ruleIds: readonly string[]): ReadonlyMap<string, string> | null {
+  const unique = [...new Set(ruleIds)].sort();
+  const query = useQuery({
+    queryKey: ['admin-exception-rule-titles', unique.join(',')],
+    queryFn: () =>
+      api.get(
+        `/v1/alert-exceptions/rule-titles?ruleIds=${encodeURIComponent(unique.join(','))}`,
+        alertExceptionRuleTitlesSchema,
+      ),
+    enabled: unique.length > 0,
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+  if (!query.data) return null;
+  return new Map(query.data.items.map((item) => [item.ruleId, item.title]));
+}
+
 export const useExceptionList = (page: number, enabled: boolean) =>
   useList('admin-exceptions', '/v1/alert-exceptions', alertExceptionSchema, page, enabled);
 export const useCreateException = () =>

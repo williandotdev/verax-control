@@ -16,6 +16,7 @@ import {
   useCreateException,
   useDeleteException,
   useExceptionList,
+  useExceptionRuleTitles,
   useUpdateException,
 } from '@/features/admin/admin-api';
 import { AdminShell, ConfirmButton, FormError, SelectInput, TextAreaField } from '@/features/admin/admin-ui';
@@ -58,6 +59,7 @@ export function ExceptionsPage() {
       return next;
     });
   const selected = list.data?.items.find((item) => item.id === open) ?? null;
+  const titles = useExceptionRuleTitles(list.data?.items.map((item) => item.ruleId) ?? []);
 
   const columns: Column<AlertException>[] = [
     {
@@ -65,9 +67,11 @@ export function ExceptionsPage() {
       card: 'title',
       header: 'Regra',
       cell: (row) => (
-        <button type="button" className="font-mono text-sm hover:underline" onClick={() => setOpen(row.id)}>
-          {row.ruleId}
-        </button>
+        <RuleName
+          ruleId={row.ruleId}
+          title={titles?.get(row.ruleId) ?? null}
+          onOpen={() => setOpen(row.id)}
+        />
       ),
     },
     {
@@ -140,7 +144,13 @@ export function ExceptionsPage() {
         onOpenChange={(value) => {
           if (!value) setOpen(null);
         }}
-        title={open === NEW ? 'Nova exceção' : `Exceção da regra ${selected?.ruleId ?? ''}`}
+        title={
+          open === NEW
+            ? 'Nova exceção'
+            : `Exceção da regra ${selected?.ruleId ?? ''}${
+                selected && titles?.get(selected.ruleId) ? `: ${titles.get(selected.ruleId) ?? ''}` : ''
+              }`
+        }
         description={selected ? `${EXCEPTION_FIELD_LABELS[selected.field]}: ${selected.value}` : undefined}
       >
         {open === NEW ? (
@@ -157,6 +167,26 @@ export function ExceptionsPage() {
         )}
       </Sheet>
     </AdminShell>
+  );
+}
+
+/**
+ * A regra da exceção na lista (E-09): o título dela (o do alerta mais recente da regra, texto vindo do log e mostrado
+ * como texto) e, abaixo, o número, em letra menor. Sem o título (a regra não disparou nos últimos 180 dias, ou um nó de
+ * antes), só o número, como antes.
+ */
+function RuleName({ ruleId, title, onOpen }: { ruleId: string; title: string | null; onOpen: () => void }) {
+  return (
+    <button type="button" className="min-h-11 text-left hover:underline md:min-h-0" onClick={onOpen}>
+      {title === null ? (
+        <span className="font-mono text-sm">{ruleId}</span>
+      ) : (
+        <>
+          <span className="block text-sm font-medium">{title}</span>
+          <span className="block font-mono text-xs text-muted-foreground">Regra {ruleId}</span>
+        </>
+      )}
+    </button>
   );
 }
 
@@ -190,6 +220,10 @@ function CreateException({ onDone }: { onDone: () => void }) {
 
   return (
     <form onSubmit={submit} noValidate className="space-y-4">
+      <p className="rounded-md border p-3 text-sm">
+        O caminho mais fácil é criar a exceção a partir de um alerta ou de um caso, em Detecções: ali a regra,
+        o campo e o valor já vêm preenchidos. Aqui, para quem já sabe o número da regra.
+      </p>
       <Field
         label="Regra"
         hint="O número da regra, que aparece no detalhe do alerta (dos logs da AWS ou da auditoria da GCP)."

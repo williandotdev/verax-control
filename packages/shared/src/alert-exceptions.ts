@@ -69,3 +69,40 @@ export const alertExceptionSchema = z.strictObject({
   updatedAt: z.iso.datetime(),
 });
 export type AlertException = z.infer<typeof alertExceptionSchema>;
+
+/** Quantas regras a tela pede de uma vez: uma página de exceções. */
+export const ALERT_EXCEPTION_RULE_TITLES_MAX = 50;
+
+/**
+ * `GET /v1/alert-exceptions/rule-titles?ruleIds=80270,80202` (E-09 da auditoria de UX): o título de cada regra, para a
+ * lista de exceções dizer o que é a regra, e não só o número. O título é o do alerta mais recente da regra no cliente
+ * da sessão (a descrição da regra do Wazuh); a regra que não disparou nos últimos 180 dias fica fora da resposta, e a
+ * tela mostra só o número. Rota à parte da lista (o contrato da exceção é estrito: um painel de antes perderia a tela
+ * com um campo novo); num nó de antes, 404, e a tela mostra só o número.
+ */
+export const alertExceptionRuleTitlesQuerySchema = z.strictObject({
+  /** Os números das regras, separados por vírgula; a API recebe a lista já separada. */
+  ruleIds: z
+    .string()
+    .max(7 * ALERT_EXCEPTION_RULE_TITLES_MAX)
+    .transform((value) => value.split(','))
+    .pipe(
+      z
+        .array(z.string().regex(/^\d{1,6}$/, { error: 'ID de regra tem até 6 dígitos' }))
+        .min(1)
+        .max(ALERT_EXCEPTION_RULE_TITLES_MAX, { error: `até ${ALERT_EXCEPTION_RULE_TITLES_MAX} regras` }),
+    ),
+});
+export type AlertExceptionRuleTitlesQuery = z.infer<typeof alertExceptionRuleTitlesQuerySchema>;
+
+export const alertExceptionRuleTitlesSchema = z.strictObject({
+  items: z
+    .array(
+      z.strictObject({
+        ruleId: z.string().regex(/^\d{1,6}$/),
+        title: z.string().min(1).max(500),
+      }),
+    )
+    .max(ALERT_EXCEPTION_RULE_TITLES_MAX),
+});
+export type AlertExceptionRuleTitles = z.infer<typeof alertExceptionRuleTitlesSchema>;
