@@ -30,7 +30,7 @@ import { PostureSeverityBadge } from '@/features/posture/posture-severity-badge'
 import { usePostureChecks, usePostureOverview } from '@/features/posture/posture-api';
 import { useMe } from '@/features/session/session';
 import { cn } from '@/lib/cn';
-import { formatRelative } from '@/lib/format';
+import { formatList, formatRelative, plural } from '@/lib/format';
 
 const PAGE_SIZE = 20;
 
@@ -317,35 +317,48 @@ function AccountCard({
 function PartialScan({ accounts }: { accounts: PostureAccount[] }) {
   const partial = accounts.filter((item) => item.errors.length > 0);
   if (partial.length === 0) return null;
+  const refused = partial.reduce((sum, item) => sum + item.errors.length, 0);
   const { icon: Icon, tone, surface } = SEVERITY_STYLES.medium;
   return (
     <section
       aria-labelledby="postura-varredura-parcial"
       className={cn('space-y-2 rounded-md border p-3 text-sm', surface)}
     >
-      <h2 id="postura-varredura-parcial" className="flex items-center gap-2 font-semibold">
-        <Icon aria-hidden className={cn('size-4 shrink-0', tone)} />
-        Varredura parcial
-      </h2>
-      <ul className="space-y-2">
-        {partial.map((item) => (
-          <li key={item.accountId}>
-            <span className="font-medium">Conta {item.accountId}</span>
-            <ul className="mt-1 list-disc space-y-0.5 pl-5">
-              {item.errors.map((error) => (
-                <li key={`${error.section}:${error.region ?? ''}:${error.code}`}>
-                  {describePostureError(error)}.
-                </li>
-              ))}
-            </ul>
-          </li>
-        ))}
-      </ul>
-      <p>
-        As checagens que dependem dessas leituras aparecem como não lidas e ficam fora da nota: nunca contam
-        como aprovadas. Uma recusa costuma vir da política do papel verax-control-reader ou de uma SCP da
-        organização; a próxima varredura tenta de novo.
-      </p>
+      {/* R-10: numa linha, que a leitura foi parcial e que o não lido não conta como aprovado (a regra da nota); a lista e
+          o motivo, a um clique. */}
+      <div className="flex items-start gap-2">
+        <Icon aria-hidden className={cn('mt-0.5 size-4 shrink-0', tone)} />
+        <div>
+          <h2 id="postura-varredura-parcial" className="inline font-semibold">
+            Varredura parcial
+          </h2>
+          : a AWS recusou {plural(refused, 'leitura', 'leituras')}{' '}
+          {partial.length === 1 ? 'na conta' : 'nas contas'}{' '}
+          {formatList(partial.map((item) => item.accountId))}. As checagens que dependem delas ficam fora da
+          nota e não contam como aprovadas.
+        </div>
+      </div>
+      <Explainer label={`Ver ${refused === 1 ? 'a leitura' : `as ${refused} leituras`} e como corrigir`}>
+        <ul className="space-y-2 text-foreground">
+          {partial.map((item) => (
+            <li key={item.accountId}>
+              <span className="font-medium">Conta {item.accountId}</span>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                {item.errors.map((error) => (
+                  <li key={`${error.section}:${error.region ?? ''}:${error.code}`}>
+                    {describePostureError(error)}.
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+        <p>
+          As checagens que dependem dessas leituras aparecem como não lidas e ficam fora da nota: nunca contam
+          como aprovadas. Uma recusa costuma vir da política do papel verax-control-reader ou de uma SCP da
+          organização; a próxima varredura tenta de novo.
+        </p>
+      </Explainer>
     </section>
   );
 }

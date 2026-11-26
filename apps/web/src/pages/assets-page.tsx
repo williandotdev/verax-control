@@ -17,6 +17,7 @@ import { useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
 import { SeverityBadge } from '@/components/security/severity-badge';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
+import { Explainer } from '@/components/ui/explainer';
 import { SelectField } from '@/components/ui/select-field';
 import { SEVERITY_STYLES } from '@/design/severity';
 import { useAssets, useInventorySummary } from '@/features/inventory/inventory-api';
@@ -457,40 +458,54 @@ const GROUP_COLUMNS: Column<SecurityGroupAsset>[] = [
 function PartialCollection({ accounts }: { accounts: InventorySummary['accounts'] }) {
   const partial = accounts.filter((item) => item.errors.length > 0 || item.truncated);
   if (partial.length === 0) return null;
+  const refused = partial.reduce((sum, item) => sum + item.errors.length, 0);
   const { icon: Icon, tone, surface } = SEVERITY_STYLES.medium;
   return (
     <section
       aria-labelledby="ativos-coleta-parcial"
       className={cn('space-y-2 rounded-md border p-3 text-sm', surface)}
     >
-      <h2 id="ativos-coleta-parcial" className="flex items-center gap-2 font-semibold">
-        <Icon aria-hidden className={cn('size-4 shrink-0', tone)} />
-        Coleta parcial
-      </h2>
-      <ul className="space-y-2">
-        {partial.map((item) => (
-          <li key={item.accountId}>
-            <span className="font-medium">Conta {item.accountId}</span>
-            <ul className="mt-1 list-disc space-y-0.5 pl-5">
-              {item.errors.map((error) => (
-                <li key={`${error.section}:${error.region ?? ''}:${error.code}`}>
-                  {describeSectionError(error)}.
-                </li>
-              ))}
-              {item.truncated && (
-                <li>
-                  Alguma parte passou do teto de {INVENTORY_ITEM_CAP.toLocaleString('pt-BR')} itens por tipo:
-                  os itens além dele não aparecem.
-                </li>
-              )}
-            </ul>
-          </li>
-        ))}
-      </ul>
-      <p>
-        O que foi lido está nas abas. Uma recusa costuma vir da política do papel verax-control-reader ou de
-        uma SCP da organização; a próxima coleta, em até 24 horas, tenta de novo.
-      </p>
+      {/* R-10: numa linha, que a coleta foi parcial e onde está o que foi lido; a lista e o motivo, a um clique. */}
+      <div className="flex items-start gap-2">
+        <Icon aria-hidden className={cn('mt-0.5 size-4 shrink-0', tone)} />
+        <div>
+          <h2 id="ativos-coleta-parcial" className="inline font-semibold">
+            Coleta parcial
+          </h2>
+          :{' '}
+          {refused > 0
+            ? `a AWS recusou ${plural(refused, 'leitura', 'leituras')}`
+            : 'parte dos itens ficou de fora'}{' '}
+          {partial.length === 1 ? 'na conta' : 'nas contas'}{' '}
+          {formatList(partial.map((item) => item.accountId))}. O que foi lido está nas abas.
+        </div>
+      </div>
+      <Explainer label="Ver quais e como corrigir">
+        <ul className="space-y-2 text-foreground">
+          {partial.map((item) => (
+            <li key={item.accountId}>
+              <span className="font-medium">Conta {item.accountId}</span>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                {item.errors.map((error) => (
+                  <li key={`${error.section}:${error.region ?? ''}:${error.code}`}>
+                    {describeSectionError(error)}.
+                  </li>
+                ))}
+                {item.truncated && (
+                  <li>
+                    Alguma parte passou do teto de {INVENTORY_ITEM_CAP.toLocaleString('pt-BR')} itens por
+                    tipo: os itens além dele não aparecem.
+                  </li>
+                )}
+              </ul>
+            </li>
+          ))}
+        </ul>
+        <p>
+          O que foi lido está nas abas. Uma recusa costuma vir da política do papel verax-control-reader ou de
+          uma SCP da organização; a próxima coleta, em até 24 horas, tenta de novo.
+        </p>
+      </Explainer>
     </section>
   );
 }

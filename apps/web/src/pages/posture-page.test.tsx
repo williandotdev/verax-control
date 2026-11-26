@@ -103,6 +103,11 @@ describe('Postura cloud', () => {
   it('a varredura parcial diz o que a AWS recusou e que as checagens dela ficam fora da nota', async () => {
     renderAt('/postura');
     const band = await screen.findByRole('region', { name: 'Varredura parcial' });
+    // R-10: numa linha, que a leitura foi parcial e que o não lido não conta como aprovado; a lista, a um clique.
+    expect(band).toHaveTextContent(
+      `Varredura parcial: a AWS recusou 3 leituras na conta ${DEMO_ACCOUNTS.alfaProducao}. As checagens que dependem delas ficam fora da nota e não contam como aprovadas.Ver as 3 leituras e como corrigir`,
+    );
+    expect(within(band).getAllByRole('list')[0]?.closest('details')).not.toHaveAttribute('open');
     expect(band).toHaveTextContent(`Conta ${DEMO_ACCOUNTS.alfaProducao}`);
     expect(
       within(band)
