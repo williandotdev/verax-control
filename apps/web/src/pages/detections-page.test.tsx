@@ -276,6 +276,31 @@ describe('Detecções: a lista', () => {
   });
 });
 
+describe('Detecções abaixo de 1280 px (R-08)', () => {
+  it('as listas de alertas e de incidentes ficam enxutas: conta, origem, quem e quando embaixo do título', async () => {
+    renderAt('/?visao=alertas');
+    const table = await list();
+    expect(table).toHaveAttribute('data-dense', 'true');
+    expect(table).toHaveAttribute('data-compact', 'true');
+    const [first] = await rows();
+    const titleCell = within(first!)
+      .getByRole('button', { name: /^Abrir o alerta: / })
+      .closest('td');
+    // A linha de baixo traz a conta (que sai das colunas) e a hora.
+    const meta = titleCell!.querySelector('time')?.parentElement;
+    // A coluna "Conta" só sai pelo CSS (no jsdom ela continua): o mesmo texto vai na linha de baixo.
+    const account = within(first!).getAllByRole('cell')[2]?.textContent ?? '';
+    expect(account).not.toBe('');
+    expect(meta?.textContent).toContain(account);
+    expect(within(table).getByRole('columnheader', { name: 'Status' })).toBeInTheDocument();
+    expect(within(table).getByRole('columnheader', { name: 'Incidente' })).toBeInTheDocument();
+    cleanup();
+
+    renderAt('/?visao=incidentes');
+    expect(await list()).toHaveAttribute('data-compact', 'true');
+  });
+});
+
 describe('Detecções: o detalhe e a triagem', () => {
   it('o incidente abre na gaveta (tela estreita), com o resumo, o tratamento e a linha do tempo; o status muda ali', async () => {
     const router = renderAt('/?visao=incidentes');

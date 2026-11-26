@@ -287,8 +287,10 @@ function DetectionsContent({
       : { period: periods.period ?? '30d' };
 
   // Com o detalhe ou o radar ao lado, a tabela esconde as colunas que não cabem; numa tela muito larga, cabem com o radar.
-  const dense = besideRadar && !wide;
-  const compact = side && (selection !== null || dense);
+  // Abaixo de 1280 px (R-08), o mesmo arranjo enxuto: a conta, a origem, quem e quando numa linha embaixo do título, e a
+  // severidade, o status e o incidente como colunas, sem rolar de lado.
+  const dense = (besideRadar && !wide) || !side;
+  const compact = !side || selection !== null || dense;
   const tabs = side ? ANALYSIS_TABS.filter((tab) => tab.value !== 'list') : ANALYSIS_TABS;
 
   const strip = canTower && (

@@ -251,6 +251,7 @@ export function IncidentsList({
               incident={row.incident}
               matched={filtered ? row.matchedFindings : null}
               dense={page.dense === true}
+              compact={page.compact === true}
               selection={selection}
               onOpen={onOpen}
             />
@@ -274,6 +275,7 @@ export function IncidentsList({
                 </span>
                 {page.dense && (
                   <DenseMeta>
+                    {page.compact && row.finding.resource && <>{row.finding.resource} · </>}
                     <When at={row.finding.occurredAt} />
                   </DenseMeta>
                 )}
@@ -312,12 +314,15 @@ function IncidentRows({
   incident,
   matched,
   dense,
+  compact,
   selection,
   onOpen,
 }: {
   incident: Incident;
   matched: number | null;
   dense: boolean;
+  /** Sem as colunas do responsável e dos ativos: eles vão na linha embaixo do título. */
+  compact: boolean;
   selection: DetectionSelection;
   onOpen: (selection: NonNullable<DetectionSelection>, opener: HTMLElement) => void;
 }) {
@@ -356,7 +361,14 @@ function IncidentRows({
           </span>
           {dense && (
             <DenseMeta>
-              {incident.assignee?.name ?? 'Sem responsável'} · <When at={incident.lastSeenAt} />
+              {incident.assignee?.name ?? 'Sem responsável'} ·{' '}
+              {compact && incident.resources.length > 0 && (
+                <>
+                  {incident.resources[0]}
+                  {incident.resources.length > 1 && ` e mais ${incident.resources.length - 1}`} ·{' '}
+                </>
+              )}
+              <When at={incident.lastSeenAt} />
             </DenseMeta>
           )}
           <MobileMeta>
@@ -507,7 +519,12 @@ export function AlertsList({
               )}
               {page.dense && (
                 <DenseMeta>
-                  {[FINDING_SOURCE_LABELS[row.source], row.actor.user ?? row.actor.ip]
+                  {[
+                    // Sem a coluna da conta (enxuta), ela vem nesta linha: nenhuma informação some.
+                    page.compact ? findingOriginId(row.accountId) : null,
+                    FINDING_SOURCE_LABELS[row.source],
+                    row.actor.user ?? row.actor.ip,
+                  ]
                     .filter(Boolean)
                     .join(' · ')}{' '}
                   · <When at={row.occurredAt} />
