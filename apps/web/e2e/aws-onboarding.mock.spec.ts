@@ -179,7 +179,7 @@ test.describe('onboarding self-service da AWS (modo mock)', () => {
       const sources = sheet.getByRole('region', { name: 'Fontes de log' });
       await expect(sources.getByRole('region', { name: /^Precisam de permissão adicional/ })).toBeVisible();
       await expect(sources.getByRole('region', { name: /^Não habilitadas na AWS/ })).toContainText(
-        'o Verax nunca liga nada na sua conta',
+        'o Verax só liga, a seu pedido, o log de acesso de um balanceador, e nada mais',
       );
       await expect(sources.getByRole('region', { name: /^Ainda não coletadas/ })).toBeVisible();
       await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);

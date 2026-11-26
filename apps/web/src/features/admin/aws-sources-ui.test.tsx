@@ -125,7 +125,7 @@ describe('fontes de log: os grupos da tela', () => {
 
     const notEnabled = group(region, /^Não habilitadas na AWS \(2\)$/);
     expect(notEnabled).toHaveTextContent(
-      'Ligar um destes serviços tem custo na AWS, e a decisão é sua: o Verax nunca liga nada na sua conta.',
+      'Ligar um destes serviços tem custo na AWS, e a decisão é sua: o Verax só liga, a seu pedido, o log de acesso de um balanceador, e nada mais.',
     );
     // A linha do serviço desligado mostra só o tipo; cada uma com o aviso de custo dela.
     expect(notEnabled).toHaveTextContent('Inspector · conta inteira, desligado');

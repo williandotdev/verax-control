@@ -314,6 +314,34 @@ describe('log de acesso do ALB ligado pelo painel', () => {
     });
   });
 
+  it('o banco recusa o que o worker e a API nunca gravariam (CHECK da migration)', async () => {
+    const source = await idle(await account(tenantA));
+    const row = (data: Partial<Prisma.WebAlbLoggingUncheckedCreateInput>) =>
+      prisma.webAlbLogging.create({ data: { sourceId: source.id, tenantId: tenantA, ...data } });
+    for (const data of [
+      { pending: 'ligar', requestedAt: new Date(), requestedBy: adminA.userId },
+      { pending: 'enable', requestedBy: adminA.userId },
+      { pending: 'enable', requestedAt: new Date() },
+      { status: 'enabled', lastAction: 'enable' },
+      { status: 'failed', lastAction: 'enable', completedAt: new Date() },
+      { status: 'enabled', lastAction: 'enable', completedAt: new Date(), errorCode: 'permission_denied' },
+      { enabledByVerax: true, bucket: STACK_BUCKET, prefix: '' },
+      {
+        enabledByVerax: true,
+        bucket: STACK_BUCKET,
+        loadBalancerArn: source.arn,
+        enabledAt: new Date(),
+        prefix: 'outro',
+      },
+    ] satisfies Partial<Prisma.WebAlbLoggingUncheckedCreateInput>[]) {
+      await expect(row(data), JSON.stringify(data)).rejects.toThrow(/WebAlbLogging_values_check/);
+    }
+    // A cascata: a fonte apagada leva a linha.
+    await row({ pending: 'enable', requestedAt: new Date(), requestedBy: adminA.userId });
+    await prisma.awsSource.delete({ where: { id: source.id } });
+    expect(await rowOf(source.id)).toBeNull();
+  });
+
   describe('a tarefa do worker', () => {
     it('liga no bucket da pilha só as três chaves, guarda quem pediu e o estado de antes, e pede a descoberta', async () => {
       const cloud = await account(tenantA);

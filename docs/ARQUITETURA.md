@@ -2700,13 +2700,13 @@ banco. A fonte autorizada continua à vista, como "aguardando" e nunca "coletand
 outras fontes (uma listagem da pasta `AWSLogs/<conta>/elasticloadbalancing/<região>/` e 1 byte de um objeto), que o papel de
 leitura já cobre: nenhuma mudança no template.
 
-| Balanceador                                    | Como aparece                                                                       |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------- |
-| ALB com o log ligado                           | Disponível (nota `high_volume`) ou com a permissão que falta (`bucket_denied`...)  |
-| ALB com prefixo antes de `AWSLogs/`            | Precisa de permissão: `additional_bucket_required`, `outside_awslogs_prefix`       |
-| ALB com o log desligado                        | Sem destino, com `aws_cost_alb_logs`: ligar tem custo na AWS, e a Verax nunca liga |
-| NLB e GWLB, com ou sem log                     | Formato não lido: o log do NLB é só de TLS e sem URL; o GWLB não tem log           |
-| Atributos não lidos (recusados, estrangulados) | Como estava: não entra, não some                                                   |
+| Balanceador                                    | Como aparece                                                                        |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------- |
+| ALB com o log ligado                           | Disponível (nota `high_volume`) ou com a permissão que falta (`bucket_denied`...)   |
+| ALB com prefixo antes de `AWSLogs/`            | Precisa de permissão: `additional_bucket_required`, `outside_awslogs_prefix`        |
+| ALB com o log desligado                        | Sem destino, com `aws_cost_alb_logs`: ligar tem custo na AWS; só a pedido no painel |
+| NLB e GWLB, com ou sem log                     | Formato não lido: o log do NLB é só de TLS e sem URL; o GWLB não tem log            |
+| Atributos não lidos (recusados, estrangulados) | Como estava: não entra, não some                                                    |
 
 Os que aceitam conexão da internet (`details.internetFacing`) vêm primeiro. A fonte é a conta, a região e o nome do
 balanceador; o `app/<nome>/<id>` sai do ARN. Apagado e recriado com o mesmo nome, é a mesma fonte (com a autorização); como
@@ -2773,6 +2773,68 @@ inteiro). Com os ataques web desligados, o nó responde o que sempre respondeu. 
 Por isso a ordem: **esta versão sai, no painel e no nó, uma versão inteira antes de a linha ser ligada** (e de qualquer achado
 `alb` ser gravado); ligar só depois de o painel do cliente estar nela. Com achados `alb` gravados, não se volta para antes
 desta versão; para parar, desliga-se a linha.
+
+## Ligar o log de acesso do ALB pelo painel (`apps/api/src/weblogs/alb-logging/`)
+
+_(Migration `20261205120000_web_alb_logging`, só aditiva. Decisão do responsável: em vez do comando para o cliente rodar, a
+Verax liga o log a pedido no painel, com uma permissão de escrita opcional no papel do cliente.)_
+
+**A pilha.** O parâmetro `EnableAlbAccessLogs` do `verax-control-reader.yaml` (desligado por padrão, sem mudar a versão do
+modelo: a pilha v2 sem ele continua atual) cria, na região da pilha:
+
+- um bucket só para o log dos ALB: privado (bloqueio de acesso público, `BucketOwnerEnforced`), SSE-S3 (o ALB não grava com
+  chave do KMS), versionado, com retenção de `LogRetentionDays`, e que fica na conta (`Retain`, ele e a política) se a opção
+  for desligada: nenhum ALB perde o log. A política só aceita TLS e só deixa
+  `logdelivery.elasticloadbalancing.amazonaws.com` gravar em `AWSLogs/<conta>/`, de balanceadores desta região e conta
+  (`aws:SourceArn`). É a política atual da AWS, que vale em toda região; a antiga, com a conta do ELB de cada região, só
+  existe nas regiões de antes de 08/2022 e não é usada;
+- no papel, `elasticloadbalancing:ModifyLoadBalancerAttributes` em `loadbalancer/app/*` desta região e conta, numa declaração
+  da `VeraxControlReader` (`LigarLogDosAlb`). Ela é também o limite do papel: numa política separada, a ação precisaria estar
+  repetida no limite (e o template já está perto do limite de 51.200 bytes). Na negação, só essa ação sai do `Modify*` do
+  balanceador: o resto do `Modify*` fica negado fora dos ALB da região, e `ModifyCapacityReservation` e `ModifyIpPools`
+  negados em tudo;
+- a leitura do bucket pelo papel (as declarações dos buckets criados pela pilha) e a etiqueta
+  `verax-control:alb-logs-bucket` (`<região>/<bucket>`), que diz ao nó para onde ligar.
+
+**O pedido** (`/v1/web-logs/sources/:id/access-logs`, atrás do mesmo portão `AWS_WEB_LOGS_ENABLED`):
+
+| Rota             | Quem                   | O quê                                                                                                      |
+| ---------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `GET`            | `cloud_accounts:read`  | O pedido pendente, o último resultado e o que a Verax ligou (`WebAlbLogging`)                              |
+| `POST …/enable`  | `cloud_accounts:write` | Só `{ "confirm": true }`. ALB com o log desligado (`no_destination`), conta conectada, sem pedido pendente |
+| `POST …/disable` | `cloud_accounts:write` | Só o que a Verax ligou (`enabledByVerax`), com a autorização do balanceador já retirada                    |
+
+Recusas: `WEB_ALB_LOGGING_PENDING`, `WEB_ALB_LOGGING_ALREADY_ON`, `WEB_ALB_LOGGING_NOT_ALB`, `WEB_ALB_LOGGING_NOT_VERAX`,
+`WEB_ALB_LOGGING_SOURCE_AUTHORIZED` e `ACCOUNT_NOT_CONNECTED` (409). O pedido entra na trilha, com quem pediu.
+
+**A tarefa `web-logs-alb-logging`** (worker, a cada 15 s, cinco pedidos por vez) é a única escrita da Verax na conta do cliente:
+
+1. Lê a etiqueta do papel (`iam:GetRole`), na hora. Sem ela (a pilha sem a opção, ou o papel do modelo 1), ou com a chave de
+   um usuário de leitura (a VM própria do cliente), `stack_update_required`; bucket de outra região, `other_region`.
+2. Lê os atributos do balanceador de novo. Com o log já ligado, em qualquer bucket: nada muda (`already_enabled`), e o painel
+   diz qual é o bucket.
+3. Manda `ModifyLoadBalancerAttributes` com só `access_logs.s3.enabled=true`, `access_logs.s3.bucket=<bucket da pilha>` e
+   `access_logs.s3.prefix=` (vazio). Para desligar, só `access_logs.s3.enabled=false`, e só se o ARN, o bucket e o prefixo ainda
+   forem os que a Verax deixou (senão, `released`: alguém mudou fora do painel, e a Verax não mexe mais). O IAM não filtra qual
+   atributo muda: a trava é do código (`alb-access-logs.ts`), que recusa, antes de sair para a rede, qualquer outro comando,
+   chave, valor, bucket ou balanceador.
+4. Grava o resultado, quem pediu, quando e os atributos de antes; a trilha do cliente (ator sistema, antes e depois); e, se algo
+   mudou, pede a descoberta da conta, que mostra o balanceador entre os disponíveis. Daí em diante, o caminho é o de sempre:
+   a estimativa, a autorização e as 72 h de observação.
+
+A recusa da AWS vira código, nunca 500: `permission_denied`, `bucket_rejected` (o ELB grava um arquivo de teste no bucket antes
+de aceitar), `balancer_missing`, `throttled`, `account_not_connected` e `failed`. Só o nome do erro vai para o log.
+
+**O painel.** No ALB sem log, o botão "Ligar logs", com a confirmação do que muda (só o log daquele balanceador, num bucket
+novo da pilha, o custo e como desfazer); os comandos de antes ficam recolhidos, em "Prefere fazer você mesmo?". Com
+`stack_update_required`, `permission_denied` ou `bucket_rejected`, "Atualize a pilha da Verax", com o arquivo preenchido (a
+mesma pilha, com `EnableAlbAccessLogs=true`). O ALB que a Verax ligou mostra, entre os disponíveis, de quando é e o
+"Desligar log".
+
+**Diferença de versão.** Nenhuma resposta ganhou campo (as rotas são novas). O painel novo num nó de antes recebe 404 sem código
+na leitura do estado e mostra a tela de antes, os comandos; o painel de antes num nó novo nunca chama as rotas. Voltar o nó
+para antes desta versão deixa a tabela sem uso (a cascata a leva com a fonte), e o log ligado continua ligado, como um que o
+cliente tivesse ligado.
 
 ## Leitura dos logs do ALB: as tarefas `web-logs` e `web-logs-estimate` (`apps/api/src/weblogs/collect/`)
 
@@ -2891,9 +2953,11 @@ Na confirmação, o volume de cada um, o que é feito com o log e, acima de 20% 
 por balanceador. A ciência é da estimativa vista (`estimateKey`): refeita, ou com o plano mudado, a caixa volta desmarcada. O campo
 `webLogs` só vai no pedido que tem um balanceador. Recusado por a estimativa ter mudado, os números são relidos.
 
-O que não dá para ler diz por quê: ALB sem log, com os passos do cliente (console e linha de comando; o nome do bucket entra nos
-comandos só se seguir as regras da AWS, e o ARN só se for de um ALB desta conta e desta região); NLB e GWLB; bucket de outra
-conta; e o prefixo, que se tira (os "buckets fora do padrão" são de outras fontes). **O Verax nunca liga nada.**
+O que não dá para ler diz por quê: ALB sem log, com o "Ligar logs" (no nó que tem a rota; "Ligar o log de acesso do ALB pelo
+painel") e os passos do cliente, recolhidos como alternativa (console e linha de comando; o nome do bucket entra nos comandos só
+se seguir as regras da AWS, e o ARN só se for de um ALB desta conta e desta região); NLB e GWLB; bucket de outra conta; e o
+prefixo, que se tira (os "buckets fora do padrão" são de outras fontes). Fora o log do ALB pedido no painel, **o Verax não liga
+nada.**
 
 **"Ataques web"**, na conta AWS, com um quadro por balanceador autorizado (a leitura só é pedida com o quadro aberto):
 

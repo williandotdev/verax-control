@@ -26,6 +26,26 @@ acesso depois de muitas falhas. Como funciona: `docs/ARQUITETURA.md`, "Logs de a
 
 Depois, no painel: Contas cloud, a conta AWS, "Fontes de log", pedir a estimativa do balanceador, conferir e autorizar.
 
+## O balanceador com o log desligado
+
+O painel mostra "Ligar logs" no ALB sem log ("Não habilitadas na AWS"). Funciona só com a pilha do papel de leitura com
+`EnableAlbAccessLogs=true` (o padrão é não), que cria um bucket para o log dos ALB **da região da pilha** e deixa o papel mudar
+os atributos de um ALB dessa região. O nó só muda o log de acesso, e só se ele estiver desligado. Como funciona:
+`docs/ARQUITETURA.md`, "Ligar o log de acesso do ALB pelo painel".
+
+| Resultado               | O que houve                                                                     | O que fazer                                                                                             |
+| ----------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `enabled`               | Ligado no bucket da pilha; a descoberta da conta foi pedida                     | Esperar o balanceador aparecer em "Disponíveis", pedir a estimativa e autorizar                         |
+| `already_enabled`       | O log já gravava em outro bucket; nada mudou                                    | Descobrir de novo; se o papel não lê esse bucket, o balanceador aparece em "Precisam de permissão"      |
+| `stack_update_required` | A pilha não tem a opção (ou a conta usa a chave de um usuário de leitura)       | O cliente atualiza a pilha com o arquivo que o painel baixa (`EnableAlbAccessLogs=true`) e pede de novo |
+| `permission_denied`     | A AWS negou a mudança                                                           | Pilha atual? Então uma SCP da organização nega `ModifyLoadBalancerAttributes`                           |
+| `other_region`          | O bucket da pilha é de outra região                                             | O cliente liga pelos comandos ("Prefere fazer você mesmo?"), ou cria a pilha na região do balanceador   |
+| `bucket_rejected`       | A AWS não gravou o arquivo de teste no bucket (a política dele mudou, ou sumiu) | Atualizar a pilha; conferir a política do bucket `AlbLogsBucketName`                                    |
+| `released`              | No desligar: alguém mudou o log fora do painel; nada mudou                      | Nada: a partir daí, o log é do cliente                                                                  |
+
+Os pedidos e os resultados ficam na trilha do cliente (`web_logs.alb_logging_enable`, `web_logs.alb_logging_disable` e
+`web_logs.alb_logging_result`, este com os atributos de antes e de depois).
+
 ## O que o painel diz
 
 | Código                   | O que houve                                                                                        | O que fazer                                                                                                |
@@ -38,6 +58,10 @@ Depois, no painel: Contas cloud, a conta AWS, "Fontes de log", pedir a estimativ
 Um balanceador recriado com o mesmo nome é outro: a observação de 72 horas recomeça.
 
 ## Desligar
+
+- **O log que a Verax ligou:** tire a autorização do balanceador e clique em "Desligar log". O nó manda só
+  `access_logs.s3.enabled=false`, e só se o log ainda estiver no bucket da pilha; os arquivos ficam no bucket, pela retenção.
+  Desligar a opção da pilha não desliga o log de nenhum ALB: o bucket e a política dele ficam na conta.
 
 - **Um balanceador:** tire a autorização no painel. Para na passagem seguinte, e os alertas já abertos ficam.
 - **Parar de alertar sem parar de ler:** "Voltar a observar".

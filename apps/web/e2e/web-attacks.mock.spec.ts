@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Locator, type Page, test } from '@playwright/test';
 import { skipDemoTour } from './demo-tour';
@@ -23,14 +24,21 @@ const WIDTHS = [360, 768, 1280] as const;
 
 type Theme = (typeof THEMES)[number];
 
-async function enter(page: Page, role: string, theme: Theme = 'light', webLogs: 'on' | 'off' = 'on') {
+async function enter(
+  page: Page,
+  role: string,
+  theme: Theme = 'light',
+  webLogs: 'on' | 'off' = 'on',
+  albLogs: 'ok' | 'stack' | 'old' = 'ok',
+) {
   await page.addInitScript(
-    ([mockRole, value, enabled]) => {
+    ([mockRole, value, enabled, alb]) => {
       window.localStorage.setItem('verax.mock.role', mockRole);
       window.localStorage.setItem('verax.theme', value);
       window.localStorage.setItem('verax.mock.web-logs', enabled);
+      window.localStorage.setItem('verax.mock.alb-logs', alb);
     },
-    [role, theme, webLogs] as const,
+    [role, theme, webLogs, albLogs] as const,
   );
   await skipDemoTour(page);
 }
@@ -94,7 +102,7 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
         await section.getByRole('button', { name: 'Declarar uma rota: api-alb' }).click();
         await section.getByRole('button', { name: 'Incluir fonte confiável' }).click();
         await section.getByText('O que esta detecção não vê').click();
-        await sources.getByText('Como ligar o log de acesso do site-alb').click();
+        await sources.getByText('Prefere fazer você mesmo? Os passos na sua conta AWS').click();
         await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
         await expectNoSidewaysScroll(page, sheet);
         expect(await violations(page, '#aws-ataques-web')).toEqual([]);
@@ -137,6 +145,93 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
     }
   }
 
+  for (const theme of THEMES) {
+    for (const width of WIDTHS) {
+      test(`"Ligar logs" do ALB: a confirmação, o andamento e o resultado, sem violação nem rolagem de lado (${theme}, ${width} px)`, async ({
+        page,
+      }) => {
+        test.setTimeout(120_000);
+        await page.setViewportSize({ width, height: 900 });
+        await enter(page, 'admin_cliente', theme);
+        const sheet = await openAccount(page);
+        const sources = sheet.getByRole('region', { name: 'Fontes de log' });
+        const row = sources.getByRole('listitem').filter({ hasText: 'site-alb' });
+        await sources.getByText('Prefere fazer você mesmo? Os passos na sua conta AWS').click();
+        await expectNoSidewaysScroll(page, sheet);
+        expect(await violations(page, '#aws-fontes')).toEqual([]);
+
+        await row.getByRole('button', { name: 'Ligar logs' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Ligar o log de acesso do site-alb?' });
+        await expect(dialog).toContainText('Nenhuma outra configuração dele muda');
+        await expect(dialog).toContainText('Para desfazer');
+        expect(await violations(page)).toEqual([]);
+        const box = await dialog.boundingBox();
+        expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+        expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width);
+        await dialog.getByRole('button', { name: 'Ligar o log' }).click();
+        await expect(dialog).toBeHidden();
+        await expect(row.getByRole('status')).toContainText('Ligando o log de acesso');
+        // Sem clique nenhum: o servidor responde, e a tela mostra.
+        await expect(row).toContainText('Log de acesso ligado.', { timeout: 30_000 });
+        await expectNoSidewaysScroll(page, sheet);
+        expect(await violations(page, '#aws-fontes')).toEqual([]);
+      });
+
+      test(`"Ligar logs" com a pilha sem a opção: "Atualize a pilha da Verax" sem violação nem rolagem de lado (${theme}, ${width} px)`, async ({
+        page,
+      }) => {
+        test.setTimeout(120_000);
+        await page.setViewportSize({ width, height: 900 });
+        await enter(page, 'admin_cliente', theme, 'on', 'stack');
+        const sheet = await openAccount(page);
+        const sources = sheet.getByRole('region', { name: 'Fontes de log' });
+        const row = sources.getByRole('listitem').filter({ hasText: 'site-alb' });
+        await row.getByRole('button', { name: 'Ligar logs' }).click();
+        await page
+          .getByRole('dialog', { name: 'Ligar o log de acesso do site-alb?' })
+          .getByRole('button', { name: 'Ligar o log' })
+          .click();
+        await expect(row).toContainText('Atualize a pilha da Verax', { timeout: 30_000 });
+        await expect(row.getByRole('button', { name: 'Baixar o arquivo da pilha' })).toBeEnabled();
+        await expectNoSidewaysScroll(page, sheet);
+        expect(await violations(page, '#aws-fontes')).toEqual([]);
+      });
+    }
+  }
+
+  test('o nó de antes, sem as rotas do log: a tela de antes, com os comandos e sem o botão', async ({
+    page,
+  }) => {
+    await enter(page, 'admin_cliente', 'light', 'on', 'old');
+    const sheet = await openAccount(page);
+    const sources = sheet.getByRole('region', { name: 'Fontes de log' });
+    await expect(sources.getByText('Como ligar o log de acesso do site-alb')).toBeVisible();
+    await expect(sources.getByRole('button', { name: 'Ligar logs' })).toHaveCount(0);
+  });
+
+  test('o "Ligar logs" baixa a pilha com a opção ligada', async ({ page }) => {
+    await enter(page, 'admin_cliente', 'light', 'on', 'stack');
+    const sheet = await openAccount(page);
+    const row = sheet
+      .getByRole('region', { name: 'Fontes de log' })
+      .getByRole('listitem')
+      .filter({ hasText: 'site-alb' });
+    await row.getByRole('button', { name: 'Ligar logs' }).click();
+    await page
+      .getByRole('dialog', { name: 'Ligar o log de acesso do site-alb?' })
+      .getByRole('button', { name: 'Ligar o log' })
+      .click();
+    const download = page.waitForEvent('download');
+    await row.getByRole('button', { name: 'Baixar o arquivo da pilha' }).click({ timeout: 30_000 });
+    const file = await download;
+    const path = await file.path();
+    const text = await readFile(path, 'utf8');
+    const lines = text.split(/\r?\n/);
+    const at = lines.indexOf('  EnableAlbAccessLogs:');
+    expect(at).toBeGreaterThan(0);
+    expect(lines.slice(at, at + 10)).toContain("    Default: 'true'");
+  });
+
   test('de 320 a 1920 px, nada rola de lado, nem com tudo aberto', async ({ page }) => {
     test.setTimeout(120_000);
     await enter(page, 'admin_cliente');
@@ -146,7 +241,7 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
     const sources = sheet.getByRole('region', { name: 'Fontes de log' });
     for (const name of ['loja-alb', 'api-alb', 'checkout-alb']) await balancer(section, name).click();
     await section.getByRole('button', { name: 'Incluir fonte confiável' }).click();
-    await sources.getByText('Como ligar o log de acesso do site-alb').click();
+    await sources.getByText('Prefere fazer você mesmo? Os passos na sua conta AWS').click();
     for (const width of [320, 360, 414, 600, 768, 1024, 1280, 1600, 1920]) {
       await page.setViewportSize({ width, height: 900 });
       await expectNoSidewaysScroll(page, sheet);

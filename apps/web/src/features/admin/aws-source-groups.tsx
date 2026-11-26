@@ -289,7 +289,7 @@ const ESTIMATE_CLOCK_MS = 30_000;
  * "Fontes de log": o que a descoberta achou e ainda não está autorizado, em grupos: as disponíveis para coletar (com a
  * caixa de marcar e o "Autorizar selecionadas"), os grupos do CloudWatch Logs (a lista com busca), as que precisam de
  * permissão adicional (com a correção exata de cada uma e o "Verificar de novo"), as não habilitadas na AWS (com o
- * aviso de custo: ligar é decisão do cliente, e a Verax nunca liga nada), as que gravam onde o Verax não lê e as ainda
+ * aviso de custo: ligar é decisão do cliente; o log do ALB, a Verax liga só a pedido), as que gravam onde o Verax não lê e as ainda
  * não coletadas. Nada é marcado de antemão, e a autorização só vale quando a API responde com o estado novo.
  *
  * O balanceador só pode ser marcado com a estimativa de volume que vale: até lá, a linha dele mostra o passo da estimativa.

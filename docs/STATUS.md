@@ -7887,3 +7887,43 @@ cloudflare-oauth-steps.tsx,zone-health.tsx,labels.ts,oauth-return.ts,oauth-retur
   - As regras de login nas instâncias (`HOST_LOGIN_RULES`) entram só com a fonte `wazuh_agent`; as mesmas regras podem disparar
     num grupo do CloudWatch Logs.
   - O teste da API roda no `pnpm test` da API, que exige o banco; ele mesmo não usa banco.
+
+## Log de acesso do ALB ligado pelo painel ⚠️ altera `infra/` e o banco (migration)
+
+- **Decisão do responsável:** a Verax liga o log de acesso do ALB pelo painel, com uma permissão de escrita opcional no papel
+  do cliente, em vez do comando para o cliente rodar. "Nunca derrubar nada no ambiente do cliente, nunca sobrescrever log."
+- **Arquivos:** `infra/cloudformation/verax-control-reader.yaml` (parâmetro `EnableAlbAccessLogs`, desligado por padrão: bucket
+  `AlbLogsBucket` e a política dele, a declaração `LigarLogDosAlb`, a negação de `Modify*` do balanceador trocada só com a
+  opção, a etiqueta `verax-control:alb-logs-bucket`, a saída `AlbLogsBucketName`; comentários enxugados para caber no
+  `TemplateBody`), `README.md`, `guard/*`, `tests/test_reader.py`; `apps/api/prisma/schema.prisma` e a migration
+  `20261205120000_web_alb_logging` (tabela nova `WebAlbLogging`, só aditiva); `apps/api/src/weblogs/alb-logging/`
+  (`alb-access-logs.ts`, a trava; `web-alb-logging-job.ts`, a tarefa `web-logs-alb-logging`),
+  `weblogs/settings/web-alb-logging.service.ts`, o controller, o módulo, `web-logs-tasks.ts`, `tenant-scope.ts`;
+  `packages/shared` (`web-alb-logging.ts`, os códigos em `web-logs.ts`, `albLogs` no preenchimento da pilha); o painel
+  (`web-attacks/alb-logging-control.tsx`, `alb-logging-steps.tsx`, `web-logs-api.ts`, `web-logs-labels.ts`,
+  `admin/aws-source-groups.tsx`, `aws-connect.ts`, `aws-hooks.ts`, o mock e os testes); `docs/ARQUITETURA.md` ("Ligar o log
+  de acesso do ALB pelo painel") e `docs/runbooks/ataques-web.md`.
+- **Dependências novas:** nenhuma (`@aws-sdk/client-elastic-load-balancing-v2` e `@aws-sdk/client-iam` já estavam).
+- **Decisões minhas (para revisão):** a permissão fica numa declaração da `VeraxControlReader`, e não numa política separada:
+  ela é também o limite do papel, e a ação teria de estar repetida nela de qualquer jeito (o template também estava perto do
+  limite de 51.200 bytes); o recurso é só a região da pilha (o bucket só serve aos ALB dela); a versão do modelo continua 2
+  (a opção é opcional, e subir a versão pediria a todo cliente para atualizar); a política de entrega usa só o principal de
+  serviço `logdelivery.elasticloadbalancing.amazonaws.com` (a política atual da AWS, que vale em toda região; a antiga, com a
+  conta do ELB de cada região, só existe nas regiões de antes de 08/2022); o bucket e a política ficam (`Retain`); desligar
+  exige a autorização retirada; o desligar manda só `enabled=false` (o bucket da Verax fica no atributo, sem efeito).
+- **Riscos:** o IAM não filtra a chave do atributo, então a permissão deixaria mudar qualquer atributo de um ALB da região: a
+  garantia de só mexer no log é do código (a trava e os testes). A atualização da pilha por outro caminho que ponha
+  `EnableAlbAccessLogs=false` tira a permissão, mas não desliga nenhum log (bucket e política ficam).
+- **Testes:** template: `cfn-lint` sem achados; `tests/` do CloudFormation 111 testes (4 novos, com mutação da escrita
+  afrouxada); `cfn-guard test` 95 casos e `validate` do template sem falha (binário 3.2.1 com o SHA do CI, num contêiner
+  descartável); Checkov 3.4.0 (a imagem do CI): 43 passaram, 0 falharam, 3 pulados (um novo, `CKV_AWS_18` no bucket do log dos
+  ALB, com o motivo). Contrato: 39 arquivos, 739 testes. API, com um Postgres descartável (porta 55439, removido no fim): 24
+  arquivos, 943 testes, entre eles `web-alb-logging.test.ts` (11: permissão, trilha, isolamento entre clientes, corpo estrito,
+  CHECK da migration, a tarefa contra uma AWS falsa e a conferência de que nenhuma chave além das três do log saiu) e
+  `alb-access-logs.test.ts` (7: a trava). Painel: 20 arquivos, 283 testes (5 novos da tela, 2 do mock). Playwright (mock,
+  portas 5421/5422): `web-attacks.mock.spec.ts` 33 testes (12 novos: "Ligar logs" e "Atualize a pilha" com axe nos dois temas
+  a 360, 768 e 1280 px, o nó de antes e o arquivo baixado com `EnableAlbAccessLogs: 'true'`) e `aws-onboarding.mock.spec.ts` 7. `pnpm typecheck` sem erros; lint (max-warnings 0) nos arquivos tocados.
+- **Teste manual:** numa conta de teste, atualizar a pilha com `EnableAlbAccessLogs=true` (em sa-east-1 e numa região nova),
+  clicar em "Ligar logs" num ALB sem log e conferir no console: só o log de acesso mudou, o arquivo `ELBAccessLogTestFile`
+  apareceu no bucket da pilha, a descoberta mostrou o ALB entre os disponíveis; depois, tirar a autorização e "Desligar log".
+  Conferir também a pilha sem a opção ("Atualize a pilha da Verax") e um ALB com o log já ligado (nada muda).
