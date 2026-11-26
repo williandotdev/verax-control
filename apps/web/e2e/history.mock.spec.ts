@@ -94,7 +94,10 @@ test.describe('histórico de 12 meses (modo mock)', () => {
         await page.goto('/auditoria?periodo=12m');
         await ready(page, 'Auditoria');
         await expect(page.getByRole('combobox', { name: 'Período' })).toHaveValue('12m');
-        await expect(page.getByRole('table', { name: 'Trilha de auditoria' })).toBeVisible();
+        // Abaixo de 768 px a trilha vira cartões (E-05): a mesma lista, com o mesmo nome.
+        await expect(
+          page.getByRole(width < 768 ? 'list' : 'table', { name: 'Trilha de auditoria' }),
+        ).toBeVisible();
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
 
