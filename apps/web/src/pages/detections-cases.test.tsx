@@ -130,6 +130,21 @@ describe('os casos desligados', () => {
   });
 });
 
+describe('o tipo do alerta (E-06)', () => {
+  it('com os casos, a lista de alertas filtra pelo tipo (a fila do caso) e mostra o filtro como etiqueta da URL', async () => {
+    renderAt('/?visao=alertas&tipo=vulnerabilidade&ordem=severidade');
+    expect(await screen.findByRole('table', { name: 'Alertas do cliente' }, SLOW)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(casePath('/v1/findings?').some((path) => path.includes('type=vulnerability'))).toBe(true),
+    );
+    expect(
+      casePath('/v1/findings?').every((path) => !path.includes('type=') || path.includes('sort=severity')),
+    ).toBe(true);
+    expect(screen.getByLabelText('Tipo')).toHaveValue('vulnerabilidade');
+    expect(screen.getByLabelText('Tipo')).toHaveAccessibleDescription(/Pelo caso do alerta/);
+  });
+});
+
 describe('os casos desligados com a tela aberta', () => {
   it('a lista que passa a responder 404 faz a tela perguntar de novo, e voltar a ser a de sempre', async () => {
     renderAt('/');
@@ -975,6 +990,19 @@ describe('o detalhe do caso', () => {
     await within(detail).findByRole('region', { name: 'Resumo' }, SLOW);
     return { router, detail };
   };
+
+  it('E-06: o caso de um alerta só mostra o alerta e as ações, sem o que há em comum, o gráfico e os filtros', async () => {
+    const { detail } = await open('/', /^Abrir o caso: Login do usuário root/);
+    expect(within(detail).getByRole('region', { name: 'Resumo' })).toHaveTextContent(/de 1 guardado/);
+    expect(within(detail).queryByRole('region', { name: 'O que os alertas têm em comum' })).toBeNull();
+    expect(within(detail).queryByRole('region', { name: 'O que foge do padrão' })).toBeNull();
+    expect(within(detail).queryByRole('img', { name: /^Alertas do caso por hora/ })).toBeNull();
+    const alerts = within(detail).getByRole('region', { name: 'Alertas do caso' });
+    expect(within(alerts).queryByLabelText('Status do alerta')).toBeNull();
+    expect(
+      await within(alerts).findByRole('link', { name: 'Login do usuário root no console' }, SLOW),
+    ).toBeInTheDocument();
+  });
 
   it('o resumo, o que os alertas têm em comum, o que foge do padrão e a linha do tempo', async () => {
     const { router, detail } = await open();

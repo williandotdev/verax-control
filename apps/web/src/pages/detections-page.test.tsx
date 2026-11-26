@@ -12,7 +12,8 @@ import { createQueryClient } from '@/lib/query-client';
 import { DEMO_TENANTS, demoMe, demoTower } from '@/mocks/fixtures';
 import { DEMO_INCIDENTS } from '@/mocks/findings-fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
-import { SIDE_PANEL_QUERY } from '@/lib/use-media-query';
+import { STACKED_QUERY } from '@/features/detections/strip-preference';
+import { NARROW_QUERY, SIDE_PANEL_QUERY } from '@/lib/use-media-query';
 import { routes } from '@/routes/router';
 
 const server = setupServer();
@@ -86,7 +87,8 @@ describe('Detecções: o mapa de origens no topo', () => {
     renderAt('/');
     const region = await findBand();
     expect(header()?.nextElementSibling).toBe(region);
-    expect(region.nextElementSibling).toBe(await strip());
+    // O resumo e a lista ficam na mesma grade (no computador, lado a lado), logo depois do mapa.
+    expect(region.nextElementSibling).toContainElement(await strip());
     expect(within(region).getByRole('button', { name: /^Recolher/ })).toHaveAttribute(
       'aria-expanded',
       'true',
@@ -109,9 +111,7 @@ describe('Detecções: o mapa de origens no topo', () => {
         const situation = await strip();
         await screen.findByRole('table', { name: 'Alertas do cliente' }, SLOW);
         expect(band()).toBeNull();
-        const next = header()?.nextElementSibling;
-        if (wide) expect(next).toContainElement(situation);
-        else expect(next).toBe(situation);
+        expect(header()?.nextElementSibling).toContainElement(situation);
         cleanup();
       }
     },
@@ -275,6 +275,108 @@ describe('Detecções: a lista', () => {
   });
 });
 
+describe('Detecções: a lista de alertas por gravidade (E-06)', () => {
+  it('"Mais graves primeiro" pede a ordem à API e a lista vem da mais grave à menos grave', async () => {
+    const asked: string[] = [];
+    server.events.on('request:start', ({ request }) => {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith('/v1/findings')) asked.push(url.search);
+    });
+    renderAt('/?ordem=severidade');
+    const table = await list();
+    await waitFor(() => expect(asked.some((search) => search.includes('sort=severity'))).toBe(true));
+    const order = ['Crítico', 'Alto', 'Médio', 'Baixo'];
+    const severities = within(table)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => order.findIndex((label) => row.textContent?.includes(label)));
+    expect(severities).toEqual([...severities].sort((a, b) => a - b));
+    expect(screen.getByLabelText('Ordem')).toHaveValue('severidade');
+    // Sem os casos, não há o filtro de tipo (o tipo vem do caso do alerta).
+    expect(screen.queryByLabelText('Tipo')).toBeNull();
+    server.events.removeAllListeners();
+  });
+
+  it('o nó de antes recusa a ordem: a lista vem sem ela, e a tela diz isso', async () => {
+    renderAt('/?ordem=severidade');
+    server.use(
+      http.get(`${API_URL}/v1/findings`, ({ request }) =>
+        new URL(request.url).searchParams.has('sort')
+          ? HttpResponse.json({ statusCode: 400, message: 'Dados inválidos' }, { status: 400 })
+          : undefined,
+      ),
+    );
+    expect(await list()).toBeInTheDocument();
+    expect(
+      await screen.findByText(/^Este servidor ainda não ordena os alertas pela gravidade/, undefined, SLOW),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('Detecções no celular (E-02)', () => {
+  const phone = () =>
+    mockMedia((query) => query === NARROW_QUERY || query === STACKED_QUERY || query === MENU_NARROW);
+  const MENU_NARROW = '(max-width: 47.99rem)';
+
+  it('o resumo recolhido vira linhas tocáveis: o incidente, o que validar, a coleta parada e o resto', async () => {
+    phone();
+    renderAt('/');
+    const strip = await screen.findByRole('region', { name: 'Situação agora' });
+    const rowsList = await within(strip).findByRole('list', { name: 'Resumo da situação' });
+    const items = within(rowsList).getAllByRole('listitem');
+    expect(items[0]).toHaveTextContent(/^Crítico: 1 incidente crítico abertoe 2 altos · 1 sem responsável$/);
+    expect(within(items[0]!).getByRole('link')).toHaveAttribute('href', '/?visao=incidentes');
+    expect(within(rowsList).getByText(/alertas? altos? ou críticos? para validar$/)).toBeInTheDocument();
+    // A coleta parada continua à vista (R-13); a última linha abre o quadro.
+    expect(within(rowsList).getByText('Coleta parada: GCP')).toBeInTheDocument();
+    await userEvent.click(within(rowsList).getByRole('button', { name: /Postura 69 de 100/ }));
+    expect(within(strip).getByRole('button', { name: /Recolher/ })).toHaveAttribute('aria-expanded', 'true');
+    window.localStorage.clear();
+  });
+
+  it('os filtros ficam atrás de "Filtros", com o CSV; os ativos viram etiquetas que dá para remover', async () => {
+    phone();
+    const router = renderAt('/?severidade=critical&status=new');
+    const chip = await screen.findByRole('button', { name: /^Severidade: Crítico/ }, SLOW);
+    expect(screen.queryByLabelText('Severidade')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Status: Novo/ })).toBeInTheDocument();
+    await userEvent.click(chip);
+    await waitFor(() => expect(search(router).get('severidade')).toBeNull());
+    expect(search(router).get('status')).toBe('new');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Filtros (1)' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Filtros' });
+    expect(within(sheet).getByLabelText('Severidade')).toBeInTheDocument();
+    expect(within(sheet).getByRole('button', { name: /Exportar CSV/ })).toBeInTheDocument();
+    window.localStorage.clear();
+  });
+});
+
+describe('Detecções abaixo de 1280 px (R-08)', () => {
+  it('as listas de alertas e de incidentes ficam enxutas: conta, origem, quem e quando embaixo do título', async () => {
+    renderAt('/?visao=alertas');
+    const table = await list();
+    expect(table).toHaveAttribute('data-dense', 'true');
+    expect(table).toHaveAttribute('data-compact', 'true');
+    const [first] = await rows();
+    const titleCell = within(first!)
+      .getByRole('button', { name: /^Abrir o alerta: / })
+      .closest('td');
+    // A linha de baixo traz a conta (que sai das colunas) e a hora.
+    const meta = titleCell!.querySelector('time')?.parentElement;
+    // A coluna "Conta" só sai pelo CSS (no jsdom ela continua): o mesmo texto vai na linha de baixo.
+    const account = within(first!).getAllByRole('cell')[2]?.textContent ?? '';
+    expect(account).not.toBe('');
+    expect(meta?.textContent).toContain(account);
+    expect(within(table).getByRole('columnheader', { name: 'Status' })).toBeInTheDocument();
+    expect(within(table).getByRole('columnheader', { name: 'Incidente' })).toBeInTheDocument();
+    cleanup();
+
+    renderAt('/?visao=incidentes');
+    expect(await list()).toHaveAttribute('data-compact', 'true');
+  });
+});
+
 describe('Detecções: o detalhe e a triagem', () => {
   it('o incidente abre na gaveta (tela estreita), com o resumo, o tratamento e a linha do tempo; o status muda ali', async () => {
     const router = renderAt('/?visao=incidentes');
@@ -306,12 +408,52 @@ describe('Detecções: o detalhe e a triagem', () => {
     expect(search(router).get('incidente')).toBeNull();
   });
 
+  it('E-03: uma pergunta, três respostas explicadas, "Mais opções" e uma caixa de texto só', async () => {
+    renderAt(`/?alerta=${BUCKET_ALERT}`);
+    const panel = await screen.findByRole('dialog', {
+      name: 'Política de bucket alterada para permitir leitura pública',
+    });
+    const decision = await within(panel).findByRole('region', { name: 'O que você decide?' });
+    expect(within(panel).queryByRole('heading', { name: 'Validar o alerta' })).toBeNull();
+    expect(within(panel).queryByRole('heading', { name: 'Mudar status' })).toBeNull();
+    const options = within(decision)
+      .getAllByRole('listitem')
+      .map((item) => within(item).getByRole('button'));
+    expect(options.map((option) => option.firstChild?.textContent)).toEqual([
+      'É uma ameaça real',
+      'É esperado (falso positivo)',
+      'Ainda não sei',
+    ]);
+    expect(options[1]).toHaveAccessibleDescription(
+      'Marca como legítimo. Depois, o painel oferece criar a exceção.',
+    );
+    // Nenhuma resposta em destaque, e uma caixa de texto só.
+    for (const option of options) expect(option.className).not.toMatch(/bg-primary/);
+    expect(within(panel).getAllByRole('textbox')).toHaveLength(2); // o porquê e o novo comentário
+    expect(within(decision).getAllByRole('textbox')).toHaveLength(1);
+    expect(within(decision).getByText('Mais opções').closest('details')).not.toHaveAttribute('open');
+    expect(
+      within(decision).getByRole('button', { name: 'Anexar a um incidente aberto' }),
+    ).toBeInTheDocument();
+    expect(within(decision).getByRole('button', { name: 'Marcar como resolvido' })).toBeInTheDocument();
+    // A decisão vem antes dos campos do evento (a lista com "Quando"; "O que aconteceu" vem antes dela, e tem a sua).
+    const fields = within(panel).getAllByText('Quando', { selector: 'dt' }).at(-1)?.closest('dl');
+    expect(decision.compareDocumentPosition(fields!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // O porquê vai junto com a decisão e fica nos comentários.
+    await userEvent.type(within(decision).getByLabelText(/Por quê\?/), 'Conferindo com o time de dados.');
+    await userEvent.click(within(decision).getByRole('button', { name: 'Ainda não sei' }));
+    expect(
+      await within(panel).findByText('Conferindo com o time de dados.', undefined, SLOW),
+    ).toBeInTheDocument();
+  });
+
   it('o alerta (endereço de antes): triagem no lugar, com a oferta de exceção ao marcar como legítimo', async () => {
     const router = renderAt(`/?visao=achados&achado=${FINDING}`);
     const dialog = await screen.findByRole('dialog', {
       name: 'Tentativa de desligar a trilha do CloudTrail',
     });
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Marcar como legítimo' }));
+    await userEvent.click(within(dialog).getByRole('button', { name: 'É esperado (falso positivo)' }));
     expect(await within(dialog).findByText('Criar exceção para alertas iguais?')).toBeInTheDocument();
     await waitFor(async () => {
       const row = within(await list())
@@ -332,6 +474,7 @@ describe('Detecções: o detalhe e a triagem', () => {
     expect(within(dialog).queryByRole('combobox', { name: 'Status' })).toBeNull();
     expect(within(dialog).getByText('Equipe Verax')).toBeInTheDocument();
     expect(within(dialog).queryByRole('button', { name: /^Remover do incidente/ })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Editar alertas do incidente' })).toBeNull();
   });
 
   it('quem só lê não vê "Promover a incidente" nem "Anexar"', async () => {
@@ -339,7 +482,7 @@ describe('Detecções: o detalhe e a triagem', () => {
     const dialog = await screen.findByRole('dialog', {
       name: 'Política de bucket alterada para permitir leitura pública',
     });
-    expect(within(dialog).queryByRole('button', { name: 'Promover a incidente' })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'É uma ameaça real' })).toBeNull();
     expect(within(dialog).queryByRole('button', { name: 'Anexar a um incidente aberto' })).toBeNull();
   });
 
@@ -351,7 +494,7 @@ describe('Detecções: o detalhe e a triagem', () => {
       const panel = await screen.findByRole('dialog', {
         name: 'Política de bucket alterada para permitir leitura pública',
       });
-      await userEvent.click(within(panel).getByRole('button', { name: 'Promover a incidente' }));
+      await userEvent.click(within(panel).getByRole('button', { name: 'É uma ameaça real' }));
       const promote = await screen.findByRole('dialog', { name: 'Promover a incidente' });
       const related = await within(promote).findByRole('checkbox', {
         name: /Bloqueio de acesso público removido do bucket/,
@@ -401,6 +544,15 @@ describe('Detecções: o detalhe e a triagem', () => {
       expect(
         await within(incident).findByRole('heading', { name: /Linha do tempo \(4 alertas\)/ }, SLOW),
       ).toBeInTheDocument();
+      // R-06: a linha do tempo é a única lista dos alertas; "Remover" aparece depois de "Editar alertas do incidente".
+      expect(within(incident).queryByRole('heading', { name: 'Alertas do incidente' })).toBeNull();
+      expect(within(incident).queryByRole('button', { name: /^Remover do incidente/ })).toBeNull();
+      const edit = within(incident).getByRole('button', { name: 'Editar alertas do incidente' });
+      await userEvent.click(edit);
+      expect(within(incident).getByRole('button', { name: 'Concluir a edição dos alertas' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
       await userEvent.click(
         within(incident).getByRole('button', {
           name: 'Remover do incidente: Política de bucket alterada para permitir leitura pública',
@@ -456,14 +608,65 @@ describe('Detecções: os endereços de antes', () => {
   });
 });
 
+describe('Detecções: as explicações saem da frente (R-03)', () => {
+  it('a explicação do título, a do radar e o período das análises: a um clique, numa linha', async () => {
+    mockMedia((query) => query === SIDE_PANEL_QUERY);
+    renderAt('/?analise=resumo');
+    const header = (await screen.findByRole('heading', { level: 1, name: 'Detecções' }, SLOW)).closest(
+      'header',
+    );
+    const intro = within(header!).getByText(/^Cada evento suspeito vira um alerta para validar/);
+    // Fechada: o texto está num trecho que abre e fecha, com "Como funciona" ao lado do título.
+    const details = intro.closest('details');
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute('open');
+    expect(within(details!).getByText('Como funciona').closest('summary')).not.toBeNull();
+    await userEvent.click(within(details!).getByText('Como funciona'));
+    expect(details).toHaveAttribute('open');
+
+    const radar = await screen.findByRole('region', { name: 'Radar das últimas 24 horas' }, SLOW);
+    expect(
+      within(radar)
+        .getByText(/^Centro: agora\./)
+        .closest('details'),
+    ).not.toHaveAttribute('open');
+    expect(within(radar).getByText('Como ler o radar')).toBeInTheDocument();
+
+    expect(
+      await screen.findByText(
+        /^Período: \d{2}\/\d{2} a \d{2}\/\d{2}\/\d{4} \(o do filtro da lista; sem filtro, os últimos 30 dias\)\.$/,
+        undefined,
+        SLOW,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^As análises usam o período/)).toBeNull();
+  });
+});
+
 describe('Detecções: o resumo da situação', () => {
   it('o radar em destaque, o motivo em texto, as decisões com o atalho para a lista filtrada e a coleta numa gaveta', async () => {
     const router = renderAt('/');
     const strip = await screen.findByRole('region', { name: 'Situação agora' });
-    expect(await within(strip).findByRole('status', { name: /^Situação: / })).toHaveTextContent(
-      '1 incidente crítico aberto, 2 incidentes altos abertos, nota de postura 69, abaixo de 70 e coleta parada (GCP).',
+    const status = await within(strip).findByRole('status', { name: /^Situação: / });
+    // R-01: a frase completa para o leitor de tela; à vista, a manchete, e o resto nos botões e nas decisões logo abaixo.
+    expect(status).toHaveAccessibleName(
+      /^Situação: 1 incidente crítico aberto, 2 incidentes altos abertos, nota de postura 69, abaixo de 70 e coleta parada \(GCP\)\./,
     );
+    expect(status).toHaveTextContent(/^1 incidente crítico aberto e 2 incidentes altos abertos$/);
+    expect(status).toHaveAttribute('data-headline-severity', 'critical');
     const decisions = within(strip).getByRole('region', { name: 'Decisões pendentes' });
+    // A ordem do quadro: a manchete, a coleta e a postura, as decisões e só então o radar.
+    const order = [
+      status,
+      within(strip).getByRole('button', { name: /Coleta parada: GCP/ }),
+      decisions,
+      within(strip).getByRole('region', { name: 'Radar das últimas 24 horas' }),
+    ];
+    for (let i = 1; i < order.length; i += 1) {
+      expect(
+        order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
     expect(within(decisions).getByText('1 incidente sem responsável')).toBeInTheDocument();
     expect(within(decisions).getByText(/alertas? altos? ou críticos? para validar$/)).toBeInTheDocument();
     // Alerta sem dono é só do admin_verax.
@@ -486,6 +689,38 @@ describe('Detecções: o resumo da situação', () => {
     await waitFor(() => expect(search(router).get('responsavel')).toBe('nenhum'));
     expect(search(router).get('visao')).toBe('incidentes');
     expect(await screen.findByRole('table', { name: /^Incidentes do cliente/ })).toBeInTheDocument();
+  });
+
+  it('R-02: "Ver os críticos" e "Ver os altos" abrem exatamente o que o cartão conta', async () => {
+    const router = renderAt('/');
+    const strip = await screen.findByRole('region', { name: 'Situação agora' });
+    const decisions = await within(strip).findByRole('region', { name: 'Decisões pendentes' }, SLOW);
+    const card = within(decisions).getByText(/alertas? altos? ou críticos? para validar$/);
+    // O texto começa pelo nome da severidade, só para leitor de tela ("Alto: ").
+    const counted = Number.parseInt((card.textContent ?? '').split(': ').at(-1) ?? '', 10);
+    // O total que a API devolve para cada fila (a lista o mostra na paginação, quando há linhas).
+    const totals = new Map<string, number>();
+    server.events.on('response:mocked', ({ request, response }) => {
+      const url = new URL(request.url);
+      if (!url.pathname.endsWith('/v1/findings') || url.searchParams.get('status') !== 'new') return;
+      const severity = url.searchParams.get('severity');
+      if (severity === null) return;
+      void response
+        .clone()
+        .json()
+        .then((body: { total: number }) => totals.set(severity, body.total));
+    });
+    const totalOf = async (name: string, severity: string) => {
+      await userEvent.click(within(decisions).getByRole('link', { name }));
+      await waitFor(() => expect(search(router).get('severidade')).toBe(severity));
+      expect(search(router).get('status')).toBe('new');
+      await waitFor(() => expect(totals.has(severity)).toBe(true), SLOW);
+      return totals.get(severity) ?? -1;
+    };
+    const critical = await totalOf('Ver os críticos', 'critical');
+    const high = await totalOf('Ver os altos', 'high');
+    server.events.removeAllListeners();
+    expect(critical + high).toBe(counted);
   });
 
   it('24.321 alertas para validar e nenhum incidente: nada de "Tudo calmo", aberto ou recolhido (nó novo ou de antes)', async () => {
@@ -524,18 +759,35 @@ describe('Detecções: o resumo da situação', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await userEvent.click(toggle);
     expect(within(strip).getByRole('button', { name: /Mostrar/ })).toHaveAttribute('aria-expanded', 'false');
-    expect(within(strip).getByRole('status', { name: /^Situação: / })).toHaveAccessibleName(
+    const compact = within(strip).getByRole('status', { name: /^Situação: / });
+    expect(compact).toHaveAccessibleName(
       /1 incidente crítico aberto, 2 altos, \d+ detecções em 24 h, \d+ decisões pendentes/,
+    );
+    // R-13: recolhida, a linha começa pelo que pede atenção: a coleta parada e a postura abaixo do limite à vista.
+    expect(compact).toHaveTextContent(
+      /^Coleta parada: GCP · 1 incidente crítico aberto · 2 altos · postura 69, abaixo de 70 · \d+ detecções em 24 h · \d+ decisões pendentes$/,
     );
     const userId = demoMe('analista_cliente').userId;
     expect(window.localStorage.getItem(`verax:deteccoes:resumo:${userId}`)).toBe('recolhido');
   });
 
-  it('no celular começa recolhido; a escolha guardada vale sobre o padrão', async () => {
-    mockMedia((query) => query.includes('max-width'));
-    renderAt('/');
+  it('abaixo de 1280 px (tela empilhada, celular incluído) começa recolhido (R-07); a escolha guardada vale sobre o padrão', async () => {
+    mockMedia((query) => query === STACKED_QUERY);
+    const first = renderAt('/');
     const strip = await screen.findByRole('region', { name: 'Situação agora' });
     expect(within(strip).getByRole('button', { name: /Mostrar/ })).toHaveAttribute('aria-expanded', 'false');
+    // Recolhido, o que pede atenção continua à vista (R-13).
+    expect(await within(strip).findByRole('status', { name: /^Situação: / })).toHaveTextContent(
+      /^Coleta parada: GCP/,
+    );
+    cleanup();
+    first.dispose();
+
+    window.localStorage.setItem(`verax:deteccoes:resumo:${demoMe('analista_cliente').userId}`, 'aberto');
+    renderAt('/');
+    const again = await screen.findByRole('region', { name: 'Situação agora' });
+    expect(within(again).getByRole('button', { name: /Recolher/ })).toHaveAttribute('aria-expanded', 'true');
+    window.localStorage.clear();
   });
 
   it('sem armazenamento no navegador, a tela segue com o padrão', async () => {
@@ -605,30 +857,39 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
   const desktop = () => mockMedia((query) => query === '(min-width: 80rem)');
   const tabs = async () => (await screen.findAllByRole('tab')).map((tab) => tab.textContent);
 
-  it('a lista fica na tela com o radar, sem aba própria, e as análises embaixo começam pelo Resumo', async () => {
+  it('a lista fica ao lado do radar, na aba "Lista"; as análises são abas no mesmo nível, sem pedido ao abrir (E-07)', async () => {
     desktop();
+    const asked: string[] = [];
+    server.events.on('request:start', ({ request }) => {
+      if (new URL(request.url).pathname.includes('/v1/reports/')) asked.push(request.url);
+    });
     const router = renderAt('/');
     const radar = await screen.findByRole('region', { name: 'Radar das últimas 24 horas' });
     const table = await list();
     expect(await tabs()).toEqual([
+      'Lista',
       'Resumo',
       'MITRE ATT&CK',
       'Regras',
       'Entidades',
       'Resposta a incidentes',
-      'Cobertura das fontes',
-      'Exceções',
     ]);
-    const summary = screen.getByRole('tab', { name: 'Resumo' });
-    expect(summary).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Lista' })).toHaveAttribute('aria-selected', 'true');
     expect(search(router).get('analise')).toBeNull();
-    expect(await screen.findByText('Alertas no período', undefined, SLOW)).toBeInTheDocument();
-    // Na ordem da tela e da leitura: o radar, a lista e as análises.
+    // Na ordem da tela e da leitura: o radar e, ao lado, as abas e a lista.
     const follows = Node.DOCUMENT_POSITION_FOLLOWING;
     expect(radar.compareDocumentPosition(table) & follows).toBeTruthy();
-    expect(table.compareDocumentPosition(summary) & follows).toBeTruthy();
-    // Um filtro só na tela.
+    // Um filtro só na tela; nenhuma análise pedida só por abrir a tela.
     expect(screen.getAllByLabelText('Período')).toHaveLength(1);
+    expect(asked).toEqual([]);
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Resumo' }));
+    await waitFor(() => expect(search(router).get('analise')).toBe('resumo'));
+    expect(await screen.findByText('Alertas no período', undefined, SLOW)).toBeInTheDocument();
+    // A análise troca a área da lista; o radar continua.
+    expect(screen.queryByRole('table', { name: /^Alertas do cliente/ })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Radar das últimas 24 horas' })).toBeInTheDocument();
+    server.events.removeAllListeners();
   });
 
   it('trocar a análise não mexe na lista, nos filtros nem no detalhe aberto', async () => {
@@ -639,8 +900,13 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
     await waitFor(() => expect(search(router).get('analise')).toBe('regras'));
     expect(search(router).get('severidade')).toBe('critical');
     expect(search(router).get('alerta')).toBe(FINDING);
-    expect(await list()).toBeInTheDocument();
     expect(await screen.findByRole('table', { name: 'Regras que mais dispararam' })).toBeInTheDocument();
+    // O detalhe continua no lugar do radar; de volta à "Lista", a lista com os mesmos filtros.
+    expect(screen.getByRole('complementary', { name: /desligar a trilha/ })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('tab', { name: 'Lista' }));
+    await waitFor(() => expect(search(router).get('analise')).toBeNull());
+    expect(await list()).toBeInTheDocument();
+    expect(search(router).get('severidade')).toBe('critical');
   });
 
   it('o detalhe abre no lugar do radar e, ao fechar, o radar volta', async () => {
@@ -649,10 +915,10 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
     const radar = await screen.findByRole('region', { name: 'Radar das últimas 24 horas' });
     await userEvent.click(within(radar).getAllByRole('link')[0] as HTMLElement);
     await waitFor(() => expect(search(router).get('alerta') ?? search(router).get('incidente')).toBeTruthy());
-    // A análise de baixo continua a mesma.
+    // A análise aberta continua a mesma.
     expect(search(router).get('analise')).toBe('mitre');
     expect(screen.queryByRole('region', { name: 'Radar das últimas 24 horas' })).toBeNull();
-    expect(await list()).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'MITRE ATT&CK' })).toHaveAttribute('aria-selected', 'true');
     await userEvent.click(await screen.findByRole('button', { name: 'Fechar o detalhe' }));
     expect(await screen.findByRole('region', { name: 'Radar das últimas 24 horas' })).toBeInTheDocument();
   });
@@ -670,16 +936,17 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
     window.localStorage.clear();
   });
 
-  it('um link para uma análise abre nela, rolada até as análises; a tática filtra a lista sem sair dela', async () => {
+  it('um link para uma análise abre nela, na aba ao lado do radar, sem rolar (R-05); a tática volta para a lista filtrada', async () => {
     desktop();
     const scroll = vi.spyOn(Element.prototype, 'scrollIntoView');
     const router = renderAt('/?analise=mitre&periodo=30d');
     expect(await screen.findByRole('tab', { name: 'MITRE ATT&CK' })).toHaveAttribute('aria-selected', 'true');
-    await waitFor(() => expect(scroll).toHaveBeenCalled());
     await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' }, SLOW);
+    // O mapa do topo começa recolhido por ser um link direto: a análise fica perto do topo, sem rolar a tela.
+    expect(scroll).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('link', { name: /^Evasão de defesas \(TA0005\)/ }));
     await waitFor(() => expect(search(router).get('tatica')).toBe('Defense Evasion'));
-    expect(search(router).get('analise')).toBe('mitre');
+    expect(search(router).get('analise')).toBeNull();
     expect(await list()).toBeInTheDocument();
   });
 
@@ -695,6 +962,39 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
 });
 
 describe('Detecções: análise e exportação', () => {
+  it('E-07: "Baixar o relatório do período" abre a impressão só do Resumo; os CSVs continuam', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    renderAt('/?analise=resumo&periodo=30d');
+    const button = await screen.findByRole('button', { name: 'Baixar o relatório do período' }, SLOW);
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(button).toHaveAccessibleDescription(/Salvar como PDF/);
+    expect(button.closest('[data-print-area="resumo"]')).not.toBeNull();
+    await userEvent.click(button);
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(document.documentElement.dataset['printing']).toBe('resumo');
+    window.dispatchEvent(new Event('afterprint'));
+    expect(document.documentElement.dataset['printing']).toBeUndefined();
+    expect(screen.getAllByRole('button', { name: /^Exportar .* em CSV$/ }).length).toBeGreaterThan(0);
+  });
+
+  it('R-11: a tabela completa do MITRE fica atrás de "Ver tabela completa"; o CSV e o gráfico continuam à vista', async () => {
+    renderAt('/?analise=mitre&periodo=30d');
+    const table = await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' }, SLOW);
+    const details = table.closest('details');
+    expect(details).not.toHaveAttribute('open');
+    expect(
+      within(details!).getByText('Ver tabela completa (14 táticas, com as técnicas)'),
+    ).toBeInTheDocument();
+    const csv = screen.getByRole('button', { name: 'Exportar Táticas e técnicas do MITRE ATT&CK em CSV' });
+    expect(details).not.toContainElement(csv);
+    expect(screen.getByRole('list', { name: 'Táticas com alertas' })).toBeInTheDocument();
+    // A nota sobre os alertas sem tática sai da frente (a matriz não está vazia).
+    expect(screen.getByText(/^A matriz mostra ações de um ataque/).closest('details')).not.toHaveAttribute(
+      'open',
+    );
+    expect(screen.getByText('Por que há alertas sem tática?')).toBeInTheDocument();
+  });
+
   it('MITRE ATT&CK no período da tela; a tática filtra a lista', async () => {
     const router = renderAt('/?analise=mitre&periodo=7d');
     expect(screen.queryByRole('table', { name: /^Alertas do cliente/ })).toBeNull();
@@ -846,18 +1146,20 @@ describe('Detecções: análise e exportação', () => {
     ['regras', 'Regras', 'Regras que mais dispararam'],
     ['entidades', 'Entidades', 'IPs de origem'],
     ['resposta', 'Resposta a incidentes', 'Incidentes abertos no período'],
-    ['excecoes', 'Exceções', 'Exceções e quantos alertas cada uma silenciou'],
   ])('a análise "%s" volta com a tabela dela', async (slug, tab, table) => {
     renderAt(`/?analise=${slug}`);
     expect(await screen.findByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true');
     expect(await screen.findByRole('table', { name: table })).toBeInTheDocument();
   });
 
-  it('cobertura das fontes, com o CSV da tabela', async () => {
-    renderAt('/?analise=cobertura');
-    expect(
-      await screen.findByRole('table', { name: 'Contas monitoradas e o que chegou de cada uma' }),
-    ).toBeInTheDocument();
+  it.each([
+    ['cobertura', '/cadastros/contas'],
+    ['excecoes', '/cadastros/excecoes'],
+  ])('a análise "%s" saiu de Detecções: o endereço antigo leva a %s', async (slug, path) => {
+    const router = renderAt(`/?analise=${slug}`);
+    await waitFor(() => expect(router.state.location.pathname).toBe(path));
+    expect(screen.queryByRole('tab', { name: 'Cobertura das fontes' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Exceções' })).toBeNull();
   });
 
   it('exporta em CSV a lista filtrada de agora', async () => {

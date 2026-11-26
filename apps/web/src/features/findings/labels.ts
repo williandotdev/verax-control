@@ -1,4 +1,10 @@
-import { agentIdOfRef, type FindingPeriod, type FindingSource, type FindingStatus } from '@verax/shared';
+import {
+  agentIdOfRef,
+  type FindingPeriod,
+  type FindingSource,
+  type FindingStatus,
+  type FindingType,
+} from '@verax/shared';
 import { CircleCheck, CircleDot, type LucideIcon, Search, ShieldCheck } from 'lucide-react';
 
 export const FINDING_STATUS_LABELS: Readonly<Record<FindingStatus, { label: string; icon: LucideIcon }>> = {
@@ -49,4 +55,11 @@ export const FINDING_PERIOD_LABELS: Readonly<Record<FindingPeriod, string>> = {
   '30d': 'Últimos 30 dias',
   '90d': 'Últimos 90 dias',
   '12m': 'Últimos 12 meses',
+};
+
+/** O tipo do alerta (E-06): as filas dos casos. */
+export const FINDING_TYPE_LABELS: Readonly<Record<FindingType, string>> = {
+  detection: 'Detecção',
+  posture: 'Postura',
+  vulnerability: 'Vulnerabilidade',
 };

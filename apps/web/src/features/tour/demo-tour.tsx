@@ -2,6 +2,7 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalSt
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router';
 import { useMe } from '@/features/session/session';
+import { preloadPages } from '@/routes/lazy-page';
 import { examplePath } from './examples';
 import { type Box, placeCard, spotlightBox } from './placement';
 import { readTourProgress, type TourProgress, writeTourProgress } from './progress';
@@ -31,7 +32,21 @@ export default function DemoTour({ steps = TOUR_STEPS, targetTimeoutMs = TARGET_
     () => (permissions ? tourStepsFor(permissions, steps) : null),
     [permissions, steps],
   );
-  if (!visible || visible.length === 0) return null;
+  // As telas carregam sob demanda (E-13): o tour passa por várias, e o prazo de cada alvo não pode correr enquanto a
+  // tela ainda baixa. Carrega todas antes do primeiro passo; uma falha não segura o tour (o alvo cai no centro).
+  const [pagesReady, setPagesReady] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void preloadPages()
+      .catch(() => undefined)
+      .then(() => {
+        if (alive) setPagesReady(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  if (!pagesReady || !visible || visible.length === 0) return null;
   return <TourController steps={visible} timeoutMs={targetTimeoutMs} />;
 }
 

@@ -171,6 +171,28 @@ export function gcpConnectionErrorHint(code: string): string | null {
 }
 
 /**
+ * A explicação curta da conexão na própria lista de Contas cloud (E-08), abaixo de "Erro" ou "Aguardando": a mesma que
+ * o detalhe da conta mostra ao lado de "Conexão". No Cloudflare e na GCP, o erro com explicação própria diz o motivo
+ * ("O token venceu."); sem ela, o texto geral do provedor. Conectada, nada: o selo basta.
+ */
+export function connectionListHint(
+  account: Pick<
+    CloudAccount,
+    'provider' | 'connection' | 'connectionError' | 'checkRequestedAt' | 'ingestFrom'
+  >,
+): string | null {
+  if (account.connection === 'connected') return null;
+  const code = account.connection === 'error' ? account.connectionError : null;
+  if (code !== null && account.provider === 'cloudflare') {
+    return cloudflareConnectionErrorHint(code) ?? connectionHint(account);
+  }
+  if (code !== null && account.provider === 'gcp') {
+    return gcpConnectionErrorHint(code) ?? connectionHint(account);
+  }
+  return connectionHint(account);
+}
+
+/**
  * Os avisos da coleta pelo Wazuh do nó (a tarefa `wazuh-config` do worker, à parte da conexão): são do nó, não da conta
  * do cliente, e quem resolve é a Verax.
  */

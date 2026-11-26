@@ -40,7 +40,12 @@ export function ScopedExceptionsSection({ scope, role }: { scope: string | null;
   if (list.error instanceof ApiRequestError && list.error.status === 404) return null;
 
   const columns: Column<ScopedException>[] = [
-    { key: 'regra', header: 'Regra', cell: (row) => <span className="font-mono text-sm">{row.ruleId}</span> },
+    {
+      key: 'regra',
+      card: 'title',
+      header: 'Regra',
+      cell: (row) => <span className="font-mono text-sm">{row.ruleId}</span>,
+    },
     {
       key: 'alvo',
       header: 'Quando',

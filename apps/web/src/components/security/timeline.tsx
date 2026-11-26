@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import type { Severity } from '@/design/severity';
 import { SEVERITY_STYLES } from '@/design/severity';
@@ -14,6 +15,10 @@ export interface TimelineEvent {
   source?: string;
   /** Leva ao detalhe do evento (por exemplo, o achado). */
   href?: string;
+  /** Um selo ao lado da fonte (o status do alerta). */
+  badge?: ReactNode;
+  /** Uma ação do item ("Remover do incidente"), na linha de baixo. */
+  action?: ReactNode;
 }
 
 /** Linha do tempo de um incidente ou recurso, na ordem recebida (o chamador ordena). */
@@ -46,7 +51,13 @@ export function Timeline({ events, className }: { events: TimelineEvent[]; class
               {style && <span className="sr-only"> (severidade {style.label})</span>}
             </p>
             {event.description && <p className="text-sm text-muted-foreground">{event.description}</p>}
-            {event.source && <p className="text-xs text-subtle-foreground">{event.source}</p>}
+            {(event.source ?? event.badge) && (
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-subtle-foreground">
+                {event.source}
+                {event.badge}
+              </p>
+            )}
+            {event.action && <div className="mt-1">{event.action}</div>}
           </li>
         );
       })}

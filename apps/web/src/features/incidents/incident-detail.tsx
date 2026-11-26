@@ -1,4 +1,5 @@
 import { agentIdOfRef, type IncidentDetail, INCIDENT_STATUSES, type IncidentStatus } from '@verax/shared';
+import { useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { SeverityBadge } from '@/components/security/severity-badge';
 import { Timeline } from '@/components/security/timeline';
@@ -6,11 +7,16 @@ import { SelectField } from '@/components/ui/select-field';
 import { FINDING_SOURCE_LABELS, findingOriginId } from '@/features/findings/labels';
 import { IncidentStatusBadge } from '@/features/incidents/incident-status-badge';
 import { selectionSearch } from '@/features/detections/url-state';
-import { useIncidentAssignees, useUpdateIncident } from '@/features/incidents/incidents-api';
+import {
+  useDetachFinding,
+  useIncidentAssignees,
+  useUpdateIncident,
+} from '@/features/incidents/incidents-api';
+import { FindingStatusBadge } from '@/features/findings/finding-status-badge';
+import { Button } from '@/components/ui/button';
 import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
 import { TACTIC_LABELS } from '@/features/reports/labels';
 import { incidentRecommendation, incidentSummary, parseKeys } from '@/features/incidents/narrative';
-import { IncidentAlerts } from '@/features/incidents/incident-actions';
 import { errorMessage } from '@/lib/errors';
 import { formatRelative, plural } from '@/lib/format';
 
@@ -19,7 +25,7 @@ const NO_ASSIGNEE = '';
 /**
  * Detalhe do incidente (T7.9), no painel ao lado da lista da tela Detecções: severidade, status e nota, o resumo em
  * português com o primeiro passo, o tratamento (status e responsável), a linha do tempo dos alertas (cada um abre no
- * mesmo painel), os alertas com "Remover do incidente" para quem opera, os ativos e o MITRE. Numa coluna só: o painel
+ * mesmo painel; para quem opera, "Editar alertas do incidente" dá a cada um "Remover do incidente"), os ativos e o MITRE. Numa coluna só: o painel
  * é estreito.
  */
 export function IncidentDetailView({ incident, canWrite }: { incident: IncidentDetail; canWrite: boolean }) {
@@ -38,6 +44,13 @@ export function IncidentDetailView({ incident, canWrite }: { incident: IncidentD
   ];
 
   const mitre = incident.mitreTactics.length + incident.mitreTechniques.length > 0;
+  // R-06: a linha do tempo é a única lista dos alertas. "Remover do incidente" vira uma ação de cada item, depois de
+  // "Editar alertas do incidente": só para quem opera, no incidente não resolvido; o último alerta não sai.
+  const canEdit = canWrite && incident.status !== 'resolved';
+  const [editingAsked, setEditing] = useState(false);
+  const editing = canEdit && editingAsked;
+  const last = incident.findings.length <= 1;
+  const detach = useDetachFinding(incident.id);
   return (
     <>
       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -67,6 +80,11 @@ export function IncidentDetailView({ incident, canWrite }: { incident: IncidentD
         <h3 id="incidente-linha-do-tempo" className="text-sm font-semibold">
           Linha do tempo ({plural(incident.findingCount, 'alerta', 'alertas')})
         </h3>
+        {editing && last && (
+          <p className="text-xs text-muted-foreground">
+            O incidente precisa de pelo menos um alerta. Para encerrá-lo, mude o status para resolvido.
+          </p>
+        )}
         <Timeline
           className="ml-2"
           events={incident.findings.map((finding) => ({
@@ -78,12 +96,39 @@ export function IncidentDetailView({ incident, canWrite }: { incident: IncidentD
             source: [finding.actor.user ?? finding.actor.ip, FINDING_SOURCE_LABELS[finding.source]]
               .filter(Boolean)
               .join(' · '),
+            badge: <FindingStatusBadge status={finding.status} />,
             href: selectionSearch(params, { kind: 'finding', id: finding.id }),
+            action:
+              editing && !last ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="max-sm:min-h-11"
+                  disabled={detach.isPending}
+                  onClick={() => detach.mutate(finding.id)}
+                >
+                  Remover do incidente<span className="sr-only">: {finding.title}</span>
+                </Button>
+              ) : undefined,
           }))}
         />
+        {canEdit && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="max-sm:min-h-11"
+            aria-pressed={editing}
+            onClick={() => setEditing(!editing)}
+          >
+            {editing ? 'Concluir a edição dos alertas' : 'Editar alertas do incidente'}
+          </Button>
+        )}
+        {detach.error && (
+          <p role="alert" className="text-sm text-critical-text">
+            {errorMessage(detach.error)}
+          </p>
+        )}
       </section>
-
-      {canWrite && incident.status !== 'resolved' && <IncidentAlerts incident={incident} />}
 
       <section aria-labelledby="incidente-ativos" className="space-y-2">
         <h3 id="incidente-ativos" className="text-sm font-semibold">
@@ -137,7 +182,10 @@ function StatusAndAssignee({ incident, canWrite }: { incident: IncidentDetail; c
   const update = useUpdateIncident(incident.id);
 
   return (
-    <section aria-labelledby="incidente-tratamento" className="space-y-2 rounded-md border p-3">
+    <section
+      aria-labelledby="incidente-tratamento"
+      className="space-y-2 rounded-md border p-3 max-md:[&_select]:h-11"
+    >
       <h3 id="incidente-tratamento" className="text-sm font-semibold">
         Tratamento
       </h3>

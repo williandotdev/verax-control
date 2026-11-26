@@ -66,8 +66,16 @@ async function openSite(browser: Browser, target: typeof A) {
   if (!response) throw new Error('sem resposta do painel');
   await expect(page.getByRole('heading', { name: 'Entrar' })).toBeVisible();
   const html = await response.text();
-  const entry = /<script[^>]* src="(\/assets\/[^"]+\.js)"/.exec(html)?.[1] ?? '';
-  const script = await page.evaluate(async (path) => (await fetch(path)).text(), entry);
+  // Com as telas sob demanda (E-13), o código de entrada vem em vários arquivos: o de entrada e os pré-carregados
+  // (`modulepreload`). Junta todos, na ordem do HTML.
+  const files = Array.from(
+    html.matchAll(/<(?:script|link)[^>]* (?:src|href)="(\/assets\/[^"]+\.js)"/g),
+    (m) => m[1] ?? '',
+  );
+  const script = await page.evaluate(
+    async (paths) => (await Promise.all(paths.map(async (path) => (await fetch(path)).text()))).join(''),
+    files,
+  );
   return { context, traffic, html, script, csp: response.headers()['content-security-policy'] ?? '' };
 }
 
@@ -89,7 +97,7 @@ test('o mesmo dist serve os dois sites: cada um chama só a própria API e receb
     expect(opened.traffic.external.filter((url) => !url.startsWith(`${target.api}/`))).toEqual([]);
   }
 
-  // Mesmos bytes (o HTML e o JavaScript de entrada), CSPs diferentes. O bundle traz o modelo, e não a API de um cliente.
+  // Mesmos bytes (o HTML e os arquivos JavaScript de entrada), CSPs diferentes. O bundle traz o modelo, e não a API de um cliente.
   expect(a.html).toBe(b.html);
   expect(a.script).toBe(b.script);
   expect(a.script).toContain('https://api-{tenant}.veraxsistemas.com.br');

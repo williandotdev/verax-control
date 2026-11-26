@@ -71,7 +71,8 @@ export function SelectCell<T extends { id: string }>({
   label: string;
 }) {
   return (
-    <td className={cn('w-11 p-0 align-top', column(select.selecting))}>
+    // Acima da área de toque da linha (E-02), que cobre o resto dela no celular.
+    <td className={cn('w-11 p-0 align-top max-md:relative max-md:z-10', column(select.selecting))}>
       <SelectBox select={select} rows={rows} row={row} label={label} />
     </td>
   );

@@ -12,6 +12,7 @@ import { Link, useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
+import { Explainer } from '@/components/ui/explainer';
 import { SelectField } from '@/components/ui/select-field';
 import { ReportTable } from '@/features/reports/report-table';
 import { UNOWNED_PERIOD_LABELS, UNOWNED_REASON_LABELS } from '@/features/unowned/labels';
@@ -118,11 +119,14 @@ export function UnownedAlertsPage() {
     <section className="space-y-6">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">Alertas sem dono</h1>
+        {/* R-04: as duas frases que dizem a regra à vista; o resto, a um clique. */}
         <p className="text-sm text-muted-foreground">
-          Alertas que não foram atribuídos a nenhum cliente: na dúvida, um alerta não é de ninguém. Quase
-          sempre falta cadastrar uma conta ou um bucket de log no cliente certo. Só a equipe da Verax vê esta
-          fila.
+          Alertas que não foram atribuídos a nenhum cliente. Quase sempre falta cadastrar uma conta ou um
+          bucket de log no cliente certo.
         </p>
+        <Explainer about="Alertas sem dono">
+          <p>Na dúvida, um alerta não é de ninguém. Só a equipe da Verax vê esta fila.</p>
+        </Explainer>
       </header>
 
       <AccountsSummary onPick={showAccount} />

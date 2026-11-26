@@ -21,6 +21,7 @@ import {
   cloudAccountDeleteSchema,
   type CloudAccountListQuery,
   cloudAccountListQuerySchema,
+  type CloudAccountSourceAttention,
   type CloudAccountUpdate,
   cloudAccountUpdateSchema,
   type Paginated,
@@ -47,6 +48,13 @@ export class CloudAccountsController {
     @Query({ schema: cloudAccountListQuerySchema }) query: CloudAccountListQuery,
   ): Promise<Paginated<CloudAccount>> {
     return this.accounts.list(query);
+  }
+
+  /** Antes de `:id`: quantas fontes autorizadas de cada conta AWS pedem atenção (E-08). */
+  @Get('source-attention')
+  @RequirePermission('cloud_accounts:read')
+  sourceAttention(): Promise<CloudAccountSourceAttention> {
+    return this.accounts.sourceAttention();
   }
 
   @Get(':id')

@@ -94,42 +94,45 @@ export function CaseAlerts({
       <h3 className="text-sm font-semibold">
         Alertas do caso ({detail.counts.total.toLocaleString('pt-BR')})
       </h3>
-      <div className="flex flex-wrap items-end gap-2">
-        <SelectField
-          label="Status do alerta"
-          value={filters.status ?? ''}
-          onChange={(value) =>
-            change({ ...filters, status: FINDING_STATUSES.find((status) => status === value) })
-          }
-          options={[
-            { value: '', label: 'Todos' },
-            ...FINDING_STATUSES.map((value) => ({ value, label: FINDING_STATUS_LABELS[value].label })),
-          ]}
-        />
-        <SelectField
-          label="Severidade do alerta"
-          value={filters.severity ?? ''}
-          onChange={(value) =>
-            change({ ...filters, severity: FINDING_SEVERITIES.find((severity) => severity === value) })
-          }
-          options={[
-            { value: '', label: 'Todas' },
-            ...FINDING_SEVERITIES.map((value) => ({ value, label: SEVERITY_STYLES[value].label })),
-          ]}
-        />
-        {groups.length > 1 && (
+      {/* E-06: um alerta só não precisa de filtro. */}
+      {detail.counts.total > 1 && (
+        <div className="flex flex-wrap items-end gap-2">
           <SelectField
-            label="Grupo do alerta"
-            className="min-w-0 [&_select]:max-w-64"
-            value={filters.group ?? ''}
-            onChange={(value) => change({ ...filters, group: value || undefined })}
+            label="Status do alerta"
+            value={filters.status ?? ''}
+            onChange={(value) =>
+              change({ ...filters, status: FINDING_STATUSES.find((status) => status === value) })
+            }
             options={[
               { value: '', label: 'Todos' },
-              ...groups.map((group) => ({ value: group.value, label: group.value })),
+              ...FINDING_STATUSES.map((value) => ({ value, label: FINDING_STATUS_LABELS[value].label })),
             ]}
           />
-        )}
-      </div>
+          <SelectField
+            label="Severidade do alerta"
+            value={filters.severity ?? ''}
+            onChange={(value) =>
+              change({ ...filters, severity: FINDING_SEVERITIES.find((severity) => severity === value) })
+            }
+            options={[
+              { value: '', label: 'Todas' },
+              ...FINDING_SEVERITIES.map((value) => ({ value, label: SEVERITY_STYLES[value].label })),
+            ]}
+          />
+          {groups.length > 1 && (
+            <SelectField
+              label="Grupo do alerta"
+              className="min-w-0 [&_select]:max-w-64"
+              value={filters.group ?? ''}
+              onChange={(value) => change({ ...filters, group: value || undefined })}
+              options={[
+                { value: '', label: 'Todos' },
+                ...groups.map((group) => ({ value: group.value, label: group.value })),
+              ]}
+            />
+          )}
+        </div>
+      )}
       {restarted && (
         <p role="status" className="text-xs text-muted-foreground">
           A lista mudou no servidor e recomeçou do mais recente.

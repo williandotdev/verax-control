@@ -1,6 +1,6 @@
 import { ChevronsLeft, ChevronsRight, KeyRound, type LucideIcon, X } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { NavLink } from 'react-router';
+import { NavLink, useLocation } from 'react-router';
 import { BrandLockup, PRODUCT_NAME, VeraxSymbol } from '@/components/brand/logo';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/cn';
@@ -14,12 +14,14 @@ interface SidebarProps {
   onCollapsedChange: (collapsed: boolean) => void;
   /** Fecha a gaveta do celular. */
   onClose: () => void;
+  /** No celular, embaixo do menu: a conta, o tema e "Sair" (E-02). */
+  footer?: ReactNode;
 }
 
 /** Classe de um item: ícone e nome; o da página atual em negrito, sobre um fundo claro discreto. */
 function itemClass(collapsed: boolean, active: boolean, hasBadge: boolean) {
   return cn(
-    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
+    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors max-md:min-h-11',
     'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
     active
       ? 'bg-foreground/[0.08] font-semibold text-foreground'
@@ -82,16 +84,27 @@ function GroupLabel({ children, collapsed }: { children: string; collapsed: bool
  * Menu lateral no navy da marca: seções com o título pequeno em caixa alta, itens com ícone de traço fino e, no topo,
  * a marca com o botão de recolher.
  */
-export function Sidebar({ groups, adminMasterUrl, collapsed, onCollapsedChange, onClose }: SidebarProps) {
+export function Sidebar({
+  groups,
+  adminMasterUrl,
+  collapsed,
+  onCollapsedChange,
+  onClose,
+  footer,
+}: SidebarProps) {
+  const { pathname } = useLocation();
   const sections: { label: string; content: ReactNode }[] = groups.map((group) => ({
     label: group.label,
-    content: group.items.map(({ to, label, icon, badge }) => (
+    content: group.items.map(({ to, label, icon, badge, match }) => (
       <li key={to} className="relative">
         <NavLink
           to={to}
           end={to === '/'}
           title={collapsed ? label : undefined}
-          className={({ isActive }) => itemClass(collapsed, isActive, badge !== undefined)}
+          // "Fontes" fica marcada em qualquer aba dela.
+          className={({ isActive }) =>
+            itemClass(collapsed, isActive || (match?.includes(pathname) ?? false), badge !== undefined)
+          }
         >
           <ItemContent icon={icon} label={label} collapsed={collapsed} />
         </NavLink>
@@ -139,7 +152,13 @@ export function Sidebar({ groups, adminMasterUrl, collapsed, onCollapsedChange, 
         >
           {collapsed ? <ChevronsRight aria-hidden /> : <ChevronsLeft aria-hidden />}
         </Button>
-        <Button variant="ghost" size="icon" className="md:hidden" aria-label="Fechar menu" onClick={onClose}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-11 md:hidden"
+          aria-label="Fechar menu"
+          onClick={onClose}
+        >
           <X aria-hidden />
         </Button>
       </div>
@@ -157,6 +176,7 @@ export function Sidebar({ groups, adminMasterUrl, collapsed, onCollapsedChange, 
           </div>
         ))}
       </nav>
+      {footer}
     </>
   );
 }

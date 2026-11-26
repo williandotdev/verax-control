@@ -3,6 +3,7 @@ import {
   FINDING_SEVERITIES,
   FINDING_SOURCES,
   FINDING_STATUSES,
+  FINDING_TYPES,
   type FindingPeriod,
   MITRE_TACTICS,
 } from '@verax/shared';
@@ -13,13 +14,18 @@ import { Input } from '@/components/ui/field';
 import { SelectField } from '@/components/ui/select-field';
 import { SEVERITY_STYLES } from '@/design/severity';
 import { useCloudAccounts } from '@/features/findings/findings-api';
-import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
+import {
+  FINDING_SOURCE_LABELS,
+  FINDING_STATUS_LABELS,
+  FINDING_TYPE_LABELS,
+} from '@/features/findings/labels';
 import { TACTIC_LABELS } from '@/features/reports/labels';
 import {
   CUSTOM_PERIOD,
   type DetectionState,
   DETECTION_PARAMS,
   FILTER_KEYS,
+  findingTypeSlug,
   NO_ASSIGNEE,
   PERIOD_CHOICE_LABELS,
 } from './url-state';
@@ -44,8 +50,11 @@ export function FilterBar({
   periodOptions,
   onChange,
   analysis,
+  types = false,
 }: {
   state: DetectionState;
+  /** Com os casos (ligados ou em medição), o filtro "Tipo" (E-06): o tipo vem do caso do alerta. */
+  types?: boolean;
   params: URLSearchParams;
   /** Os períodos que cabem no histórico do plano. */
   periodOptions: readonly FindingPeriod[];
@@ -56,7 +65,12 @@ export function FilterBar({
   const moreId = useId();
   const { filters, view } = state;
   const moreActive = Boolean(
-    filters.source ?? filters.accountId ?? filters.tactic ?? filters.technique ?? filters.unassigned,
+    filters.source ??
+    filters.accountId ??
+    filters.tactic ??
+    filters.technique ??
+    filters.unassigned ??
+    state.findingType,
   );
   const [moreOpen, setMoreOpen] = useState(moreActive || state.sort !== 'recent');
   const hasFilters = FILTER_KEYS.some((key) => params.get(DETECTION_PARAMS[key]));
@@ -64,7 +78,11 @@ export function FilterBar({
     state.periodChoice === 'custom' ? CUSTOM_PERIOD : (state.periodChoice ?? (analysis ? '30d' : ''));
 
   return (
-    <div data-tour="filtros" className="space-y-3">
+    // E-11: no celular, os campos e os botões dos filtros com 44 px de altura.
+    <div
+      data-tour="filtros"
+      className="space-y-3 max-md:[&_button]:min-h-11 max-md:[&_input]:h-11 max-md:[&_select]:h-11"
+    >
       <div className="flex flex-wrap items-end gap-2">
         {!analysis && (
           <SearchField key={filters.q ?? ''} value={filters.q ?? ''} onSearch={(q) => onChange({ q })} />
@@ -189,6 +207,35 @@ export function FilterBar({
             value={filters.technique ?? ''}
             onSubmit={(technique) => onChange({ technique })}
           />
+          {view === 'alerts' && (
+            <>
+              {/* E-06: a lista de alertas também ordena pela gravidade, como a de incidentes. */}
+              <SelectField
+                label="Ordem"
+                value={state.sort === 'severity' ? 'severidade' : ''}
+                onChange={(value) => onChange({ sort: value || null })}
+                options={[
+                  { value: '', label: 'Mais recentes primeiro' },
+                  { value: 'severidade', label: 'Mais graves primeiro' },
+                ]}
+              />
+              {types && (
+                <SelectField
+                  label="Tipo"
+                  value={state.findingType ? findingTypeSlug(state.findingType) : ''}
+                  onChange={(value) => onChange({ type: value || null })}
+                  hint="Pelo caso do alerta: o que ainda não entrou em caso não aparece com o tipo escolhido."
+                  options={[
+                    { value: '', label: 'Todos' },
+                    ...FINDING_TYPES.map((type) => ({
+                      value: findingTypeSlug(type),
+                      label: FINDING_TYPE_LABELS[type],
+                    })),
+                  ]}
+                />
+              )}
+            </>
+          )}
           {view === 'incidents' && (
             <>
               <SelectField

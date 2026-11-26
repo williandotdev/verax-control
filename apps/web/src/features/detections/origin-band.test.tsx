@@ -10,6 +10,7 @@ import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
 import { OriginBand } from './origin-band';
 import { readOriginPlace, rememberOriginPlace } from './origin-place';
+import { STACKED_QUERY } from './strip-preference';
 import { ORIGIN_IDLE_POLL_MS, ORIGIN_POLL_MS } from './origin-traffic';
 
 const server = setupServer();
@@ -435,9 +436,9 @@ describe('recolher', () => {
     );
   });
 
-  it('no celular começa recolhida; por um link direto também, sem mexer na escolha guardada', async () => {
+  it('abaixo de 1280 px (tela empilhada) começa recolhida (R-07); por um link direto também, sem mexer na escolha guardada', async () => {
     answer(() => traffic());
-    mockMedia((query) => query === '(max-width: 47.99rem)');
+    mockMedia((query) => query === STACKED_QUERY);
     const phone = renderBand();
     expect(await screen.findByRole('button', { name: /^Mostrar/ })).toBeInTheDocument();
     phone.unmount();

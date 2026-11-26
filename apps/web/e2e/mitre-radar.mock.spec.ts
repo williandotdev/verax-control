@@ -173,7 +173,8 @@ test.describe('gráfico do MITRE ATT&CK (modo mock)', () => {
       360: false,
       390: false,
       768: false,
-      1280: true,
+      // Desde a E-07, a análise fica na coluna ao lado do radar: em 1280 px, a lista vai para baixo do gráfico.
+      1280: false,
       1920: true,
     });
   });
@@ -190,7 +191,10 @@ test.describe('gráfico do MITRE ATT&CK (modo mock)', () => {
       .first()
       .click();
     await expect(page).toHaveURL(/tatica=Defense\+Evasion/);
-    // No computador, a análise continua aberta embaixo da lista. O ponto leva ao mesmo lugar que o nome.
+    // Desde a E-07, a tática volta para a aba "Lista", já filtrada. O ponto leva ao mesmo lugar que o nome.
+    await expect(page).not.toHaveURL(/analise=/);
+    await expect(page.getByRole('table', { name: 'Alertas do cliente' })).toBeVisible();
+    await page.goBack();
     await expect(chart).toBeVisible();
     await chart
       .getByRole('link', { name: /^Descoberta/ })
@@ -198,10 +202,12 @@ test.describe('gráfico do MITRE ATT&CK (modo mock)', () => {
       .first()
       .click();
     await expect(page).toHaveURL(/tatica=Discovery/);
+    await page.goBack();
 
     await chart.getByRole('link', { name: /^Acesso inicial/ }).focus();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/tatica=Initial\+Access/);
+    await page.goBack();
 
     await page
       .getByRole('list', { name: 'Táticas com alertas' })

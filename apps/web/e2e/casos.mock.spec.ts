@@ -93,13 +93,15 @@ test.describe('casos desligados (modo mock)', () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, '/?visao=casos');
     await expect(page.getByRole('table', { name: 'Alertas do cliente' })).toBeVisible();
-    const list = page.getByRole('group', { name: 'Visão da lista' }).locator('xpath=..');
-    await expect(list.locator('> *').nth(0)).toMatchAriaSnapshot(`
+    // Desde a E-07, a visão fica na mesma linha das abas ("Lista" e as análises); os filtros vêm logo abaixo dela.
+    const toggle = page.getByRole('group', { name: 'Visão da lista' });
+    await expect(toggle).toMatchAriaSnapshot(`
       - group "Visão da lista":
         - button "Alertas" [pressed]
         - button "Incidentes"
     `);
-    await expect(list.locator('> *').nth(1)).toMatchAriaSnapshot(`
+    const row = toggle.locator('xpath=..');
+    await expect(row.locator('xpath=following-sibling::*[1]')).toMatchAriaSnapshot(`
       - search:
         - text: Buscar
         - searchbox "Buscar"
@@ -112,7 +114,11 @@ test.describe('casos desligados (modo mock)', () => {
       - combobox "Status"
       - button "Mais filtros"
     `);
-    await expect(list.locator('> *')).toHaveCount(3);
+    // Sem os casos, nada entre os filtros e a lista (o histórico das operações em massa não aparece).
+    await expect(
+      row.locator('xpath=following-sibling::*[2]').getByRole('table', { name: 'Alertas do cliente' }),
+    ).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Operações recentes' })).toHaveCount(0);
     await expect(page.getByRole('table', { name: 'Alertas do cliente' }).getByRole('row').first())
       .toMatchAriaSnapshot(`
       - row "Severidade Alerta Status Incidente":
@@ -207,14 +213,15 @@ test.describe('casos (modo mock): acessibilidade', () => {
   test('nenhuma largura de 320 a 1920 px rola para o lado, e as tabelas cabem ao lado do radar', async ({
     page,
   }) => {
-    test.setTimeout(120_000);
+    // 32 aberturas da tela: com os testes em paralelo, a máquina lenta passa dos 2 minutos.
+    test.setTimeout(300_000);
     await prepare(page);
     for (const path of ['/', '/?visao=vulnerabilidades', '/?visao=alertas', '/?fila=postura']) {
       for (const width of [320, 390, 640, 768, 1024, 1280, 1440, 1920]) {
         await page.setViewportSize({ width, height: 900 });
         await open(page, path);
         await noHorizontalScroll(page, `${path} em ${width} px`);
-        if (path === '/?visao=alertas' && width < 1440) continue;
+        // Desde a R-08, a lista de alertas também cabe sem rolar de lado em toda largura.
         const region = page.locator('[data-tour="deteccoes-lista"]');
         expect(
           await region.evaluate((element) => element.scrollWidth - element.clientWidth),

@@ -81,7 +81,8 @@ describe('Contas cloud na VM própria do cliente: as chaves de leitura', () => {
     async () => {
       const user = userEvent.setup();
       const { bodies, handler } = captureCredentialBodies();
-      renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`, vm, [handler]);
+      // A conta já conectada: os passos da chave ficam na aba "Conexão e usuário" (E-04).
+      renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}&aba=conexao`, vm, [handler]);
       const section = await screen.findByRole('region', {
         name: `Conectar a conta ${DEMO_ACCOUNTS.alfaProducao}`,
       });

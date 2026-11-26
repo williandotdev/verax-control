@@ -32,7 +32,7 @@ export interface ListPage<T> {
 }
 
 export const HEAD = 'px-3 py-2 text-left font-medium';
-export const CELL = 'px-3 py-2 align-top';
+export const CELL = 'px-3 py-2 align-top max-md:py-3';
 /**
  * Ao lado do radar ou do detalhe (`data-fill`, em `detections-page.tsx`), a lista ocupa a altura do quadro da esquerda: cada
  * elemento entre a coluna e a tabela leva esta classe, e só a tabela rola.
@@ -77,18 +77,25 @@ export function OpenButton({
   onOpen,
   children,
   label,
+  rowTarget = false,
 }: {
   selected: boolean;
   onOpen: (opener: HTMLElement) => void;
   children: ReactNode;
   label: string;
+  /** No celular, o toque em qualquer ponto da linha abre o item (a linha precisa ser `max-md:relative`). */
+  rowTarget?: boolean;
 }) {
   return (
     <button
       type="button"
       aria-label={label}
       aria-current={selected ? 'true' : undefined}
-      className="text-left font-medium hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      className={cn(
+        'text-left font-medium hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
+        // E-02: no celular, a linha inteira é o alvo do toque (a área do botão cobre a linha, que precisa ser `relative`).
+        rowTarget && "max-md:after:absolute max-md:after:inset-0 max-md:after:content-['']",
+      )}
       onClick={(event) => onOpen(event.currentTarget)}
     >
       {children}
@@ -165,7 +172,8 @@ export function Frame<T>({
       )}
     >
       {body}
-      <div className="in-data-[fill=true]:mt-auto in-data-[fill=true]:border-t in-data-[fill=true]:px-3 in-data-[fill=true]:py-2">
+      {/* E-11: no celular, os botões da paginação com 44 px. */}
+      <div className="in-data-[fill=true]:mt-auto in-data-[fill=true]:border-t in-data-[fill=true]:px-3 in-data-[fill=true]:py-2 max-md:[&_button]:min-h-11 max-md:[&_button]:min-w-11">
         <Pagination
           page={page.page}
           pageSize={page.pageSize}
@@ -251,6 +259,7 @@ export function IncidentsList({
               incident={row.incident}
               matched={filtered ? row.matchedFindings : null}
               dense={page.dense === true}
+              compact={page.compact === true}
               selection={selection}
               onOpen={onOpen}
             />
@@ -274,6 +283,7 @@ export function IncidentsList({
                 </span>
                 {page.dense && (
                   <DenseMeta>
+                    {page.compact && row.finding.resource && <>{row.finding.resource} · </>}
                     <When at={row.finding.occurredAt} />
                   </DenseMeta>
                 )}
@@ -312,12 +322,15 @@ function IncidentRows({
   incident,
   matched,
   dense,
+  compact,
   selection,
   onOpen,
 }: {
   incident: Incident;
   matched: number | null;
   dense: boolean;
+  /** Sem as colunas do responsável e dos ativos: eles vão na linha embaixo do título. */
+  compact: boolean;
   selection: DetectionSelection;
   onOpen: (selection: NonNullable<DetectionSelection>, opener: HTMLElement) => void;
 }) {
@@ -333,7 +346,7 @@ function IncidentRows({
             aria-expanded={expanded}
             aria-controls={childrenId}
             aria-label={`${expanded ? 'Fechar' : 'Abrir'} os alertas do incidente: ${title}`}
-            className="flex size-8 items-center justify-center rounded-md hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-ring"
+            className="flex size-8 items-center justify-center rounded-md hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-ring max-md:size-11"
             onClick={() => setExpanded(!expanded)}
           >
             <ChevronRight aria-hidden className={cn('size-4', expanded && 'rotate-90')} />
@@ -356,7 +369,14 @@ function IncidentRows({
           </span>
           {dense && (
             <DenseMeta>
-              {incident.assignee?.name ?? 'Sem responsável'} · <When at={incident.lastSeenAt} />
+              {incident.assignee?.name ?? 'Sem responsável'} ·{' '}
+              {compact && incident.resources.length > 0 && (
+                <>
+                  {incident.resources[0]}
+                  {incident.resources.length > 1 && ` e mais ${incident.resources.length - 1}`} ·{' '}
+                </>
+              )}
+              <When at={incident.lastSeenAt} />
             </DenseMeta>
           )}
           <MobileMeta>
@@ -489,7 +509,10 @@ export function AlertsList({
     >
       {(rows) =>
         rows.map((row) => (
-          <tr key={row.id} className={cn('border-t', selection?.id === row.id && 'bg-primary/5')}>
+          <tr
+            key={row.id}
+            className={cn('border-t max-md:relative', selection?.id === row.id && 'bg-primary/5')}
+          >
             {select && <SelectCell select={select} rows={rows} row={row} label={row.title} />}
             <td className={cn(CELL, WIDE)}>
               <SeverityBadge severity={row.severity} />
@@ -499,6 +522,7 @@ export function AlertsList({
                 selected={selection?.id === row.id}
                 label={`Abrir o alerta: ${row.title}`}
                 onOpen={(opener) => onOpen({ kind: 'finding', id: row.id }, opener)}
+                rowTarget
               >
                 {row.title}
               </OpenButton>
@@ -507,7 +531,12 @@ export function AlertsList({
               )}
               {page.dense && (
                 <DenseMeta>
-                  {[FINDING_SOURCE_LABELS[row.source], row.actor.user ?? row.actor.ip]
+                  {[
+                    // Sem a coluna da conta (enxuta), ela vem nesta linha: nenhuma informação some.
+                    page.compact ? findingOriginId(row.accountId) : null,
+                    FINDING_SOURCE_LABELS[row.source],
+                    row.actor.user ?? row.actor.ip,
+                  ]
                     .filter(Boolean)
                     .join(' · ')}{' '}
                   · <When at={row.occurredAt} />

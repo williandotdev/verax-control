@@ -51,11 +51,6 @@ export function CasesView({ view, ...given }: ViewProps & { view: 'cases' | 'vul
     <div className={cn(FILL_COLUMN, 'space-y-3')}>
       <CasesNotice />
       {isGrouped(view, props.cases) ? <GroupedView {...props} /> : <ListView view={view} {...props} />}
-      <p className="text-xs text-muted-foreground">
-        {view === 'cases'
-          ? 'Um caso reúne os alertas pendentes com a mesma origem e o mesmo alvo. Trate o caso inteiro de uma vez ou abra-o para ver alerta por alerta.'
-          : 'Cada caso é um pacote num recurso. Agrupe por pacote para atualizar em todo lugar de uma vez, ou por recurso para ver o que há em cada um.'}
-      </p>
     </div>
   );
 }

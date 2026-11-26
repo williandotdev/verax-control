@@ -1,11 +1,15 @@
 import { useState } from 'react';
 
-const NARROW = '(max-width: 47.99rem)';
+/**
+ * A tela empilhada: abaixo de 1280 px, o resumo e a lista ficam um embaixo do outro (`SIDE_PANEL_QUERY` é o contrário).
+ * Aí o mapa e o resumo começam recolhidos (R-07), como já começavam no celular: só as contagens, numa linha.
+ */
+export const STACKED_QUERY = '(max-width: 79.99rem)';
 
 /**
  * Aberto ou recolhido, lembrado por pessoa neste navegador. O armazenamento pode faltar (janela privada, bloqueio): a
- * tela segue com o padrão, aberto no computador e recolhido no celular. Com `startCollapsed`, começa recolhido só desta
- * vez: a escolha guardada fica como está.
+ * tela segue com o padrão, aberto no computador (1280 px ou mais) e recolhido com a tela empilhada (R-07). Com
+ * `startCollapsed`, começa recolhido só desta vez: a escolha guardada fica como está.
  */
 function usePanelPreference(key: string, startCollapsed = false): [boolean, (expanded: boolean) => void] {
   const [expanded, setState] = useState(() => {
@@ -17,7 +21,7 @@ function usePanelPreference(key: string, startCollapsed = false): [boolean, (exp
     } catch {
       // Sem armazenamento: o padrão.
     }
-    return typeof window.matchMedia === 'function' ? !window.matchMedia(NARROW).matches : true;
+    return typeof window.matchMedia === 'function' ? !window.matchMedia(STACKED_QUERY).matches : true;
   });
   const set = (next: boolean) => {
     setState(next);

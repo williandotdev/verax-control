@@ -1,4 +1,5 @@
-import { CASE_QUEUES, type CaseQueueName, type TowerCases, type TowerSummary } from '@verax/shared';
+import { type CaseQueueName, type TowerCases, type TowerSummary } from '@verax/shared';
+import type { Severity } from '@/design/severity';
 import { formatCount, formatList, formatRelative, plural } from '@/lib/format';
 import { allCollecting, collectionProof, proofSentence, stalledPhrase } from './tower-collection';
 
@@ -57,24 +58,23 @@ const QUEUE_NOUNS: Readonly<Record<CaseQueueName, string>> = {
 /** A ordem em que se olha o mais antigo: a detecção é a que tem pressa. */
 const OLDEST_ORDER: readonly CaseQueueName[] = ['detection', 'posture', 'vulnerability'];
 
-/** Os casos pendentes por fila, e desde quando espera o mais antigo da fila mais urgente. */
+/**
+ * Os casos pendentes por fila, na ordem da pressa, e desde quando espera o mais antigo da fila mais urgente (R-03):
+ * "Pendentes: 18 de detecção · 3 de postura · 10 de vulnerabilidade. O mais antigo de detecção, há 5 dias."
+ */
 export function pendingCasesNote(cases: TowerCases, now: Date): string {
-  const totals = CASE_QUEUES.map((queue) => {
+  const totals = OLDEST_ORDER.map((queue) => {
     const { critical, high, medium, low } = cases[queue];
     return { queue, total: critical + high + medium + low };
   }).filter(({ total }) => total > 0);
   if (totals.length === 0) return 'Nenhum caso pendente.';
-  const counts = totals.map(({ queue, total }, index) =>
-    index === 0
-      ? `${plural(total, 'caso pendente', 'casos pendentes')} ${QUEUE_NOUNS[queue]}`
-      : `${formatCount(total)} ${QUEUE_NOUNS[queue]}`,
-  );
+  const counts = totals.map(({ queue, total }) => `${formatCount(total)} ${QUEUE_NOUNS[queue]}`);
   const oldest = OLDEST_ORDER.find((queue) => cases.oldestPendingAt[queue] !== null);
   const since = oldest === undefined ? null : cases.oldestPendingAt[oldest];
-  return `${formatList(counts)}.${
+  return `Pendentes: ${counts.join(' · ')}.${
     oldest === undefined || since === null
       ? ''
-      : ` O mais antigo ${QUEUE_NOUNS[oldest]} foi aberto ${formatRelative(since, now)}.`
+      : ` O mais antigo ${QUEUE_NOUNS[oldest]}, ${formatRelative(since, now)}.`
   }`;
 }
 
@@ -96,11 +96,66 @@ export function towerReason(summary: TowerSummary, now?: Date): string {
   const proof = collectionProof(summary);
   const waiting = waitingSentence(summary);
   if (summary.reasons.length === 0) {
-    const calm = allCollecting(proof) && nothingToDecide(summary) ? 'Tudo calmo. ' : '';
-    const situation = waiting ?? `${calm}${NOTHING_OPEN}`;
+    const situation = waiting ?? `${calmPrefix(summary, proof)}${NOTHING_OPEN}`;
     return proof === null ? situation : `${situation} ${proofSentence(proof, now)}`;
   }
-  const parts = summary.reasons.map((reason) => {
+  return [`${formatList(reasonParts(summary))}.`, waiting].filter((sentence) => sentence !== null).join(' ');
+}
+
+/** "Tudo calmo. " só com a prova de que tudo coleta e nada espera uma decisão do cliente. */
+function calmPrefix(summary: TowerSummary, proof: ReturnType<typeof collectionProof>): string {
+  return allCollecting(proof) && nothingToDecide(summary) ? 'Tudo calmo. ' : '';
+}
+
+/** A manchete da situação (R-01): o mais grave em destaque, com a severidade; o resto fica nos botões e nas decisões. */
+export interface SituationHeadline {
+  severity: Severity;
+  title: string;
+  /** Uma linha abaixo, menor: os incidentes altos junto dos críticos, ou a prova da coleta no verde. */
+  detail: string | null;
+}
+
+const capitalize = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
+
+/**
+ * A manchete de "Situação agora". Com incidente crítico ou alto aberto, eles; com outro motivo (a coleta parada, a postura
+ * baixa), o motivo; sem motivo, a frase de sempre, com a prova da coleta inteira. As regras de honestidade são as de
+ * `towerReason`: o "Tudo calmo" só aparece onde ela o diria, e a frase completa continua no rótulo do leitor de tela.
+ */
+export function situationHeadline(summary: TowerSummary, now?: Date): SituationHeadline {
+  const { critical, high } = summary.openIncidents;
+  const reasons = summary.reasons;
+  const highText = plural(high, 'incidente alto aberto', 'incidentes altos abertos');
+  if (reasons.includes('critical_incident') && critical > 0) {
+    return {
+      severity: 'critical',
+      title: plural(critical, 'incidente crítico aberto', 'incidentes críticos abertos'),
+      detail: reasons.includes('high_incident') && high > 0 ? `e ${highText}` : null,
+    };
+  }
+  if (reasons.includes('high_incident') && high > 0)
+    return { severity: 'high', title: highText, detail: null };
+  const proof = collectionProof(summary);
+  if (reasons.length > 0) {
+    return {
+      severity: reasons.includes('collection_stalled') ? 'high' : 'medium',
+      title: capitalize(formatList(reasonParts(summary))),
+      detail: null,
+    };
+  }
+  const waiting = waitingSentence(summary);
+  const calm = calmPrefix(summary, proof);
+  return {
+    severity: waiting !== null ? 'high' : calm ? 'ok' : 'low',
+    title: waiting ?? `${calm}${NOTHING_OPEN}`,
+    detail: proof === null ? null : proofSentence(proof, now),
+  };
+}
+
+/** Os motivos da situação, um trecho por motivo. */
+function reasonParts(summary: TowerSummary): string[] {
+  const proof = collectionProof(summary);
+  return summary.reasons.map((reason) => {
     switch (reason) {
       case 'critical_incident':
         return plural(
@@ -116,5 +171,4 @@ export function towerReason(summary: TowerSummary, now?: Date): string {
         return stalledPhrase(proof);
     }
   });
-  return [`${formatList(parts)}.`, waiting].filter((sentence) => sentence !== null).join(' ');
 }

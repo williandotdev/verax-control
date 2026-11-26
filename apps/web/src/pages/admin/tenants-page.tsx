@@ -44,6 +44,7 @@ export function TenantsPage() {
   const columns: Column<TenantSummary>[] = [
     {
       key: 'nome',
+      card: 'title',
       header: 'Cliente',
       cell: (row) => (
         <button
@@ -57,6 +58,7 @@ export function TenantsPage() {
     },
     {
       key: 'status',
+      card: 'status',
       header: 'Status',
       cell: (row) => (
         <span className={row.status === 'active' ? undefined : 'text-muted-foreground'}>

@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { alertExceptionSchema } from '@verax/shared';
+import { alertExceptionRuleTitlesSchema, alertExceptionSchema } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
@@ -171,6 +171,62 @@ describe('exceções de alerta (T3.5)', () => {
     expect(await entryOf(removed)).toMatchObject({
       action: 'alert_exception.delete',
       before: { value: 'deploy' },
+    });
+  });
+
+  describe('títulos das regras (E-09)', () => {
+    const finding = (tenantId: string, ruleId: string, title: string, daysAgo: number) =>
+      prisma.finding.create({
+        data: {
+          tenantId,
+          accountId: '111111111111',
+          source: 'wazuh',
+          sourceEventId: `e09-${ruleId}-${daysAgo}-${Math.random()}`,
+          logSource: 'cloudtrail',
+          occurredAt: new Date(Date.now() - daysAgo * DAY),
+          severity: 'medium',
+          ruleId,
+          ruleLevel: 6,
+          title,
+          mitreTactics: [],
+          mitreTechniques: [],
+        },
+      });
+
+    it('o título do alerta mais recente da regra, só do cliente da sessão e dos últimos 180 dias', async () => {
+      const recent = nextRule();
+      const old = nextRule();
+      const otherTenant = nextRule();
+      const never = nextRule();
+      await finding(tenantA, recent, 'Título antigo da regra', 10);
+      await finding(tenantA, recent, 'Login no console sem MFA', 1);
+      await finding(tenantA, old, 'Alerta de muito tempo atrás', 200);
+      await finding(tenantB, otherTenant, 'Só do cliente B', 1);
+      const response = await call(readerA)
+        .get(
+          `/v1/alert-exceptions/rule-titles?ruleIds=${[recent, old, otherTenant, never, recent].join(',')}`,
+        )
+        .expect(200);
+      expect(alertExceptionRuleTitlesSchema.parse(response.body)).toEqual({
+        items: [{ ruleId: recent, title: 'Login no console sem MFA' }],
+      });
+      // O cliente B vê o título da regra dele.
+      const ofB = await call(analystB)
+        .get(`/v1/alert-exceptions/rule-titles?ruleIds=${otherTenant}`)
+        .expect(200);
+      expect(ofB.body).toEqual({ items: [{ ruleId: otherTenant, title: 'Só do cliente B' }] });
+    });
+
+    it('recusa o pedido fora do formato e pede sessão', async () => {
+      for (const ruleIds of ['', 'abc', '80270,', '1234567']) {
+        await call(readerA)
+          .get(`/v1/alert-exceptions/rule-titles?ruleIds=${encodeURIComponent(ruleIds)}`)
+          .expect(400);
+      }
+      const tooMany = Array.from({ length: 51 }, (_, index) => String(90000 + index)).join(',');
+      await call(readerA).get(`/v1/alert-exceptions/rule-titles?ruleIds=${tooMany}`).expect(400);
+      await call(readerA).get('/v1/alert-exceptions/rule-titles').expect(400);
+      await request(app.getHttpServer()).get('/v1/alert-exceptions/rule-titles?ruleIds=1').expect(401);
     });
   });
 });

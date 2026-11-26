@@ -106,6 +106,7 @@ export function AuditPage() {
     },
     {
       key: 'acao',
+      card: 'title',
       header: 'Ação',
       className: 'min-w-56',
       cell: (row) => (
@@ -126,7 +127,12 @@ export function AuditPage() {
         </button>
       ),
     },
-    { key: 'resultado', header: 'Resultado', cell: (row) => <AuditOutcomeBadge outcome={row.outcome} /> },
+    {
+      key: 'resultado',
+      card: 'status',
+      header: 'Resultado',
+      cell: (row) => <AuditOutcomeBadge outcome={row.outcome} />,
+    },
     {
       key: 'origem',
       header: 'Origem',

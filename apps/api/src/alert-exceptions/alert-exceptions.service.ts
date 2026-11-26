@@ -4,6 +4,7 @@ import type {
   AlertExceptionCreate,
   AlertExceptionCreated,
   AlertExceptionListQuery,
+  AlertExceptionRuleTitles,
   AlertExceptionOpenPreviewQuery,
   AlertExceptionUpdate,
   ExceptionCreateQuery,
@@ -38,6 +39,9 @@ const exceptionSelect = {
   createdAt: true,
   updatedAt: true,
 } as const satisfies Prisma.AlertExceptionSelect;
+
+/** Até quando o título de uma regra é procurado nos alertas do cliente (E-09). */
+const RULE_TITLE_WINDOW_DAYS = 180;
 
 type ExceptionRow = Prisma.AlertExceptionGetPayload<{ select: typeof exceptionSelect }>;
 
@@ -98,6 +102,29 @@ export class AlertExceptionsService {
       total,
       query,
     );
+  }
+
+  /**
+   * O título de cada regra pedida: o do alerta mais recente dela no cliente da sessão, nos últimos 180 dias (a descrição
+   * da regra do Wazuh). Uma consulta por regra, com o limite de cima da página (50), cada uma parando no primeiro achado
+   * pelo índice da data; a regra sem alerta na janela fica fora da resposta.
+   */
+  async ruleTitles(ruleIds: readonly string[]): Promise<AlertExceptionRuleTitles> {
+    const since = new Date(Date.now() - RULE_TITLE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    const db = this.prisma.scoped();
+    const unique = [...new Set(ruleIds)];
+    const found = await Promise.all(
+      unique.map(async (ruleId) => {
+        const row = await db.finding.findFirst({
+          where: { ruleId, occurredAt: { gte: since } },
+          orderBy: { occurredAt: 'desc' },
+          select: { title: true },
+        });
+        const title = row?.title.trim() ?? '';
+        return title === '' ? [] : [{ ruleId, title }];
+      }),
+    );
+    return { items: found.flat() };
   }
 
   async get(id: string): Promise<AlertException> {

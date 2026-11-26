@@ -1,7 +1,7 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ApiRequestError } from '@/lib/api-client';
 import { BrandLockup, VeraxSymbol, VeraxWordmark } from './brand/logo';
 import { StatTile } from './charts/stat-tile';
@@ -321,5 +321,83 @@ describe('catálogo', () => {
       expect(screen.getByRole('heading', { name })).toBeInTheDocument();
     }
     expect(screen.getAllByRole('meter')).toHaveLength(3);
+  });
+});
+
+describe('DataTable no celular (E-05)', () => {
+  interface Row {
+    id: string;
+    account: string;
+    state: string;
+    active: boolean;
+  }
+  const rows: Row[] = [
+    { id: '1', account: '111122223333', state: 'Conectada', active: true },
+    { id: '2', account: '222233334444', state: 'Erro', active: false },
+  ];
+  const open = vi.fn<(id: string) => void>();
+  const columns = [
+    {
+      key: 'conta',
+      header: 'Conta',
+      card: 'title' as const,
+      cell: (row: Row) => (
+        <button
+          type="button"
+          onClick={() => {
+            open(row.id);
+          }}
+        >
+          {row.account}
+        </button>
+      ),
+    },
+    { key: 'conexao', header: 'Conexão', card: 'status' as const, cell: (row: Row) => row.state },
+    {
+      key: 'status',
+      header: 'Status',
+      cardOmit: (row: Row) => row.active,
+      cell: (row: Row) => (row.active ? 'Ativa' : 'Inativa'),
+    },
+  ];
+  const renderTable = () =>
+    render(
+      <DataTable
+        caption="Contas de teste"
+        columns={columns}
+        rows={rows}
+        rowKey={(row) => row.id}
+        page={1}
+        pageSize={20}
+        total={2}
+        onPageChange={() => undefined}
+      />,
+    );
+
+  it('abaixo de 768 px, cada linha vira um cartão: o título inteiro, o estado ao lado e o resto com o nome da coluna', async () => {
+    const original = window.matchMedia.bind(window);
+    const restore = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+    window.matchMedia = (query: string) => ({ ...original(query), matches: query.includes('max-width') });
+    onTestFinished(() => {
+      if (restore) Object.defineProperty(window, 'matchMedia', restore);
+    });
+    renderTable();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    const list = screen.getByRole('list', { name: 'Contas de teste' });
+    const [first, second] = within(list).getAllByRole('listitem');
+    expect(first).toHaveTextContent('111122223333Conectada');
+    // "Ativa" é o normal e não ocupa espaço; "Inativa" aparece, com o rótulo da coluna.
+    expect(first).not.toHaveTextContent('Ativa');
+    expect(within(second as HTMLElement).getByText('Status:')).toBeInTheDocument();
+    expect(second).toHaveTextContent('Status:Inativa');
+    // O cartão inteiro abre o item; o caminho pelo teclado continua o botão do título.
+    await userEvent.click(within(second as HTMLElement).getByText('Status:'));
+    expect(open).toHaveBeenCalledWith('2');
+  });
+
+  it('no computador, a tabela de sempre', () => {
+    renderTable();
+    expect(screen.getByRole('table', { name: 'Contas de teste' })).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Contas de teste' })).not.toBeInTheDocument();
   });
 });

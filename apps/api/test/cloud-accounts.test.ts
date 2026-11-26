@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { randomBytes, randomInt } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { AWS_READER_AUDIENCE, cloudAccountSchema } from '@verax/shared';
+import { AWS_READER_AUDIENCE, cloudAccountSchema, cloudAccountSourceAttentionSchema } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
@@ -1097,6 +1097,72 @@ describe('contas cloud (T3.3)', () => {
       await call(adminA).get(`/v1/cloud-accounts/${ofB.id}`).expect(404);
       const own = await call(adminB).get(`/v1/cloud-accounts/${ofB.id}`).expect(200);
       expect(own.body).toMatchObject({ connection: 'error', connectionError: 'ErroDaContaDoClienteB' });
+    });
+  });
+
+  describe('fontes que pedem atenção (E-08)', () => {
+    const AUTHORIZED_AT = new Date('2026-11-01T10:00:00.000Z');
+    const sourceIn = (
+      cloud: { id: string; tenantId: string },
+      state: string,
+      extra: { authorizedAt?: Date | null; revokedAt?: Date | null } = {},
+    ) =>
+      prisma.awsSource.create({
+        data: {
+          tenantId: cloud.tenantId,
+          cloudAccountId: cloud.id,
+          kind: 'vpc_flow_logs',
+          region: 'sa-east-1',
+          resourceId: `fl-${randomInt(1e6, 9e6)}`,
+          name: 'Flow logs',
+          method: 's3',
+          availability: 'available',
+          permission: 'granted',
+          authorizedAt: AUTHORIZED_AT,
+          state,
+          ...extra,
+        },
+      });
+
+    it('conta só as autorizadas paradas, sem permissão, com erro ou que sumiram, por conta e só do cliente', async () => {
+      const first = await prisma.cloudAccount.create({
+        data: { tenantId: tenantA, accountId: accountId(), regions: ['sa-east-1'] },
+      });
+      const calm = await prisma.cloudAccount.create({
+        data: { tenantId: tenantA, accountId: accountId(), regions: ['sa-east-1'] },
+      });
+      const ofB = await prisma.cloudAccount.create({
+        data: { tenantId: tenantB, accountId: accountId(), regions: ['sa-east-1'] },
+      });
+      for (const state of ['stalled', 'permission_error', 'ingestion_error', 'source_missing']) {
+        await sourceIn(first, state);
+      }
+      // Não contam: coletando, esperando evento, retirada, nunca autorizada.
+      await sourceIn(first, 'collecting');
+      await sourceIn(first, 'waiting_events');
+      await sourceIn(first, 'revoked', { revokedAt: new Date() });
+      await sourceIn(first, 'needs_permission', { authorizedAt: null });
+      await sourceIn(first, 'source_missing', { authorizedAt: null });
+      await sourceIn(calm, 'collecting');
+      await sourceIn(ofB, 'stalled');
+      await sourceIn(ofB, 'stalled');
+
+      const response = await call(readerA).get('/v1/cloud-accounts/source-attention').expect(200);
+      const body = cloudAccountSourceAttentionSchema.parse(response.body);
+      expect(body.items).toContainEqual({ cloudAccountId: first.id, sourcesNeedingAttention: 4 });
+      const ids = body.items.map((item) => item.cloudAccountId);
+      expect(ids).not.toContain(calm.id);
+      // A conta do cliente B não aparece para o A, e o B vê só a dele.
+      expect(ids).not.toContain(ofB.id);
+      const ofBView = cloudAccountSourceAttentionSchema.parse(
+        (await call(adminB).get('/v1/cloud-accounts/source-attention').expect(200)).body,
+      );
+      expect(ofBView.items.map((item) => item.cloudAccountId)).not.toContain(first.id);
+      expect(ofBView.items).toContainEqual({ cloudAccountId: ofB.id, sourcesNeedingAttention: 2 });
+    });
+
+    it('pede sessão', async () => {
+      await request(app.getHttpServer()).get('/v1/cloud-accounts/source-attention').expect(401);
     });
   });
 });

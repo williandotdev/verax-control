@@ -174,7 +174,13 @@ function SidePanel({
             </p>
           )}
         </div>
-        <Button variant="ghost" size="icon" aria-label="Fechar o detalhe" onClick={onClose}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="max-md:size-11"
+          aria-label="Fechar o detalhe"
+          onClick={onClose}
+        >
           <X aria-hidden />
         </Button>
       </header>

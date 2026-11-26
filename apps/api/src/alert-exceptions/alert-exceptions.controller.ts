@@ -18,6 +18,9 @@ import {
   alertExceptionCreateSchema,
   type AlertExceptionListQuery,
   alertExceptionListQuerySchema,
+  type AlertExceptionRuleTitles,
+  type AlertExceptionRuleTitlesQuery,
+  alertExceptionRuleTitlesQuerySchema,
   type AlertExceptionOpenPreviewQuery,
   alertExceptionOpenPreviewQuerySchema,
   type AlertExceptionUpdate,
@@ -47,6 +50,15 @@ export class AlertExceptionsController {
     @Query({ schema: alertExceptionListQuerySchema }) query: AlertExceptionListQuery,
   ): Promise<Paginated<AlertException>> {
     return this.exceptions.list(query);
+  }
+
+  /** Antes de `:id`: o título de cada regra, para a lista dizer o que é a regra (E-09). */
+  @Get('rule-titles')
+  @RequirePermission('alert_exceptions:read')
+  ruleTitles(
+    @Query({ schema: alertExceptionRuleTitlesQuerySchema }) query: AlertExceptionRuleTitlesQuery,
+  ): Promise<AlertExceptionRuleTitles> {
+    return this.exceptions.ruleTitles(query.ruleIds);
   }
 
   /**
