@@ -197,7 +197,7 @@ describe('as decisões pendentes', () => {
       'href',
       '/?visao=vulnerabilidades',
     );
-    expect(list).toHaveTextContent(/casos? pendentes? de detecção, .* de vulnerabilidade e .* de postura\./);
+    expect(list).toHaveTextContent(/Pendentes: .* de detecção · .* de postura · .* de vulnerabilidade\./);
     await userEvent.click(within(list).getByRole('link', { name: 'Ver os casos' }));
     expect(await screen.findByRole('table', { name: 'Casos do cliente' }, SLOW)).toBeInTheDocument();
     expect([...search(router)]).toEqual([]);
@@ -273,7 +273,7 @@ describe('as decisões pendentes', () => {
     expect(within(list).getByText(/^\d+ alertas altos ou críticos para validar$/)).toBeInTheDocument();
     expect(within(list).queryByText(/fora dos casos/)).toBeNull();
     expect(await screen.findByRole('group', { name: /^Radar de casos/ }, SLOW)).toBeInTheDocument();
-    expect(list).toHaveTextContent(/casos? pendentes? de detecção/);
+    expect(list).toHaveTextContent(/Pendentes: .* de detecção/);
   });
 
   it('recolhido, diz os casos junto das detecções', async () => {

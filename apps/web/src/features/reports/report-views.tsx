@@ -19,7 +19,7 @@ import { PROVIDER_LABELS } from '@/features/admin/labels';
 import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
 import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
 import { cn } from '@/lib/cn';
-import { formatCount, formatTimestamp } from '@/lib/format';
+import { formatCount, formatDate, formatMinute, formatTimestamp } from '@/lib/format';
 import { formatDuration } from './labels';
 import { MitreRadar } from './mitre-radar';
 import { ReportContext } from './report-context';
@@ -76,13 +76,29 @@ function Loaded<T extends { period: ReportWindowPeriod; from: string; to: string
     <ReportContext value={{ period: query.data.period, current }}>
       <div className="space-y-6" aria-busy={!current}>
         <p className="text-xs text-muted-foreground">
-          De {formatTimestamp(query.data.from)} a {formatTimestamp(query.data.to)}
+          {periodLine(query.data.from, query.data.to)}
           {!current && <span role="status"> · Atualizando para o período escolhido…</span>}
         </p>
         <div className={cn('space-y-6', !current && 'opacity-60')}>{children(query.data)}</div>
       </div>
     </ReportContext>
   );
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * O período das análises numa linha (R-03): "Período: 26/10 a 25/11/2026 (o do filtro da lista; sem filtro, os últimos
+ * 30 dias)." Numa janela de até dois dias, com a hora, para não parecer um dia só.
+ */
+function periodLine(from: string, to: string): string {
+  const start = new Date(from);
+  const end = new Date(to);
+  const short = end.getTime() - start.getTime() <= 2 * DAY_MS;
+  const sameYear = start.getFullYear() === end.getFullYear();
+  const first = short ? formatMinute(start) : sameYear ? formatDate(start).slice(0, 5) : formatDate(start);
+  const last = short ? formatMinute(end) : formatDate(end);
+  return `Período: ${first} a ${last} (o do filtro da lista; sem filtro, os últimos 30 dias).`;
 }
 
 /** Por que um alerta pode ficar sem tática, em linguagem simples. */

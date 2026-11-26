@@ -456,6 +456,41 @@ describe('Detecções: os endereços de antes', () => {
   });
 });
 
+describe('Detecções: as explicações saem da frente (R-03)', () => {
+  it('a explicação do título, a do radar e o período das análises: a um clique, numa linha', async () => {
+    mockMedia((query) => query === SIDE_PANEL_QUERY);
+    renderAt('/?analise=resumo');
+    const header = (await screen.findByRole('heading', { level: 1, name: 'Detecções' }, SLOW)).closest(
+      'header',
+    );
+    const intro = within(header!).getByText(/^Cada evento suspeito vira um alerta para validar/);
+    // Fechada: o texto está num trecho que abre e fecha, com "Como funciona" ao lado do título.
+    const details = intro.closest('details');
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute('open');
+    expect(within(details!).getByText('Como funciona').closest('summary')).not.toBeNull();
+    await userEvent.click(within(details!).getByText('Como funciona'));
+    expect(details).toHaveAttribute('open');
+
+    const radar = await screen.findByRole('region', { name: 'Radar das últimas 24 horas' }, SLOW);
+    expect(
+      within(radar)
+        .getByText(/^Centro: agora\./)
+        .closest('details'),
+    ).not.toHaveAttribute('open');
+    expect(within(radar).getByText('Como ler o radar')).toBeInTheDocument();
+
+    expect(
+      await screen.findByText(
+        /^Período: \d{2}\/\d{2} a \d{2}\/\d{2}\/\d{4} \(o do filtro da lista; sem filtro, os últimos 30 dias\)\.$/,
+        undefined,
+        SLOW,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^As análises usam o período/)).toBeNull();
+  });
+});
+
 describe('Detecções: o resumo da situação', () => {
   it('o radar em destaque, o motivo em texto, as decisões com o atalho para a lista filtrada e a coleta numa gaveta', async () => {
     const router = renderAt('/');

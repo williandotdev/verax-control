@@ -20,6 +20,7 @@ import {
 } from 'react';
 import { Link, type To, useNavigate } from 'react-router';
 import { formatHour, useKeepInside } from '@/components/charts/chart-utils';
+import { Explainer } from '@/components/ui/explainer';
 import { SEVERITY_MARKS, SEVERITY_STYLES } from '@/design/severity';
 import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
 import { cn } from '@/lib/cn';
@@ -832,13 +833,16 @@ function RadarLegend({
           </li>
         )}
       </ul>
-      <p>
-        Centro: agora. Anéis a {formatList(radarRings(windowHours).map((ring) => `${ring.hours}`))} horas
-        atrás (as horas recentes têm mais espaço).{' '}
-        {cases
-          ? 'Cada ponto é um caso de detecção: o tamanho é quantos alertas ele reúne, e o setor, a origem.'
-          : 'O setor é a origem da detecção.'}
-      </p>
+      {/* R-03: os anéis e os setores têm rótulo no desenho; a explicação fica a um clique. */}
+      <Explainer label="Como ler o radar">
+        <p className="text-xs">
+          Centro: agora. Anéis a {formatList(radarRings(windowHours).map((ring) => `${ring.hours}`))} horas
+          atrás (as horas recentes têm mais espaço).{' '}
+          {cases
+            ? 'Cada ponto é um caso de detecção: o tamanho é quantos alertas ele reúne, e o setor, a origem.'
+            : 'O setor é a origem da detecção.'}
+        </p>
+      </Explainer>
     </div>
   );
 }

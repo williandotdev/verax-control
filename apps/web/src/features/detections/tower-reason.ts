@@ -1,4 +1,4 @@
-import { CASE_QUEUES, type CaseQueueName, type TowerCases, type TowerSummary } from '@verax/shared';
+import { type CaseQueueName, type TowerCases, type TowerSummary } from '@verax/shared';
 import type { Severity } from '@/design/severity';
 import { formatCount, formatList, formatRelative, plural } from '@/lib/format';
 import { allCollecting, collectionProof, proofSentence, stalledPhrase } from './tower-collection';
@@ -58,24 +58,23 @@ const QUEUE_NOUNS: Readonly<Record<CaseQueueName, string>> = {
 /** A ordem em que se olha o mais antigo: a detecção é a que tem pressa. */
 const OLDEST_ORDER: readonly CaseQueueName[] = ['detection', 'posture', 'vulnerability'];
 
-/** Os casos pendentes por fila, e desde quando espera o mais antigo da fila mais urgente. */
+/**
+ * Os casos pendentes por fila, na ordem da pressa, e desde quando espera o mais antigo da fila mais urgente (R-03):
+ * "Pendentes: 18 de detecção · 3 de postura · 10 de vulnerabilidade. O mais antigo de detecção, há 5 dias."
+ */
 export function pendingCasesNote(cases: TowerCases, now: Date): string {
-  const totals = CASE_QUEUES.map((queue) => {
+  const totals = OLDEST_ORDER.map((queue) => {
     const { critical, high, medium, low } = cases[queue];
     return { queue, total: critical + high + medium + low };
   }).filter(({ total }) => total > 0);
   if (totals.length === 0) return 'Nenhum caso pendente.';
-  const counts = totals.map(({ queue, total }, index) =>
-    index === 0
-      ? `${plural(total, 'caso pendente', 'casos pendentes')} ${QUEUE_NOUNS[queue]}`
-      : `${formatCount(total)} ${QUEUE_NOUNS[queue]}`,
-  );
+  const counts = totals.map(({ queue, total }) => `${formatCount(total)} ${QUEUE_NOUNS[queue]}`);
   const oldest = OLDEST_ORDER.find((queue) => cases.oldestPendingAt[queue] !== null);
   const since = oldest === undefined ? null : cases.oldestPendingAt[oldest];
-  return `${formatList(counts)}.${
+  return `Pendentes: ${counts.join(' · ')}.${
     oldest === undefined || since === null
       ? ''
-      : ` O mais antigo ${QUEUE_NOUNS[oldest]} foi aberto ${formatRelative(since, now)}.`
+      : ` O mais antigo ${QUEUE_NOUNS[oldest]}, ${formatRelative(since, now)}.`
   }`;
 }
 

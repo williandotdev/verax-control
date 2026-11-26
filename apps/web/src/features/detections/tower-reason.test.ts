@@ -208,7 +208,7 @@ describe('com os casos, a frase conta casos', () => {
         now,
       ),
     ).toBe(
-      '10 casos pendentes de detecção, 1.830 de vulnerabilidade e 1 de postura. O mais antigo de detecção foi aberto há 3 horas.',
+      'Pendentes: 10 de detecção · 1 de postura · 1.830 de vulnerabilidade. O mais antigo de detecção, há 3 horas.',
     );
     expect(
       pendingCasesNote(
@@ -219,9 +219,7 @@ describe('com os casos, a frase conta casos', () => {
         }),
         now,
       ),
-    ).toBe(
-      '1 caso pendente de vulnerabilidade e 1 de postura. O mais antigo de postura foi aberto há 5 dias.',
-    );
+    ).toBe('Pendentes: 1 de postura · 1 de vulnerabilidade. O mais antigo de postura, há 5 dias.');
   });
 });
 

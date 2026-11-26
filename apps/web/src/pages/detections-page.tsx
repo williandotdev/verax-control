@@ -5,6 +5,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { EmptyState } from '@/components/states';
 import { Button } from '@/components/ui/button';
+import { Explainer } from '@/components/ui/explainer';
 import { BulkAlertsList } from '@/features/cases/alerts-bulk';
 import { CaseFilterBar } from '@/features/cases/case-filter-bar';
 import { caseListQuery } from '@/features/cases/case-query';
@@ -115,17 +116,41 @@ export function DetectionsPage() {
   );
 }
 
-function Shell({ children, actions }: { children: ReactNode; actions?: ReactNode }) {
+function Shell({
+  children,
+  actions,
+  casesOn = false,
+}: {
+  children: ReactNode;
+  actions?: ReactNode;
+  /** Com os casos (ligados ou em medição), o "Como funciona" explica também os casos e as vulnerabilidades. */
+  casesOn?: boolean;
+}) {
   return (
     <section className="space-y-4">
       <header className="flex flex-wrap items-end justify-between gap-3">
-        <div className="space-y-1">
+        {/* R-03: a explicação lida uma vez sai da frente e fica em "Como funciona", ao lado do título. */}
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
           <h1 className="text-2xl font-semibold">Detecções</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            Cada evento suspeito vira um alerta para validar: pode ser falso positivo. Quando a ameaça é real,
-            quem opera promove o alerta, com os relacionados, a um incidente. Abra um item para ver o detalhe
-            e decidir o que fazer.
-          </p>
+          <Explainer about="Detecções" className="open:basis-full">
+            <p>
+              Cada evento suspeito vira um alerta para validar: pode ser falso positivo. Quando a ameaça é
+              real, quem opera promove o alerta, com os relacionados, a um incidente. Abra um item para ver o
+              detalhe e decidir o que fazer.
+            </p>
+            {casesOn && (
+              <>
+                <p>
+                  Um caso reúne os alertas pendentes com a mesma origem e o mesmo alvo. Trate o caso inteiro
+                  de uma vez ou abra-o para ver alerta por alerta.
+                </p>
+                <p>
+                  Nas vulnerabilidades, cada caso é um pacote num recurso. Agrupe por pacote para atualizar em
+                  todo lugar de uma vez, ou por recurso para ver o que há em cada um.
+                </p>
+              </>
+            )}
+          </Explainer>
         </div>
         {actions}
       </header>
@@ -462,6 +487,7 @@ function DetectionsContent({
   const operations = listing && cases.mode !== 'off' && view !== 'incidents' && <OperationsPanel />;
   return (
     <Shell
+      casesOn={cases.mode !== 'off'}
       actions={
         listing && (
           <ExportButton
@@ -525,12 +551,7 @@ function DetectionsContent({
                 }
                 className="space-y-4"
               >
-                <div className="space-y-2">
-                  {tabList}
-                  <p className="text-xs text-muted-foreground">
-                    As análises usam o período do filtro da lista; sem período, os últimos 30 dias.
-                  </p>
-                </div>
+                {tabList}
                 {analyses}
               </Tabs.Root>
             </div>
