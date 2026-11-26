@@ -7896,7 +7896,7 @@ cloudflare-oauth-steps.tsx,zone-health.tsx,labels.ts,oauth-return.ts,oauth-retur
   `AlbLogsBucket` e a política dele, a declaração `LigarLogDosAlb`, a negação de `Modify*` do balanceador trocada só com a
   opção, a etiqueta `verax-control:alb-logs-bucket`, a saída `AlbLogsBucketName`; comentários enxugados para caber no
   `TemplateBody`), `README.md`, `guard/*`, `tests/test_reader.py`; `apps/api/prisma/schema.prisma` e a migration
-  `20261205120000_web_alb_logging` (tabela nova `WebAlbLogging`, só aditiva); `apps/api/src/weblogs/alb-logging/`
+  `20261205130000_web_alb_logging` (tabela nova `WebAlbLogging`, só aditiva); `apps/api/src/weblogs/alb-logging/`
   (`alb-access-logs.ts`, a trava; `web-alb-logging-job.ts`, a tarefa `web-logs-alb-logging`),
   `weblogs/settings/web-alb-logging.service.ts`, o controller, o módulo, `web-logs-tasks.ts`, `tenant-scope.ts`;
   `packages/shared` (`web-alb-logging.ts`, os códigos em `web-logs.ts`, `albLogs` no preenchimento da pilha); o painel

@@ -2776,7 +2776,7 @@ desta versão; para parar, desliga-se a linha.
 
 ## Ligar o log de acesso do ALB pelo painel (`apps/api/src/weblogs/alb-logging/`)
 
-_(Migration `20261205120000_web_alb_logging`, só aditiva. Decisão do responsável: em vez do comando para o cliente rodar, a
+_(Migration `20261205130000_web_alb_logging`, só aditiva. Decisão do responsável: em vez do comando para o cliente rodar, a
 Verax liga o log a pedido no painel, com uma permissão de escrita opcional no papel do cliente.)_
 
 **A pilha.** O parâmetro `EnableAlbAccessLogs` do `verax-control-reader.yaml` (desligado por padrão, sem mudar a versão do
