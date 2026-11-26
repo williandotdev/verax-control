@@ -100,7 +100,15 @@ export const findingFilterShape = {
   q: findingSearchSchema.optional(),
 };
 
-export const findingListQuerySchema = withPagination(findingFilterShape).superRefine(checkCustomRange);
+/**
+ * A lista de achados aceita também a exceção que os marcou (`exception`, o id de uma de usuário, IP ou recurso ou de uma
+ * ampla): os alertas que ela marcou na chegada e os que estavam em aberto e ela resolveu ao ser criada. Opcional: um
+ * painel de antes não manda.
+ */
+export const findingListQuerySchema = withPagination({
+  ...findingFilterShape,
+  exception: z.uuid().optional(),
+}).superRefine(checkCustomRange);
 export type FindingListQuery = z.infer<typeof findingListQuerySchema>;
 
 const nullableText = z.string().max(2048).nullable();
