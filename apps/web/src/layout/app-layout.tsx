@@ -53,89 +53,105 @@ export function AppLayout() {
   const adminMasterUrl = me.role === 'admin_verax' ? (clientConfig.data?.adminMasterUrl ?? null) : null;
 
   return (
-    <div
-      className={cn(
-        'min-h-screen md:grid',
-        collapsed ? 'md:grid-cols-[4.5rem_1fr]' : 'md:grid-cols-[15rem_1fr]',
-      )}
-    >
-      {menuOpen && (
-        <button
-          type="button"
-          aria-label="Fechar menu"
-          className="fixed inset-0 z-30 bg-foreground/30 md:hidden"
-          onClick={() => setMenuOpen(false)}
-        />
-      )}
-      <aside
-        id="menu-principal"
-        data-open={menuOpen}
-        data-collapsed={collapsed}
+    <>
+      {/* R-12: o primeiro item do teclado leva direto ao conteúdo, sem passar pelo menu e pelo cabeçalho. Só aparece com o
+          foco. O foco vai para o conteúdo sem mexer no endereço (a URL guarda o estado das telas). */}
+      <a
+        href="#conteudo"
+        className="sr-only z-50 rounded-md bg-surface px-3 py-2 text-sm font-medium shadow-lg focus:fixed focus:top-2 focus:left-2 focus:h-auto focus:w-auto focus:overflow-visible focus:whitespace-normal focus:[clip:auto] focus:m-0 focus:px-3 focus:py-2 focus-visible:outline-2 focus-visible:outline-ring"
+        onClick={(event) => {
+          event.preventDefault();
+          const main = document.getElementById('conteudo');
+          main?.focus();
+          main?.scrollIntoView({ block: 'start' });
+        }}
+      >
+        Pular para o conteúdo
+      </a>
+      <div
         className={cn(
-          // No navy da marca nos dois temas, como o cabeçalho do site (tokens do modo escuro, no index.css). No
-          // computador fica preso à altura da tela, e o menu rola por dentro quando não cabe.
-          'brand-surface flex-col border-r md:sticky md:top-0 md:flex md:h-screen',
-          menuOpen ? 'fixed inset-y-0 left-0 z-40 flex w-64 shadow-lg' : 'hidden',
+          'min-h-screen md:grid',
+          collapsed ? 'md:grid-cols-[4.5rem_1fr]' : 'md:grid-cols-[15rem_1fr]',
         )}
       >
-        <Sidebar
-          groups={groups}
-          adminMasterUrl={adminMasterUrl}
-          collapsed={collapsed}
-          onCollapsedChange={setCollapsed}
-          onClose={() => setMenuOpen(false)}
-        />
-      </aside>
+        {menuOpen && (
+          <button
+            type="button"
+            aria-label="Fechar menu"
+            className="fixed inset-0 z-30 bg-foreground/30 md:hidden"
+            onClick={() => setMenuOpen(false)}
+          />
+        )}
+        <aside
+          id="menu-principal"
+          data-open={menuOpen}
+          data-collapsed={collapsed}
+          className={cn(
+            // No navy da marca nos dois temas, como o cabeçalho do site (tokens do modo escuro, no index.css). No
+            // computador fica preso à altura da tela, e o menu rola por dentro quando não cabe.
+            'brand-surface flex-col border-r md:sticky md:top-0 md:flex md:h-screen',
+            menuOpen ? 'fixed inset-y-0 left-0 z-40 flex w-64 shadow-lg' : 'hidden',
+          )}
+        >
+          <Sidebar
+            groups={groups}
+            adminMasterUrl={adminMasterUrl}
+            collapsed={collapsed}
+            onCollapsedChange={setCollapsed}
+            onClose={() => setMenuOpen(false)}
+          />
+        </aside>
 
-      <div className="flex min-w-0 flex-col">
-        {/* No celular o menu lateral, que leva a marca, fica fechado: ela vai numa faixa no topo, como no site. */}
-        <div className="brand-surface px-4 py-3 md:hidden">
-          <BrandLockup />
-        </div>
-        <header className="flex flex-wrap items-end justify-between gap-3 border-b bg-surface px-4 py-3 md:px-6">
-          <div className="flex items-end gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              className="md:hidden"
-              aria-expanded={menuOpen}
-              aria-controls="menu-principal"
-              onClick={() => setMenuOpen(true)}
-            >
-              <Menu aria-hidden />
-              Menu
-            </Button>
-            {me.permissions.includes('session:switch_tenant') && <TenantSwitcher me={me} />}
+        <div className="flex min-w-0 flex-col">
+          {/* No celular o menu lateral, que leva a marca, fica fechado: ela vai numa faixa no topo, como no site. */}
+          <div className="brand-surface px-4 py-3 md:hidden">
+            <BrandLockup />
           </div>
-          <div className="flex items-center gap-3">
-            <div className="hidden text-right sm:block">
-              <p className="text-sm font-medium">{me.email}</p>
-              <p className="text-xs text-muted-foreground">{ROLE_LABELS[me.role]}</p>
+          <header className="flex flex-wrap items-end justify-between gap-3 border-b bg-surface px-4 py-3 md:px-6">
+            <div className="flex items-end gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="md:hidden"
+                aria-expanded={menuOpen}
+                aria-controls="menu-principal"
+                onClick={() => setMenuOpen(true)}
+              >
+                <Menu aria-hidden />
+                Menu
+              </Button>
+              {me.permissions.includes('session:switch_tenant') && <TenantSwitcher me={me} />}
             </div>
-            {/* A própria conta e a preferência de aviso por e-mail (fase 2, PR-17'). */}
-            <Link to="/minha-conta" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
-              <UserRound aria-hidden />
-              <span className="sr-only sm:not-sr-only">Minha conta</span>
-            </Link>
-            <ThemeToggle />
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={signOut.isPending}
-              onClick={() =>
-                signOut.mutate(undefined, { onSettled: () => void navigate('/login', { replace: true }) })
-              }
-            >
-              <LogOut aria-hidden />
-              Sair
-            </Button>
-          </div>
-        </header>
-        <main className="flex-1 p-4 md:p-6">
-          {/* Trocar de cliente remonta a página: nenhuma tela segura na mão (como dado provisório) o que era do outro. */}
-          <Outlet key={me.scopeTenantId ?? 'nenhum'} />
-        </main>
+            <div className="flex items-center gap-3">
+              <div className="hidden text-right sm:block">
+                <p className="text-sm font-medium">{me.email}</p>
+                <p className="text-xs text-muted-foreground">{ROLE_LABELS[me.role]}</p>
+              </div>
+              {/* A própria conta e a preferência de aviso por e-mail (fase 2, PR-17'). */}
+              <Link to="/minha-conta" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
+                <UserRound aria-hidden />
+                <span className="sr-only sm:not-sr-only">Minha conta</span>
+              </Link>
+              <ThemeToggle />
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={signOut.isPending}
+                onClick={() =>
+                  signOut.mutate(undefined, { onSettled: () => void navigate('/login', { replace: true }) })
+                }
+              >
+                <LogOut aria-hidden />
+                Sair
+              </Button>
+            </div>
+          </header>
+          <main id="conteudo" tabIndex={-1} className="flex-1 p-4 focus:outline-none md:p-6">
+            {/* Trocar de cliente remonta a página: nenhuma tela segura na mão (como dado provisório) o que era do outro. */}
+            <Outlet key={me.scopeTenantId ?? 'nenhum'} />
+          </main>
+        </div>
       </div>
-    </div>
+    </>
   );
 }

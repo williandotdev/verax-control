@@ -156,6 +156,21 @@ describe('menu no celular', () => {
   });
 });
 
+describe('"Pular para o conteúdo" (R-12)', () => {
+  it('é o primeiro item do teclado e leva o foco ao conteúdo, sem mudar o endereço', async () => {
+    const { router } = renderApp('/postura', demoMe('analista_cliente'));
+    await menu();
+    await userEvent.tab();
+    const skip = screen.getByRole('link', { name: 'Pular para o conteúdo' });
+    expect(skip).toHaveFocus();
+    const before = `${router.state.location.pathname}${router.state.location.search}`;
+    await userEvent.keyboard('{Enter}');
+    expect(screen.getByRole('main')).toHaveFocus();
+    expect(`${router.state.location.pathname}${router.state.location.search}`).toBe(before);
+    expect(router.state.location.hash).toBe('');
+  });
+});
+
 describe('menu recolhido (computador)', () => {
   afterEach(() => window.localStorage.removeItem('verax:menu'));
 
