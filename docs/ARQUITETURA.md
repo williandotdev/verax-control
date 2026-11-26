@@ -2930,7 +2930,7 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   telefone) não é usuário: não tem login, MFA nem Minha conta. Por isso ele só recebe e-mail depois de confirmar que a
   caixa é dele, recebe só os críticos e sai por um link em qualquer e-mail.
   - **Quem muda:** a equipe da Verax, no cadastro de clientes (`PATCH /v1/tenants/:id`, auditado como `tenant.update`),
-    e quem administra o cliente, na tela Administração → **Escalonamento** (`GET` e `PUT /v1/escalation-contact`,
+    e quem administra o cliente, na tela Conta → **Escalonamento** (`GET` e `PUT /v1/escalation-contact`,
     sempre o cliente da sessão, permissões `escalation_contact:read` e `:write`, auditado como
     `escalation_contact.update` com o contato anterior e o novo). Nos nós de clientes, o cadastro é feito pelo próprio
     cliente, sem a Verax no meio. Analista e leitura não veem nem mudam.
@@ -2998,6 +2998,68 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   origem do painel (`WEB_ORIGIN`), que o `start.sh` escreve no `worker.env` só com `MAIL_TRANSPORT=smtp` no
   `node.conf`. Sem o e-mail, o `worker.env` não muda, e o worker sobe com `none`. Nos nós de clientes, o SMTP é o da
   Verax (decisão D-16, sem SES).
+
+## Tela Detecções: arrumação e leitura (auditoria de UX de 25/11/2026)
+
+_(propostas aprovadas da auditoria de UX, implementadas em 26/11/2026; a E-01, o mapa em faixa compacta, foi recusada: a
+faixa do mapa no topo continua do mesmo tamanho e aberta no computador)_
+
+O painel não estava lento: a tela principal mostrava tudo ao mesmo tempo, na ordem errada. As regras de honestidade da
+situação não mudam (`tower-reason.ts`): nunca "Tudo calmo" com alerta alto ou crítico para validar, e a coleta parada
+sempre à vista. O que mudou é a apresentação:
+
+- **Situação agora** (`situation-strip.tsx`): aberta, uma manchete com o mais grave (o ícone da severidade, 18 px, a cor do
+  texto principal; `situationHeadline`), depois a coleta e a postura, as decisões e só então o radar, do mesmo tamanho e
+  com a lista ao lado. A frase completa (`towerReason`) continua no rótulo do leitor de tela; no verde, a frase e a prova
+  da coleta ficam inteiras e à vista. Recolhida, a linha começa pelo que pede atenção (`compactParts`): a coleta parada
+  (pelas fontes ou, num nó de antes, pelo motivo) e a postura abaixo do limite; a contagem de 24 h sai da linha no
+  celular quando há o que pede atenção. No celular, recolhida, vira linhas tocáveis (o incidente mais grave, o que
+  espera validação, a coleta e a postura, que abre o quadro).
+- **Decisões:** "alertas altos ou críticos para validar" leva a duas filas, "Ver os críticos" e "Ver os altos"
+  (`?status=new&severidade=`), que somam o número do cartão. Com os casos, a nota fica "Pendentes: 18 de detecção · 3 de
+  postura · 10 de vulnerabilidade. O mais antigo de detecção, há 5 dias."
+- **Explicações** (`components/ui/explainer.tsx`, um `<details>` nativo, por teclado e por toque): "Como funciona" ao lado
+  do título de Detecções (com os casos, as notas deles vão junto), "Como ler o radar", "Por que há alertas sem tática?"
+  e, nas telas de Usuários, Escalonamento, Agentes, Postura ("Como a nota é calculada") e Alertas sem dono, o resto da
+  explicação do topo. O período das análises numa linha ("Período: 26/10 a 25/11/2026 (...)"). Os textos do mapa de
+  origens ficam como estão.
+- **Larguras:** abaixo de 1280 px (tela empilhada), o mapa e a situação começam recolhidos (`STACKED_QUERY`); de 768 a
+  1023 px, o menu começa nos ícones (`MENU_ICONS_QUERY`). A escolha guardada de cada pessoa vale sobre o padrão. Abaixo
+  de 1280 px, as listas de alertas e de incidentes usam o arranjo enxuto (a conta, a origem, quem e quando numa linha
+  embaixo do título; a severidade, o status e o incidente como colunas): nenhuma coluna fora da vista. No celular
+  (`NARROW_QUERY`), uma barra só no topo (Menu, a marca e a conta; o tema e "Sair" no menu), as abas numa fileira que
+  desliza, os filtros atrás de "Filtros" (numa folha, com o "Exportar CSV"; os ativos como etiquetas removíveis) e a
+  linha inteira do alerta como alvo do toque. Abaixo de 768 px, os controles antigos de Detecções e do menu têm 44 px.
+- **Análises** (decisão de 23/11/2026 revista): no computador também, as análises são abas no mesmo nível de "Lista"
+  (`?analise=`: Resumo, MITRE ATT&CK, Regras, Entidades e Resposta a incidentes), que trocam a área da lista; o radar e a
+  situação ficam. "Cobertura das fontes" e "Exceções" saíram (26/11/2026: repetiam as Fontes e a tela de Exceções); o
+  endereço antigo leva a `/cadastros/contas` e a `/cadastros/excecoes`. Nenhuma análise é pedida só por abrir a tela, e
+  o link direto abre na aba, perto do topo, sem rolar. A tática do MITRE volta para a lista filtrada. No Resumo, "Baixar
+  o relatório do período" abre a impressão do navegador só com o Resumo (o navegador salva em PDF); os CSVs continuam.
+  No MITRE, a tabela completa fica atrás de "Ver tabela completa"; o gráfico e a lista ao lado, à vista.
+- **Painel do alerta:** um quadro só, "O que você decide?", logo abaixo dos selos (no alerta do balanceador, antes da
+  evidência), com "É uma ameaça real" (o diálogo de promover de sempre), "É esperado (falso positivo)" (legítimo, com a
+  oferta da exceção) e "Ainda não sei" (em análise), nenhuma em destaque; "Mais opções" guarda anexar, resolver e
+  reabrir. Uma caixa de texto só: o porquê vai com a decisão e fica nos comentários (na promoção, como comentário logo
+  depois).
+- **Painel do incidente:** a linha do tempo é a única lista dos alertas, com o status de cada um; "Editar alertas do
+  incidente" (só para quem opera, no incidente não resolvido) dá a cada item "Remover do incidente".
+- **Caso de um alerta só:** sem "O que os alertas têm em comum", "O que foge do padrão", o gráfico e os filtros da lista;
+  as frases de como o caso nasceu continuam, e tudo volta com o segundo alerta.
+- **Menu:** Operação; Fontes e regras (Fontes, Lista de proteção, Exceções); Conta (Usuários, Plano e uso, Escalonamento,
+  Auditoria); Verax (Clientes, Alertas sem dono). "Fontes" (pedido do responsável de 26/11/2026) junta Contas cloud e
+  Agentes numa entrada só, com uma aba para cada (`layout/sources-tabs.tsx`, uma moldura em volta das telas de sempre);
+  cada aba fica no endereço de antes (`/cadastros/contas`, `/cadastros/agentes`) e aparece só com a permissão dela. Os
+  endereços não mudam. "Pular para o conteúdo" é o primeiro item do teclado em toda tela interna.
+- **Radar:** o brilho de cada ponto só anima a opacidade (sem `transform` no SVG, nenhum layout por quadro) e, depois de
+  um minuto sem ninguém mexer na tela (ou com a aba escondida), a varredura pausa e o brilho para (`useIdle`).
+- **Lista de alertas por gravidade e por tipo** (`GET /v1/findings`): `sort` (`recent` | `severity`) e `type`
+  (`detection` | `posture` | `vulnerability`), opcionais e estritos. A mais grave primeiro e, nela, a mais recente (o enum
+  do Prisma é declarado do mais grave ao menos grave, e o índice `(tenantId, status, severity)` serve à fila "novo"). O
+  tipo é a fila do caso do alerta (`alertCase.queue`): o alerta sem caso não entra; por isso o painel só oferece o filtro
+  com os casos ligados ou em medição, com a nota na tela. Sem migração. Compatibilidade: o painel de antes não manda os
+  parâmetros; o nó de antes os recusa (400, a query é estrita), e o painel novo pede de novo sem eles e diz na tela que a
+  lista veio sem a ordem e sem o tipo; o CSV faz o mesmo. Na URL do painel: `?ordem=severidade` e `?tipo=vulnerabilidade`.
 
 ## Torre: semáforo, saúde da coleta e pulso da operação
 
@@ -3228,7 +3290,7 @@ control_plane`), e o `PLAN` e os ajustes do ambiente são recusados na partida. 
   mostra uma faixa a partir de 80%; os avisos por e-mail de 80% e 100% estão na seção "Avisos por e-mail".
 - **Histórico:** `historyDays` é o prazo do expurgo (PR-19) e o alcance das telas (PR-20, abaixo).
 - **`GET /v1/plan`** (permissão `plan:read`, só administradores): o plano resolvido do cliente da sessão (rótulo e os
-  quatro limites) e o uso dele (contas ativas, usuários convidados ou ativos, o mês e os bytes lidos nele). Tela: Administração
+  quatro limites) e o uso dele (contas ativas, usuários convidados ou ativos, o mês e os bytes lidos nele). Tela: Conta
   → **Plano e uso** (`/cadastros/plano`), só leitura, com uma barra por contador.
 
 ### Histórico nas telas (PR-20)
@@ -3657,7 +3719,7 @@ writerIdentity}`, `cell.status` (só agregados da célula) e **`command.refused 
   célula) recebe o bloco `franchise` (`franchiseUsageSchema`, `packages/shared/src/franchise.ts`): o ciclo, o dia `k`
   de `D`, a franquia de hoje e a agenda do ciclo, o orçamento `B = Σ F_d`, o volume do ciclo `U_k`, a média `U_k / k`,
   a projeção `U_k / k × D`, o excedente projetado em centésimos de GB/dia e os últimos 30 dias por fonte. Nenhum
-  valor em dinheiro. Em Administração → Plano e uso, o cartão da franquia mostra a barra `U_k / B` com a marca em
+  valor em dinheiro. Em Conta → Plano e uso, o cartão da franquia mostra a barra `U_k / B` com a marca em
   `k / D`, os números e as colunas por dia e fonte (com a tabela), e o botão "Ampliar franquia" desligado, com o aviso
   de que chega em breve. Até a agenda chegar pelo estado desejado (CE-19), a franquia do `TenantPlan` vale para o
   ciclo inteiro.
@@ -3666,7 +3728,7 @@ writerIdentity}`, `cell.status` (só agregados da célula) e **`command.refused 
   projeção do painel). Vai à Stripe como um evento de medidor por ciclo fechado, com identificador idempotente, e cai
   na fatura seguinte. Um ciclo estranho (dia sem fechamento, divergência na conferência, excedente muito acima da
   franquia) espera a aprovação do responsável.
-- **Ampliar a franquia** _(a construir, CE-19)_: pelo painel (Administração → Plano e uso), só o `admin_cliente`, com
+- **Ampliar a franquia** _(a construir, CE-19)_: pelo painel (Conta → Plano e uso), só o `admin_cliente`, com
   um código TOTP novo; o plano de controle muda a quantidade na Stripe, com a cobrança proporcional na hora, e só
   aplica se o pagamento passar. Reduzir vale no ciclo seguinte. Toda mudança gera auditoria nos dois lados e um recibo
   por e-mail.

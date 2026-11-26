@@ -7737,3 +7737,34 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
   - As regras de login nas instâncias (`HOST_LOGIN_RULES`) entram só com a fonte `wazuh_agent`; as mesmas regras podem disparar
     num grupo do CloudWatch Logs.
   - O teste da API roda no `pnpm test` da API, que exige o banco; ele mesmo não usa banco.
+
+## Auditoria de UX: Detecções, alerta, incidente, caso e menu (26/11/2026)
+
+- **Feito, um commit por ID, na ordem pedida:** R-13, R-01, R-02, R-03, R-07, R-08, R-05 (resolvida pela E-07, parte 1:
+  as análises viram abas ao lado de "Lista"), R-06, R-04, R-09, R-10, R-11, R-12, E-14, E-02, E-03, E-06 (com a API),
+  E-07 (parte 2: a folha de impressão do Resumo) e E-11. Pedidos do responsável no meio do trabalho: "Exceções" e
+  "Cobertura das fontes" saem das análises de Detecções (os endereços antigos levam às telas que ficaram); "Contas cloud"
+  vira "Fontes" no menu, com Contas cloud e Agentes em abas, nos endereços de sempre e com as mesmas permissões. Decisões do responsável seguidas: a E-01 (mapa compacto) foi
+  recusada, e a faixa do mapa não muda no computador; a R-03 deixa os textos do mapa como estão pelo mesmo motivo; a R-07
+  só recolhe o mapa abaixo de 1280 px; a E-07 revê a decisão de 23/11.
+- **Fora, de propósito:** a frase do topo de Contas cloud (R-04), porque a tela está com outra frente em paralelo; os
+  números opcionais da R-02 ("4 críticos", "41 altos"); o item 3 da E-06 (abrir a lista em "Novo" por padrão), marcado
+  como opinião na auditoria.
+- **API e contrato:** `GET /v1/findings` aceita `sort` e `type`, opcionais e estritos (ver "Tela Detecções: arrumação e
+  leitura" em `docs/ARQUITETURA.md`). Sem migração. O painel novo funciona com o nó de antes (pede de novo sem os
+  parâmetros e avisa), e o painel de antes funciona com o nó novo.
+- **Dependências novas:** nenhuma.
+- **Testes:** `pnpm lint` (max-warnings 0), `pnpm format:check` e `pnpm typecheck` sem erros. Painel: 88 arquivos, 1.290
+  testes; 1.289 passaram na suíte inteira e o que falhou (`cloud-accounts-vm.test.tsx`, espera de 5 s na primeira
+  abertura, sob carga) passou duas vezes rodado sozinho. Contrato: 37 arquivos, 665 testes. API com Postgres descartável
+  (porta própria, removido no fim): `findings-sort-type` (novo), `findings` e `detections`, 3 arquivos, 76 testes.
+  Navegador (demonstração, portas 5401/5402): `deteccoes`, `casos`, `casos-torre`, `casos-excecoes`, `radar`, `origens`,
+  `tour`, `pages`, `history`, `mitre-radar`, `layout` e `account`; tudo passou depois dos ajustes, e as poucas falhas de
+  tempo (espera de 30 a 120 s com 3 processos) passaram rodadas de novo. Imagens do depois em
+  `ux-audit-2026-11-25/implementado/` (fora do repositório).
+- **Teste manual:** o painel do alerta com dados reais (a ordem decisão antes da evidência no alerta do balanceador); a
+  folha de impressão do Resumo em Chrome, Firefox e Safari; o celular de verdade (o toque na linha inteira); o leitor de
+  tela nas linhas do resumo recolhido do celular.
+- **Riscos:** o filtro "Tipo" depende dos casos (o alerta ainda sem caso não aparece com o tipo escolhido; a tela diz
+  isso); quem filtrava muito no celular ganha um toque ("Filtros"); "Anexar" e "Marcar como resolvido" ficam a um clique
+  ("Mais opções").
