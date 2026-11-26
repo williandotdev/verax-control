@@ -78,7 +78,11 @@ export function FilterBar({
     state.periodChoice === 'custom' ? CUSTOM_PERIOD : (state.periodChoice ?? (analysis ? '30d' : ''));
 
   return (
-    <div data-tour="filtros" className="space-y-3">
+    // E-11: no celular, os campos e os botões dos filtros com 44 px de altura.
+    <div
+      data-tour="filtros"
+      className="space-y-3 max-md:[&_button]:min-h-11 max-md:[&_input]:h-11 max-md:[&_select]:h-11"
+    >
       <div className="flex flex-wrap items-end gap-2">
         {!analysis && (
           <SearchField key={filters.q ?? ''} value={filters.q ?? ''} onSearch={(q) => onChange({ q })} />

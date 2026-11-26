@@ -107,6 +107,7 @@ export function SituationStrip({
         <Button
           variant="ghost"
           size="sm"
+          className="max-md:min-h-11"
           aria-expanded={expanded}
           aria-controls={contentId}
           onClick={() => onExpandedChange(!expanded)}
@@ -506,7 +507,10 @@ function PostureChip({ posture }: { posture: TowerSummary['posture'] }) {
   const severity = scoreSeverity(posture.score, { warning: posture.warningBelow, critical: 40 });
   const { icon: Icon, tone } = SEVERITY_STYLES[severity];
   return (
-    <Link to="/postura" className={buttonVariants({ variant: 'secondary', size: 'sm' })}>
+    <Link
+      to="/postura"
+      className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'max-md:min-h-11')}
+    >
       <Icon aria-hidden className={tone} />
       Postura {posture.score} de 100
       {posture.score < posture.warningBelow && (
@@ -553,6 +557,7 @@ function CollectionIndicator({ summary }: { summary: TowerSummary }) {
       <Button
         variant="secondary"
         size="sm"
+        className="max-md:min-h-11"
         data-tour="deteccoes-coleta"
         aria-haspopup="dialog"
         onClick={() => setOpen(true)}

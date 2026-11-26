@@ -21,7 +21,7 @@ interface SidebarProps {
 /** Classe de um item: ícone e nome; o da página atual em negrito, sobre um fundo claro discreto. */
 function itemClass(collapsed: boolean, active: boolean, hasBadge: boolean) {
   return cn(
-    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
+    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors max-md:min-h-11',
     'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
     active
       ? 'bg-foreground/[0.08] font-semibold text-foreground'
@@ -148,7 +148,13 @@ export function Sidebar({
         >
           {collapsed ? <ChevronsRight aria-hidden /> : <ChevronsLeft aria-hidden />}
         </Button>
-        <Button variant="ghost" size="icon" className="md:hidden" aria-label="Fechar menu" onClick={onClose}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-11 md:hidden"
+          aria-label="Fechar menu"
+          onClick={onClose}
+        >
           <X aria-hidden />
         </Button>
       </div>

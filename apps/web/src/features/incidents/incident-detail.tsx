@@ -182,7 +182,10 @@ function StatusAndAssignee({ incident, canWrite }: { incident: IncidentDetail; c
   const update = useUpdateIncident(incident.id);
 
   return (
-    <section aria-labelledby="incidente-tratamento" className="space-y-2 rounded-md border p-3">
+    <section
+      aria-labelledby="incidente-tratamento"
+      className="space-y-2 rounded-md border p-3 max-md:[&_select]:h-11"
+    >
       <h3 id="incidente-tratamento" className="text-sm font-semibold">
         Tratamento
       </h3>

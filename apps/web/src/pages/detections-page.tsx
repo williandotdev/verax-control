@@ -332,7 +332,9 @@ function DetectionsContent({
       className={cn(
         'inline-flex self-start rounded-md border p-0.5',
         // Quatro visões não cabem numa linha do celular: duas a duas, com a área de toque inteira.
-        cases.mode !== 'off' && 'max-sm:grid max-sm:w-full max-sm:grid-cols-2 max-md:[&>button]:min-h-11',
+        cases.mode !== 'off' && 'max-sm:grid max-sm:w-full max-sm:grid-cols-2',
+        // E-11: no celular, cada visão com 44 px de altura.
+        'max-md:[&>button]:min-h-11',
       )}
     >
       {views.map((value) => (

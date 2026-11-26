@@ -172,7 +172,8 @@ export function Frame<T>({
       )}
     >
       {body}
-      <div className="in-data-[fill=true]:mt-auto in-data-[fill=true]:border-t in-data-[fill=true]:px-3 in-data-[fill=true]:py-2">
+      {/* E-11: no celular, os botões da paginação com 44 px. */}
+      <div className="in-data-[fill=true]:mt-auto in-data-[fill=true]:border-t in-data-[fill=true]:px-3 in-data-[fill=true]:py-2 max-md:[&_button]:min-h-11 max-md:[&_button]:min-w-11">
         <Pagination
           page={page.page}
           pageSize={page.pageSize}
@@ -345,7 +346,7 @@ function IncidentRows({
             aria-expanded={expanded}
             aria-controls={childrenId}
             aria-label={`${expanded ? 'Fechar' : 'Abrir'} os alertas do incidente: ${title}`}
-            className="flex size-8 items-center justify-center rounded-md hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-ring"
+            className="flex size-8 items-center justify-center rounded-md hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-ring max-md:size-11"
             onClick={() => setExpanded(!expanded)}
           >
             <ChevronRight aria-hidden className={cn('size-4', expanded && 'rotate-90')} />
