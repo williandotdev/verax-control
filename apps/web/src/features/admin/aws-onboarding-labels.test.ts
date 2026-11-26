@@ -36,6 +36,8 @@ import { authorizedSourceFixture, sourceFixture } from '@/test/aws-onboarding-fi
 import {
   AWS_AUTHORIZATION_FOOTNOTE,
   AWS_AUTHORIZATION_TEXTS,
+  AWS_DISCOVERY_AUTHORIZATION_TEXT,
+  authorizationDescription,
   AWS_CHECK_CODE_TEXTS,
   AWS_CHECK_LABELS,
   AWS_CHECK_STATUS_LABELS,
@@ -385,7 +387,7 @@ describe('textos do onboarding da AWS: todo código do contrato tem o texto dele
   });
 
   it('balanceadores: o que o cliente autoriza diz que tudo é analisado, que nada fica guardado e que IPs de visitantes são tratados', () => {
-    const consent = AWS_AUTHORIZATION_TEXTS['service-logs'].description;
+    const consent = authorizationDescription(AWS_AUTHORIZATION_TEXTS['service-logs']);
     for (const text of [consent, AWS_SOURCE_COLLECTION_NOTES.elb_logs ?? '']) {
       expect(text).toMatch(/analisa todas as linhas e não guarda nenhuma/);
       expect(text).toMatch(/endereços IP de quem visita a sua aplicação/);
@@ -544,11 +546,15 @@ describe('textos do onboarding da AWS: todo código do contrato tem o texto dele
 
   it('autorizações: o que cada uma permite e não permite, com a nota honesta dos buckets e como revogar', () => {
     expectTexts(AWS_READER_AUTHORIZATIONS, AWS_AUTHORIZATION_TEXTS);
-    const logs = AWS_AUTHORIZATION_TEXTS['service-logs'].description;
+    const logs = authorizationDescription(AWS_AUTHORIZATION_TEXTS['service-logs']);
     expect(logs).toMatch(/AWSLogs\/<conta>\//);
     expect(logs).toMatch(/nomes do primeiro nível dos buckets: só os nomes, nunca o conteúdo/);
-    expect(AWS_AUTHORIZATION_TEXTS.findings.description).toMatch(/Não liga nenhum desses serviços/);
-    expect(AWS_AUTHORIZATION_TEXTS['log-groups'].description).toMatch(/podem conter dados pessoais/);
+    expect(authorizationDescription(AWS_AUTHORIZATION_TEXTS.findings)).toMatch(
+      /Não liga nenhum desses serviços/,
+    );
+    expect(authorizationDescription(AWS_AUTHORIZATION_TEXTS['log-groups'])).toMatch(
+      /podem conter dados pessoais/,
+    );
     expect(AWS_AUTHORIZATION_FOOTNOTE).toMatch(/Nada é criado nem alterado na sua conta AWS/);
     expect(AWS_AUTHORIZATION_FOOTNOTE).toMatch(/desligue uma autorização .* ou apague a pilha/);
     expectTexts(AWS_READER_PREFILL_PROBLEMS, AWS_PREFILL_PROBLEM_TEXTS);
@@ -586,5 +592,30 @@ describe('textos do onboarding da AWS: todo código do contrato tem o texto dele
     }
     expect(values[0]).toBe(AWS_DEFAULT_REGION);
     expect(AWS_DEFAULT_REGION).toBe('sa-east-1');
+  });
+});
+
+describe('o que o cliente autoriza em linhas com rótulo (E-10)', () => {
+  it('o mesmo texto de antes, frase a frase: só o "Permite ler" virou o rótulo "Lê"', () => {
+    const before = {
+      'service-logs':
+        'Permite ler os logs que a própria AWS grava no S3 para esta conta: CloudTrail, VPC Flow Logs, WAF e o export do GuardDuty; e, onde a detecção de ataques web estiver ligada, os logs de acesso dos balanceadores de aplicação (ALB) que você autorizar, um a um. O Verax lê o conteúdo só do que está na pasta AWSLogs/<conta>/, em qualquer bucket, e você não informa bucket nenhum. Para achar essa pasta, ele lista os nomes do primeiro nível dos buckets: só os nomes, nunca o conteúdo. Nenhum outro arquivo seu é lido. Dos logs do ALB, o Verax analisa todas as linhas e não guarda nenhuma: fica só a evidência mascarada de um ataque, com a indicação do arquivo no seu próprio S3. Essa análise trata os endereços IP de quem visita a sua aplicação.',
+      findings:
+        'Permite ler os achados do GuardDuty, do Security Hub, do Inspector e do IAM Access Analyzer. Não liga nenhum desses serviços (ligar tem custo na AWS, e a decisão é sua) e não altera, arquiva nem apaga achado nenhum.',
+      'log-groups':
+        'Permite ler só os grupos de logs em que você puser a etiqueta verax-control = leitura, um a um. Sem a etiqueta, o Verax vê o nome e o tamanho do grupo, nunca o conteúdo. Logs de aplicação podem conter dados pessoais: por isso a escolha é sua, grupo a grupo.',
+    } as const;
+    for (const authorization of AWS_READER_AUTHORIZATIONS) {
+      const lines = AWS_AUTHORIZATION_TEXTS[authorization].lines;
+      const [first, ...rest] = lines;
+      expect(first?.label).toBe('Lê');
+      const text = ['Permite ler ' + (first?.text ?? ''), ...rest.map((line) => line.text)].join(' ');
+      expect(text, authorization).toBe(before[authorization]);
+    }
+    // Na descoberta, o "Não lê" do começo da segunda frase também virou o rótulo.
+    const [sees, unread] = AWS_DISCOVERY_AUTHORIZATION_TEXT.lines;
+    expect(`${sees?.text ?? ''} Não lê ${unread?.text ?? ''}`).toBe(
+      'Para mostrar aqui as fontes de log que existem na conta e alimentar Ativos e Postura, o Verax vê configuração e nomes. Não lê evento de log, achado, arquivo nem dado de banco.',
+    );
   });
 });

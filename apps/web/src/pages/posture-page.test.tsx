@@ -54,6 +54,17 @@ const catalogRow = async (title: string) => {
 const nativeFields = { unknown: 0, checks: [], errors: [] };
 
 describe('Postura cloud', () => {
+  it('R-04: a explicação do topo numa linha; como a nota é calculada, a um clique', async () => {
+    renderAt('/postura');
+    expect(await screen.findByText('A configuração das contas AWS, conferida todo dia.')).toBeInTheDocument();
+    const rest = screen.getByText(/^A leitura é feita pelo papel somente leitura/);
+    const details = rest.closest('details');
+    expect(details).not.toHaveAttribute('open');
+    await userEvent.click(within(details!).getByText('Como a nota é calculada'));
+    expect(details).toHaveAttribute('open');
+    expect(rest).toHaveTextContent('o que a AWS recusou ler fica fora da nota');
+  });
+
   it('nota e evolução por conta, e as checagens da mais grave à menos grave', async () => {
     renderAt('/postura');
     const prod = await screen.findByRole('region', { name: `Conta ${DEMO_ACCOUNTS.alfaProducao}` });
@@ -92,6 +103,11 @@ describe('Postura cloud', () => {
   it('a varredura parcial diz o que a AWS recusou e que as checagens dela ficam fora da nota', async () => {
     renderAt('/postura');
     const band = await screen.findByRole('region', { name: 'Varredura parcial' });
+    // R-10: numa linha, que a leitura foi parcial e que o não lido não conta como aprovado; a lista, a um clique.
+    expect(band).toHaveTextContent(
+      `Varredura parcial: a AWS recusou 3 leituras na conta ${DEMO_ACCOUNTS.alfaProducao}. As checagens que dependem delas ficam fora da nota e não contam como aprovadas.Ver as 3 leituras e como corrigir`,
+    );
+    expect(within(band).getAllByRole('list')[0]?.closest('details')).not.toHaveAttribute('open');
     expect(band).toHaveTextContent(`Conta ${DEMO_ACCOUNTS.alfaProducao}`);
     expect(
       within(band)

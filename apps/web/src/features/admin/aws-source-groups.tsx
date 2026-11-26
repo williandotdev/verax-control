@@ -33,10 +33,12 @@ import {
 } from '@/features/admin/aws-source-parts';
 import {
   groupAwsSources,
+  isFirstOfKind,
   isAuthorizableSource,
   isCoveredByGuardDutyApi,
   isHighVolumeSource,
   isRecommendedSource,
+  repeatsHighVolumeNote,
 } from '@/features/admin/aws-sources';
 import { Notice, Section, Tag } from '@/features/admin/aws-ui';
 import { AlbLoggingControl, AlbLoggingOwned } from '@/features/web-attacks/alb-logging-control';
@@ -432,7 +434,8 @@ export function AwsSourceGroups({
           </div>
         ) : null}
         <SourceList label="Fontes disponíveis para coletar">
-          {groups.available.map((source) => {
+          {groups.available.map((source, index) => {
+            const firstOfKind = isFirstOfKind(groups.available, index);
             const fieldId = `aws-fonte-${source.id}`;
             const covered = isCoveredByGuardDutyApi(source, sources);
             const balancer = source.kind === 'elb_logs';
@@ -461,17 +464,25 @@ export function AwsSourceGroups({
                       Para marcar, falta a estimativa de volume, abaixo.
                     </p>
                   )}
-                  <p className="text-xs text-muted-foreground">
-                    {AWS_SOURCE_KIND_TEXTS[source.kind].description}
-                  </p>
-                  <SourceCollectionNote source={source} />
+                  {/* O que o tipo traz e como é lido: uma vez, na primeira fonte do tipo (E-04). */}
+                  {firstOfKind && (
+                    <>
+                      <p className="text-xs text-muted-foreground">
+                        {AWS_SOURCE_KIND_TEXTS[source.kind].description}
+                      </p>
+                      <SourceCollectionNote source={source} />
+                    </>
+                  )}
                   <SourceLocation source={source} />
                   {covered && !source.notes.includes('covered_by_api') && (
                     <p className="text-xs text-muted-foreground">
                       Coberto pela API: os mesmos achados já chegam pela API do GuardDuty.
                     </p>
                   )}
-                  <SourceNotes source={source} />
+                  <SourceNotes
+                    source={source}
+                    omit={repeatsHighVolumeNote(groups.available, index) ? ['high_volume'] : []}
+                  />
                   {balancer && (
                     <EstimateStep source={source} web={webById.get(source.id)} canWrite={canAuthorize} />
                   )}

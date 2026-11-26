@@ -44,10 +44,20 @@ const veraxIn = (tenantId: string | undefined) =>
   demoMe('admin_verax', { activeTenantId: tenantId ?? null, scopeTenantId: tenantId ?? null });
 
 describe('Agentes', () => {
-  it('fica no menu de Administração, para todos os papéis', async () => {
+  it('R-04: a explicação do topo numa linha, o resto em "Como funciona"', async () => {
+    renderAt('/cadastros/agentes', { me: demoMe('leitura') });
+    expect(await screen.findByText('Agentes do Wazuh nas suas VMs e instâncias EC2.')).toBeInTheDocument();
+    const rest = screen.getByText(/^Integridade de arquivos, inventário/);
+    expect(rest.closest('details')).not.toHaveAttribute('open');
+    expect(within(rest.closest('details')!).getByText('Como funciona')).toBeInTheDocument();
+  });
+
+  it('fica em "Fontes", na aba dela, para todos os papéis', async () => {
     renderAt('/cadastros/agentes', { me: demoMe('leitura') });
     const nav = await screen.findByRole('navigation', { name: /principal|menu/i });
-    expect(within(nav).getByRole('link', { name: /Agentes/ })).toHaveAttribute('href', '/cadastros/agentes');
+    expect(within(nav).getByRole('link', { name: 'Fontes' })).toHaveAttribute('href', '/cadastros/contas');
+    const tabs = await screen.findByRole('navigation', { name: 'Fontes' });
+    expect(within(tabs).getByRole('link', { name: 'Agentes' })).toHaveAttribute('href', '/cadastros/agentes');
   });
 
   it('pronto: "Instalar novo agente" abre a instalação guiada, com a senha mascarada até o "Mostrar senha"', async () => {

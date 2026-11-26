@@ -141,6 +141,11 @@ describe('Ativos: coleta parcial e "em breve" (PR-14)', () => {
   it('a faixa diz o que ficou de fora em cada conta, e o resto continua nas abas', async () => {
     renderAt('/ativos');
     const band = await screen.findByRole('region', { name: 'Coleta parcial' });
+    // R-10: numa linha à vista; a lista e o motivo, a um clique.
+    expect(band).toHaveTextContent(
+      `Coleta parcial: a AWS recusou 2 leituras na conta ${DEMO_ACCOUNTS.alfaProducao}. O que foi lido está nas abas.Ver quais e como corrigir`,
+    );
+    expect(within(band).getAllByRole('list')[0]?.closest('details')).not.toHaveAttribute('open');
     expect(band).toHaveTextContent(`Conta ${DEMO_ACCOUNTS.alfaProducao}`);
     const items = within(band)
       .getAllByRole('listitem')

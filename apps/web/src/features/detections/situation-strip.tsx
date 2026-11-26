@@ -25,7 +25,8 @@ import { getWithCases } from '@/features/cases/cases-api';
 import { useCasesContext } from '@/features/cases/cases-context';
 import { useMe } from '@/features/session/session';
 import { cn } from '@/lib/cn';
-import { formatDuration, formatList, formatRelative, plural } from '@/lib/format';
+import { NARROW_QUERY, useMediaQuery } from '@/lib/use-media-query';
+import { formatCount, formatDuration, formatList, formatRelative, plural } from '@/lib/format';
 import {
   allCollecting,
   COLLECTION_SOURCE_LABELS,
@@ -37,12 +38,21 @@ import {
   casePhrase,
   countsByCase,
   pendingCasesNote,
+  situationHeadline,
   towerReason,
   uncoveredPhrase,
   validationPhrase,
   vulnerabilityPhrase,
 } from './tower-reason';
-import { ALERTS_VIEW, casesSearch, selectionSearch, VULNERABILITIES_VIEW, withChanges } from './url-state';
+import { compactParts } from './compact-situation';
+import {
+  ALERTS_VIEW,
+  casesSearch,
+  INCIDENTS_VIEW,
+  selectionSearch,
+  VULNERABILITIES_VIEW,
+  withChanges,
+} from './url-state';
 
 /**
  * O resumo da situação no topo da tela Detecções (o que era a Torre, enxuto): o radar das últimas 24 horas em
@@ -76,6 +86,7 @@ export function SituationStrip({
   const contentId = useId();
   const titleId = useId();
   const summary = tower.data;
+  const narrow = useMediaQuery(NARROW_QUERY);
 
   return (
     <section
@@ -88,7 +99,7 @@ export function SituationStrip({
           <h2 id={titleId} className="text-base font-semibold">
             Situação agora
           </h2>
-          {summary && !expanded && <CompactSituation summary={summary} />}
+          {summary && !expanded && !narrow && <CompactSituation summary={summary} />}
           {summary && expanded && (
             <p className="text-xs text-muted-foreground">Atualizada {formatRelative(summary.generatedAt)}</p>
           )}
@@ -96,6 +107,7 @@ export function SituationStrip({
         <Button
           variant="ghost"
           size="sm"
+          className="max-md:min-h-11"
           aria-expanded={expanded}
           aria-controls={contentId}
           onClick={() => onExpandedChange(!expanded)}
@@ -105,6 +117,9 @@ export function SituationStrip({
           <span className="sr-only"> o resumo da situação</span>
         </Button>
       </header>
+      {summary && !expanded && narrow && (
+        <MobileSituation summary={summary} onMore={() => onExpandedChange(true)} />
+      )}
       <div id={contentId} hidden={!expanded} className="border-t p-4">
         {tower.isError ? (
           <ErrorState error={tower.error} onRetry={() => void tower.refetch()} />
@@ -118,24 +133,158 @@ export function SituationStrip({
   );
 }
 
-/** Recolhido: as contagens, numa linha. */
+/** Uma linha tocável do resumo do celular: o ícone da severidade, o texto e a seta. */
+function MobileRow({
+  severity,
+  title,
+  detail,
+  to,
+  onClick,
+  expands = false,
+}: {
+  severity: Severity;
+  title: string;
+  detail?: string;
+  to?: To;
+  onClick?: () => void;
+  /** Abre o quadro, em vez de levar a outro lugar. */
+  expands?: boolean;
+}) {
+  const { icon: Icon, tone, label } = SEVERITY_STYLES[severity];
+  const content = (
+    <>
+      <Icon aria-hidden className={cn('mt-0.5 size-5 shrink-0', tone)} />
+      <span className="min-w-0 flex-1">
+        <span className="sr-only">{label}: </span>
+        <span className="block font-medium">{title}</span>
+        {detail && <span className="block text-xs text-muted-foreground">{detail}</span>}
+      </span>
+      {expands ? (
+        <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      ) : (
+        <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      )}
+    </>
+  );
+  const className =
+    'flex min-h-12 w-full items-start gap-3 px-4 py-3 text-left text-sm hover:bg-foreground/5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring';
+  return (
+    <li className="border-t">
+      {to === undefined ? (
+        <button
+          type="button"
+          className={className}
+          onClick={onClick}
+          aria-expanded={expands ? false : undefined}
+        >
+          {content}
+        </button>
+      ) : (
+        <Link to={to} className={className}>
+          {content}
+        </Link>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Recolhido no celular (E-02): linhas tocáveis com o incidente mais grave, o que espera validação e a coleta; a última
+ * abre o quadro, com a postura à vista. A coleta parada fica sempre à vista (R-13).
+ */
+function MobileSituation({ summary, onMore }: { summary: TowerSummary; onMore: () => void }) {
+  const { critical, high } = summary.openIncidents;
+  const unassigned = summary.pendingDecisions.find((decision) => decision.kind === 'unassigned_incident');
+  const incidentDetail = [
+    ...(critical > 0 && high > 0 ? [`e ${plural(high, 'alto', 'altos')}`] : []),
+    ...(unassigned ? [`${formatCount(unassigned.count)} sem responsável`] : []),
+  ].join(' · ');
+  const waiting = summary.pendingDecisions.find(
+    (decision) =>
+      decision.kind === 'untriaged_case' ||
+      decision.kind === 'untriaged_vulnerability_case' ||
+      decision.kind === 'untriaged_finding',
+  );
+  const proof = collectionProof(summary);
+  const warnings = collectionWarnings(summary);
+  const stalled = (proof?.stalled.length ?? 0) > 0 || summary.reasons.includes('collection_stalled');
+  const { score, warningBelow } = summary.posture;
+  const label = `Situação: ${towerReason(summary)} ${compactParts(summary)
+    .filter((part) => !part.inReason)
+    .map((part) => part.text)
+    .join(', ')}.`;
+  return (
+    <div role="status" aria-label={label}>
+      <ul aria-label="Resumo da situação">
+        <MobileRow
+          severity={critical > 0 ? 'critical' : high > 0 ? 'high' : 'ok'}
+          title={
+            critical > 0
+              ? plural(critical, 'incidente crítico aberto', 'incidentes críticos abertos')
+              : high > 0
+                ? plural(high, 'incidente alto aberto', 'incidentes altos abertos')
+                : 'Nenhum incidente crítico ou alto aberto'
+          }
+          detail={incidentDetail || undefined}
+          to={`/?visao=${INCIDENTS_VIEW}`}
+        />
+        {waiting && (
+          <MobileRow
+            severity="high"
+            title={DECISIONS[waiting.kind].title(waiting.count, summary)}
+            to={DECISIONS[waiting.kind].links(summary)[0]?.to ?? '/'}
+          />
+        )}
+        <MobileRow
+          severity={stalled ? 'high' : warnings > 0 ? 'medium' : 'ok'}
+          title={collectionText(summary)}
+          onClick={onMore}
+          expands
+        />
+        <MobileRow
+          severity={score === null ? 'low' : scoreSeverity(score, { warning: warningBelow, critical: 40 })}
+          title={[
+            ...(score === null ? [] : [`Postura ${score} de 100`]),
+            ...(summary.radar ? ['radar'] : []),
+            'decisões',
+          ].join(' · ')}
+          onClick={onMore}
+          expands
+        />
+      </ul>
+    </div>
+  );
+}
+
+/** Recolhido: as contagens, numa linha, o que pede atenção primeiro. */
 function CompactSituation({ summary }: { summary: TowerSummary }) {
-  const decisions = summary.pendingDecisions.reduce((sum, decision) => sum + decision.count, 0);
-  const radarCases = summary.radar?.cases;
-  const counts = [
-    plural(summary.openIncidents.critical, 'incidente crítico aberto', 'incidentes críticos abertos'),
-    plural(summary.openIncidents.high, 'alto', 'altos'),
-    ...(summary.radar ? [plural(summary.radar.total, 'detecção em 24 h', 'detecções em 24 h')] : []),
-    ...(radarCases ? [plural(radarCases.total, 'caso de detecção', 'casos de detecção')] : []),
-    plural(decisions, 'decisão pendente', 'decisões pendentes'),
-  ];
+  const parts = compactParts(summary);
   return (
     <p
       role="status"
-      aria-label={`Situação: ${towerReason(summary)} ${counts.join(', ')}.`}
+      aria-label={`Situação: ${towerReason(summary)} ${parts
+        .filter((part) => !part.inReason)
+        .map((part) => part.text)
+        .join(', ')}.`}
       className="min-w-0 text-sm text-muted-foreground"
     >
-      <span aria-hidden>{counts.join(' · ')}</span>
+      <span aria-hidden className="inline">
+        {parts.map((part, index) => {
+          const style = part.severity ? SEVERITY_STYLES[part.severity] : null;
+          const Icon = style?.icon;
+          return (
+            <span
+              key={part.text}
+              data-compact-part
+              className={cn(part.optional && 'max-sm:hidden', part.severity && 'font-medium text-foreground')}
+            >
+              {index > 0 && <span className="text-muted-foreground"> · </span>}
+              {Icon && style && <Icon className={cn('mr-1 inline size-4 align-[-3px]', style.tone)} />}
+              {part.text}
+            </span>
+          );
+        })}
+      </span>
     </p>
   );
 }
@@ -160,44 +309,55 @@ function ExpandedSituation({ summary, stacked }: { summary: TowerSummary; stacke
   };
   return (
     <div className="space-y-4">
-      {/* O motivo, em texto: o que antes acompanhava a cor do semáforo. */}
-      <p
-        role="status"
-        aria-label={`Situação: ${towerReason(summary)}`}
-        className="text-sm text-muted-foreground"
-      >
-        {towerReason(summary)}
-      </p>
-      <div
-        className={cn(
-          'grid gap-6',
-          summary.radar &&
-            !stacked &&
-            'lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,28rem)_minmax(0,1fr)]',
-        )}
-      >
-        {summary.radar && (
-          <section
-            data-tour="deteccoes-radar"
-            aria-labelledby="deteccoes-radar"
-            className="min-w-0 space-y-2"
-          >
-            <h3 id="deteccoes-radar" className="text-sm font-semibold">
-              Radar das últimas {summary.radar.windowHours} horas
-            </h3>
-            <DetectionRadar radar={summary.radar} generatedAt={summary.generatedAt} links={links} compact />
-          </section>
-        )}
-        {/* Contêiner: as decisões ficam em duas colunas só quando a coluna ao lado do radar tem largura para isso. */}
-        <div className="@container min-w-0 space-y-4">
-          <PendingDecisions summary={summary} />
-          <div className="flex flex-wrap gap-2">
-            <CollectionIndicator summary={summary} />
-            <PostureChip posture={summary.posture} />
-          </div>
-        </div>
+      {/* R-01: a resposta em destaque, depois a coleta e a postura, as decisões e só então o radar. */}
+      <Headline summary={summary} />
+      <div className="flex flex-wrap gap-2">
+        <CollectionIndicator summary={summary} />
+        <PostureChip posture={summary.posture} />
       </div>
+      {/* Contêiner: as decisões ficam em duas colunas só quando há largura para isso. */}
+      <div className="@container min-w-0">
+        <PendingDecisions summary={summary} />
+      </div>
+      {summary.radar && (
+        <section
+          data-tour="deteccoes-radar"
+          aria-labelledby="deteccoes-radar"
+          className={cn('min-w-0 space-y-2', !stacked && 'max-w-md')}
+        >
+          <h3 id="deteccoes-radar" className="text-sm font-semibold">
+            Radar das últimas {summary.radar.windowHours} horas
+          </h3>
+          <DetectionRadar radar={summary.radar} generatedAt={summary.generatedAt} links={links} compact />
+        </section>
+      )}
     </div>
+  );
+}
+
+/**
+ * A manchete da situação: o mais grave, com o ícone da severidade, na letra maior da tela depois do título. O que ela não
+ * repete (a coleta parada, a postura, os alertas para validar) está logo abaixo, nos botões e nas decisões; o leitor de
+ * tela ouve a frase completa, como antes.
+ */
+function Headline({ summary }: { summary: TowerSummary }) {
+  const headline = situationHeadline(summary);
+  const { icon: Icon, tone } = SEVERITY_STYLES[headline.severity];
+  return (
+    <p
+      role="status"
+      aria-label={`Situação: ${towerReason(summary)}`}
+      data-headline-severity={headline.severity}
+      className="flex items-start gap-2.5"
+    >
+      <Icon aria-hidden className={cn('mt-0.5 size-5 shrink-0', tone)} />
+      <span className="min-w-0">
+        <span className="block text-lg leading-snug font-semibold text-foreground">{headline.title}</span>
+        {headline.detail && (
+          <span className="mt-0.5 block text-sm text-muted-foreground"> {headline.detail}</span>
+        )}
+      </span>
+    </p>
   );
 }
 
@@ -250,7 +410,11 @@ const DECISIONS: Readonly<Record<PendingDecisionKind, DecisionCard>> = {
   untriaged_finding: {
     severity: 'high',
     title: (count, summary) => (countsByCase(summary) ? uncoveredPhrase(count) : validationPhrase(count)),
-    links: () => [{ action: 'Ver os alertas', to: '/?status=new' }],
+    // R-02: o cartão conta os altos e os críticos novos; cada atalho abre exatamente uma dessas filas, e não a lista inteira.
+    links: () => [
+      { action: 'Ver os críticos', to: '/?status=new&severidade=critical' },
+      { action: 'Ver os altos', to: '/?status=new&severidade=high' },
+    ],
   },
   unowned_alert: {
     severity: 'medium',
@@ -327,7 +491,10 @@ function PendingDecisions({ summary }: { summary: TowerSummary }) {
 function DecisionButton({ link }: { link: DecisionLink | undefined }) {
   if (!link) return null;
   return (
-    <Link to={link.to} className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'shrink-0')}>
+    <Link
+      to={link.to}
+      className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'shrink-0 max-sm:min-h-11')}
+    >
       {link.action}
     </Link>
   );
@@ -340,7 +507,10 @@ function PostureChip({ posture }: { posture: TowerSummary['posture'] }) {
   const severity = scoreSeverity(posture.score, { warning: posture.warningBelow, critical: 40 });
   const { icon: Icon, tone } = SEVERITY_STYLES[severity];
   return (
-    <Link to="/postura" className={buttonVariants({ variant: 'secondary', size: 'sm' })}>
+    <Link
+      to="/postura"
+      className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'max-md:min-h-11')}
+    >
       <Icon aria-hidden className={tone} />
       Postura {posture.score} de 100
       {posture.score < posture.warningBelow && (
@@ -348,6 +518,19 @@ function PostureChip({ posture }: { posture: TowerSummary['posture'] }) {
       )}
     </Link>
   );
+}
+
+/** O estado da coleta numa linha: "Coleta parada: GCP", "Coleta ativa em 4 de 4 fontes". */
+function collectionText(summary: TowerSummary): string {
+  const proof = collectionProof(summary);
+  if (proof === null) {
+    return summary.reasons.includes('collection_stalled')
+      ? 'Coleta parada'
+      : `Coleta: ${plural(summary.coverage.connectedAccounts, 'conta conectada', 'contas conectadas')}`;
+  }
+  if (proof.configured === 0) return 'Nenhuma fonte conectada';
+  if (proof.stalled.length > 0) return `Coleta parada: ${formatList(proof.stalled)}`;
+  return `Coleta ativa em ${proof.active} de ${proof.configured} ${proof.configured === 1 ? 'fonte' : 'fontes'}`;
 }
 
 /** O que a saúde da coleta pede de atenção: fonte parada, conta silenciosa, AWS parada ou o medidor bloqueado. */
@@ -368,19 +551,13 @@ function CollectionIndicator({ summary }: { summary: TowerSummary }) {
   const warnings = collectionWarnings(summary);
   const severity: Severity = proof && proof.stalled.length > 0 ? 'high' : warnings > 0 ? 'medium' : 'ok';
   const { icon: Icon, tone } = SEVERITY_STYLES[severity];
-  const text =
-    proof === null
-      ? `Coleta: ${plural(summary.coverage.connectedAccounts, 'conta conectada', 'contas conectadas')}`
-      : proof.configured === 0
-        ? 'Nenhuma fonte conectada'
-        : proof.stalled.length > 0
-          ? `Coleta parada: ${formatList(proof.stalled)}`
-          : `Coleta ativa em ${proof.active} de ${proof.configured} ${proof.configured === 1 ? 'fonte' : 'fontes'}`;
+  const text = collectionText(summary);
   return (
     <>
       <Button
         variant="secondary"
         size="sm"
+        className="max-md:min-h-11"
         data-tour="deteccoes-coleta"
         aria-haspopup="dialog"
         onClick={() => setOpen(true)}

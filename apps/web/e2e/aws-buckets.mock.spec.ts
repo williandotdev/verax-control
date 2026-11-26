@@ -42,9 +42,10 @@ test.describe('buckets fora do padrão da conta AWS (modo mock)', () => {
       // outros testes em paralelo, passam dos 30 s padrão sem nada de errado.
       test.setTimeout(90_000);
       await useRole(page, 'admin_verax', theme);
-      await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
+      // A conta já conectada abre em abas (E-04): os buckets ficam em "Avançado", e a pilha, em "Conexão e pilha".
+      await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}&aba=avancado`);
       const sheet = page.getByRole('dialog', { name: AWS_DIALOG });
-      // A conta tem buckets cadastrados: o "Avançado" abre sozinho.
+      // A conta tem buckets cadastrados: o "Avançado: buckets fora do padrão" abre sozinho.
       const section = sheet.getByRole('region', { name: 'Buckets fora do padrão' });
       const stack = sheet.getByRole('region', { name: 'Pilha na AWS' });
       await expect(section.getByRole('group', { name: 'Bucket 3' })).toBeVisible();
@@ -77,10 +78,15 @@ test.describe('buckets fora do padrão da conta AWS (modo mock)', () => {
       await expect(section.getByRole('status')).toContainText('Buckets salvos, e a lista mudou.');
       await expect(name).toHaveValue('aws-waf-logs-loja-alfa-nova');
       // A lista nova já está nos passos da pilha (o comando da CLI fica recolhido).
+      await sheet.getByRole('tab', { name: 'Conexão e pilha' }).click();
       await expect(stack.getByRole('listitem').filter({ hasText: '(LogBucketArns)' }).last()).toContainText(
         'arn:aws:s3:::aws-waf-logs-loja-alfa-nova',
       );
-      await expect(sheet.getByText('Aguardando uma nova verificação', { exact: false })).toBeVisible();
+      await expect(
+        sheet.getByRole('tabpanel').getByText('Aguardando uma nova verificação', { exact: false }),
+      ).toBeVisible();
+      // O caminho de volta (verificar a conexão) fica no topo da visão geral.
+      await sheet.getByRole('tab', { name: 'Visão geral' }).click();
       await expect(
         sheet
           .getByRole('region', { name: 'Reconectar a conta 111122223333' })
@@ -122,7 +128,7 @@ test.describe('buckets fora do padrão da conta AWS (modo mock)', () => {
 
   test('quem só lê vê os buckets, sem o formulário e sem violação de acessibilidade', async ({ page }) => {
     await useRole(page, 'leitura');
-    await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
+    await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}&aba=avancado`);
     const section = page
       .getByRole('dialog', { name: AWS_DIALOG })
       .getByRole('region', { name: 'Buckets fora do padrão' });

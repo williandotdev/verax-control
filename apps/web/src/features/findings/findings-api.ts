@@ -1,4 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { z } from 'zod';
 import {
   type AlertExceptionCreate,
   alertExceptionCreatedSchema,
@@ -23,13 +24,31 @@ import { api } from '@/lib/api';
 import { ApiRequestError } from '@/lib/api-client';
 
 const findingPageSchema = paginatedSchema(findingSchema);
+type FindingPage = z.infer<typeof findingPageSchema>;
 const cloudAccountPageSchema = paginatedSchema(cloudAccountSchema);
+
+/**
+ * A lista de alertas pedida com a ordem e o tipo (E-06). Um nó de antes recusa os dois (400: a query é estrita): o painel
+ * pede de novo sem eles e diz que a lista veio sem (`unsupported`). Outra recusa continua sendo erro.
+ */
+export async function getFindingPage(
+  query: FindingListQuery,
+): Promise<FindingPage & { unsupported: boolean }> {
+  try {
+    return { ...(await api.get(`/v1/findings?${toSearch(query)}`, findingPageSchema)), unsupported: false };
+  } catch (error) {
+    const { sort, type, ...plain } = query;
+    const refused = error instanceof ApiRequestError && error.status === 400;
+    if (!refused || (sort === undefined && type === undefined)) throw error;
+    return { ...(await api.get(`/v1/findings?${toSearch(plain)}`, findingPageSchema)), unsupported: true };
+  }
+}
 
 /** Lista de alertas (achados) do cliente da sessão, com os filtros na query string (T5.4). */
 export function useFindings(query: FindingListQuery, enabled: boolean) {
   return useQuery({
     queryKey: ['findings', query],
-    queryFn: () => api.get(`/v1/findings?${toSearch(query)}`, findingPageSchema),
+    queryFn: () => getFindingPage(query),
     enabled,
     placeholderData: keepPreviousData,
   });

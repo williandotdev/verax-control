@@ -6,6 +6,7 @@ import { useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
+import { Explainer } from '@/components/ui/explainer';
 import { Card, CardDescription, CardTitle } from '@/components/ui/card';
 import { SelectField } from '@/components/ui/select-field';
 import { Sheet } from '@/components/ui/sheet';
@@ -43,10 +44,16 @@ export function AgentsPage() {
   const { data: me } = useMe();
   const hasTenant = me?.scopeTenantId != null;
   return (
-    <AdminShell
-      title="Agentes"
-      description="Agentes do Wazuh nas suas VMs e instâncias EC2: integridade de arquivos, inventário, vulnerabilidades e configuração das máquinas, no mesmo painel das suas contas cloud."
-    >
+    <AdminShell title="Agentes" description="Agentes do Wazuh nas suas VMs e instâncias EC2.">
+      {/* R-04: o resto da explicação do topo, a um clique. */}
+      {hasTenant && (
+        <Explainer about="Agentes" className="-mt-3">
+          <p>
+            Integridade de arquivos, inventário, vulnerabilidades e configuração das máquinas, no mesmo painel
+            das suas contas cloud.
+          </p>
+        </Explainer>
+      )}
       {hasTenant && <AgentsContent />}
     </AdminShell>
   );
@@ -453,6 +460,7 @@ function AgentList({ action }: { action: ReactNode }) {
   const columns: Column<Agent>[] = [
     {
       key: 'nome',
+      card: 'title',
       header: 'Nome',
       cell: (row) => (
         <>
@@ -483,6 +491,7 @@ function AgentList({ action }: { action: ReactNode }) {
     },
     {
       key: 'situacao',
+      card: 'status',
       header: 'Situação',
       cell: (row) => {
         const status = AGENT_STATUS_LABELS[row.status];

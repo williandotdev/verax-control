@@ -68,7 +68,7 @@ const part = (name: string, value: string | null | undefined): CaseSummary['keyP
 
 const PACKAGE_MARK = ' - ';
 
-function keyOf(finding: FindingDetail): Key {
+export function keyOf(finding: FindingDetail): Key {
   const high = finding.severity === 'critical' || finding.severity === 'high';
   const rule = part('rule', finding.ruleId);
   const detection = (family: string, title: string, fine: CaseSummary['keyParts']): Key => ({

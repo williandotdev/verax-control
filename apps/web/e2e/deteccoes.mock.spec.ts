@@ -106,7 +106,7 @@ test.describe('tela Detecções (modo mock)', () => {
         // O alerta a validar: o diálogo de promover a incidente, com os relacionados.
         // No celular, o detalhe abre numa gaveta modal, que tira o resto da tela da árvore de acessibilidade.
         await page.goto(`/?alerta=${BUCKET_ALERT}`);
-        await page.getByRole('button', { name: 'Promover a incidente' }).click();
+        await page.getByRole('button', { name: 'É uma ameaça real' }).click();
         const promote = page.getByRole('dialog', { name: 'Promover a incidente' });
         await expect(promote.getByRole('checkbox', { name: /Bloqueio de acesso público/ })).toBeChecked();
         expect(await violations(page)).toEqual([]);
@@ -129,10 +129,13 @@ test.describe('tela Detecções (modo mock)', () => {
         await expect(
           list.getByRole('button', { name: /^Abrir o alerta: Tentativa de desligar/ }),
         ).toBeVisible();
+        // No celular, os filtros ficam na folha "Filtros" (E-02).
+        if (device === 'celular') await page.getByRole('button', { name: /^Filtros/ }).click();
         await page.getByRole('button', { name: 'Mais filtros' }).click();
         await expect(page.getByLabel('Tática do MITRE')).toBeVisible();
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
+        if (device === 'celular') await page.keyboard.press('Escape');
 
         // O detalhe: ao lado da lista no computador, numa gaveta no celular.
         await list
@@ -157,13 +160,14 @@ test.describe('tela Detecções (modo mock)', () => {
           'true',
         );
         await expect(page.getByRole('group', { name: /^Gráfico de radar das táticas/ })).toBeVisible();
+        // R-11: a tabela completa fica atrás de "Ver tabela completa"; aberta, também sem violação.
+        await expect(page.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' })).toBeHidden();
+        await page.getByText(/^Ver tabela completa \(14 táticas/).click();
         await expect(page.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' })).toBeVisible();
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
-        await page.getByRole('tab', { name: 'Cobertura das fontes' }).click();
-        await expect(
-          page.getByRole('table', { name: 'Contas monitoradas e o que chegou de cada uma' }),
-        ).toBeVisible();
+        await page.getByRole('tab', { name: 'Entidades' }).click();
+        await expect(page.getByRole('table', { name: 'IPs de origem' })).toBeVisible();
         await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
@@ -186,22 +190,23 @@ test.describe('tela Detecções (modo mock)', () => {
     });
   }
 
-  test('no computador, a lista fica ao lado do radar e as análises embaixo, a começar pelo Resumo', async ({
+  test('no computador, a lista fica ao lado do radar, e as análises são abas no mesmo nível de "Lista" (E-07)', async ({
     page,
   }) => {
+    test.setTimeout(90_000);
     for (const width of [1280, 1440, 1920]) {
       await page.setViewportSize({ width, height: 900 });
       await open(page);
       const radar = await page.getByRole('region', { name: 'Radar das últimas 24 horas' }).boundingBox();
       const list = await page.getByRole('region', { name: 'Lista de alertas' }).boundingBox();
-      const summary = page.getByRole('tab', { name: 'Resumo' });
-      await expect(summary).toHaveAttribute('aria-selected', 'true');
-      await expect(page.getByRole('tab', { name: 'Lista' })).toHaveCount(0);
-      const tab = await summary.boundingBox();
+      await expect(page.getByRole('tab', { name: 'Lista' })).toHaveAttribute('aria-selected', 'true');
+      const tab = await page.getByRole('tab', { name: 'Resumo' }).boundingBox();
       if (!radar || !list || !tab) throw new Error('sem o radar, a lista ou as análises na tela');
       expect(list.x).toBeGreaterThanOrEqual(radar.x + radar.width);
       expect(list.y).toBeLessThan(radar.y + radar.height);
-      expect(tab.y).toBeGreaterThanOrEqual(list.y + list.height);
+      // As abas ficam acima da lista, na mesma coluna.
+      expect(tab.y).toBeLessThan(list.y);
+      expect(tab.x).toBeGreaterThanOrEqual(radar.x + radar.width);
       await noHorizontalScroll(page);
       // Os alertas cabem na coluna ao lado do radar, sem rolar por dentro, nas duas visões.
       for (const [view, name] of [
@@ -323,5 +328,134 @@ test.describe('tela Detecções (modo mock)', () => {
     const file = await download;
     expect(file.suggestedFilename()).toMatch(/^verax-alertas-\d{4}-\d{2}-\d{2}\.csv$/);
     await expect(page.getByText(/^\d+ linhas? exportadas?\.$/)).toBeVisible();
+  });
+});
+
+/** As propostas da auditoria de UX (25/11/2026) que só o navegador mede: posição, largura e área de toque. */
+test.describe('Detecções: arrumação por largura (auditoria de UX)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem('verax.mock.role', 'analista_cliente');
+      window.localStorage.setItem('verax.mock.cases', 'off');
+    });
+    await skipDemoTour(page);
+  });
+
+  test('E-02 e E-11: no celular, a primeira tela responde, mostra a lista e todo alvo de toque tem 44 px', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 360, height: 760 });
+    await open(page);
+    const strip = page.getByRole('region', { name: 'Situação agora' });
+    const rows = strip.getByRole('list', { name: 'Resumo da situação' });
+    await expect(rows.getByText('Coleta parada: GCP')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Filtros/ })).toBeVisible();
+    await expect(page.getByLabel('Severidade')).toBeHidden();
+    // Uma barra só no topo; o tema e "Sair" no menu.
+    await expect(page.getByRole('button', { name: 'Sair' })).toBeHidden();
+    const targets = [
+      page.getByRole('button', { name: 'Menu' }),
+      page.getByRole('link', { name: 'Minha conta' }),
+      strip.getByRole('button', { name: /^Mostrar/ }),
+      ...(await rows.getByRole('link').all()),
+      ...(await rows.getByRole('button').all()),
+      page.getByRole('tab', { name: 'Lista' }),
+      page.getByRole('button', { name: 'Alertas', exact: true }),
+      page.getByRole('button', { name: /^Filtros/ }),
+    ];
+    for (const target of targets) {
+      const box = await target.boundingBox();
+      expect(box?.height ?? 0, (await target.textContent()) ?? '').toBeGreaterThanOrEqual(43.5);
+    }
+    // A linha inteira do alerta é o alvo do toque.
+    const row = page.getByRole('region', { name: 'Lista de alertas' }).getByRole('row').nth(1);
+    await row.scrollIntoViewIfNeeded();
+    const rowBox = await row.boundingBox();
+    expect(rowBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+    await page.mouse.click(
+      (rowBox?.x ?? 0) + (rowBox?.width ?? 0) - 8,
+      (rowBox?.y ?? 0) + (rowBox?.height ?? 0) - 6,
+    );
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.keyboard.press('Escape');
+    // As abas numa fileira só, que desliza de lado, sem rolar a página.
+    const tabs = page.getByRole('tablist', { name: 'Como ver as detecções' });
+    expect(await tabs.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    await noHorizontalScroll(page);
+    expect(await violations(page)).toEqual([]);
+
+    await page.getByRole('button', { name: /^Filtros/ }).click();
+    const sheet = page.getByRole('dialog', { name: 'Filtros' });
+    await expect(sheet.getByRole('button', { name: /Exportar CSV/ })).toBeVisible();
+    const select = sheet.getByLabel('Severidade');
+    expect((await select.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(43.5);
+    await select.selectOption('high');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: /^Severidade: Alto/ })).toBeVisible();
+    expect(await violations(page)).toEqual([]);
+  });
+
+  for (const [width, height] of [
+    [1024, 768],
+    [768, 1024],
+  ] as const) {
+    test(`R-07 e R-08: em ${width} px, o mapa e a situação começam recolhidos e a lista não rola de lado`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height });
+      await open(page);
+      const strip = page.getByRole('region', { name: 'Situação agora' });
+      await expect(strip.getByRole('button', { name: /^Mostrar/ })).toHaveAttribute('aria-expanded', 'false');
+      // Recolhida, a situação diz a coleta parada (R-13).
+      await expect(strip.getByRole('status', { name: /^Situação: / })).toContainText('Coleta parada: GCP');
+      const region = page.getByRole('region', { name: 'Lista de alertas' });
+      await expect(region.getByRole('columnheader', { name: 'Status' })).toBeVisible();
+      await expect(region.getByRole('columnheader', { name: 'Incidente' })).toBeVisible();
+      expect(
+        await region.evaluate((element) => element.scrollWidth - element.clientWidth),
+      ).toBeLessThanOrEqual(1);
+      const first = await region.getByRole('row').nth(1).boundingBox();
+      expect(first?.y ?? Infinity).toBeLessThan(height);
+      await noHorizontalScroll(page);
+      if (width === 768) {
+        // De 768 a 1023 px, o menu começa nos ícones.
+        await expect(page.getByRole('button', { name: 'Expandir menu' })).toBeVisible();
+      }
+    });
+  }
+
+  test('R-12: "Pular para o conteúdo" é o primeiro item do teclado e só aparece com o foco', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page);
+    const skip = page.getByRole('link', { name: 'Pular para o conteúdo' });
+    await page.locator('body').focus();
+    // Na demonstração, o botão do tour vem antes (a faixa da demonstração fica fora do painel).
+    for (
+      let i = 0;
+      i < 3 && !(await skip.evaluate((element) => element === document.activeElement));
+      i += 1
+    ) {
+      await page.keyboard.press('Tab');
+    }
+    await expect(skip).toBeFocused();
+    expect((await skip.boundingBox())?.width ?? 0).toBeGreaterThan(40);
+    await page.keyboard.press('Enter');
+    await expect(page.locator('main')).toBeFocused();
+  });
+
+  test('R-01: a manchete vem antes das decisões, e as decisões antes do radar', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page);
+    const strip = page.getByRole('region', { name: 'Situação agora' });
+    const headline = await strip.getByRole('status', { name: /^Situação: / }).boundingBox();
+    const decisions = await strip.getByRole('region', { name: 'Decisões pendentes' }).boundingBox();
+    const radar = await strip.getByRole('region', { name: 'Radar das últimas 24 horas' }).boundingBox();
+    expect(headline?.y ?? 0).toBeLessThan(decisions?.y ?? 0);
+    expect(decisions?.y ?? 0).toBeLessThan(radar?.y ?? 0);
+    await expect(strip.getByRole('status', { name: /^Situação: / })).toHaveText(
+      '1 incidente crítico aberto e 2 incidentes altos abertos',
+    );
   });
 });

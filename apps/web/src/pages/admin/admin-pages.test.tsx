@@ -80,6 +80,11 @@ function renderAt(
   return router;
 }
 
+/** Abre uma aba do detalhe da conta AWS já conectada (E-04): o nome dela, sem a contagem. */
+async function showTab(sheet: HTMLElement, name: string) {
+  await userEvent.click(await within(sheet).findByRole('tab', { name: (tab) => tab.startsWith(name) }));
+}
+
 const rowsOf = async (caption: string) =>
   within(await screen.findByRole('table', { name: caption }))
     .getAllByRole('row')
@@ -386,6 +391,12 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
   it('AWS conectada: a situação, a pilha com os valores do nó, o que foi encontrado e as fontes', async () => {
     renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`);
     const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaProducao}` });
+    // E-04: a conta já conectada abre na visão geral, que diz numa linha o que a lista e o selo dizem.
+    const overview = await within(sheet).findByRole('region', { name: 'Visão geral da conta' });
+    expect(overview).toHaveTextContent('Conectada, com 7 fontes que precisam de atenção');
+    expect(within(sheet).getByRole('tab', { selected: true })).toHaveTextContent('Visão geral');
+    // Os dados da conta, a situação, a pilha e o que foi encontrado ficam em "Conexão e pilha".
+    await showTab(sheet, 'Conexão e pilha');
     expect(within(sheet).getByText('Papel de leitura').nextElementSibling).toHaveTextContent(
       `arn:aws:iam::${DEMO_ACCOUNTS.alfaProducao}:role/verax/verax-control-reader`,
     );
@@ -415,6 +426,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       'Descoberta parcial: 3 leituras ficaram de fora.',
     );
     // As fontes dos buckets do cadastro estão no acompanhamento, como cadastradas manualmente.
+    await showTab(sheet, 'Fontes lidas');
     const monitor = within(sheet).getByRole('region', { name: 'Fontes autorizadas' });
     expect(within(monitor).getAllByText('Cadastrada manualmente')).toHaveLength(3);
     // As fontes de achados, uma em cada situação: sem achado nenhum, limitada pela AWS, sem permissão e desligada.
@@ -422,13 +434,92 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     expect(monitor).toHaveTextContent('A AWS está limitando as chamadas a este serviço.');
     expect(monitor).toHaveTextContent('Falta permissão: a AWS negou a ação access-analyzer:ListFindings.');
     expect(monitor).toHaveTextContent('O serviço foi desligado na conta depois da autorização.');
+    await showTab(sheet, 'Para autorizar');
     expect(within(sheet).getByRole('region', { name: 'Fontes de log' })).toHaveTextContent(
       'A leitura de grupos de logs está desligada na pilha.',
     );
-    // Os buckets do cadastro ficam em "Avançado", aberto porque a conta os tem.
+    // Os buckets do cadastro ficam na aba "Avançado", abertos porque a conta os tem.
+    await showTab(sheet, 'Avançado');
     expect(
       within(sheet).getByText('Avançado: buckets fora do padrão', { selector: 'summary' }).closest('details'),
     ).toHaveAttribute('open');
+  });
+
+  describe('E-04: a conta AWS conectada em visão geral e abas', () => {
+    it('a visão geral: os quatro números, o que precisa de atenção e o resumo do que é lido', async () => {
+      renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`);
+      const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaProducao}` });
+      const overview = await within(sheet).findByRole('region', { name: 'Visão geral da conta' });
+      const figure = (label: string) =>
+        within(overview).getByText(label, { selector: 'dt' }).parentElement as HTMLElement;
+      expect(figure('Fontes lidas')).toHaveTextContent('Fontes lidas1710 em dia ou começando');
+      expect(figure('Precisam de atenção')).toHaveTextContent('Precisam de atenção71 por falta de permissão');
+      expect(figure('Conferências da conexão')).toHaveTextContent(/\d de 9/);
+      // As abas dizem quantas fontes guardam.
+      expect(within(sheet).getByRole('tab', { name: 'Fontes lidas (17)' })).toBeInTheDocument();
+      expect(within(sheet).getByRole('tab', { name: /^Para autorizar \(\d+\)$/ })).toBeInTheDocument();
+      // Cada item tem o motivo numa linha e o caminho até as ações; nenhuma ação é repetida aqui.
+      const items = within(overview).getAllByRole('listitem');
+      expect(items.length).toBeGreaterThanOrEqual(7);
+      expect(within(overview).queryByRole('button', { name: /Revogar|Tentar de novo/ })).toBeNull();
+      const permission = items.find((item) =>
+        item.textContent?.includes('IAM Access Analyzer'),
+      ) as HTMLElement;
+      expect(permission).toHaveTextContent(
+        'Falta permissão: a AWS negou a ação access-analyzer:ListFindings.',
+      );
+      expect(
+        within(overview).getByRole('heading', { name: /^Lendo normalmente \(10\)$/ }),
+      ).toBeInTheDocument();
+    });
+
+    it('"Ver na tabela" abre a aba da fonte, e o endereço guarda a aba', async () => {
+      const router = renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`);
+      const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaProducao}` });
+      const overview = await within(sheet).findByRole('region', { name: 'Visão geral da conta' });
+      const item = within(overview)
+        .getAllByRole('listitem')
+        .find((candidate) => candidate.textContent?.includes('IAM Access Analyzer')) as HTMLElement;
+      await userEvent.click(within(item).getByRole('link', { name: 'Ver na tabela' }));
+      await waitFor(() =>
+        expect(within(sheet).getByRole('tab', { selected: true })).toHaveTextContent('Fontes lidas'),
+      );
+      expect(router.state.location.search).toContain('aba=fontes');
+      const monitor = within(sheet).getByRole('region', { name: 'Fontes autorizadas' });
+      expect(monitor).toHaveTextContent('Falta permissão: a AWS negou a ação access-analyzer:ListFindings.');
+      // "Visão geral" volta pelo teclado: as setas andam entre as abas.
+      await userEvent.click(within(sheet).getByRole('tab', { selected: true }));
+      await userEvent.keyboard('{ArrowLeft}');
+      await waitFor(() =>
+        expect(within(sheet).getByRole('tab', { selected: true })).toHaveTextContent('Visão geral'),
+      );
+      await waitFor(() => expect(router.state.location.search).not.toContain('aba='));
+    });
+
+    it('a aba vem do endereço; fechar o painel tira a conta e a aba do endereço', async () => {
+      const router = renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}&aba=avancado`);
+      const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaProducao}` });
+      await waitFor(() =>
+        expect(within(sheet).getByRole('tab', { selected: true })).toHaveTextContent('Avançado'),
+      );
+      // Desativar e excluir ficam em "Avançado", com a mesma confirmação de antes.
+      expect(within(sheet).getByRole('button', { name: 'Desativar monitoramento' })).toBeEnabled();
+      expect(within(sheet).getByRole('region', { name: 'Buckets fora do padrão' })).toBeInTheDocument();
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(router.state.location.search).not.toMatch(/conta=|aba=/));
+    });
+
+    it('o link de uma conferência leva à aba "Conexão e pilha"', async () => {
+      renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`);
+      const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaProducao}` });
+      const overview = await within(sheet).findByRole('region', { name: 'Visão geral da conta' });
+      const [check] = within(overview).getAllByRole('link', { name: 'Ver a conferência' });
+      await userEvent.click(check as HTMLElement);
+      await waitFor(() =>
+        expect(within(sheet).getByRole('tab', { selected: true })).toHaveTextContent('Conexão e pilha'),
+      );
+      expect(within(sheet).getByRole('region', { name: 'Conferências da conexão' })).toBeInTheDocument();
+    });
   });
 
   it(
@@ -512,14 +603,23 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
   it('AWS: quem só lê vê a situação e as fontes, sem conectar, verificar, autorizar nem revogar', async () => {
     renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`, { me: demoMe('leitura') });
     const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaProducao}` });
+    // Nenhuma aba oferece as ações de quem administra.
+    const tabs = await within(sheet).findAllByRole('tab');
+    expect(tabs.length).toBeGreaterThan(4);
+    for (const tab of tabs) {
+      await userEvent.click(tab);
+      expect(
+        within(sheet).queryByRole('button', { name: /Verificar|Conectar|Autorizar|Revogar|Descobrir/ }),
+      ).toBeNull();
+    }
+    await showTab(sheet, 'Conexão e pilha');
     const status = await within(sheet).findByRole('region', { name: 'Situação da conexão' });
     expect(within(status).getByText('Quem administra as contas pede a verificação.')).toBeInTheDocument();
-    expect(
-      within(sheet).queryByRole('button', { name: /Verificar|Conectar|Autorizar|Revogar|Descobrir/ }),
-    ).toBeNull();
+    await showTab(sheet, 'Para autorizar');
     expect(within(sheet).getByRole('region', { name: 'Fontes de log' })).toHaveTextContent(
       'Quem administra as contas autoriza as fontes.',
     );
+    await showTab(sheet, 'Fontes lidas');
     expect(within(sheet).getByRole('region', { name: 'Fontes autorizadas' })).toBeInTheDocument();
   });
 
@@ -575,6 +675,8 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     const command = within(connect).getByText(/^aws cloudformation deploy/);
     expect(command).toHaveTextContent('NodeServiceAccountId=ID_DA_CONTA_DE_SERVICO_DO_NO');
     expect(command).toHaveTextContent('NodeEgressIps=IP_DE_SAIDA_DO_NO/32');
+    // A primeira conexão continua guiada numa página só, sem abas (E-04).
+    expect(within(sheet).queryByRole('tablist')).not.toBeInTheDocument();
     // Sem bucket cadastrado, o "Avançado" fica fechado.
     expect(
       within(sheet).getByText('Avançado: buckets fora do padrão', { selector: 'summary' }).closest('details'),
@@ -632,7 +734,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
         'excess_permissions',
       );
       renderAt(
-        `/cadastros/contas?conta=${warned.id}`,
+        `/cadastros/contas?conta=${warned.id}&aba=conexao`,
         undefined,
         undefined,
         listing(warned, {
@@ -649,8 +751,10 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       const status = await within(sheet).findByRole('region', { name: 'Situação da conexão' });
       // Conectada e coletando, mas com um aviso: o selo não é o do "tudo certo".
       expect(within(status).getByRole('status')).toHaveTextContent('Coletando eventos, com pendências');
+      // A aba aberta (a visão geral também resume a conferência, com o mesmo texto).
+      const panel = within(sheet).getByRole('tabpanel');
       expect(
-        within(sheet).getByText(/Aviso: O papel verax-control-reader tem permissão além da leitura/),
+        within(panel).getByText(/Aviso: O papel verax-control-reader tem permissão além da leitura/),
       ).toHaveTextContent('A coleta continua.');
       expect(within(sheet).getByText(/^A última leitura deu certo./)).toHaveTextContent(
         'Tipo do aviso: excess_permissions.',
@@ -668,7 +772,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
         collectionError: 'wazuh_apply_failed' as const,
       };
       renderAt(
-        `/cadastros/contas?conta=${both.id}`,
+        `/cadastros/contas?conta=${both.id}&aba=conexao`,
         undefined,
         undefined,
         listing(both, {
@@ -711,7 +815,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
         connectionError: null,
         collectionError: null,
       };
-      renderAt(`/cadastros/contas?conta=${clean.id}`, undefined, undefined, listing(clean));
+      renderAt(`/cadastros/contas?conta=${clean.id}&aba=conexao`, undefined, undefined, listing(clean));
       const sheet = await screen.findByRole('dialog', { name: 'Conta AWS 999988884444' });
       await within(sheet).findByRole('region', { name: 'Situação da conexão' });
       expect(within(sheet).queryByText('Coleta no nó')).not.toBeInTheDocument();
@@ -726,7 +830,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       );
       const bucket = broken.buckets.waf ?? '';
       renderAt(
-        `/cadastros/contas?conta=${broken.id}`,
+        `/cadastros/contas?conta=${broken.id}&aba=fontes`,
         undefined,
         undefined,
         listing(broken, {
@@ -752,9 +856,12 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       expect(
         within(monitor).getByText(/^Bucket do WAF: o papel não lista ou não lê os objetos/),
       ).toHaveTextContent('Corrija e clique em Verificar conexão.');
-      expect(within(sheet).getByText(/A última conferência do papel de leitura falhou/)).toHaveTextContent(
-        'Tipo do erro: bucket_denied:waf.',
-      );
+      await showTab(sheet, 'Conexão e pilha');
+      expect(
+        within(within(sheet).getByRole('tabpanel')).getByText(
+          /A última conferência do papel de leitura falhou/,
+        ),
+      ).toHaveTextContent('Tipo do erro: bucket_denied:waf.');
       expect(
         within(within(sheet).getByRole('region', { name: 'Situação da conexão' })).getByRole('status'),
       ).toHaveTextContent('Erro de permissão');
@@ -767,11 +874,19 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     const rowOf = (id: string) => rows.find((row) => row.textContent?.includes(id)) as HTMLElement;
     // A terceira coluna é a da conexão.
     const badge = (id: string) => within(rowOf(id)).getAllByRole('cell')[2];
-    expect(badge(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(/^Conectada$/);
+    expect(badge(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(/^Conectada/);
     // As leituras da assinatura da GCP da demonstração falham (a coleta parada da Torre).
-    expect(badge(DEMO_ACCOUNTS.alfaGcp)).toHaveTextContent(/^Erro$/);
-    expect(badge(DEMO_ACCOUNTS.alfaHomologacao)).toHaveTextContent(/^Erro$/);
-    expect(badge(DEMO_ACCOUNTS.alfaCloudflare)).toHaveTextContent(/^Aguardando$/);
+    expect(badge(DEMO_ACCOUNTS.alfaGcp)).toHaveTextContent(/^Erro/);
+    expect(badge(DEMO_ACCOUNTS.alfaHomologacao)).toHaveTextContent(/^Erro/);
+    expect(badge(DEMO_ACCOUNTS.alfaCloudflare)).toHaveTextContent(/^Aguardando/);
+    // E-08: o motivo curto fica na própria lista, abaixo do selo: o mesmo do detalhe.
+    expect(badge(DEMO_ACCOUNTS.alfaHomologacao)).toHaveTextContent(
+      'ErroA última conferência do papel de leitura falhou.',
+    );
+    expect(badge(DEMO_ACCOUNTS.alfaGcp)).toHaveTextContent('ErroA última leitura falhou.');
+    expect(badge(DEMO_ACCOUNTS.alfaCloudflare)).toHaveTextContent(
+      'AguardandoAguardando a configuração: a conta conecta na primeira leitura bem-sucedida.',
+    );
 
     await userEvent.click(
       within(rowOf(DEMO_ACCOUNTS.alfaHomologacao)).getByRole('button', {
@@ -787,6 +902,57 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     expect(within(sheet).getByText('Último evento', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
       'ontem',
     );
+  });
+
+  describe('E-08: fontes que pedem atenção na lista', () => {
+    const attentionUrl = `${API_URL}/v1/cloud-accounts/source-attention`;
+    const cellOf = async (id: string) => {
+      const rows = await rowsOf('Contas cloud do cliente');
+      const row = rows.find((candidate) => candidate.textContent?.includes(id)) as HTMLElement;
+      return within(row).getAllByRole('cell')[2] as HTMLElement;
+    };
+
+    it('a conta AWS conectada diz quantas fontes autorizadas pedem atenção', async () => {
+      renderAt('/cadastros/contas', undefined, undefined, [
+        http.get(attentionUrl, () =>
+          HttpResponse.json({ items: [{ cloudAccountId: DEMO_AWS_ALFA_ID, sourcesNeedingAttention: 7 }] }),
+        ),
+      ]);
+      await waitFor(async () =>
+        expect(await cellOf(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(
+          'Conectada7 fontes precisam de atenção',
+        ),
+      );
+    });
+
+    it('uma fonte fica no singular; a conta em erro não ganha a contagem, só o motivo', async () => {
+      renderAt('/cadastros/contas', undefined, undefined, [
+        http.get(attentionUrl, () =>
+          HttpResponse.json({
+            items: [
+              { cloudAccountId: DEMO_AWS_ALFA_ID, sourcesNeedingAttention: 1 },
+              { cloudAccountId: DEMO_AWS_HOMOLOGACAO_ID, sourcesNeedingAttention: 3 },
+            ],
+          }),
+        ),
+      ]);
+      await waitFor(async () =>
+        expect(await cellOf(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(
+          'Conectada1 fonte precisa de atenção',
+        ),
+      );
+      expect(await cellOf(DEMO_ACCOUNTS.alfaHomologacao)).not.toHaveTextContent('precisam de atenção');
+    });
+
+    it('num nó de antes (404), a lista mostra só o selo e o motivo, como no detalhe', async () => {
+      renderAt('/cadastros/contas', undefined, undefined, [
+        http.get(attentionUrl, () => HttpResponse.json({ title: 'Não encontrado' }, { status: 404 })),
+      ]);
+      expect(await cellOf(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(/^Conectada$/);
+      expect(await cellOf(DEMO_ACCOUNTS.alfaHomologacao)).toHaveTextContent(
+        'ErroA última conferência do papel de leitura falhou.',
+      );
+    });
   });
 
   it('GCP: conecta quando o primeiro evento chega; trocar a assinatura volta para Aguardando', async () => {
@@ -989,16 +1155,20 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     );
     const sheet = await screen.findByRole('dialog', { name: (name) => name.includes(aws.accountId) });
     expect(within(sheet).getByText('Cadastrada pela Verax')).toBeInTheDocument();
+    await showTab(sheet, 'Avançado');
     expect(within(sheet).getByText('A Verax altera os buckets desta conta.')).toBeInTheDocument();
     expect(within(sheet).queryByRole('button', { name: /Salvar buckets/ })).not.toBeInTheDocument();
     expect(within(sheet).getByRole('button', { name: 'Desativar monitoramento' })).toBeDisabled();
     // O cadastro é da Verax; a conexão, a descoberta e a autorização das fontes são do cliente.
+    await showTab(sheet, 'Conexão e pilha');
     expect(await within(sheet).findByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
     expect(within(sheet).getByRole('button', { name: 'Descobrir de novo' })).toBeEnabled();
+    await showTab(sheet, 'Para autorizar');
     const sources = within(sheet).getByRole('region', { name: 'Fontes de log' });
     const [choice] = within(sources).getAllByRole('checkbox');
     await userEvent.click(choice as HTMLElement);
     expect(within(sources).getByRole('button', { name: 'Autorizar selecionadas (1)' })).toBeEnabled();
+    await showTab(sheet, 'Fontes lidas');
     expect(within(sheet).getAllByRole('button', { name: /^Revogar: / }).length).toBeGreaterThan(0);
   });
 
@@ -1260,6 +1430,10 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Nova exceção' }));
     const sheet = await screen.findByRole('dialog', { name: 'Nova exceção' });
+    // O caminho mais fácil vem antes do número da regra.
+    expect(sheet).toHaveTextContent(
+      'O caminho mais fácil é criar a exceção a partir de um alerta ou de um caso',
+    );
     await userEvent.type(within(sheet).getByLabelText(/^Regra/), '80254');
     await userEvent.selectOptions(within(sheet).getByLabelText('Comparar por'), 'ip');
     await userEvent.type(within(sheet).getByLabelText(/^Valor/), 'não-é-ip');
@@ -1272,8 +1446,13 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
     await waitFor(async () => expect(await rowsOf('Exceções de alerta do cliente')).toHaveLength(4));
 
     // Exceção vencida: mudar só o motivo salva, sem reenviar a validade no passado.
-    await userEvent.click(screen.getByRole('button', { name: '80250' }));
-    const expired = await screen.findByRole('dialog', { name: 'Exceção da regra 80250' });
+    // E-09: o botão de cada exceção diz o título da regra e, abaixo, o número.
+    await userEvent.click(
+      await screen.findByRole('button', { name: (name) => name.endsWith('Regra 80250') }),
+    );
+    const expired = await screen.findByRole('dialog', {
+      name: (name) => name.startsWith('Exceção da regra 80250: '),
+    });
     await userEvent.clear(within(expired).getByLabelText('Motivo'));
     await userEvent.type(within(expired).getByLabelText('Motivo'), 'Troca de senha concluída.');
     await userEvent.click(within(expired).getByRole('button', { name: 'Salvar' }));
@@ -1283,14 +1462,39 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
     ) as HTMLElement;
     expect(expiredRow).toHaveTextContent('Vencida em');
 
-    await userEvent.click(screen.getByRole('button', { name: '80202' }));
-    const edit = await screen.findByRole('dialog', { name: 'Exceção da regra 80202' });
+    await userEvent.click(screen.getByRole('button', { name: (name) => name.endsWith('Regra 80202') }));
+    const edit = await screen.findByRole('dialog', {
+      name: (name) => name.startsWith('Exceção da regra 80202'),
+    });
     expect(edit).toHaveTextContent('48 alertas marcados por esta exceção');
     await userEvent.clear(within(edit).getByLabelText('Motivo'));
     await userEvent.type(within(edit).getByLabelText('Motivo'), 'Correção do job em andamento.');
     await userEvent.click(within(edit).getByRole('button', { name: 'Salvar' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(await screen.findByText('Correção do job em andamento.')).toBeInTheDocument();
+  });
+
+  it('E-09: o título da regra no lugar do número; num nó de antes (404), só o número', async () => {
+    renderAt('/cadastros/excecoes', undefined, undefined, [
+      http.get(`${API_URL}/v1/alert-exceptions/rule-titles`, ({ request }) => {
+        expect(new URL(request.url).searchParams.get('ruleIds')).toBe('80202,80250,80270');
+        return HttpResponse.json({ items: [{ ruleId: '80270', title: 'Bucket com leitura pública' }] });
+      }),
+    ]);
+    const button = await screen.findByRole('button', { name: 'Bucket com leitura públicaRegra 80270' });
+    expect(button).toBeInTheDocument();
+    // A regra sem título continua pelo número.
+    expect(screen.getByRole('button', { name: '80202' })).toBeInTheDocument();
+  });
+
+  it('E-09: num nó de antes, a rota não existe e a lista mostra só o número', async () => {
+    renderAt('/cadastros/excecoes', undefined, undefined, [
+      http.get(`${API_URL}/v1/alert-exceptions/rule-titles`, () =>
+        HttpResponse.json({ message: 'Não encontrado' }, { status: 404 }),
+      ),
+    ]);
+    expect(await screen.findByRole('button', { name: '80270' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '80250' })).toBeInTheDocument();
   });
 
   // Duas telas em sequência: no runner da CI, sob carga, a lista ainda carregava ao fim da espera padrão (3 s).
@@ -1302,7 +1506,7 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
       }),
     );
     const panel = await screen.findByRole('dialog');
-    await userEvent.click(within(panel).getByRole('button', { name: 'Marcar como legítimo' }));
+    await userEvent.click(within(panel).getByRole('button', { name: 'É esperado (falso positivo)' }));
     const offer = (await within(panel).findByText('Criar exceção para alertas iguais?')).closest(
       'form',
     ) as HTMLFormElement;

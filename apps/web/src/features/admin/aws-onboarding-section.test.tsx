@@ -174,6 +174,19 @@ describe('Conectar com AWS', () => {
       /lista os nomes do primeiro nível dos buckets: só os nomes, nunca o conteúdo/,
     );
     expect(choices).toHaveTextContent('Descoberta e postura (sempre ligada)');
+    // E-10: cada autorização em linhas com rótulo; a descrição da caixa lê as linhas inteiras, com os rótulos.
+    const findings = within(choices).getByRole('checkbox', { name: 'Achados de segurança' });
+    expect(findings).toHaveAccessibleDescription(
+      'Lê: os achados do GuardDuty, do Security Hub, do Inspector e do IAM Access Analyzer. Não faz: Não liga nenhum desses serviços (ligar tem custo na AWS, e a decisão é sua) e não altera, arquiva nem apaga achado nenhum.',
+    );
+    const logs = within(choices).getByRole('checkbox', { name: 'Logs de serviços da AWS no S3' });
+    const lines = document.getElementById(logs.getAttribute('aria-describedby') ?? '') as HTMLElement;
+    expect([...lines.querySelectorAll('dt')].map((term) => term.textContent)).toEqual([
+      'Lê:',
+      'Onde:',
+      'Não lê:',
+      'Dado pessoal:',
+    ]);
     expect(choices).toHaveTextContent('Nada é criado nem alterado na sua conta AWS');
     // O cliente desliga os achados: o arquivo sai com essa escolha.
     await user.click(within(choices).getByRole('checkbox', { name: 'Achados de segurança' }));

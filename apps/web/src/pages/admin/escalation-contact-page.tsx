@@ -2,6 +2,7 @@ import { type EscalationContact, escalationContactInputSchema } from '@verax/sha
 import { type FormEvent, useState } from 'react';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
+import { Explainer } from '@/components/ui/explainer';
 import { Card, CardDescription, CardTitle } from '@/components/ui/card';
 import { Field } from '@/components/ui/field';
 import { AdminShell, FormError } from '@/features/admin/admin-ui';
@@ -25,8 +26,17 @@ export function EscalationContactPage() {
   return (
     <AdminShell
       title="Contato de escalonamento"
-      description="Quem a Verax e a sua equipe acionam num incidente grave. Depois de confirmar o endereço pelo link do e-mail, ele recebe só os avisos críticos (incidente crítico e alerta crítico), sem detalhes, e pode deixar de receber pelo link de qualquer e-mail."
+      description="Quem a Verax e a sua equipe acionam num incidente grave."
     >
+      {/* R-04: o resto da explicação do topo, a um clique; o quadro "Situação do contato" já diz o que ele recebe. */}
+      {hasTenant && (
+        <Explainer about="Contato de escalonamento" className="-mt-3">
+          <p>
+            Depois de confirmar o endereço pelo link do e-mail, ele recebe só os avisos críticos (incidente
+            crítico e alerta crítico), sem detalhes, e pode deixar de receber pelo link de qualquer e-mail.
+          </p>
+        </Explainer>
+      )}
       {hasTenant && <EscalationContactContent />}
     </AdminShell>
   );

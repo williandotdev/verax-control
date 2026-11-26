@@ -155,6 +155,30 @@ export function isFindingSource(source: Pick<AwsSource, 'kind'>): boolean {
   return AWS_SOURCE_KIND_INFO[source.kind].capability === 'findings';
 }
 
+/**
+ * A fonte é a primeira do tipo dela numa lista já em ordem (`compareAwsSources`)? O que é igual para todas as fontes de
+ * um tipo (o que ele traz e como é coletado) é dito uma vez, na primeira, e não repetido em cada linha (E-04).
+ */
+export function isFirstOfKind(list: readonly AwsSource[], index: number): boolean {
+  return index === 0 || list[index - 1]?.kind !== list[index]?.kind;
+}
+
+/**
+ * O aviso de volume alto já foi dito na fonte anterior do mesmo tipo? Então esta linha não o repete: as fontes do mesmo
+ * tipo ficam juntas, e o aviso da primeira vale para as seguintes.
+ */
+export function repeatsHighVolumeNote(list: readonly AwsSource[], index: number): boolean {
+  const source = list[index];
+  const previous = list[index - 1];
+  return (
+    source !== undefined &&
+    previous !== undefined &&
+    previous.kind === source.kind &&
+    previous.notes.includes('high_volume') &&
+    source.notes.includes('high_volume')
+  );
+}
+
 /** O texto de busca de um grupo de logs: o nome e a região, em minúsculas. */
 export function matchesLogGroupSearch(source: AwsSource, search: string): boolean {
   const term = search.trim().toLowerCase();

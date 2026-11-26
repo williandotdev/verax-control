@@ -51,14 +51,22 @@ function renderAt(path: string, state: MockState = { me: demoMe('admin_cliente')
   return { verifyCalls };
 }
 
+/** Abre uma aba do detalhe da conta AWS já conectada (E-04): o nome dela, sem a contagem. */
+async function showTab(sheet: HTMLElement, name: string) {
+  await userEvent.click(await within(sheet).findByRole('tab', { name: (tab) => tab.startsWith(name) }));
+}
+
 async function openAlfa(state?: MockState) {
   const rendered = renderAt(`/cadastros/contas?conta=${DEMO_AWS_ALFA_ID}`, state);
   const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${ALFA}` });
-  // Os buckets cadastrados à mão ficam em "Avançado: buckets fora do padrão" (aberto, porque esta conta os tem).
+  // A pilha, na aba "Conexão e pilha": os passos para atualizá-la e o comando da CLI, com a lista de buckets da conta.
+  await showTab(sheet, 'Conexão e pilha');
+  const steps = await within(sheet).findByRole('region', { name: 'Pilha na AWS' });
+  // Os buckets cadastrados à mão ficam na aba "Avançado", em "Avançado: buckets fora do padrão" (aberto, porque esta
+  // conta os tem). A aba "Avançado" fica aberta: os testes voltam à pilha com `showTab`.
+  await showTab(sheet, 'Avançado');
   const section = within(sheet).getByRole('region', { name: 'Buckets fora do padrão' });
   expect(section.closest('details')).toHaveAttribute('open');
-  // A pilha: os passos para atualizá-la e o comando da CLI, com a lista de buckets da conta.
-  const steps = await within(sheet).findByRole('region', { name: 'Pilha na AWS' });
   return { ...rendered, sheet, section, steps };
 }
 
@@ -116,6 +124,7 @@ describe('buckets fora do padrão da conta AWS (painel)', { timeout: FORM_TIMEOU
     );
     expect(rowOf(section, 3).getByLabelText('Nome do bucket')).toHaveValue('aws-waf-logs-loja-alfa-nova');
     // Os passos para atualizar a pilha e o comando da CLI já trazem a lista nova.
+    await showTab(sheet, 'Conexão e pilha');
     const arns = [
       `arn:aws:s3:::${TRAIL}`,
       `arn:aws:s3:::${DEMO_ALFA_MORE_BUCKETS.guardduty}`,
@@ -127,11 +136,14 @@ describe('buckets fora do padrão da conta AWS (painel)', { timeout: FORM_TIMEOU
     expect(within(sheet).getByText('Conexão').nextElementSibling).toHaveTextContent(
       'Aguardando uma nova verificação: se os buckets mudaram, atualize a pilha na conta; depois, clique em Verificar.',
     );
-    // A conta volta ao começo sem perder a pilha: o caminho é atualizar a pilha e verificar, não criar outra.
+    // A conta volta ao começo sem perder a pilha: o caminho é atualizar a pilha e verificar, não criar outra. O
+    // aviso fica no topo da visão geral.
+    await showTab(sheet, 'Visão geral');
     const reconnect = await within(sheet).findByRole('region', { name: `Reconectar a conta ${ALFA}` });
     expect(reconnect).toHaveTextContent('Esta conta já esteve conectada.');
     expect(within(reconnect).getByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
     // As fontes dos buckets continuam no acompanhamento, como cadastradas manualmente, com o bucket novo.
+    await showTab(sheet, 'Fontes lidas');
     expect(within(sheet).getByRole('region', { name: 'Fontes autorizadas' })).toHaveTextContent(
       'aws-waf-logs-loja-alfa-nova',
     );
@@ -150,7 +162,7 @@ describe('buckets fora do padrão da conta AWS (painel)', { timeout: FORM_TIMEOU
 
   it('o bucket de outro cliente é recusado como na API (409), com a mensagem, sem mudar a lista', async () => {
     const user = userEvent.setup();
-    const { section, steps } = await openAlfa();
+    const { sheet, section, steps } = await openAlfa();
     const name = rowOf(section, 2).getByLabelText('Nome do bucket');
     await user.clear(name);
     // A trilha da conta do Cliente Demo Beta.
@@ -159,6 +171,7 @@ describe('buckets fora do padrão da conta AWS (painel)', { timeout: FORM_TIMEOU
     expect(await within(section).findByRole('alert')).toHaveTextContent(
       `O bucket trilha-${DEMO_ACCOUNTS.beta} já está cadastrado em outro cliente`,
     );
+    await showTab(sheet, 'Conexão e pilha');
     expect(within(steps).getByText(/^aws cloudformation deploy/)).toHaveTextContent(
       `arn:aws:s3:::${DEMO_ALFA_MORE_BUCKETS.guardduty}`,
     );
@@ -166,7 +179,7 @@ describe('buckets fora do padrão da conta AWS (painel)', { timeout: FORM_TIMEOU
 
   it('tirar todos os buckets: o LogBucketArns fica vazio, também no comando que atualiza a pilha', async () => {
     const user = userEvent.setup();
-    const { section, steps } = await openAlfa();
+    const { sheet, section, steps } = await openAlfa();
     for (const label of [
       'Remover o bucket 3 (WAF)',
       'Remover o bucket 2 (GuardDuty)',
@@ -177,6 +190,7 @@ describe('buckets fora do padrão da conta AWS (painel)', { timeout: FORM_TIMEOU
     expect(within(section).getByText('Nenhum bucket na lista.')).toBeInTheDocument();
     await user.click(within(section).getByRole('button', { name: 'Salvar buckets' }));
     expect(await within(section).findByRole('status')).toHaveTextContent(/a lista mudou/);
+    await showTab(sheet, 'Conexão e pilha');
     await waitFor(() => expect(steps).toHaveTextContent('(LogBucketArns): vazio'));
     // A seção não fecha sozinha com o aviso dentro: quem abre e fecha é a pessoa.
     expect(section.closest('details')).toHaveAttribute('open');

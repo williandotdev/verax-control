@@ -7,12 +7,12 @@ import {
   type DetectionRow,
   type DetectionSort,
   type Finding,
-  findingSchema,
+  type FindingListQuery,
   MAX_PAGE_SIZE,
-  paginatedSchema,
 } from '@verax/shared';
 import { SEVERITY_STYLES } from '@/design/severity';
 import { keyPartRows, QUEUE_LABELS } from '@/features/cases/labels';
+import { getFindingPage } from '@/features/findings/findings-api';
 import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
 import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
 import { incidentTitle } from '@/features/incidents/narrative';
@@ -22,8 +22,6 @@ import { toSearch } from './detections-api';
 
 /** O CSV leva até 2 000 linhas (20 páginas da API); passou disso, avisa e pede para filtrar. */
 export const EXPORT_MAX_ROWS = 2_000;
-
-const findingPageSchema = paginatedSchema(findingSchema);
 
 export interface ExportResult {
   csv: string;
@@ -105,14 +103,15 @@ export async function exportIncidents(filters: DetectionFilters, sort: Detection
 }
 
 /** "Alertas": uma linha por alerta, com o incidente em que foi confirmado (vazio se ainda não). */
-export async function exportFindings(filters: DetectionFilters): Promise<ExportResult> {
+export async function exportFindings(
+  filters: DetectionFilters,
+  extras: Pick<FindingListQuery, 'sort' | 'type'> = {},
+): Promise<ExportResult> {
   // Sem "sem responsável" (só a visão de incidentes tem): a lista de alertas recusa o parâmetro.
   const { unassigned: _unassigned, ...findingFilters } = filters;
+  // A ordem e o tipo (E-06), com a mesma volta da lista: o nó de antes os recusa, e o arquivo sai sem eles.
   const { items, total } = await readAll((page) =>
-    api.get(
-      `/v1/findings?${toSearch({ ...findingFilters, page, pageSize: MAX_PAGE_SIZE })}`,
-      findingPageSchema,
-    ),
+    getFindingPage({ ...findingFilters, ...extras, page, pageSize: MAX_PAGE_SIZE }),
   );
   const header = [
     'ID',

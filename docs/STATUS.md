@@ -7928,6 +7928,71 @@ cloudflare-oauth-steps.tsx,zone-health.tsx,labels.ts,oauth-return.ts,oauth-retur
   apareceu no bucket da pilha, a descoberta mostrou o ALB entre os disponíveis; depois, tirar a autorização e "Desligar log".
   Conferir também a pilha sem a opção ("Atualize a pilha da Verax") e um ALB com o log já ligado (nada muda).
 
+## Auditoria de UX: Detecções, alerta, incidente, caso e menu (26/11/2026)
+
+- **Feito, um commit por ID, na ordem pedida:** R-13, R-01, R-02, R-03, R-07, R-08, R-05 (resolvida pela E-07, parte 1:
+  as análises viram abas ao lado de "Lista"), R-06, R-04, R-09, R-10, R-11, R-12, E-14, E-02, E-03, E-06 (com a API),
+  E-07 (parte 2: a folha de impressão do Resumo) e E-11. Pedidos do responsável no meio do trabalho: "Exceções" e
+  "Cobertura das fontes" saem das análises de Detecções (os endereços antigos levam às telas que ficaram); "Contas cloud"
+  vira "Fontes" no menu, com Contas cloud e Agentes em abas, nos endereços de sempre e com as mesmas permissões. Decisões do responsável seguidas: a E-01 (mapa compacto) foi
+  recusada, e a faixa do mapa não muda no computador; a R-03 deixa os textos do mapa como estão pelo mesmo motivo; a R-07
+  só recolhe o mapa abaixo de 1280 px; a E-07 revê a decisão de 23/11.
+- **Fora, de propósito:** a frase do topo de Contas cloud (R-04), porque a tela está com outra frente em paralelo; os
+  números opcionais da R-02 ("4 críticos", "41 altos"); o item 3 da E-06 (abrir a lista em "Novo" por padrão), marcado
+  como opinião na auditoria.
+- **API e contrato:** `GET /v1/findings` aceita `sort` e `type`, opcionais e estritos (ver "Tela Detecções: arrumação e
+  leitura" em `docs/ARQUITETURA.md`). Sem migração. O painel novo funciona com o nó de antes (pede de novo sem os
+  parâmetros e avisa), e o painel de antes funciona com o nó novo.
+- **Dependências novas:** nenhuma.
+- **Testes:** `pnpm lint` (max-warnings 0), `pnpm format:check` e `pnpm typecheck` sem erros. Painel: 88 arquivos, 1.290
+  testes; 1.289 passaram na suíte inteira e o que falhou (`cloud-accounts-vm.test.tsx`, espera de 5 s na primeira
+  abertura, sob carga) passou duas vezes rodado sozinho. Contrato: 37 arquivos, 665 testes. API com Postgres descartável
+  (porta própria, removido no fim): `findings-sort-type` (novo), `findings` e `detections`, 3 arquivos, 76 testes.
+  Navegador (demonstração, portas 5401/5402): `deteccoes`, `casos`, `casos-torre`, `casos-excecoes`, `radar`, `origens`,
+  `tour`, `pages`, `history`, `mitre-radar`, `layout` e `account`; tudo passou depois dos ajustes, e as poucas falhas de
+  tempo (espera de 30 a 120 s com 3 processos) passaram rodadas de novo. Imagens do depois em
+  `ux-audit-2026-11-25/implementado/` (fora do repositório).
+- **Teste manual:** o painel do alerta com dados reais (a ordem decisão antes da evidência no alerta do balanceador); a
+  folha de impressão do Resumo em Chrome, Firefox e Safari; o celular de verdade (o toque na linha inteira); o leitor de
+  tela nas linhas do resumo recolhido do celular.
+- **Riscos:** o filtro "Tipo" depende dos casos (o alerta ainda sem caso não aparece com o tipo escolhido; a tela diz
+  isso); quem filtrava muito no celular ganha um toque ("Filtros"); "Anexar" e "Marcar como resolvido" ficam a um clique
+  ("Mais opções").
+
+## Auditoria de UX: contas, exceções e cadastros (E-08, E-04, E-10, E-05, E-09, E-13, E-12, E-11) (26/11/2026)
+
+- **O que mudou:** as propostas aprovadas da auditoria de UX de 25/11/2026 nas telas de contas, exceções e cadastros
+  (detalhe em `docs/ARQUITETURA.md`, "Contas, exceções e cadastros depois da auditoria de UX"). E-08: o motivo do erro
+  na lista de Contas cloud e "N fontes precisam de atenção" na conta AWS conectada. E-04: o detalhe da conta AWS
+  conectada abre numa visão geral, com o resto em abas, e o que é igual para um tipo de fonte é dito uma vez. E-10: "O
+  que você autoriza" em linhas com rótulo. E-05: as tabelas de cadastro viram cartões abaixo de 768 px. E-09: o título
+  da regra em Exceções. E-13: uma tela por arquivo e as bibliotecas à parte. E-12 (primeira parte): selo, aviso e
+  etiqueta em `components/ui/status.tsx`, usados em Contas cloud e Exceções. E-11 (nestas telas): 44 px no celular.
+- **API e contratos (compatíveis nos dois sentidos):** duas rotas novas, só de leitura e no escopo da sessão:
+  `GET /v1/cloud-accounts/source-attention` e `GET /v1/alert-exceptions/rule-titles?ruleIds=`. Os contratos estritos da
+  conta e da exceção não ganharam campo (um painel de antes perderia a tela); num nó de antes, as rotas novas dão 404 e
+  o painel mostra o que mostrava. Sem migration.
+- **E-10, as frases do consentimento:** só a forma mudou. "Permite ler …" virou o rótulo "Lê" seguido de "os logs …",
+  "os achados …" e "só os grupos …"; na descoberta, o "Não lê" do começo da segunda frase virou o rótulo. As demais frases
+  foram só agrupadas sob um rótulo, sem mudar nenhuma palavra (o teste remonta o texto de antes e compara). Pede a revisão
+  de quem cuida do DPA e da política de privacidade.
+- **Primeira carga (E-13):** antes, um arquivo de 1.331,6 kB (400,3 kB gzip); depois, o login baixa 718,2 kB (226,0 kB
+  gzip), e Detecções e Contas cloud só quando abertas (250,8 e 180,2 kB). Os links do e-mail de escalonamento ficaram no
+  arquivo principal (leem o token do endereço e o apagam: nenhuma recarga pode perdê-lo). A CSP não muda; o build e o build da
+  demonstração passam pela varredura de segredos.
+- **Dependências novas:** nenhuma.
+- **Testes:** lint (max-warnings 0), formato e tipos sem erros. Contrato: 39 arquivos, 669 testes. API (Postgres
+  próprio, descartado no fim): `cloud-accounts` e `alert-exceptions`, 81 testes (4 novos, com o isolamento por cliente).
+  Painel: a suíte inteira (ver a resposta da tarefa para os números e os testes instáveis sob carga) e os testes de
+  navegador das telas tocadas (onboarding da AWS, buckets, exclusão, ataques web, páginas, exceções de caso, plano,
+  escalonamento, admin master).
+- **Teste manual:** abrir a conta AWS conectada no celular e no computador, nos dois temas; seguir "Ver na tabela" e
+  "Ver a conferência"; conectar uma conta nova até autorizar as primeiras fontes (a passagem para as abas); revisar as
+  linhas de "O que você autoriza".
+- **O que ficou de fora:** E-12 nas outras áreas (Detecções, casos, layout) e E-11 fora destas telas (botões do
+  cabeçalho, filtros e paginação das listas de Detecções). "Como liberar a leitura deste grupo" continua por grupo de
+  logs, porque o comando de cada um é diferente.
+
 ## O alerta explicado: "O que aconteceu" no detalhe (26/11/2026)
 
 - **O que foi feito:** pedido do responsável a partir do alerta "Regras do WAF alteradas" (`UpdateIPSet`, regra 100323) feito

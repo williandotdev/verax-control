@@ -80,7 +80,8 @@ test.describe('mapa de origens na tela Detecções (modo mock)', () => {
         await prepare(page, { theme });
         await open(page);
         await expect(band(page)).toBeVisible();
-        if (width < 768) {
+        // Abaixo de 1280 px (a tela empilhada), a faixa começa recolhida (R-07).
+        if (width < 1280) {
           await settled(page);
           expect(await violations(page)).toEqual([]);
           await band(page)
@@ -185,6 +186,11 @@ test.describe('mapa de origens na tela Detecções (modo mock)', () => {
       await page.setViewportSize({ width, height: 900 });
       await prepare(page);
       await open(page);
+      // Abaixo de 1280 px a faixa começa recolhida (R-07): abrir guarda a escolha para a visita seguinte.
+      if (width < 1280)
+        await band(page)
+          .getByRole('button', { name: /^Mostrar/ })
+          .click();
       await expect(map(page)).toBeVisible();
       await settled(page);
       // A altura é medida depois do mapa pronto.

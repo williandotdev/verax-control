@@ -70,7 +70,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [tour('seletor-cliente')],
     permission: 'session:switch_tenant',
     title: 'Um cliente por vez',
-    body: 'A equipe da Verax escolhe aqui qual cliente está vendo. A troca vale só para esta sessão, fica registrada na auditoria e tira da tela os dados do cliente anterior. Os clientes são cadastrados em Administração, no menu, cada um já com o primeiro administrador dele.',
+    body: 'A equipe da Verax escolhe aqui qual cliente está vendo. A troca vale só para esta sessão, fica registrada na auditoria e tira da tela os dados do cliente anterior. Os clientes são cadastrados em Clientes, no grupo Verax do menu, cada um já com o primeiro administrador dele.',
   },
   {
     id: 'casos',
@@ -120,15 +120,15 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [tour('alerta-validacao'), tour('achado-triagem')],
     permission: 'findings:triage',
     title: 'Validar o alerta',
-    body: 'No detalhe do alerta, você decide: ameaça real vira incidente ("Promover a incidente", com os relacionados já marcados, ou "Anexar a um incidente aberto"); falso positivo é marcado como legítimo, e o painel oferece uma exceção para alertas iguais.',
+    body: 'No detalhe do alerta, "O que você decide?": "É uma ameaça real" abre um incidente, com os relacionados já marcados; "É esperado" marca como legítimo, e o painel oferece uma exceção para alertas iguais; "Ainda não sei" deixa em análise. Anexar a um incidente aberto e resolver ficam em "Mais opções".',
   },
   {
     id: 'deteccoes-analise',
     path: '/?analise=mitre',
     target: [inMain('deteccoes-analise')],
     permission: 'reports:read',
-    title: 'Análise: MITRE e cobertura',
-    body: 'As 14 táticas do MITRE ATT&CK, com alertas e incidentes no período, e a cobertura de cada conta monitorada. Clique numa tática para filtrar a lista; as tabelas exportam em CSV.',
+    title: 'Análise: MITRE ATT&CK',
+    body: 'As 14 táticas do MITRE ATT&CK, com alertas e incidentes no período. Clique numa tática para filtrar a lista; as tabelas exportam em CSV. As análises ficam em abas ao lado de "Lista".',
   },
   {
     id: 'postura',

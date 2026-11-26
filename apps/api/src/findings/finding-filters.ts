@@ -56,5 +56,7 @@ export function findingWhere(filters: FindingFilters, now: Date): Prisma.Finding
       },
     }),
     ...findingContentWhere(filters),
+    // O tipo (E-06) vem da fila do caso do alerta: sem caso, o alerta não entra no filtro.
+    ...(filters.type !== undefined && { alertCase: { is: { queue: filters.type } } }),
   };
 }

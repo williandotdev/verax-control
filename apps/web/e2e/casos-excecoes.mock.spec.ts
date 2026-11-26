@@ -90,7 +90,10 @@ test.describe('exceções a partir de um caso (modo mock): acessibilidade', () =
 
         await goInside(page, '/cadastros/excecoes');
         const section = page.getByRole('region', { name: 'Exceções amplas' });
-        await expect(section.getByRole('table', { name: 'Exceções amplas do cliente' })).toBeVisible();
+        // No celular, a tabela vira uma lista de cartões com o mesmo nome (E-05).
+        await expect(
+          section.getByRole(width < 768 ? 'list' : 'table', { name: 'Exceções amplas do cliente' }),
+        ).toBeVisible();
         await expect(section.getByText('Listagem do inventário noturno')).toBeVisible();
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page, 'tela Exceções');
