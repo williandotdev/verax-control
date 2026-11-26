@@ -862,7 +862,8 @@ function viaOf(aws: unknown): { via?: string; invokedBy?: string } {
       return 'ec2';
     if (service !== undefined && service !== 'signin.amazonaws.com') return 'aws_service';
     if (
-      lower.startsWith('console.amazonaws.com') ||
+      // O console se anuncia como o nome do host inteiro, sozinho: compara o primeiro termo, não um começo de texto.
+      lower.split(/[\s/]/, 1)[0] === 'console.amazonaws.com' ||
       lower.startsWith('aws internal') ||
       lower.startsWith('mozilla/') ||
       at(aws, 'eventName') === 'ConsoleLogin' ||
