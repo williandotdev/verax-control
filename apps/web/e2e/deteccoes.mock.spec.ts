@@ -186,7 +186,7 @@ test.describe('tela Detecções (modo mock)', () => {
     });
   }
 
-  test('no computador, a lista fica ao lado do radar e as análises embaixo, a começar pelo Resumo', async ({
+  test('no computador, a lista fica ao lado do radar, e as análises são abas no mesmo nível de "Lista" (E-07)', async ({
     page,
   }) => {
     for (const width of [1280, 1440, 1920]) {
@@ -194,14 +194,14 @@ test.describe('tela Detecções (modo mock)', () => {
       await open(page);
       const radar = await page.getByRole('region', { name: 'Radar das últimas 24 horas' }).boundingBox();
       const list = await page.getByRole('region', { name: 'Lista de alertas' }).boundingBox();
-      const summary = page.getByRole('tab', { name: 'Resumo' });
-      await expect(summary).toHaveAttribute('aria-selected', 'true');
-      await expect(page.getByRole('tab', { name: 'Lista' })).toHaveCount(0);
-      const tab = await summary.boundingBox();
+      await expect(page.getByRole('tab', { name: 'Lista' })).toHaveAttribute('aria-selected', 'true');
+      const tab = await page.getByRole('tab', { name: 'Resumo' }).boundingBox();
       if (!radar || !list || !tab) throw new Error('sem o radar, a lista ou as análises na tela');
       expect(list.x).toBeGreaterThanOrEqual(radar.x + radar.width);
       expect(list.y).toBeLessThan(radar.y + radar.height);
-      expect(tab.y).toBeGreaterThanOrEqual(list.y + list.height);
+      // As abas ficam acima da lista, na mesma coluna.
+      expect(tab.y).toBeLessThan(list.y);
+      expect(tab.x).toBeGreaterThanOrEqual(radar.x + radar.width);
       await noHorizontalScroll(page);
       // Os alertas cabem na coluna ao lado do radar, sem rolar por dentro, nas duas visões.
       for (const [view, name] of [

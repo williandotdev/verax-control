@@ -87,7 +87,8 @@ describe('Detecções: o mapa de origens no topo', () => {
     renderAt('/');
     const region = await findBand();
     expect(header()?.nextElementSibling).toBe(region);
-    expect(region.nextElementSibling).toBe(await strip());
+    // O resumo e a lista ficam na mesma grade (no computador, lado a lado), logo depois do mapa.
+    expect(region.nextElementSibling).toContainElement(await strip());
     expect(within(region).getByRole('button', { name: /^Recolher/ })).toHaveAttribute(
       'aria-expanded',
       'true',
@@ -110,9 +111,7 @@ describe('Detecções: o mapa de origens no topo', () => {
         const situation = await strip();
         await screen.findByRole('table', { name: 'Alertas do cliente' }, SLOW);
         expect(band()).toBeNull();
-        const next = header()?.nextElementSibling;
-        if (wide) expect(next).toContainElement(situation);
-        else expect(next).toBe(situation);
+        expect(header()?.nextElementSibling).toContainElement(situation);
         cleanup();
       }
     },
@@ -731,12 +730,17 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
   const desktop = () => mockMedia((query) => query === '(min-width: 80rem)');
   const tabs = async () => (await screen.findAllByRole('tab')).map((tab) => tab.textContent);
 
-  it('a lista fica na tela com o radar, sem aba própria, e as análises embaixo começam pelo Resumo', async () => {
+  it('a lista fica ao lado do radar, na aba "Lista"; as análises são abas no mesmo nível, sem pedido ao abrir (E-07)', async () => {
     desktop();
+    const asked: string[] = [];
+    server.events.on('request:start', ({ request }) => {
+      if (new URL(request.url).pathname.includes('/v1/reports/')) asked.push(request.url);
+    });
     const router = renderAt('/');
     const radar = await screen.findByRole('region', { name: 'Radar das últimas 24 horas' });
     const table = await list();
     expect(await tabs()).toEqual([
+      'Lista',
       'Resumo',
       'MITRE ATT&CK',
       'Regras',
@@ -745,16 +749,22 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
       'Cobertura das fontes',
       'Exceções',
     ]);
-    const summary = screen.getByRole('tab', { name: 'Resumo' });
-    expect(summary).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Lista' })).toHaveAttribute('aria-selected', 'true');
     expect(search(router).get('analise')).toBeNull();
-    expect(await screen.findByText('Alertas no período', undefined, SLOW)).toBeInTheDocument();
-    // Na ordem da tela e da leitura: o radar, a lista e as análises.
+    // Na ordem da tela e da leitura: o radar e, ao lado, as abas e a lista.
     const follows = Node.DOCUMENT_POSITION_FOLLOWING;
     expect(radar.compareDocumentPosition(table) & follows).toBeTruthy();
-    expect(table.compareDocumentPosition(summary) & follows).toBeTruthy();
-    // Um filtro só na tela.
+    // Um filtro só na tela; nenhuma análise pedida só por abrir a tela.
     expect(screen.getAllByLabelText('Período')).toHaveLength(1);
+    expect(asked).toEqual([]);
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Resumo' }));
+    await waitFor(() => expect(search(router).get('analise')).toBe('resumo'));
+    expect(await screen.findByText('Alertas no período', undefined, SLOW)).toBeInTheDocument();
+    // A análise troca a área da lista; o radar continua.
+    expect(screen.queryByRole('table', { name: /^Alertas do cliente/ })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Radar das últimas 24 horas' })).toBeInTheDocument();
+    server.events.removeAllListeners();
   });
 
   it('trocar a análise não mexe na lista, nos filtros nem no detalhe aberto', async () => {
@@ -765,8 +775,13 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
     await waitFor(() => expect(search(router).get('analise')).toBe('regras'));
     expect(search(router).get('severidade')).toBe('critical');
     expect(search(router).get('alerta')).toBe(FINDING);
-    expect(await list()).toBeInTheDocument();
     expect(await screen.findByRole('table', { name: 'Regras que mais dispararam' })).toBeInTheDocument();
+    // O detalhe continua no lugar do radar; de volta à "Lista", a lista com os mesmos filtros.
+    expect(screen.getByRole('complementary', { name: /desligar a trilha/ })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('tab', { name: 'Lista' }));
+    await waitFor(() => expect(search(router).get('analise')).toBeNull());
+    expect(await list()).toBeInTheDocument();
+    expect(search(router).get('severidade')).toBe('critical');
   });
 
   it('o detalhe abre no lugar do radar e, ao fechar, o radar volta', async () => {
@@ -775,10 +790,10 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
     const radar = await screen.findByRole('region', { name: 'Radar das últimas 24 horas' });
     await userEvent.click(within(radar).getAllByRole('link')[0] as HTMLElement);
     await waitFor(() => expect(search(router).get('alerta') ?? search(router).get('incidente')).toBeTruthy());
-    // A análise de baixo continua a mesma.
+    // A análise aberta continua a mesma.
     expect(search(router).get('analise')).toBe('mitre');
     expect(screen.queryByRole('region', { name: 'Radar das últimas 24 horas' })).toBeNull();
-    expect(await list()).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'MITRE ATT&CK' })).toHaveAttribute('aria-selected', 'true');
     await userEvent.click(await screen.findByRole('button', { name: 'Fechar o detalhe' }));
     expect(await screen.findByRole('region', { name: 'Radar das últimas 24 horas' })).toBeInTheDocument();
   });
@@ -796,16 +811,17 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
     window.localStorage.clear();
   });
 
-  it('um link para uma análise abre nela, rolada até as análises; a tática filtra a lista sem sair dela', async () => {
+  it('um link para uma análise abre nela, na aba ao lado do radar, sem rolar (R-05); a tática volta para a lista filtrada', async () => {
     desktop();
     const scroll = vi.spyOn(Element.prototype, 'scrollIntoView');
     const router = renderAt('/?analise=mitre&periodo=30d');
     expect(await screen.findByRole('tab', { name: 'MITRE ATT&CK' })).toHaveAttribute('aria-selected', 'true');
-    await waitFor(() => expect(scroll).toHaveBeenCalled());
     await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' }, SLOW);
+    // O mapa do topo começa recolhido por ser um link direto: a análise fica perto do topo, sem rolar a tela.
+    expect(scroll).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('link', { name: /^Evasão de defesas \(TA0005\)/ }));
     await waitFor(() => expect(search(router).get('tatica')).toBe('Defense Evasion'));
-    expect(search(router).get('analise')).toBe('mitre');
+    expect(search(router).get('analise')).toBeNull();
     expect(await list()).toBeInTheDocument();
   });
 

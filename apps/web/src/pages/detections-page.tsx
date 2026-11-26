@@ -15,7 +15,7 @@ import { CasesView } from '@/features/cases/cases-view';
 import { OperationsPanel } from '@/features/cases/operations-panel';
 import { VIEW_LABELS, viewsOf } from '@/features/cases/views';
 import { DetectionDetailPanel } from '@/features/detections/detail-panel';
-import { IncidentsList } from '@/features/detections/detection-list';
+import { FILL_COLUMN, IncidentsList } from '@/features/detections/detection-list';
 import { useDetections } from '@/features/detections/detections-api';
 import { EXPORT_MAX_ROWS, exportCases, exportFindings, exportIncidents } from '@/features/detections/export';
 import { FilterBar } from '@/features/detections/filter-bar';
@@ -186,10 +186,10 @@ function DetectionsContent({
   const side = useMediaQuery(SIDE_PANEL_QUERY);
   const wide = useMediaQuery(WIDE_LIST_QUERY);
   const [stripExpanded, setStripExpanded] = useStripPreference(userId);
-  // No computador a lista está sempre na tela, e as abas são só as análises: sem nenhuma na URL, o Resumo.
-  const asked = canAnalysis ? state.analysis : 'list';
-  const analysis: DetectionAnalysis = side && asked === 'list' ? 'summary' : asked;
-  const listing = side || analysis === 'list';
+  // As análises são abas no mesmo nível de "Lista" em toda largura (E-07): escolher uma troca a área da lista; o radar e a
+  // situação ficam onde estão. Sem nenhuma na URL, a lista.
+  const analysis: DetectionAnalysis = canAnalysis ? state.analysis : 'list';
+  const listing = analysis === 'list';
   const besideRadar = side && canTower && stripExpanded;
   // O período só vai para a API se couber no histórico do plano; o seletor só oferece os que cabem.
   const periods = usePeriodFilter(
@@ -226,14 +226,9 @@ function DetectionsContent({
   }, [selection, side]);
 
   const listRef = useRef<HTMLDivElement>(null);
-  const analysisRef = useRef<HTMLDivElement>(null);
-  // Quem chega por um link direto vem pelo que ele abre: o mapa do topo começa recolhido, só desta vez.
+  // Quem chega por um link direto vem pelo que ele abre: o mapa do topo começa recolhido, só desta vez. Um link para uma
+  // análise abre nela, na aba ao lado de "Lista", perto do topo: não precisa rolar (R-05, resolvido pela E-07).
   const [deepLink] = useState(selection !== null || (canAnalysis && state.analysis !== 'list'));
-  // Um link para uma análise abre nela, que no computador fica abaixo da lista.
-  const linkedAnalysis = useRef(side && asked !== 'list');
-  useEffect(() => {
-    if (linkedAnalysis.current) analysisRef.current?.scrollIntoView({ block: 'start' });
-  }, []);
   // A tática escolhida na análise filtra a lista, que pode estar fora da tela, acima.
   const tactic = useRef(state.filters.tactic);
   useEffect(() => {
@@ -291,7 +286,6 @@ function DetectionsContent({
   // severidade, o status e o incidente como colunas, sem rolar de lado.
   const dense = (besideRadar && !wide) || !side;
   const compact = !side || selection !== null || dense;
-  const tabs = side ? ANALYSIS_TABS.filter((tab) => tab.value !== 'list') : ANALYSIS_TABS;
 
   const strip = canTower && (
     <SituationStrip
@@ -345,7 +339,7 @@ function DetectionsContent({
   );
   const commonFilterBar = (
     <FilterBar
-      key={side ? view : `${view}:${analysis}`}
+      key={`${view}:${analysis}`}
       state={{ ...state, view }}
       params={params}
       periodOptions={periods.options}
@@ -428,10 +422,10 @@ function DetectionsContent({
   const tabList = (
     <Tabs.List
       data-tour="deteccoes-analise"
-      aria-label={side ? 'Análises das detecções' : 'Como ver as detecções'}
+      aria-label="Como ver as detecções"
       className="flex flex-wrap gap-1 border-b"
     >
-      {tabs.map((tab) => (
+      {ANALYSIS_TABS.map((tab) => (
         <Tabs.Trigger
           key={tab.value}
           value={tab.value}
@@ -453,8 +447,8 @@ function DetectionsContent({
             range={range}
             tacticHref={(tactic) =>
               `?${withChanges(params, {
-                // No computador, a lista já está na tela: a análise continua aberta embaixo.
-                ...(!side && { analysis: null }),
+                // A tática volta para a lista, já filtrada.
+                analysis: null,
                 tactic: tactic.name,
                 incident: null,
                 finding: null,
@@ -508,71 +502,41 @@ function DetectionsContent({
       }
     >
       {originBand}
-      {side ? (
-        <>
-          <div
-            className={cn(
-              'grid items-start gap-4',
-              besideRadar &&
-                'grid-cols-[minmax(0,24rem)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,28rem)_minmax(0,1fr)]',
-            )}
-          >
-            {besideRadar && selection ? (
-              <DetectionDetailPanel selection={selection} side onClose={close} onBack={back} />
-            ) : (
-              strip
-            )}
-            <div
-              ref={listRef}
-              data-fill={besideRadar}
-              className={cn('min-w-0 scroll-mt-4 space-y-4', besideRadar && 'flex flex-col self-stretch')}
-            >
-              {viewToggle}
-              {filterBar}
-              {operations}
-              <div
-                className={cn(
-                  'grid gap-4',
-                  besideRadar && 'grow grid-rows-[minmax(0,1fr)]',
-                  !besideRadar && selection && 'grid-cols-[minmax(0,1fr)_minmax(0,28rem)]',
-                )}
-              >
-                <div className={cn('min-w-0', besideRadar && 'flex flex-col')}>{list}</div>
-                {!besideRadar && (
-                  <DetectionDetailPanel selection={selection} side onClose={close} onBack={back} />
-                )}
-              </div>
-            </div>
-          </div>
-          {canAnalysis && (
-            <div ref={analysisRef} className="scroll-mt-4">
-              <Tabs.Root
-                value={analysis}
-                onValueChange={(value) =>
-                  update({ analysis: ANALYSIS_SLUGS[value as DetectionAnalysis] }, { keepPage: true })
-                }
-                className="space-y-4"
-              >
-                {tabList}
-                {analyses}
-              </Tabs.Root>
-            </div>
-          )}
-        </>
-      ) : (
-        <>
-          {strip}
+      <div
+        className={cn(
+          'grid items-start gap-4',
+          besideRadar &&
+            'grid-cols-[minmax(0,24rem)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,28rem)_minmax(0,1fr)]',
+        )}
+      >
+        {besideRadar && selection ? (
+          <DetectionDetailPanel selection={selection} side onClose={close} onBack={back} />
+        ) : (
+          strip
+        )}
+        {/* Ao lado do radar, a lista ocupa a altura dele (`data-fill`); uma análise cresce com o próprio conteúdo. */}
+        <div
+          ref={listRef}
+          data-fill={besideRadar && listing}
+          className={cn('min-w-0 scroll-mt-4', besideRadar && listing && 'flex flex-col self-stretch')}
+        >
           <Tabs.Root
             value={analysis}
             onValueChange={(value) =>
-              update({
-                analysis: ANALYSIS_SLUGS[value as DetectionAnalysis],
-                incident: null,
-                finding: null,
-                case: null,
-              })
+              update(
+                {
+                  analysis: ANALYSIS_SLUGS[value as DetectionAnalysis],
+                  // O detalhe no lugar do radar fica; o que fica ao lado da lista (ou na gaveta) sai com ela.
+                  ...(!besideRadar && { incident: null, finding: null, case: null }),
+                },
+                { keepPage: true },
+              )
             }
-            className="space-y-4"
+            className={cn(
+              'space-y-4',
+              FILL_COLUMN,
+              'in-data-[fill=true]:gap-4 in-data-[fill=true]:space-y-0',
+            )}
           >
             <div className="flex flex-wrap items-end justify-between gap-3">
               {canAnalysis && tabList}
@@ -580,14 +544,25 @@ function DetectionsContent({
             </div>
             {filterBar}
             {operations}
-            <Tabs.Content value="list" className="focus:outline-none">
-              {list}
+            <Tabs.Content value="list" className={cn('focus:outline-none', FILL_COLUMN)}>
+              <div
+                className={cn(
+                  'grid gap-4',
+                  besideRadar && 'grow grid-rows-[minmax(0,1fr)]',
+                  side && !besideRadar && selection && 'grid-cols-[minmax(0,1fr)_minmax(0,28rem)]',
+                )}
+              >
+                <div className={cn('min-w-0', besideRadar && 'flex flex-col')}>{list}</div>
+                {side && !besideRadar && (
+                  <DetectionDetailPanel selection={selection} side onClose={close} onBack={back} />
+                )}
+              </div>
             </Tabs.Content>
             {canAnalysis && analyses}
           </Tabs.Root>
-          <DetectionDetailPanel selection={selection} side={false} onClose={close} onBack={back} />
-        </>
-      )}
+        </div>
+      </div>
+      {!side && <DetectionDetailPanel selection={selection} side={false} onClose={close} onBack={back} />}
     </Shell>
   );
 }
