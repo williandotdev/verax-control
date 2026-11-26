@@ -4,6 +4,7 @@ import {
   alertExceptionCreateSchema,
   type AlertExceptionField,
   alertExceptionUpdateSchema,
+  type ExceptionOpenResolution,
 } from '@verax/shared';
 import { type FormEvent, useState } from 'react';
 import { useSearchParams } from 'react-router';
@@ -164,6 +165,10 @@ export function ExceptionsPage() {
   );
 }
 
+/** A criação mexeu em algum alerta em aberto (ou parou no teto): vale mostrar o resultado antes de fechar. */
+const touchedOpen = (open: ExceptionOpenResolution | undefined): boolean =>
+  open !== undefined && (open.resolved > 0 || open.keptInIncident > 0 || open.more);
+
 function CreateException({ onDone }: { onDone: () => void }) {
   const [values, setValues] = useState({
     ruleId: '',
@@ -188,13 +193,13 @@ function CreateException({ onDone }: { onDone: () => void }) {
       : null,
   );
 
-  if (create.isSuccess && create.data.openAlerts !== undefined) {
+  if (create.isSuccess && touchedOpen(create.data.openAlerts)) {
     return (
       <div className="space-y-4">
         <p className="text-sm font-medium">Exceção criada.</p>
         <OpenAlertsResult resolution={create.data.openAlerts} kind="alert" exceptionId={create.data.id} />
         <Button variant="secondary" onClick={onDone}>
-          Fechar
+          Concluir
         </Button>
       </div>
     );
@@ -217,8 +222,8 @@ function CreateException({ onDone }: { onDone: () => void }) {
     create.mutate(input.data, {
       onSuccess: (created) => {
         invalidateOpen();
-        // Um nó de antes não manda a contagem: fecha como antes.
-        if (created.openAlerts === undefined) onDone();
+        // Sem alerta em aberto mexido (ou um nó de antes, sem a contagem): fecha como antes.
+        if (!touchedOpen(created.openAlerts)) onDone();
       },
     });
   };
