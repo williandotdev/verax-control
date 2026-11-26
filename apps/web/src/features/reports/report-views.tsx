@@ -18,7 +18,6 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Explainer } from '@/components/ui/explainer';
 import { SEVERITY_MARKS, SEVERITY_STYLES } from '@/design/severity';
-import { PROVIDER_LABELS } from '@/features/admin/labels';
 import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
 import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
 import { cn } from '@/lib/cn';
@@ -262,53 +261,6 @@ export function MitreReportView({
 
 const sourceLabel = (source: string) =>
   FINDING_SOURCE_LABELS[source as keyof typeof FINDING_SOURCE_LABELS] ?? source;
-
-/** As contas monitoradas e o que chegou de cada uma no período. */
-export function CoverageReportView({ range }: { range: ReportRange }) {
-  const report = useReport('coverage', range, true);
-  return (
-    <Loaded query={report} label="a cobertura">
-      {(data) => (
-        <ReportTable
-          caption="Contas monitoradas e o que chegou de cada uma"
-          file={'cobertura'}
-          rows={data.accounts}
-          rowKey={(row) => `${row.provider}:${row.accountId}`}
-          empty="Nenhuma conta cadastrada."
-          columns={[
-            {
-              header: 'Provedor',
-              cell: (row) => PROVIDER_LABELS[row.provider],
-              csv: (row) => PROVIDER_LABELS[row.provider],
-            },
-            {
-              header: 'Conta',
-              cell: (row) => <span className="break-all font-mono text-xs">{row.accountId}</span>,
-              csv: (row) => row.accountId,
-            },
-            {
-              header: 'Status',
-              cell: (row) => (row.active ? 'Ativa' : 'Inativa'),
-              csv: (row) => (row.active ? 'Ativa' : 'Inativa'),
-            },
-            {
-              header: 'Último evento',
-              cell: (row) => (row.lastEventAt ? formatTimestamp(row.lastEventAt) : 'nenhum ainda'),
-              csv: (row) => row.lastEventAt,
-            },
-            { header: 'Alertas', cell: (row) => row.findings, csv: (row) => row.findings, align: 'right' },
-            {
-              header: 'Por fonte',
-              cell: (row) =>
-                row.bySource.map((item) => `${sourceLabel(item.source)}: ${item.count}`).join(', ') || '—',
-              csv: (row) => row.bySource.map((item) => `${item.source}: ${item.count}`).join('; '),
-            },
-          ]}
-        />
-      )}
-    </Loaded>
-  );
-}
 
 function Kpi({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -639,62 +591,6 @@ export function IncidentsReportView({ range }: { range: ReportRange }) {
             ]}
           />
         </>
-      )}
-    </Loaded>
-  );
-}
-
-const FIELD_LABELS: Readonly<Record<string, string>> = {
-  user: 'Usuário',
-  ip: 'IP ou faixa',
-  resource: 'Recurso',
-};
-const fieldLabel = (field: string) => FIELD_LABELS[field] ?? field;
-
-/** As exceções e quantos alertas cada uma silenciou, no período e no total. */
-export function ExceptionsReportView({ range }: { range: ReportRange }) {
-  const report = useReport('exceptions', range, true);
-  return (
-    <Loaded query={report} label="as exceções">
-      {(data) => (
-        <ReportTable
-          caption="Exceções e quantos alertas cada uma silenciou"
-          file={'excecoes'}
-          rows={data.items}
-          rowKey={(row) => row.id}
-          empty="Nenhuma exceção cadastrada."
-          columns={[
-            {
-              header: 'Regra',
-              cell: (row) => <span className="font-mono text-xs">{row.ruleId}</span>,
-              csv: (row) => row.ruleId,
-            },
-            { header: 'Campo', cell: (row) => fieldLabel(row.field), csv: (row) => row.field },
-            {
-              header: 'Valor',
-              cell: (row) => <span className="break-all font-mono text-xs">{row.value}</span>,
-              csv: (row) => row.value,
-            },
-            { header: 'Motivo', cell: (row) => row.reason, csv: (row) => row.reason },
-            {
-              header: 'Situação',
-              cell: (row) => (row.active ? 'Em vigor' : 'Vencida'),
-              csv: (row) => (row.active ? 'Em vigor' : 'Vencida'),
-            },
-            {
-              header: 'No período',
-              cell: (row) => row.matchedInPeriod,
-              csv: (row) => row.matchedInPeriod,
-              align: 'right',
-            },
-            {
-              header: 'No total',
-              cell: (row) => row.matchedTotal,
-              csv: (row) => row.matchedTotal,
-              align: 'right',
-            },
-          ]}
-        />
       )}
     </Loaded>
   );

@@ -8,7 +8,7 @@ import {
 import { Download, SlidersHorizontal, X } from 'lucide-react';
 import { Tabs } from 'radix-ui';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { Navigate, useSearchParams } from 'react-router';
 import { EmptyState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { Explainer } from '@/components/ui/explainer';
@@ -42,6 +42,7 @@ import {
   type DetectionAnalysis,
   FILTER_KEYS,
   findingTypeSlug,
+  MOVED_ANALYSES,
   PERIOD_CHOICE_LABELS,
   type DetectionSelection,
   type DetectionView,
@@ -56,9 +57,7 @@ import { useFindings } from '@/features/findings/findings-api';
 import { usePeriodFilter } from '@/features/plan/plan-history';
 import { downloadCsv } from '@/features/reports/csv';
 import {
-  CoverageReportView,
   EntitiesReportView,
-  ExceptionsReportView,
   IncidentsReportView,
   MitreReportView,
   RulesReportView,
@@ -88,8 +87,6 @@ const ANALYSIS_TABS: readonly { value: DetectionAnalysis; label: string }[] = [
   { value: 'rules', label: 'Regras' },
   { value: 'entities', label: 'Entidades' },
   { value: 'response', label: 'Resposta a incidentes' },
-  { value: 'coverage', label: 'Cobertura das fontes' },
-  { value: 'exceptions', label: 'Exceções' },
 ];
 
 /**
@@ -107,6 +104,10 @@ export function DetectionsPage() {
   const can = (permission: Permission) => me?.permissions.includes(permission) === true;
   // Os casos (docs/ARQUITETURA.md, "Casos"): desligados, ou num nó de antes, a tela é a de sempre.
   const cases = useCaseMode(scope, can('findings:read'));
+  // A cobertura e as exceções saíram daqui (26/11/2026): o link antigo leva à tela que ficou.
+  const [params] = useSearchParams();
+  const moved = MOVED_ANALYSES.get(params.get(DETECTION_PARAMS.analysis) ?? '');
+  if (moved !== undefined) return <Navigate to={moved} replace />;
 
   if (me && scope === null) {
     return (
@@ -524,12 +525,6 @@ function DetectionsContent({
       </Tabs.Content>
       <Tabs.Content value="response" className="focus:outline-none">
         {periods.waiting ? null : <IncidentsReportView range={range} />}
-      </Tabs.Content>
-      <Tabs.Content value="coverage" className="focus:outline-none">
-        {periods.waiting ? null : <CoverageReportView range={range} />}
-      </Tabs.Content>
-      <Tabs.Content value="exceptions" className="focus:outline-none">
-        {periods.waiting ? null : <ExceptionsReportView range={range} />}
       </Tabs.Content>
     </>
   );

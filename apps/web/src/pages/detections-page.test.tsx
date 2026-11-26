@@ -873,8 +873,6 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
       'Regras',
       'Entidades',
       'Resposta a incidentes',
-      'Cobertura das fontes',
-      'Exceções',
     ]);
     expect(screen.getByRole('tab', { name: 'Lista' })).toHaveAttribute('aria-selected', 'true');
     expect(search(router).get('analise')).toBeNull();
@@ -1148,18 +1146,20 @@ describe('Detecções: análise e exportação', () => {
     ['regras', 'Regras', 'Regras que mais dispararam'],
     ['entidades', 'Entidades', 'IPs de origem'],
     ['resposta', 'Resposta a incidentes', 'Incidentes abertos no período'],
-    ['excecoes', 'Exceções', 'Exceções e quantos alertas cada uma silenciou'],
   ])('a análise "%s" volta com a tabela dela', async (slug, tab, table) => {
     renderAt(`/?analise=${slug}`);
     expect(await screen.findByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true');
     expect(await screen.findByRole('table', { name: table })).toBeInTheDocument();
   });
 
-  it('cobertura das fontes, com o CSV da tabela', async () => {
-    renderAt('/?analise=cobertura');
-    expect(
-      await screen.findByRole('table', { name: 'Contas monitoradas e o que chegou de cada uma' }),
-    ).toBeInTheDocument();
+  it.each([
+    ['cobertura', '/cadastros/contas'],
+    ['excecoes', '/cadastros/excecoes'],
+  ])('a análise "%s" saiu de Detecções: o endereço antigo leva a %s', async (slug, path) => {
+    const router = renderAt(`/?analise=${slug}`);
+    await waitFor(() => expect(router.state.location.pathname).toBe(path));
+    expect(screen.queryByRole('tab', { name: 'Cobertura das fontes' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Exceções' })).toBeNull();
   });
 
   it('exporta em CSV a lista filtrada de agora', async () => {

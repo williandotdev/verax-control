@@ -166,10 +166,8 @@ test.describe('tela Detecções (modo mock)', () => {
         await expect(page.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' })).toBeVisible();
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
-        await page.getByRole('tab', { name: 'Cobertura das fontes' }).click();
-        await expect(
-          page.getByRole('table', { name: 'Contas monitoradas e o que chegou de cada uma' }),
-        ).toBeVisible();
+        await page.getByRole('tab', { name: 'Entidades' }).click();
+        await expect(page.getByRole('table', { name: 'IPs de origem' })).toBeVisible();
         await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);

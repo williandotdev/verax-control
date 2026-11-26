@@ -127,8 +127,8 @@ export const TOUR_STEPS: readonly TourStep[] = [
     path: '/?analise=mitre',
     target: [inMain('deteccoes-analise')],
     permission: 'reports:read',
-    title: 'Análise: MITRE e cobertura',
-    body: 'As 14 táticas do MITRE ATT&CK, com alertas e incidentes no período, e a cobertura de cada conta monitorada. Clique numa tática para filtrar a lista; as tabelas exportam em CSV.',
+    title: 'Análise: MITRE ATT&CK',
+    body: 'As 14 táticas do MITRE ATT&CK, com alertas e incidentes no período. Clique numa tática para filtrar a lista; as tabelas exportam em CSV. As análises ficam em abas ao lado de "Lista".',
   },
   {
     id: 'postura',

@@ -75,8 +75,7 @@ export const VULNERABILITIES_VIEW = 'vulnerabilidades';
  */
 export type DetectionView = 'cases' | 'alerts' | 'incidents' | 'vulnerabilities';
 /** A lista (o padrão) ou uma das análises que vieram dos Relatórios. */
-export type DetectionAnalysis =
-  'list' | 'summary' | 'mitre' | 'rules' | 'entities' | 'response' | 'coverage' | 'exceptions';
+export type DetectionAnalysis = 'list' | 'summary' | 'mitre' | 'rules' | 'entities' | 'response';
 
 export const ANALYSIS_SLUGS: Readonly<Record<DetectionAnalysis, string | null>> = {
   list: null,
@@ -85,9 +84,16 @@ export const ANALYSIS_SLUGS: Readonly<Record<DetectionAnalysis, string | null>> 
   rules: 'regras',
   entities: 'entidades',
   response: 'resposta',
-  coverage: 'cobertura',
-  exceptions: 'excecoes',
 };
+
+/**
+ * As análises que saíram da tela (pedido do responsável de 26/11/2026): "Cobertura das fontes" repetia as Fontes (as
+ * contas cloud), e "Exceções" repetia a tela de Exceções. O endereço antigo leva à tela que ficou.
+ */
+export const MOVED_ANALYSES: ReadonlyMap<string, string> = new Map([
+  ['cobertura', '/cadastros/contas'],
+  ['excecoes', '/cadastros/excecoes'],
+]);
 
 const ANALYSIS_BY_SLUG: ReadonlyMap<string, DetectionAnalysis> = new Map(
   (Object.entries(ANALYSIS_SLUGS) as [DetectionAnalysis, string | null][]).flatMap(([analysis, slug]) =>

@@ -21,8 +21,9 @@ const REPORT_TAB_TARGET: Readonly<Record<string, { view?: string; analysis?: str
   deteccoes: { analysis: 'regras' },
   entidades: { analysis: 'entidades' },
   incidentes: { analysis: 'resposta' },
-  cobertura: { analysis: 'cobertura' },
-  excecoes: { analysis: 'excecoes' },
+  // Saíram de Detecções (26/11/2026): a cobertura repetia as Fontes, e as exceções, a tela delas.
+  cobertura: { path: '/cadastros/contas' },
+  excecoes: { path: '/cadastros/excecoes' },
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

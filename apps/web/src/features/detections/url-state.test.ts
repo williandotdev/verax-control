@@ -303,11 +303,12 @@ describe('endereços de antes', () => {
     ],
     ['/relatorios', '', '/?analise=resumo'],
     ['/relatorios', '?aba=mitre&periodo=90d', '/?analise=mitre&periodo=90d'],
-    ['/relatorios', '?aba=cobertura', '/?analise=cobertura'],
+    // A cobertura e as exceções saíram de Detecções (26/11/2026): o endereço antigo leva às telas que ficaram.
+    ['/relatorios', '?aba=cobertura', '/cadastros/contas'],
     ['/relatorios', '?aba=incidentes&periodo=90d', '/?analise=resposta&periodo=90d'],
     ['/relatorios', '?aba=deteccoes', '/?analise=regras'],
     ['/relatorios', '?aba=entidades', '/?analise=entidades'],
-    ['/relatorios', '?aba=excecoes', '/?analise=excecoes'],
+    ['/relatorios', '?aba=excecoes', '/cadastros/excecoes'],
     ['/incidentes/', '', '/?visao=incidentes'],
   ])('%s%s → %s', (path, search, target) => {
     expect(legacyDetectionsUrl(path, search)).toBe(target);
