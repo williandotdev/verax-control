@@ -58,8 +58,8 @@ describe('exceção nova resolve os alertas em aberto', () => {
   }, 120_000);
 
   afterAll(async () => {
+    // Os alertas e os comentários ficam: o comentário só sai pelo expurgo.
     await cleanCases(prisma, tenants);
-    await prisma.findingComment.deleteMany({ where: { tenantId: { in: tenants } } }).catch(() => undefined);
     await app.close();
   }, 60_000);
 
