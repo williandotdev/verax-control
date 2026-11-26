@@ -120,7 +120,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [tour('alerta-validacao'), tour('achado-triagem')],
     permission: 'findings:triage',
     title: 'Validar o alerta',
-    body: 'No detalhe do alerta, você decide: ameaça real vira incidente ("Promover a incidente", com os relacionados já marcados, ou "Anexar a um incidente aberto"); falso positivo é marcado como legítimo, e o painel oferece uma exceção para alertas iguais.',
+    body: 'No detalhe do alerta, "O que você decide?": "É uma ameaça real" abre um incidente, com os relacionados já marcados; "É esperado" marca como legítimo, e o painel oferece uma exceção para alertas iguais; "Ainda não sei" deixa em análise. Anexar a um incidente aberto e resolver ficam em "Mais opções".',
   },
   {
     id: 'deteccoes-analise',

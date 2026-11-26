@@ -2,10 +2,10 @@ import {
   type AlertExceptionField,
   type FindingDetail,
   type FindingStatus,
-  FINDING_STATUSES,
   type Permission,
   RAW_EVENT_RETENTION_DAYS,
 } from '@verax/shared';
+import { ChevronRight } from 'lucide-react';
 import { type FormEvent, useId, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { SeverityBadge } from '@/components/security/severity-badge';
@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/field';
 import { FindingTriageTrail } from '@/features/cases/finding-triage-trail';
 import { selectionSearch } from '@/features/detections/url-state';
-import { AlertValidation } from '@/features/incidents/incident-actions';
+import { AttachForm, PromoteDialog } from '@/features/incidents/incident-actions';
 import { usePlanHistory } from '@/features/plan/plan-history';
 import { useMe } from '@/features/session/session';
 import { errorMessage } from '@/lib/errors';
@@ -78,6 +78,27 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
         <FindingStatusBadge status={finding.status} />
       </div>
 
+      {/* E-03: a decisão num quadro só, logo abaixo dos selos (no alerta do balanceador, antes da evidência). */}
+      {finding.incidentId && (
+        <p className="rounded-md border bg-foreground/[0.03] p-3 text-sm">
+          Este alerta foi confirmado como parte de um incidente.{' '}
+          <Link
+            to={{ search: selectionSearch(params, { kind: 'incident', id: finding.incidentId }) }}
+            className="font-medium underline"
+          >
+            Ver incidente
+          </Link>
+        </p>
+      )}
+      {(can('findings:triage') || (can('incidents:write') && !finding.incidentId)) && (
+        <AlertDecision
+          finding={finding}
+          canIncidents={can('incidents:write')}
+          canTriage={can('findings:triage')}
+          canCreateException={can('alert_exceptions:write')}
+        />
+      )}
+
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
         {fields
           .filter((entry): entry is [string, string] => Boolean(entry[1]))
@@ -103,24 +124,6 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
       )}
 
       {finding.source === 'alb' && <FindingEvidenceSection finding={finding} />}
-
-      {finding.incidentId ? (
-        <p className="rounded-md border bg-foreground/[0.03] p-3 text-sm">
-          Este alerta foi confirmado como parte de um incidente.{' '}
-          <Link
-            to={{ search: selectionSearch(params, { kind: 'incident', id: finding.incidentId }) }}
-            className="font-medium underline"
-          >
-            Ver incidente
-          </Link>
-        </p>
-      ) : (
-        can('incidents:write') && <AlertValidation finding={finding} />
-      )}
-
-      {can('findings:triage') && (
-        <StatusActions finding={finding} canCreateException={can('alert_exceptions:write')} />
-      )}
 
       <FindingTriageTrail findingId={finding.id} />
 
@@ -167,27 +170,42 @@ function RawEventRetention() {
   );
 }
 
-const ACTION_LABELS: Record<FindingStatus, string> = {
-  new: 'Reabrir',
-  investigating: 'Colocar em análise',
-  legitimate: 'Marcar como legítimo',
-  resolved: 'Marcar como resolvido',
-};
+/** Uma resposta da decisão: o que ela é e, numa linha, o que ela faz (como no diálogo da triagem em massa). */
+interface DecisionOption {
+  key: string;
+  title: string;
+  detail: string;
+  run: () => void;
+}
 
-function StatusActions({
+/**
+ * "O que você decide?" (E-03): um quadro só no lugar de "Validar o alerta" e "Mudar status". Três respostas explicadas,
+ * nenhuma em destaque (não há uma resposta certa): ameaça real (promover, com o diálogo de sempre), esperado (legítimo,
+ * com a oferta da exceção) e ainda não sei (em análise). "Mais opções" guarda anexar a um incidente aberto, marcar como
+ * resolvido e reabrir. Uma caixa de texto só: o porquê vai junto com a decisão e fica nos comentários.
+ */
+function AlertDecision({
   finding,
+  canIncidents,
+  canTriage,
   canCreateException,
 }: {
   finding: FindingDetail;
+  canIncidents: boolean;
+  canTriage: boolean;
   canCreateException: boolean;
 }) {
-  const commentId = useId();
+  const baseId = useId();
   const [comment, setComment] = useState('');
   const [offerException, setOfferException] = useState(false);
+  const [promoting, setPromoting] = useState(false);
+  const [attaching, setAttaching] = useState(false);
   const update = useUpdateFindingStatus(finding.id);
+  const addComment = useAddFindingComment(finding.id);
+  const open = finding.incidentId === null;
+  const text = comment.trim();
 
   const change = (status: FindingStatus) => {
-    const text = comment.trim();
     update.mutate(text ? { status, comment: text } : { status }, {
       onSuccess: () => {
         setComment('');
@@ -195,40 +213,145 @@ function StatusActions({
       },
     });
   };
+  // Promover não leva comentário na API: o porquê entra nos comentários do alerta logo depois.
+  const promoted = () => {
+    if (text) addComment.mutate(text, { onSuccess: () => setComment('') });
+  };
+
+  const options: DecisionOption[] = [
+    ...(canIncidents && open
+      ? [
+          {
+            key: 'promote',
+            title: 'É uma ameaça real',
+            detail:
+              'Abre um incidente com este alerta e os relacionados. Pede confirmação e avisa por e-mail.',
+            run: () => setPromoting(true),
+          },
+        ]
+      : []),
+    ...(canTriage && finding.status !== 'legitimate'
+      ? [
+          {
+            key: 'legitimate',
+            title: 'É esperado (falso positivo)',
+            detail: 'Marca como legítimo. Depois, o painel oferece criar a exceção.',
+            run: () => change('legitimate'),
+          },
+        ]
+      : []),
+    ...(canTriage && finding.status !== 'investigating'
+      ? [
+          {
+            key: 'investigating',
+            title: 'Ainda não sei',
+            detail: 'Fica em análise e continua pendente.',
+            run: () => change('investigating'),
+          },
+        ]
+      : []),
+  ];
+  const more: { key: string; label: string; run: () => void; expanded?: boolean }[] = [
+    ...(canIncidents && open
+      ? [
+          {
+            key: 'attach',
+            label: 'Anexar a um incidente aberto',
+            run: () => setAttaching(!attaching),
+            expanded: attaching,
+          },
+        ]
+      : []),
+    ...(canTriage && finding.status !== 'resolved'
+      ? [{ key: 'resolved', label: 'Marcar como resolvido', run: () => change('resolved') }]
+      : []),
+    ...(canTriage && finding.status !== 'new'
+      ? [{ key: 'new', label: 'Reabrir', run: () => change('new') }]
+      : []),
+  ];
+  const busy = update.isPending || addComment.isPending;
 
   return (
-    <section data-tour="achado-triagem" aria-labelledby={`${commentId}-titulo`} className="space-y-2">
-      <h3 id={`${commentId}-titulo`} className="text-sm font-semibold">
-        Mudar status
+    <section
+      data-tour="achado-triagem"
+      aria-labelledby={`${baseId}-titulo`}
+      className="space-y-3 rounded-md border bg-foreground/[0.03] p-3"
+    >
+      <h3 id={`${baseId}-titulo`} className="text-sm font-semibold">
+        O que você decide?
       </h3>
-      <label htmlFor={commentId} className="text-xs text-muted-foreground">
-        Comentário (opcional): por que a decisão
-      </label>
-      <Textarea
-        id={commentId}
-        value={comment}
-        onChange={(event) => setComment(event.target.value)}
-        maxLength={2000}
-      />
-      <div className="flex flex-wrap gap-2">
-        {FINDING_STATUSES.filter((status) => status !== finding.status).map((status) => (
-          <Button
-            key={status}
-            variant={status === 'resolved' ? 'primary' : 'secondary'}
-            size="sm"
-            disabled={update.isPending}
-            onClick={() => change(status)}
-          >
-            {ACTION_LABELS[status]}
-          </Button>
+      <ul data-tour="alerta-validacao" className="space-y-2">
+        {options.map((option) => (
+          <li key={option.key}>
+            <button
+              type="button"
+              disabled={busy}
+              aria-labelledby={`${baseId}-${option.key}-nome`}
+              aria-describedby={`${baseId}-${option.key}`}
+              onClick={option.run}
+              className="flex min-h-11 w-full flex-col items-start rounded-md border bg-surface px-3 py-2 text-left text-sm hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-60"
+            >
+              <span id={`${baseId}-${option.key}-nome`} className="font-medium">
+                {option.title}
+              </span>
+              <span id={`${baseId}-${option.key}`} className="text-xs text-muted-foreground">
+                {option.detail}
+              </span>
+            </button>
+          </li>
         ))}
+      </ul>
+      {more.length > 0 && (
+        <details className="group">
+          <summary className="inline-flex min-h-6 cursor-pointer list-none items-center gap-1 rounded py-1 text-sm font-medium text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring max-sm:min-h-11 [&::-webkit-details-marker]:hidden">
+            <ChevronRight
+              aria-hidden
+              className="size-4 group-open:rotate-90 motion-safe:transition-transform"
+            />
+            Mais opções
+          </summary>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {more.map((item) => (
+              <Button
+                key={item.key}
+                variant="secondary"
+                size="sm"
+                className="max-sm:min-h-11"
+                disabled={busy}
+                aria-expanded={item.expanded}
+                onClick={item.run}
+              >
+                {item.label}
+              </Button>
+            ))}
+          </div>
+          {attaching && <AttachForm finding={finding} onCancel={() => setAttaching(false)} />}
+        </details>
+      )}
+      <div className="space-y-1">
+        <label htmlFor={`${baseId}-porque`} className="text-sm font-medium">
+          Por quê? <span className="font-normal text-muted-foreground">(opcional)</span>
+        </label>
+        <Textarea
+          id={`${baseId}-porque`}
+          aria-describedby={`${baseId}-porque-nota`}
+          value={comment}
+          onChange={(event) => setComment(event.target.value)}
+          maxLength={2000}
+        />
+        <p id={`${baseId}-porque-nota`} className="text-xs text-muted-foreground">
+          Vai junto com a decisão e fica nos comentários.
+        </p>
       </div>
-      {update.error && (
+      {(update.error ?? addComment.error) && (
         <p role="alert" className="text-sm text-critical-text">
-          {errorMessage(update.error)}
+          {errorMessage(update.error ?? addComment.error)}
         </p>
       )}
       {offerException && <ExceptionOffer finding={finding} onDone={() => setOfferException(false)} />}
+      {canIncidents && open && (
+        <PromoteDialog finding={finding} open={promoting} onOpenChange={setPromoting} onCreated={promoted} />
+      )}
     </section>
   );
 }

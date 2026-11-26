@@ -106,7 +106,7 @@ test.describe('tela Detecções (modo mock)', () => {
         // O alerta a validar: o diálogo de promover a incidente, com os relacionados.
         // No celular, o detalhe abre numa gaveta modal, que tira o resto da tela da árvore de acessibilidade.
         await page.goto(`/?alerta=${BUCKET_ALERT}`);
-        await page.getByRole('button', { name: 'Promover a incidente' }).click();
+        await page.getByRole('button', { name: 'É uma ameaça real' }).click();
         const promote = page.getByRole('dialog', { name: 'Promover a incidente' });
         await expect(promote.getByRole('checkbox', { name: /Bloqueio de acesso público/ })).toBeChecked();
         expect(await violations(page)).toEqual([]);

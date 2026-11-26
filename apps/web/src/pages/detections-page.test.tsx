@@ -370,12 +370,52 @@ describe('Detecções: o detalhe e a triagem', () => {
     expect(search(router).get('incidente')).toBeNull();
   });
 
+  it('E-03: uma pergunta, três respostas explicadas, "Mais opções" e uma caixa de texto só', async () => {
+    renderAt(`/?alerta=${BUCKET_ALERT}`);
+    const panel = await screen.findByRole('dialog', {
+      name: 'Política de bucket alterada para permitir leitura pública',
+    });
+    const decision = await within(panel).findByRole('region', { name: 'O que você decide?' });
+    expect(within(panel).queryByRole('heading', { name: 'Validar o alerta' })).toBeNull();
+    expect(within(panel).queryByRole('heading', { name: 'Mudar status' })).toBeNull();
+    const options = within(decision)
+      .getAllByRole('listitem')
+      .map((item) => within(item).getByRole('button'));
+    expect(options.map((option) => option.firstChild?.textContent)).toEqual([
+      'É uma ameaça real',
+      'É esperado (falso positivo)',
+      'Ainda não sei',
+    ]);
+    expect(options[1]).toHaveAccessibleDescription(
+      'Marca como legítimo. Depois, o painel oferece criar a exceção.',
+    );
+    // Nenhuma resposta em destaque, e uma caixa de texto só.
+    for (const option of options) expect(option.className).not.toMatch(/bg-primary/);
+    expect(within(panel).getAllByRole('textbox')).toHaveLength(2); // o porquê e o novo comentário
+    expect(within(decision).getAllByRole('textbox')).toHaveLength(1);
+    expect(within(decision).getByText('Mais opções').closest('details')).not.toHaveAttribute('open');
+    expect(
+      within(decision).getByRole('button', { name: 'Anexar a um incidente aberto' }),
+    ).toBeInTheDocument();
+    expect(within(decision).getByRole('button', { name: 'Marcar como resolvido' })).toBeInTheDocument();
+    // A decisão vem antes dos campos do evento.
+    const fields = panel.querySelector('dl');
+    expect(decision.compareDocumentPosition(fields!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // O porquê vai junto com a decisão e fica nos comentários.
+    await userEvent.type(within(decision).getByLabelText(/Por quê\?/), 'Conferindo com o time de dados.');
+    await userEvent.click(within(decision).getByRole('button', { name: 'Ainda não sei' }));
+    expect(
+      await within(panel).findByText('Conferindo com o time de dados.', undefined, SLOW),
+    ).toBeInTheDocument();
+  });
+
   it('o alerta (endereço de antes): triagem no lugar, com a oferta de exceção ao marcar como legítimo', async () => {
     const router = renderAt(`/?visao=achados&achado=${FINDING}`);
     const dialog = await screen.findByRole('dialog', {
       name: 'Tentativa de desligar a trilha do CloudTrail',
     });
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Marcar como legítimo' }));
+    await userEvent.click(within(dialog).getByRole('button', { name: 'É esperado (falso positivo)' }));
     expect(await within(dialog).findByText('Criar exceção para alertas iguais?')).toBeInTheDocument();
     await waitFor(async () => {
       const row = within(await list())
@@ -404,7 +444,7 @@ describe('Detecções: o detalhe e a triagem', () => {
     const dialog = await screen.findByRole('dialog', {
       name: 'Política de bucket alterada para permitir leitura pública',
     });
-    expect(within(dialog).queryByRole('button', { name: 'Promover a incidente' })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'É uma ameaça real' })).toBeNull();
     expect(within(dialog).queryByRole('button', { name: 'Anexar a um incidente aberto' })).toBeNull();
   });
 
@@ -416,7 +456,7 @@ describe('Detecções: o detalhe e a triagem', () => {
       const panel = await screen.findByRole('dialog', {
         name: 'Política de bucket alterada para permitir leitura pública',
       });
-      await userEvent.click(within(panel).getByRole('button', { name: 'Promover a incidente' }));
+      await userEvent.click(within(panel).getByRole('button', { name: 'É uma ameaça real' }));
       const promote = await screen.findByRole('dialog', { name: 'Promover a incidente' });
       const related = await within(promote).findByRole('checkbox', {
         name: /Bloqueio de acesso público removido do bucket/,

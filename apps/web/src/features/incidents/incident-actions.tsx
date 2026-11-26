@@ -29,48 +29,23 @@ function useOpenIncident() {
 }
 
 /**
- * A validação do alerta (decisão de 17/11/2026, alerta → validação → incidente), para quem opera incidentes: confirmar
- * a ameaça promovendo o alerta (e os relacionados) a um incidente novo, ou anexá-lo a um incidente que ainda não foi
- * resolvido. O falso positivo se resolve na triagem, marcando como legítimo.
- */
-export function AlertValidation({ finding }: { finding: FindingDetail }) {
-  const headingId = useId();
-  const [attaching, setAttaching] = useState(false);
-  return (
-    <section
-      data-tour="alerta-validacao"
-      aria-labelledby={headingId}
-      className="space-y-2 rounded-md border bg-foreground/[0.03] p-3"
-    >
-      <h3 id={headingId} className="text-sm font-semibold">
-        Validar o alerta
-      </h3>
-      <p className="text-sm text-muted-foreground">
-        Ameaça real? Promova o alerta a incidente, com os relacionados, ou anexe a um incidente em aberto. Se
-        for falso positivo, marque como legítimo abaixo.
-      </p>
-      <div className="flex flex-wrap gap-2">
-        <PromoteDialog finding={finding} />
-        <Button
-          variant="secondary"
-          size="sm"
-          aria-expanded={attaching}
-          onClick={() => setAttaching(!attaching)}
-        >
-          Anexar a um incidente aberto
-        </Button>
-      </div>
-      {attaching && <AttachForm finding={finding} onCancel={() => setAttaching(false)} />}
-    </section>
-  );
-}
-
-/**
  * O diálogo de promover: o alerta, os relacionados pré-selecionados (mesmo usuário, chave, IP ou recurso, a até 60
  * minutos, ainda em validação) e o responsável opcional. O incidente confirmado abre no painel.
  */
-function PromoteDialog({ finding }: { finding: FindingDetail }) {
-  const [open, setOpen] = useState(false);
+export function PromoteDialog({
+  finding,
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  finding: FindingDetail;
+  /** Aberto por quem decide (E-03: "É uma ameaça real"); o diálogo não tem botão próprio. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Depois de criar o incidente (o comentário da decisão vai junto). */
+  onCreated?: () => void;
+}) {
+  const setOpen = onOpenChange;
   const assigneeHint = useId();
   const related = useRelatedFindings(finding.id, open);
   const assignees = useIncidentAssignees(open);
@@ -100,6 +75,7 @@ function PromoteDialog({ finding }: { finding: FindingDetail }) {
       {
         onSuccess: (incident) => {
           setOpen(false);
+          onCreated?.();
           openIncident(incident.id);
         },
       },
@@ -114,9 +90,6 @@ function PromoteDialog({ finding }: { finding: FindingDetail }) {
         if (!next) create.reset();
       }}
     >
-      <Dialog.Trigger asChild>
-        <Button size="sm">Promover a incidente</Button>
-      </Dialog.Trigger>
       <Dialog.Portal>
         {/* O fundo é uma div comum (a CSP recusa o estilo que o overlay do Radix injeta); ver `Sheet`. */}
         <div aria-hidden className="pointer-events-auto fixed inset-0 z-50 bg-foreground/30" />
@@ -232,7 +205,7 @@ function AlertLine({ finding, note }: { finding: Finding; note?: string }) {
 }
 
 /** Anexar o alerta a um incidente aberto ou em análise; o incidente abre no painel. */
-function AttachForm({ finding, onCancel }: { finding: FindingDetail; onCancel: () => void }) {
+export function AttachForm({ finding, onCancel }: { finding: FindingDetail; onCancel: () => void }) {
   const incidents = useOpenIncidents(true);
   const attach = useAttachFindings();
   const openIncident = useOpenIncident();

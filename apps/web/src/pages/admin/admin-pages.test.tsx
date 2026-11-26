@@ -1302,7 +1302,7 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
       }),
     );
     const panel = await screen.findByRole('dialog');
-    await userEvent.click(within(panel).getByRole('button', { name: 'Marcar como legítimo' }));
+    await userEvent.click(within(panel).getByRole('button', { name: 'É esperado (falso positivo)' }));
     const offer = (await within(panel).findByText('Criar exceção para alertas iguais?')).closest(
       'form',
     ) as HTMLFormElement;
