@@ -4,6 +4,7 @@ import {
   alertExceptionCreateSchema,
   type AlertExceptionField,
   alertExceptionUpdateSchema,
+  type ExceptionOpenResolution,
 } from '@verax/shared';
 import { type FormEvent, useState } from 'react';
 import { useSearchParams } from 'react-router';
@@ -23,6 +24,11 @@ import {
 import { AdminShell, ConfirmButton, FormError, SelectInput, TextAreaField } from '@/features/admin/admin-ui';
 import { fieldErrors } from '@/features/admin/forms';
 import { EXCEPTION_FIELD_LABELS } from '@/features/admin/labels';
+import {
+  useAlertExceptionOpenPreview,
+  useInvalidateOpenAlerts,
+} from '@/features/exception-open-alerts/open-alerts-api';
+import { OpenAlertsPreview, OpenAlertsResult } from '@/features/exception-open-alerts/open-alerts-view';
 import { useMe } from '@/features/session/session';
 import { formatRelative, plural } from '@/lib/format';
 import { ScopedExceptionsSection } from './scoped-exceptions-section';
@@ -192,6 +198,10 @@ function RuleName({ ruleId, title, onOpen }: { ruleId: string; title: string | n
   );
 }
 
+/** A criação mexeu em algum alerta em aberto (ou parou no teto): vale mostrar o resultado antes de fechar. */
+const touchedOpen = (open: ExceptionOpenResolution | undefined): boolean =>
+  open !== undefined && (open.resolved > 0 || open.keptInIncident > 0 || open.more);
+
 function CreateException({ onDone }: { onDone: () => void }) {
   const [values, setValues] = useState({
     ruleId: '',
@@ -202,6 +212,31 @@ function CreateException({ onDone }: { onDone: () => void }) {
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const create = useCreateException();
+  const invalidateOpen = useInvalidateOpenAlerts();
+  // A prévia dos alertas em aberto, quando o alvo já é válido.
+  const target = alertExceptionCreateSchema.safeParse({
+    ruleId: values.ruleId.trim(),
+    field: values.field,
+    value: values.value,
+    reason: '-',
+  });
+  const preview = useAlertExceptionOpenPreview(
+    target.success && !create.isSuccess
+      ? { ruleId: target.data.ruleId, field: target.data.field, value: target.data.value }
+      : null,
+  );
+
+  if (create.isSuccess && touchedOpen(create.data.openAlerts)) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm font-medium">Exceção criada.</p>
+        <OpenAlertsResult resolution={create.data.openAlerts} kind="alert" exceptionId={create.data.id} />
+        <Button variant="secondary" onClick={onDone}>
+          Concluir
+        </Button>
+      </div>
+    );
+  }
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -217,7 +252,13 @@ function CreateException({ onDone }: { onDone: () => void }) {
       return;
     }
     setErrors({});
-    create.mutate(input.data, { onSuccess: onDone });
+    create.mutate(input.data, {
+      onSuccess: (created) => {
+        invalidateOpen();
+        // Sem alerta em aberto mexido (ou um nó de antes, sem a contagem): fecha como antes.
+        if (!touchedOpen(created.openAlerts)) onDone();
+      },
+    });
   };
 
   return (
@@ -262,6 +303,9 @@ function CreateException({ onDone }: { onDone: () => void }) {
         onChange={(event) => setValues({ ...values, expires: event.target.value })}
         error={errors['expiresAt']}
       />
+      <div aria-live="polite">
+        <OpenAlertsPreview preview={preview.data} />
+      </div>
       <FormError error={create.error} />
       <Button type="submit" disabled={create.isPending}>
         Criar exceção

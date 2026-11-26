@@ -7921,3 +7921,59 @@ cloudflare-oauth-steps.tsx,zone-health.tsx,labels.ts,oauth-return.ts,oauth-retur
 - **O que ficou de fora:** E-12 nas outras áreas (Detecções, casos, layout) e E-11 fora destas telas (botões do
   cabeçalho, filtros e paginação das listas de Detecções). "Como liberar a leitura deste grupo" continua por grupo de
   logs, porque o comando de cada um é diferente.
+
+## Exceção nova resolve os alertas em aberto que cobre (decisão do responsável de 26/11/2026)
+
+- **O que mudou:** criar uma exceção (de usuário, IP ou recurso, pela tela Exceções, pela oferta no detalhe do alerta ou em
+  lote a partir de um caso; ou ampla, com `CASES_MODE=on`) resolve também os alertas em aberto (`new` e `investigating`) que
+  ela cobre, pelo mesmo comparador da chegada e com todas as travas das amplas. Viram `legitimate`, ligados à exceção
+  (`exceptionId` ou `scopedExceptionId`), com um comentário "Resolvido automaticamente pela exceção … criada por …", e a
+  contagem da exceção sobe. O alerta num incidente ou num caso promovido fica e é contado. Prévia antes de salvar ("vai resolver
+  N alertas em aberto (M ficam porque estão em incidente)"), contagem na resposta para quem a pede (`?openAlerts=true`), teto de
+  2.000 por requisição em lotes de 500, "Resolver os próximos" (idempotente), um registro na trilha por lote
+  (`alert_exception.resolve_open`) e o filtro da lista de alertas pela exceção (`GET /v1/findings?exception=<id>`). Revogar,
+  vencer ou apagar não reabre nada. Detalhes em `docs/ARQUITETURA.md`, "Exceção nova resolve os alertas em aberto".
+- **Arquivos:** `packages/shared/src/exception-open-alerts.ts` (novo, com teste), `packages/shared/src/findings.ts` (filtro
+  `exception`), `packages/shared/src/index.ts`; `apps/api/src/alerts/exception-open-alerts.ts` (novo, com teste),
+  `apps/api/src/alert-exceptions/*`, `apps/api/src/scoped-exceptions/*`, `apps/api/src/findings/findings.service.ts`,
+  `apps/api/test/exception-open-alerts.test.ts` (novo), `apps/api/test/scoped-exceptions.test.ts` (limpeza: o alerta com
+  comentário não sai); `apps/web/src/features/exception-open-alerts/` (novo: API, textos, componentes e teste),
+  `features/admin/admin-api.ts`, `features/findings/findings-api.ts`, `features/findings/finding-detail.tsx`,
+  `features/cases/case-exceptions-api.ts`, `features/cases/case-exception-dialog.tsx`, `pages/admin/exceptions-page.tsx`
+  (só o formulário de criar), `features/audit/labels.ts`, `mocks/exception-open-alerts.ts` (novo), `mocks/admin.ts`,
+  `mocks/cases-handlers.ts`, `mocks/handlers.ts`, `e2e/excecao-abertos.mock.spec.ts` (novo); `docs/ARQUITETURA.md`.
+- **Migration:** nenhuma. Usa as colunas que já existiam (`exceptionId`, `scopedExceptionId`, `matchedCount`) e os comentários.
+- **Dependências novas:** nenhuma.
+- **Decisões minhas:**
+  - Tudo na transação da requisição (a da auditoria): a exceção só existe nela até o commit, e um lote em outra transação
+    esperaria por ela. Por isso o teto de 2.000 por requisição (2.150 levaram 2,5 s no teste, com a inserção) e o "Resolver os
+    próximos" (`POST /v1/alert-exceptions/:id/resolve-open` e `/v1/scoped-exceptions/:id/resolve-open`) para o resto; o lock
+    dos alertas do cliente só é tomado se houver o que gravar.
+  - "Em incidente" é o alerta com `incidentId` (qualquer status do incidente) ou num caso com `incidentId`.
+  - O comentário tem como autor quem fez o pedido (não há usuário de sistema); o texto diz a exceção (com o id) e quem a criou.
+  - A contagem só vem para quem a pede (`openAlerts=true`): as respostas de criar são estritas no painel de antes. O painel novo,
+    num nó de antes (400 só da query, sem campo), cria de novo sem o pedido.
+  - O lote a partir de um caso resolve só pelas exceções criadas agora (a que já existia fica como estava), com um teto só.
+  - A de usuário, IP ou recurso apagada perde o vínculo (a chave estrangeira de sempre); o comentário, com o id, fica.
+  - Na tela Exceções, o formulário fecha como antes quando nada em aberto foi mexido; senão mostra o resultado e "Concluir".
+- **Testes:** API com um Postgres descartável próprio (contêiner na porta 55437, com senha, removido no fim): o novo
+  `exception-open-alerts.test.ts` (7: em aberto resolvidos, fechados intactos, em incidente e em caso promovido contados e
+  intactos, outro cliente intacto, IP por faixa, ampla com crítico nunca, acima da máxima, evento e prefixo, 2.150 alertas em
+  lotes com o teto e o "resolver os próximos", idempotência, trilha, filtro, revogar e apagar sem reabrir, o lote do caso) e o
+  unitário `src/alerts/exception-open-alerts.test.ts` (5); com as suítes tocadas (exceções, amplas, achados, padrões da API,
+  contratos das rotas, trilha, `finding-store` e as que criam exceção), 19 arquivos, 382 testes verdes. Contrato: 39 arquivos,
+  735 testes (3 novos). Painel: o novo `open-alerts.test.tsx` (5, com a volta ao nó de antes) e as suítes tocadas (tela
+  Exceções e cadastros, Detecções, Auditoria, casos), 8 arquivos, 180 testes. Playwright (mock, portas 5441 e 5442): o novo
+  `excecao-abertos.mock.spec.ts` (7: axe WCAG 2.2 AA nos dois temas em 360, 768 e 1280 px, sem rolagem lateral, e o alerta
+  em incidente) e o `casos-excecoes.mock.spec.ts` de antes (10), 17 verdes. Tipos, lint (max-warnings 0) e formatação sem
+  erros.
+- **Teste manual:** criar uma exceção de usuário com alertas novos e em análise dele, um num incidente e um já legítimo:
+  conferir a prévia, o resultado, os alertas na fila, o comentário, a contagem da exceção, a trilha e
+  `/v1/findings?exception=<id>`; criar uma ampla (casos ligados) com um alerta crítico e um alto acima da máxima, que ficam.
+- **Riscos e sugestões:**
+  - Com mais de 2.000 em aberto, a pessoa precisa clicar "Resolver os próximos"; no lote a partir de um caso não há o botão (a
+    mensagem diz que ainda há alertas em aberto). Se volumes assim forem comuns, levar o restante para o worker (pediria uma
+    coluna de andamento, migration).
+  - O lock dos alertas do cliente fica preso até o fim da requisição (no máximo alguns segundos com o teto): os coletores daquele
+    cliente esperam.
+  - O filtro por exceção existe só na API; a tela de alertas ainda não o oferece (um link a partir da exceção seria o próximo passo).
