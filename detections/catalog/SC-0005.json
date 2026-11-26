@@ -1,0 +1,18 @@
+{
+  "id": "SC-0005",
+  "title": "Novas credenciais e identidades persistentes",
+  "goal": "Detectar a criação de credenciais e identidades que dão acesso duradouro: chave de conta de serviço, conta de serviço, chave SSH nos metadados e federação de identidade na GCP; token de API, membro novo e mudança de configuração da conta no Cloudflare.",
+  "logSources": ["gcp_audit", "cloudflare_audit"],
+  "rules": ["990106", "990107", "990111", "990117", "990311", "990312", "990323"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Persistence", "Credential Access"],
+    "techniques": ["T1098", "T1098.001", "T1098.004", "T1136.003"]
+  },
+  "severity": "high",
+  "expectedResponse": "Confirmar com o dono da conta se a credencial ou a identidade era esperada. Se não era: revogar a chave ou o token, remover o membro ou a identidade e revisar o uso feito até agora.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

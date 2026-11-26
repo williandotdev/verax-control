@@ -1,0 +1,18 @@
+{
+  "id": "SC-0020",
+  "title": "Integridade e configuração das instâncias",
+  "goal": "Detectar, pelos agentes do Wazuh nas instâncias do cliente, arquivos de sistema alterados ou apagados, pacote instalado e checagem de configuração segura (SCA) com falha.",
+  "logSources": ["wazuh_agent"],
+  "rules": ["550", "553", "2902", "19007"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": [],
+    "techniques": []
+  },
+  "severity": "medium",
+  "expectedResponse": "Conferir se a mudança coincide com uma atualização ou implantação conhecida. Se não, investigar a instância (quem entrou e o que mudou) e corrigir a configuração apontada pelo SCA.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

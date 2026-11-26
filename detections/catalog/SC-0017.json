@@ -1,0 +1,18 @@
+{
+  "id": "SC-0017",
+  "title": "Negação de serviço",
+  "goal": "Detectar ataques de negação de serviço na camada de aplicação: DDoS de camada 7 mitigado pelo Cloudflare e pico de eventos de segurança na zona muito acima da média.",
+  "logSources": ["cloudflare_waf"],
+  "rules": ["990333", "990334"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Reconnaissance", "Impact"],
+    "techniques": ["T1499", "T1499.002", "T1595"]
+  },
+  "severity": "high",
+  "expectedResponse": "Acompanhar a disponibilidade da aplicação. Se houver impacto, reforçar as regras de limite de taxa e de desafio na zona e avaliar o modo de ataque do Cloudflare.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

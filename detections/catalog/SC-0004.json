@@ -1,0 +1,18 @@
+{
+  "id": "SC-0004",
+  "title": "Privilégio de administrador concedido",
+  "goal": "Detectar a concessão de permissão de administrador ou de papel equivalente: políticas de administrador na AWS, papel IAM que qualquer conta pode assumir, papel de dono ou privilegiado na GCP e papel de administrador na conta do Cloudflare. É o passo típico de escalada de privilégio e de persistência.",
+  "logSources": ["cloudtrail", "gcp_audit", "cloudflare_audit"],
+  "rules": ["100305", "100306", "100307", "100308", "100309", "990104", "990105", "990313"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Persistence", "Privilege Escalation"],
+    "techniques": ["T1098.003"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Confirmar se a concessão foi pedida e aprovada. Se não foi: retirar a permissão, revisar o que a identidade fez com ela e investigar a credencial de quem concedeu.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": false,
+  "evidence": []
+}

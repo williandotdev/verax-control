@@ -379,7 +379,7 @@ const WEB_LOGIN_RULES: ReadonlySet<string> = new Set(['990405', '990406']);
  * `authentication_failed` e `authentication_failures` do 4.14.9): nelas a rede de origem separa. As de nível menor são
  * da faixa `ml`, em que só a regra conta.
  */
-const HOST_LOGIN_RULES: ReadonlySet<string> = new Set([
+export const HOST_LOGIN_RULES: ReadonlySet<string> = new Set([
   ...['2502', '3357', '3651', '3910', '4386', '5551', '5712', '5720', '5763', '9351', '9403', '9551'],
   ...['9750', '9751', '9820', '9951', '9952', '9953', '11109', '11210', '11251', '11306', '11451'],
   ...['11510', '14251', '18156', '18157', '18170', '18171', '19152', '19153', '30310', '31316'],

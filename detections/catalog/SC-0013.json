@@ -1,0 +1,18 @@
+{
+  "id": "SC-0013",
+  "title": "Organização e políticas da organização alteradas",
+  "goal": "Detectar a conta da AWS saindo da organização, a remoção de política da organização e a alteração de política da organização na GCP. São mudanças que tiram as guardas centrais de uma conta ou de um projeto.",
+  "logSources": ["cloudtrail", "gcp_audit"],
+  "rules": ["100321", "990116"],
+  "providerDetection": false,
+  "mitre": {
+    "tactics": ["Privilege Escalation", "Defense Evasion"],
+    "techniques": ["T1484"]
+  },
+  "severity": "critical",
+  "expectedResponse": "Confirmar com a administração da organização se a mudança foi planejada. Se não foi, restaurar a política ou a vinculação e investigar a identidade que fez a mudança.",
+  "owner": "Equipe SOC da Verax",
+  "state": "em_teste",
+  "quietExpected": true,
+  "evidence": []
+}
