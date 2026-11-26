@@ -118,7 +118,14 @@ export function DataTable<T>({
         </div>
       )}
       {body}
-      <Pagination page={page} pageSize={pageSize} total={total} onPageChange={onPageChange} busy={loading} />
+      <Pagination
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onPageChange={onPageChange}
+        busy={loading}
+        touch
+      />
     </div>
   );
 }
@@ -189,12 +196,15 @@ export function Pagination({
   total,
   onPageChange,
   busy = false,
+  touch = false,
 }: {
   page: number;
   pageSize: number;
   total: number;
   onPageChange: (page: number) => void;
   busy?: boolean;
+  /** Abaixo de 768 px, os botões com 44 px, a regra de toque do painel (E-11). Ligado nas tabelas de cadastro. */
+  touch?: boolean;
 }) {
   const lastPage = Math.max(1, Math.ceil(total / pageSize));
   const first = total === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -215,6 +225,7 @@ export function Pagination({
           onClick={() => onPageChange(page - 1)}
           disabled={page <= 1 || loading}
           aria-label="Página anterior"
+          className={touch ? 'max-md:size-11' : undefined}
         >
           <ChevronLeft aria-hidden />
         </Button>
@@ -227,6 +238,7 @@ export function Pagination({
           onClick={() => onPageChange(page + 1)}
           disabled={page >= lastPage || loading}
           aria-label="Próxima página"
+          className={touch ? 'max-md:size-11' : undefined}
         >
           <ChevronRight aria-hidden />
         </Button>
