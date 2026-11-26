@@ -83,6 +83,7 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'alert_exception.create_batch': 'Criou exceções de alerta a partir de um caso',
   'alert_exception.scoped_create': 'Criou exceção ampla',
   'alert_exception.scoped_revoke': 'Revogou exceção ampla',
+  'alert_exception.resolve_open': 'Resolveu alertas em aberto pela exceção',
   'finding.status': 'Mudou o status de alerta',
   'finding.comment': 'Comentou alerta',
   'incident.update': 'Alterou incidente',

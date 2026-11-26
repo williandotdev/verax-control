@@ -12,11 +12,17 @@ import {
 } from '@nestjs/common';
 import {
   type AlertExceptionBatch,
+  type AlertExceptionBatchCreated,
   alertExceptionBatchSchema,
   type AlertExceptionBatchResult,
   type CaseExceptionDraft,
+  type ExceptionCreateQuery,
+  exceptionCreateQuerySchema,
+  type ExceptionOpenPreview,
+  type ExceptionOpenResolution,
   type Paginated,
   type ScopedException,
+  type ScopedExceptionCreated,
   type ScopedExceptionCreateParsed,
   scopedExceptionCreateSchema,
   type ScopedExceptionListQuery,
@@ -62,13 +68,35 @@ export class ScopedExceptionsController {
     return this.exceptions.preview(request.auth as RequestAuth, query);
   }
 
+  /** A prévia dos alertas em aberto que ela resolveria agora. Um nó de antes responde 404, e o painel só não a mostra. */
+  @Get('open-alerts')
+  @RequirePermission('alert_exceptions:write')
+  previewOpen(
+    @Req() request: Request,
+    @Query({ schema: scopedExceptionPreviewQuerySchema }) query: ScopedExceptionPreviewQuery,
+  ): Promise<ExceptionOpenPreview> {
+    return this.exceptions.previewOpen(request.auth as RequestAuth, query);
+  }
+
   @Post()
   @RequirePermission('alert_exceptions:write')
   create(
     @Req() request: Request,
     @Body({ schema: scopedExceptionCreateSchema }) body: ScopedExceptionCreateParsed,
-  ): Promise<ScopedException> {
-    return this.exceptions.create(request.auth as RequestAuth, body);
+    @Query({ schema: exceptionCreateQuerySchema }) query: ExceptionCreateQuery,
+  ): Promise<ScopedException | ScopedExceptionCreated> {
+    return this.exceptions.create(request.auth as RequestAuth, body, query);
+  }
+
+  /** "Resolver os próximos": os alertas em aberto que a criação deixou por causa do teto da requisição. */
+  @Post(':id/resolve-open')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('alert_exceptions:write')
+  resolveOpen(
+    @Req() request: Request,
+    @Param('id', { schema: idSchema }) id: string,
+  ): Promise<ExceptionOpenResolution> {
+    return this.exceptions.resolveOpenAgain(request.auth as RequestAuth, id);
   }
 
   @Post(':id/revoke')
@@ -100,7 +128,8 @@ export class CaseExceptionsController {
     @Req() request: Request,
     @Param('id', { schema: idSchema }) id: string,
     @Body({ schema: alertExceptionBatchSchema }) body: AlertExceptionBatch,
-  ): Promise<AlertExceptionBatchResult> {
-    return this.exceptions.createBatch(request.auth as RequestAuth, id, body);
+    @Query({ schema: exceptionCreateQuerySchema }) query: ExceptionCreateQuery,
+  ): Promise<AlertExceptionBatchResult | AlertExceptionBatchCreated> {
+    return this.exceptions.createBatch(request.auth as RequestAuth, id, body, query);
   }
 }

@@ -11,12 +11,14 @@ import {
   scopedExceptionNeedsEvent,
   type ScopedExceptionSeverity,
 } from '@verax/shared';
-import { useId, useState } from 'react';
+import { type ReactNode, useId, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { FormError, SelectInput, TextAreaField } from '@/features/admin/admin-ui';
 import { fieldErrors } from '@/features/admin/forms';
 import { EXCEPTION_FIELD_LABELS } from '@/features/admin/labels';
+import { useScopedOpenPreview } from '@/features/exception-open-alerts/open-alerts-api';
+import { OpenAlertsPreview, OpenAlertsResult } from '@/features/exception-open-alerts/open-alerts-view';
 import { plural } from '@/lib/format';
 import {
   useCaseExceptionDraft,
@@ -45,14 +47,14 @@ export function CaseExceptionDialog({
   onClose: () => void;
 }) {
   const draft = useCaseExceptionDraft(caseId);
-  const [done, setDone] = useState<string | null>(null);
+  const [done, setDone] = useState<ReactNode>(null);
   return (
     <Modal
       open
       wide
       onClose={onClose}
       title="Criar exceção a partir do caso"
-      description="Os próximos alertas iguais entram como legítimos, sem pedir decisão. Os alertas que já existem não mudam."
+      description="Os próximos alertas iguais entram como legítimos, sem pedir decisão. Os que estão em aberto agora são resolvidos junto; os que estão em incidente ficam."
       footer={
         <Button size="sm" variant={done ? 'primary' : 'ghost'} className="max-md:h-11" onClick={onClose}>
           {done ? 'Fechar' : 'Cancelar'}
@@ -60,9 +62,7 @@ export function CaseExceptionDialog({
       }
     >
       {done !== null ? (
-        <p role="status" className="text-sm font-medium">
-          {done}
-        </p>
+        done
       ) : draft.isPending ? (
         <p className="text-sm text-muted-foreground">Lendo os alertas do caso…</p>
       ) : draft.error || !draft.data ? (
@@ -83,7 +83,7 @@ function ExceptionForm({
 }: {
   draft: CaseExceptionDraft;
   canWide: boolean;
-  onDone: (message: string) => void;
+  onDone: (message: ReactNode) => void;
 }) {
   const id = useId();
   const [index, setIndex] = useState(0);
@@ -191,7 +191,7 @@ function BatchForm({
   target: Target;
   field: AlertExceptionField;
   values: readonly string[];
-  onDone: (message: string) => void;
+  onDone: (message: ReactNode) => void;
 }) {
   const [reason, setReason] = useState('');
   const [expires, setExpires] = useState('');
@@ -214,9 +214,13 @@ function BatchForm({
     batch.mutate(input.data, {
       onSuccess: (result) =>
         onDone(
-          `${plural(result.created, 'exceção criada', 'exceções criadas')}${
-            result.existing > 0 ? `; ${plural(result.existing, 'já existia', 'já existiam')}` : ''
-          }.`,
+          <Done
+            message={`${plural(result.created, 'exceção criada', 'exceções criadas')}${
+              result.existing > 0 ? `; ${plural(result.existing, 'já existia', 'já existiam')}` : ''
+            }.`}
+          >
+            <OpenAlertsResult resolution={result.openAlerts} kind="alert" nested />
+          </Done>,
         ),
     });
   };
@@ -267,7 +271,19 @@ const SEVERITY_OPTIONS = SCOPED_EXCEPTION_SEVERITIES.map((severity) => ({
   label: `Até ${SEVERITY_WORDS[severity]}`,
 }));
 
-function WideForm({ target, onDone }: { target: Target; onDone: (message: string) => void }) {
+/** O fim do diálogo: a mensagem e o que a criação fez com os alertas em aberto. */
+function Done({ message, children }: { message: string; children: ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <p role="status" className="text-sm font-medium">
+        {message}
+      </p>
+      {children}
+    </div>
+  );
+}
+
+function WideForm({ target, onDone }: { target: Target; onDone: (message: ReactNode) => void }) {
   const [eventName, setEventName] = useState(target.eventName ?? '');
   const [resourcePrefix, setResourcePrefix] = useState('');
   const [maxSeverity, setMaxSeverity] = useState<ScopedExceptionSeverity>('medium');
@@ -276,6 +292,7 @@ function WideForm({ target, onDone }: { target: Target; onDone: (message: string
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [previewed, setPreviewed] = useState<string | null>(null);
   const preview = useScopedPreview();
+  const openPreview = useScopedOpenPreview();
   const create = useCreateScoped();
 
   const targetInput = {
@@ -305,6 +322,8 @@ function WideForm({ target, onDone }: { target: Target; onDone: (message: string
   const runPreview = () => {
     if (!check()) return;
     preview.mutate(targetInput, { onSuccess: () => setPreviewed(key) });
+    // Os alertas em aberto que ela resolve agora. Um nó de antes não tem a rota: a linha só não aparece.
+    openPreview.mutate(targetInput);
   };
   const save = () => {
     const parsed = scopedExceptionCreateSchema.safeParse({
@@ -318,7 +337,12 @@ function WideForm({ target, onDone }: { target: Target; onDone: (message: string
     }
     setErrors({});
     create.mutate(parsed.data, {
-      onSuccess: () => onDone('Exceção ampla criada. Ela aparece na tela Exceções, onde pode ser revogada.'),
+      onSuccess: (created) =>
+        onDone(
+          <Done message="Exceção ampla criada. Ela aparece na tela Exceções, onde pode ser revogada.">
+            <OpenAlertsResult resolution={created.openAlerts} kind="scoped" exceptionId={created.id} nested />
+          </Done>,
+        ),
     });
   };
 
@@ -369,7 +393,12 @@ function WideForm({ target, onDone }: { target: Target; onDone: (message: string
       {errors['ruleId'] && <p className="text-sm text-critical-text">{errors['ruleId']}</p>}
       <div aria-live="polite" className="text-sm">
         {current && preview.data && (
-          <p className="rounded-md border p-2 font-medium">{previewText(preview.data)}</p>
+          <div className="space-y-2">
+            <p className="rounded-md border p-2 font-medium">{previewText(preview.data)}</p>
+            <OpenAlertsPreview
+              preview={JSON.stringify(openPreview.variables) === key ? openPreview.data : undefined}
+            />
+          </div>
         )}
       </div>
       <FormError error={preview.error ?? create.error} />
