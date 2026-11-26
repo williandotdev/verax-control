@@ -1,6 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   type AlertExceptionCreate,
+  alertExceptionCreatedSchema,
   alertExceptionSchema,
   type AlertExceptionUpdate,
   type CloudAccount,
@@ -27,6 +28,7 @@ import {
 } from '@verax/shared';
 import { useCallback, useState } from 'react';
 import type { z } from 'zod';
+import { createWithOpenAlerts } from '@/features/exception-open-alerts/open-alerts-api';
 import { api } from '@/lib/api';
 
 /**
@@ -249,7 +251,7 @@ export const useExceptionList = (page: number, enabled: boolean) =>
   useList('admin-exceptions', '/v1/alert-exceptions', alertExceptionSchema, page, enabled);
 export const useCreateException = () =>
   useWrite(['admin-exceptions'], (input: AlertExceptionCreate) =>
-    api.post('/v1/alert-exceptions', input, alertExceptionSchema),
+    createWithOpenAlerts('/v1/alert-exceptions', input, alertExceptionCreatedSchema),
   );
 export const useUpdateException = (id: string) =>
   useWrite(['admin-exceptions'], (input: AlertExceptionUpdate) =>
