@@ -504,6 +504,38 @@ describe('Detecções: o resumo da situação', () => {
     expect(await screen.findByRole('table', { name: /^Incidentes do cliente/ })).toBeInTheDocument();
   });
 
+  it('R-02: "Ver os críticos" e "Ver os altos" abrem exatamente o que o cartão conta', async () => {
+    const router = renderAt('/');
+    const strip = await screen.findByRole('region', { name: 'Situação agora' });
+    const decisions = await within(strip).findByRole('region', { name: 'Decisões pendentes' }, SLOW);
+    const card = within(decisions).getByText(/alertas? altos? ou críticos? para validar$/);
+    // O texto começa pelo nome da severidade, só para leitor de tela ("Alto: ").
+    const counted = Number.parseInt((card.textContent ?? '').split(': ').at(-1) ?? '', 10);
+    // O total que a API devolve para cada fila (a lista o mostra na paginação, quando há linhas).
+    const totals = new Map<string, number>();
+    server.events.on('response:mocked', ({ request, response }) => {
+      const url = new URL(request.url);
+      if (!url.pathname.endsWith('/v1/findings') || url.searchParams.get('status') !== 'new') return;
+      const severity = url.searchParams.get('severity');
+      if (severity === null) return;
+      void response
+        .clone()
+        .json()
+        .then((body: { total: number }) => totals.set(severity, body.total));
+    });
+    const totalOf = async (name: string, severity: string) => {
+      await userEvent.click(within(decisions).getByRole('link', { name }));
+      await waitFor(() => expect(search(router).get('severidade')).toBe(severity));
+      expect(search(router).get('status')).toBe('new');
+      await waitFor(() => expect(totals.has(severity)).toBe(true), SLOW);
+      return totals.get(severity) ?? -1;
+    };
+    const critical = await totalOf('Ver os críticos', 'critical');
+    const high = await totalOf('Ver os altos', 'high');
+    server.events.removeAllListeners();
+    expect(critical + high).toBe(counted);
+  });
+
   it('24.321 alertas para validar e nenhum incidente: nada de "Tudo calmo", aberto ou recolhido (nó novo ou de antes)', async () => {
     for (const light of ['yellow', 'green'] as const) {
       window.localStorage.clear();

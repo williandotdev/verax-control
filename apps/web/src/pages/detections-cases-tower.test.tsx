@@ -136,9 +136,13 @@ describe('versões diferentes do nó', () => {
     );
     const list = await decisions();
     expect(within(list).getByText(/^\d+ alertas altos ou críticos para validar$/)).toBeInTheDocument();
-    expect(within(list).getByRole('link', { name: 'Ver os alertas' })).toHaveAttribute(
+    expect(within(list).getByRole('link', { name: 'Ver os críticos' })).toHaveAttribute(
       'href',
-      '/?status=new',
+      '/?status=new&severidade=critical',
+    );
+    expect(within(list).getByRole('link', { name: 'Ver os altos' })).toHaveAttribute(
+      'href',
+      '/?status=new&severidade=high',
     );
     expect(screen.getByRole('group', { name: /^Radar de detecções/ })).toBeInTheDocument();
     await screen.findByText('Alertas no período', undefined, SLOW);
@@ -259,7 +263,7 @@ describe('as decisões pendentes', () => {
       within(list)
         .getAllByRole('link')
         .map((link) => link.textContent),
-    ).toEqual(['Ver os casos', 'Ver os alertas']);
+    ).toEqual(['Ver os casos', 'Ver os críticos', 'Ver os altos']);
     expect(list).toHaveTextContent('5 alertas altos ou críticos para validar fora dos casos');
   });
 

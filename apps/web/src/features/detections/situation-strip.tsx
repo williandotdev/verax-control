@@ -274,7 +274,11 @@ const DECISIONS: Readonly<Record<PendingDecisionKind, DecisionCard>> = {
   untriaged_finding: {
     severity: 'high',
     title: (count, summary) => (countsByCase(summary) ? uncoveredPhrase(count) : validationPhrase(count)),
-    links: () => [{ action: 'Ver os alertas', to: '/?status=new' }],
+    // R-02: o cartão conta os altos e os críticos novos; cada atalho abre exatamente uma dessas filas, e não a lista inteira.
+    links: () => [
+      { action: 'Ver os críticos', to: '/?status=new&severidade=critical' },
+      { action: 'Ver os altos', to: '/?status=new&severidade=high' },
+    ],
   },
   unowned_alert: {
     severity: 'medium',
@@ -351,7 +355,10 @@ function PendingDecisions({ summary }: { summary: TowerSummary }) {
 function DecisionButton({ link }: { link: DecisionLink | undefined }) {
   if (!link) return null;
   return (
-    <Link to={link.to} className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'shrink-0')}>
+    <Link
+      to={link.to}
+      className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'shrink-0 max-sm:min-h-11')}
+    >
       {link.action}
     </Link>
   );
