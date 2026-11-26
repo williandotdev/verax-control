@@ -65,10 +65,22 @@ export default defineConfig(({ mode }) => {
       ...(mode === 'mock' ? [msw()] : [mswOutsideMockMode()]),
     ],
     resolve: {
-      alias: {
-        '@': fileURLToPath(new URL('./src', import.meta.url)),
-        '@verax/shared': fileURLToPath(new URL('../../packages/shared/src/index.ts', import.meta.url)),
-      },
+      alias: [
+        // Só no Vitest: o roteador dos testes de tela carrega as telas antes (`src/test/router.ts`, E-13).
+        ...(process.env['VITEST']
+          ? [
+              {
+                find: /^@\/routes\/router$/,
+                replacement: fileURLToPath(new URL('./src/test/router.ts', import.meta.url)),
+              },
+            ]
+          : []),
+        {
+          find: '@verax/shared',
+          replacement: fileURLToPath(new URL('../../packages/shared/src/index.ts', import.meta.url)),
+        },
+        { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
+      ],
     },
     build: {
       // Sem sourcemap público: o código-fonte não fica exposto no CDN.

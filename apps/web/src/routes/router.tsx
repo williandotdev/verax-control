@@ -1,4 +1,4 @@
-import { type ComponentType, createElement, lazy } from 'react';
+import { type ComponentType, createElement } from 'react';
 import { ESCALATION_CONFIRM_PATH, ESCALATION_UNSUBSCRIBE_PATH } from '@verax/shared';
 import { createBrowserRouter, type RouteObject } from 'react-router';
 import { LegacyRedirect } from '@/features/detections/legacy';
@@ -17,74 +17,67 @@ import { NotFoundPage } from '@/pages/not-found-page';
 import { PlaceholderPage } from '@/pages/placeholder-page';
 import { SetPasswordPage } from '@/pages/set-password-page';
 import { RequirePermission, RequireSession } from './guards';
+import { lazyPage } from './lazy-page';
 import { Loaded } from './loaded';
 
-/**
- * Uma tela carregada só quando é aberta (E-13 da auditoria de UX): o login e as telas de entrada vêm no arquivo
- * principal; cada tela do painel vem num arquivo dela, baixado na primeira vez que abre (depois, do cache).
- */
-function page<M>(load: () => Promise<M>, pick: (module: M) => ComponentType): ComponentType {
-  return lazy(async () => ({ default: pick(await load()) }));
-}
-
-const DetectionsPage = page(
+const DetectionsPage = lazyPage(
   () => import('@/pages/detections-page'),
   (m) => m.DetectionsPage,
 );
-const PosturePage = page(
+const PosturePage = lazyPage(
   () => import('@/pages/posture-page'),
   (m) => m.PosturePage,
 );
-const AssetsPage = page(
+const AssetsPage = lazyPage(
   () => import('@/pages/assets-page'),
   (m) => m.AssetsPage,
 );
-const TenantsPage = page(
+const TenantsPage = lazyPage(
   () => import('@/pages/admin/tenants-page'),
   (m) => m.TenantsPage,
 );
-const UsersPage = page(
+const UsersPage = lazyPage(
   () => import('@/pages/admin/users-page'),
   (m) => m.UsersPage,
 );
-const CloudAccountsPage = page(
+const CloudAccountsPage = lazyPage(
   () => import('@/pages/admin/cloud-accounts-page'),
   (m) => m.CloudAccountsPage,
 );
-const AgentsPage = page(
+const AgentsPage = lazyPage(
   () => import('@/pages/agents-page'),
   (m) => m.AgentsPage,
 );
-const ProtectedResourcesPage = page(
+const ProtectedResourcesPage = lazyPage(
   () => import('@/pages/admin/protected-resources-page'),
   (m) => m.ProtectedResourcesPage,
 );
-const ExceptionsPage = page(
+const ExceptionsPage = lazyPage(
   () => import('@/pages/admin/exceptions-page'),
   (m) => m.ExceptionsPage,
 );
-const PlanPage = page(
+const PlanPage = lazyPage(
   () => import('@/pages/admin/plan-page'),
   (m) => m.PlanPage,
 );
-const EscalationContactPage = page(
+const EscalationContactPage = lazyPage(
   () => import('@/pages/admin/escalation-contact-page'),
   (m) => m.EscalationContactPage,
 );
-const AuditPage = page(
+const AuditPage = lazyPage(
   () => import('@/pages/audit-page'),
   (m) => m.AuditPage,
 );
-const UnownedAlertsPage = page(
+const UnownedAlertsPage = lazyPage(
   () => import('@/pages/unowned-alerts-page'),
   (m) => m.UnownedAlertsPage,
 );
-const AccountPage = page(
+const AccountPage = lazyPage(
   () => import('@/pages/account-page'),
   (m) => m.AccountPage,
 );
 // O cadastro do MFA traz o gerador de QR: só quem cadastra o baixa.
-const MfaEnrollPage = page(
+const MfaEnrollPage = lazyPage(
   () => import('@/pages/mfa-enroll-page'),
   (m) => m.MfaEnrollPage,
 );
