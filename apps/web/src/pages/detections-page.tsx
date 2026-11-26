@@ -1,4 +1,10 @@
-import { type DetectionFilters, FINDING_PERIODS, hasContentFilter, type Permission } from '@verax/shared';
+import {
+  type DetectionFilters,
+  FINDING_PERIODS,
+  FINDING_TYPES,
+  hasContentFilter,
+  type Permission,
+} from '@verax/shared';
 import { Download, SlidersHorizontal, X } from 'lucide-react';
 import { Tabs } from 'radix-ui';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
@@ -8,7 +14,11 @@ import { Button } from '@/components/ui/button';
 import { Explainer } from '@/components/ui/explainer';
 import { Sheet } from '@/components/ui/sheet';
 import { SEVERITY_STYLES } from '@/design/severity';
-import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
+import {
+  FINDING_SOURCE_LABELS,
+  FINDING_STATUS_LABELS,
+  FINDING_TYPE_LABELS,
+} from '@/features/findings/labels';
 import { BulkAlertsList } from '@/features/cases/alerts-bulk';
 import { CaseFilterBar } from '@/features/cases/case-filter-bar';
 import { caseListQuery } from '@/features/cases/case-query';
@@ -31,6 +41,7 @@ import {
   DETECTION_PARAMS,
   type DetectionAnalysis,
   FILTER_KEYS,
+  findingTypeSlug,
   PERIOD_CHOICE_LABELS,
   type DetectionSelection,
   type DetectionView,
@@ -218,8 +229,13 @@ function DetectionsContent({
     },
     ready && listing && view === 'incidents',
   );
+  // E-06: a ordem por gravidade e o tipo (só com os casos: o tipo vem do caso do alerta).
+  const findingExtras = {
+    ...(state.sort === 'severity' && { sort: 'severity' as const }),
+    ...(cases.mode !== 'off' && state.findingType !== undefined && { type: state.findingType }),
+  };
   const findings = useFindings(
-    { ...findingFilters, page: state.page, pageSize: PAGE_SIZE },
+    { ...findingFilters, ...findingExtras, page: state.page, pageSize: PAGE_SIZE },
     ready && decided && listing && view === 'alerts' && canFindings,
   );
 
@@ -354,6 +370,7 @@ function DetectionsContent({
       periodOptions={periods.options}
       onChange={(changes) => update(changes)}
       analysis={!listing}
+      types={cases.mode !== 'off'}
     />
   );
   const fullFilterBar =
@@ -377,7 +394,7 @@ function DetectionsContent({
           ? exportCases(caseListQuery({ view, filters, cases: caseState, page: 1, pageSize: PAGE_SIZE }))
           : view === 'incidents'
             ? exportIncidents(filters, state.sort)
-            : exportFindings(filters)
+            : exportFindings(filters, findingExtras)
       }
       file={EXPORT_FILES[view]}
     />
@@ -569,7 +586,16 @@ function DetectionsContent({
                   side && !besideRadar && selection && 'grid-cols-[minmax(0,1fr)_minmax(0,28rem)]',
                 )}
               >
-                <div className={cn('min-w-0', besideRadar && 'flex flex-col')}>{list}</div>
+                <div className={cn('min-w-0', besideRadar && 'flex flex-col')}>
+                  {/* E-06: o nó de antes recusa a ordem e o tipo; a lista veio sem eles, e a tela diz isso. */}
+                  {view === 'alerts' && findings.data?.unsupported && (
+                    <p role="status" className="mb-3 rounded-md border bg-foreground/[0.03] p-3 text-sm">
+                      Este servidor ainda não ordena os alertas pela gravidade nem filtra pelo tipo: a lista
+                      mostra todos os alertas dos outros filtros, do mais recente ao mais antigo.
+                    </p>
+                  )}
+                  {list}
+                </div>
                 {side && !besideRadar && (
                   <DetectionDetailPanel selection={selection} side onClose={close} onBack={back} />
                 )}
@@ -607,6 +633,8 @@ function filterChipLabel(key: (typeof FILTER_KEYS)[number], value: string): stri
       return `Busca: ${value}`;
     case 'unassigned':
       return 'Sem responsável';
+    case 'type':
+      return `Tipo: ${FINDING_TYPES.flatMap((type) => (findingTypeSlug(type) === value ? [FINDING_TYPE_LABELS[type]] : []))[0] ?? value}`;
     default:
       return value;
   }

@@ -137,7 +137,13 @@ export class FindingsService {
       db.finding.findMany({
         where,
         select: findingSelect,
-        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        // A mais grave primeiro, quando pedida (E-06): o enum do Prisma é declarado `critical, high, medium, low`, então
+        // `asc` é a mais grave; dentro dela, a mais recente, como sempre.
+        orderBy: [
+          ...(query.sort === 'severity' ? [{ severity: 'asc' as const }] : []),
+          { occurredAt: 'desc' as const },
+          { id: 'desc' as const },
+        ],
         ...toPrismaPage(query),
       }),
       db.finding.count({ where }),

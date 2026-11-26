@@ -55,6 +55,7 @@ function Section({ title, children, hint }: { title: string; children: ReactNode
  * operações. Tudo o que veio do evento é texto, quebrado na largura do painel.
  */
 export function CaseDetailView({ detail }: { detail: CaseDetail }) {
+  const single = detail.counts.total === 1;
   const { canTriage, canPromote, openBulk, mode, role } = useCasesContext();
   const [split, setSplit] = useState<SplitTarget | null>(null);
   const [excepting, setExcepting] = useState(false);
@@ -113,24 +114,35 @@ export function CaseDetailView({ detail }: { detail: CaseDetail }) {
         </Section>
       )}
 
-      <Section title="O que os alertas têm em comum">
-        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
-          {detail.preview.accounts.length === 1 && (
-            <Row label="Conta" value={findingOriginId(detail.preview.accounts[0] ?? '')} />
-          )}
-          {keyPartRows(detail.keyParts).map((part) => (
-            <Row key={part.label} label={part.label} value={part.value} />
+      {/* E-06: com um alerta só, o que há em comum, o gráfico de uma barra e os filtros da lista não dizem nada; voltam
+          quando o caso ganha o segundo alerta. O alerta, as ações do caso e a lista continuam. */}
+      {!single && (
+        <Section title="O que os alertas têm em comum">
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
+            {detail.preview.accounts.length === 1 && (
+              <Row label="Conta" value={findingOriginId(detail.preview.accounts[0] ?? '')} />
+            )}
+            {keyPartRows(detail.keyParts).map((part) => (
+              <Row key={part.label} label={part.label} value={part.value} />
+            ))}
+          </dl>
+          {groupingText(detail).map((sentence) => (
+            <p key={sentence} className="text-xs text-muted-foreground">
+              {sentence}
+            </p>
           ))}
-        </dl>
-        {groupingText(detail).map((sentence) => (
+        </Section>
+      )}
+      {/* Com um alerta só, as frases de como o caso nasceu (dividido de outro, por exemplo) continuam. */}
+      {single &&
+        groupingText(detail).map((sentence) => (
           <p key={sentence} className="text-xs text-muted-foreground">
             {sentence}
           </p>
         ))}
-      </Section>
 
-      <Rare analysis={detail.analysis} total={detail.counts.total} />
-      <Timeline caseId={detail.id} />
+      {!single && <Rare analysis={detail.analysis} total={detail.counts.total} />}
+      {!single && <Timeline caseId={detail.id} />}
       <Groups detail={detail} mayTreat={mayTreat} onSplit={setSplit} />
       <CaseAlerts detail={detail} mayTreat={mayTreat} onSplit={setSplit} />
       <Previous detail={detail} />

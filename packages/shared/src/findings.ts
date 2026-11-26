@@ -100,7 +100,26 @@ export const findingFilterShape = {
   q: findingSearchSchema.optional(),
 };
 
-export const findingListQuerySchema = withPagination(findingFilterShape).superRefine(checkCustomRange);
+/** Ordem da lista de alertas (E-06): a mais recente primeiro (o padrão) ou a mais grave primeiro, e a mais recente nela. */
+export const FINDING_SORTS = ['recent', 'severity'] as const;
+export type FindingSort = (typeof FINDING_SORTS)[number];
+
+/**
+ * O tipo do alerta (E-06): a fila do caso em que ele entrou, as mesmas três dos casos (`CASE_QUEUES`). Vem do caso: o
+ * alerta que ainda não entrou em caso nenhum (casos desligados, ou à espera do agrupamento) não entra no filtro.
+ */
+export const FINDING_TYPES = ['detection', 'posture', 'vulnerability'] as const;
+export type FindingType = (typeof FINDING_TYPES)[number];
+
+/**
+ * A lista de alertas. `sort` e `type` (E-06) são opcionais: o painel de antes não os manda, e um nó de antes os recusa
+ * (a query é estrita), o que o painel novo trata pedindo de novo sem eles.
+ */
+export const findingListQuerySchema = withPagination({
+  ...findingFilterShape,
+  sort: z.enum(FINDING_SORTS).optional(),
+  type: z.enum(FINDING_TYPES).optional(),
+}).superRefine(checkCustomRange);
 export type FindingListQuery = z.infer<typeof findingListQuerySchema>;
 
 const nullableText = z.string().max(2048).nullable();

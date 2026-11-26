@@ -13,12 +13,15 @@ export function SelectField({
   onChange,
   options,
   className,
+  hint,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   options: readonly SelectOption[];
   className?: string;
+  /** Uma linha embaixo do campo, que diz como ele filtra (lida também pelo leitor de tela). */
+  hint?: string;
 }) {
   const id = useId();
   return (
@@ -30,6 +33,7 @@ export function SelectField({
         id={id}
         className="h-9 min-w-40 rounded-md border bg-surface-raised px-2 text-sm"
         value={value}
+        aria-describedby={hint ? `${id}-dica` : undefined}
         onChange={(event) => onChange(event.target.value)}
       >
         {options.map((option) => (
@@ -38,6 +42,11 @@ export function SelectField({
           </option>
         ))}
       </select>
+      {hint && (
+        <p id={`${id}-dica`} className="max-w-56 text-xs text-muted-foreground">
+          {hint}
+        </p>
+      )}
     </div>
   );
 }

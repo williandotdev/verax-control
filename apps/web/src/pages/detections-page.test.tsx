@@ -275,6 +275,44 @@ describe('Detecções: a lista', () => {
   });
 });
 
+describe('Detecções: a lista de alertas por gravidade (E-06)', () => {
+  it('"Mais graves primeiro" pede a ordem à API e a lista vem da mais grave à menos grave', async () => {
+    const asked: string[] = [];
+    server.events.on('request:start', ({ request }) => {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith('/v1/findings')) asked.push(url.search);
+    });
+    renderAt('/?ordem=severidade');
+    const table = await list();
+    await waitFor(() => expect(asked.some((search) => search.includes('sort=severity'))).toBe(true));
+    const order = ['Crítico', 'Alto', 'Médio', 'Baixo'];
+    const severities = within(table)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => order.findIndex((label) => row.textContent?.includes(label)));
+    expect(severities).toEqual([...severities].sort((a, b) => a - b));
+    expect(screen.getByLabelText('Ordem')).toHaveValue('severidade');
+    // Sem os casos, não há o filtro de tipo (o tipo vem do caso do alerta).
+    expect(screen.queryByLabelText('Tipo')).toBeNull();
+    server.events.removeAllListeners();
+  });
+
+  it('o nó de antes recusa a ordem: a lista vem sem ela, e a tela diz isso', async () => {
+    renderAt('/?ordem=severidade');
+    server.use(
+      http.get(`${API_URL}/v1/findings`, ({ request }) =>
+        new URL(request.url).searchParams.has('sort')
+          ? HttpResponse.json({ statusCode: 400, message: 'Dados inválidos' }, { status: 400 })
+          : undefined,
+      ),
+    );
+    expect(await list()).toBeInTheDocument();
+    expect(
+      await screen.findByText(/^Este servidor ainda não ordena os alertas pela gravidade/, undefined, SLOW),
+    ).toBeInTheDocument();
+  });
+});
+
 describe('Detecções no celular (E-02)', () => {
   const phone = () =>
     mockMedia((query) => query === NARROW_QUERY || query === STACKED_QUERY || query === MENU_NARROW);

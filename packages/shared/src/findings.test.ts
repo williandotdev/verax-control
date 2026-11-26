@@ -6,7 +6,9 @@ import {
   findingListQuerySchema,
   findingSchema,
   findingStatusUpdateSchema,
+  FINDING_TYPES,
 } from './findings.js';
+import { CASE_QUEUES } from './cases.js';
 
 const finding: Finding = {
   id: '018f2c1e-0000-7000-8000-000000000001',
@@ -87,6 +89,22 @@ describe('achados', () => {
     expect(findingListQuerySchema.safeParse({ ordem: 'asc' }).success).toBe(false);
     expect(findingListQuerySchema.safeParse({ period: '1y' }).success).toBe(false);
     expect(findingListQuerySchema.parse({ period: '12m' })).toMatchObject({ period: '12m' });
+  });
+
+  it('E-06: a ordem por gravidade e o tipo são opcionais, e o valor desconhecido é recusado', () => {
+    expect(findingListQuerySchema.parse({})).not.toHaveProperty('sort');
+    expect(findingListQuerySchema.parse({})).not.toHaveProperty('type');
+    expect(findingListQuerySchema.parse({ sort: 'severity', type: 'vulnerability' })).toMatchObject({
+      sort: 'severity',
+      type: 'vulnerability',
+    });
+    for (const query of [{ sort: 'asc' }, { type: 'incident' }, { type: '' }, { tipo: 'postura' }]) {
+      expect(findingListQuerySchema.safeParse(query).success).toBe(false);
+    }
+  });
+
+  it('E-06: os tipos do alerta são as filas dos casos', () => {
+    expect([...FINDING_TYPES].sort()).toEqual([...CASE_QUEUES].sort());
   });
 
   it('comentário aceita quebra de linha e recusa vazio e caractere de controle', () => {

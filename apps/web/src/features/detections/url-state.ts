@@ -12,7 +12,9 @@ import {
   FINDING_SEVERITIES,
   FINDING_SOURCES,
   FINDING_STATUSES,
+  FINDING_TYPES,
   type FindingPeriod,
+  type FindingType,
   findingFilterShape,
   MITRE_TACTIC_NAMES,
   MITRE_TECHNIQUE_PATTERN,
@@ -47,7 +49,16 @@ export const DETECTION_PARAMS = {
   caseState: 'estado',
   queue: 'fila',
   groupBy: 'agrupar',
+  type: 'tipo',
 } as const;
+
+/** O tipo do alerta na URL (E-06), em português: `?tipo=vulnerabilidade`. */
+const FINDING_TYPE_SLUGS: Readonly<Record<FindingType, string>> = {
+  detection: 'deteccao',
+  posture: 'postura',
+  vulnerability: 'vulnerabilidade',
+};
+export const findingTypeSlug = (type: FindingType): string => FINDING_TYPE_SLUGS[type];
 
 /** O nome de antes do parâmetro do alerta aberto (`?achado=<id>`), ainda lido. */
 export const LEGACY_FINDING_PARAM = 'achado';
@@ -102,6 +113,8 @@ export interface DetectionState {
   /** Os filtros da API, menos o período (que depende do plano). */
   filters: Omit<DetectionFilters, 'period'>;
   sort: DetectionSort;
+  /** O tipo do alerta (E-06): só a lista de alertas, e só com os casos (o tipo vem do caso). */
+  findingType: FindingType | undefined;
   page: number;
   selection: DetectionSelection;
 }
@@ -195,6 +208,7 @@ export function readDetectionState(params: URLSearchParams, mode: CaseMode = 'of
       ...range,
     },
     sort: pick(DETECTION_SORTS, get('sort') === 'severidade' ? 'severity' : null) ?? 'recent',
+    findingType: FINDING_TYPES.find((type) => FINDING_TYPE_SLUGS[type] === get('type')),
     page: Math.max(1, Number.parseInt(get('page') ?? '1', 10) || 1),
     // Um item por vez: o alerta, se os dois vierem (o link de um alerta dentro do incidente); o caso por último (o
     // alerta aberto de dentro dele).
@@ -337,6 +351,7 @@ export const FILTER_KEYS = [
   'technique',
   'q',
   'unassigned',
+  'type',
 ] as const satisfies readonly (keyof typeof DETECTION_PARAMS)[];
 
 /** Quantos filtros estão em uso (o período conta uma vez). */
