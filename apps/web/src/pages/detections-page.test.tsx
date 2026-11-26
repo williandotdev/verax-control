@@ -12,6 +12,7 @@ import { createQueryClient } from '@/lib/query-client';
 import { DEMO_TENANTS, demoMe, demoTower } from '@/mocks/fixtures';
 import { DEMO_INCIDENTS } from '@/mocks/findings-fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
+import { STACKED_QUERY } from '@/features/detections/strip-preference';
 import { SIDE_PANEL_QUERY } from '@/lib/use-media-query';
 import { routes } from '@/routes/router';
 
@@ -619,11 +620,23 @@ describe('Detecções: o resumo da situação', () => {
     expect(window.localStorage.getItem(`verax:deteccoes:resumo:${userId}`)).toBe('recolhido');
   });
 
-  it('no celular começa recolhido; a escolha guardada vale sobre o padrão', async () => {
-    mockMedia((query) => query.includes('max-width'));
-    renderAt('/');
+  it('abaixo de 1280 px (tela empilhada, celular incluído) começa recolhido (R-07); a escolha guardada vale sobre o padrão', async () => {
+    mockMedia((query) => query === STACKED_QUERY);
+    const first = renderAt('/');
     const strip = await screen.findByRole('region', { name: 'Situação agora' });
     expect(within(strip).getByRole('button', { name: /Mostrar/ })).toHaveAttribute('aria-expanded', 'false');
+    // Recolhido, o que pede atenção continua à vista (R-13).
+    expect(await within(strip).findByRole('status', { name: /^Situação: / })).toHaveTextContent(
+      /^Coleta parada: GCP/,
+    );
+    cleanup();
+    first.dispose();
+
+    window.localStorage.setItem(`verax:deteccoes:resumo:${demoMe('analista_cliente').userId}`, 'aberto');
+    renderAt('/');
+    const again = await screen.findByRole('region', { name: 'Situação agora' });
+    expect(within(again).getByRole('button', { name: /Recolher/ })).toHaveAttribute('aria-expanded', 'true');
+    window.localStorage.clear();
   });
 
   it('sem armazenamento no navegador, a tela segue com o padrão', async () => {

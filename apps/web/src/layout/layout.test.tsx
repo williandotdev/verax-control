@@ -1,17 +1,18 @@
 import { QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Me, Role } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
 import { DEMO_TENANTS, demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
+import { MENU_ICONS_QUERY } from './menu-collapsed';
 
 const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
@@ -173,6 +174,31 @@ describe('menu recolhido (computador)', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Expandir menu' }));
     expect(drawer).toHaveAttribute('data-collapsed', 'false');
     expect(window.localStorage.getItem('verax:menu')).toBe('aberto');
+  });
+
+  it('de 768 a 1023 px começa nos ícones (R-07); a escolha guardada vale sobre o padrão', async () => {
+    const original = window.matchMedia.bind(window);
+    window.matchMedia = vi.fn((query: string) => ({
+      matches: query === MENU_ICONS_QUERY,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    try {
+      const first = renderApp('/', demoMe('analista_cliente'));
+      expect(await screen.findByRole('button', { name: 'Expandir menu' })).toBeInTheDocument();
+      cleanup();
+      first.router.dispose();
+      window.localStorage.setItem('verax:menu', 'aberto');
+      renderApp('/', demoMe('analista_cliente'));
+      expect(await screen.findByRole('button', { name: 'Recolher menu' })).toBeInTheDocument();
+    } finally {
+      window.matchMedia = original;
+    }
   });
 
   it('abre recolhido quando foi a última escolha', async () => {
