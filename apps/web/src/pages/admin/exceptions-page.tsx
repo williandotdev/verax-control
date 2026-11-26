@@ -11,6 +11,7 @@ import { type Column, DataTable } from '@/components/data-table';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { Sheet } from '@/components/ui/sheet';
+import { ToneBadge } from '@/components/ui/status';
 import {
   ADMIN_PAGE_SIZE,
   useCreateException,
@@ -110,9 +111,10 @@ export function ExceptionsPage() {
         ) : row.active ? (
           `até ${dayFormat.format(new Date(row.expiresAt))}`
         ) : (
-          <span className="font-medium text-critical-text">
+          // O estado nunca só pela cor: o selo com ícone (E-12).
+          <ToneBadge tone="critical" className="whitespace-nowrap font-medium">
             Vencida em {dayFormat.format(new Date(row.expiresAt))}
-          </span>
+          </ToneBadge>
         ),
     },
   ];

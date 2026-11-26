@@ -31,7 +31,7 @@ import {
   WEB_SOURCE_STATE_CODES,
   type WebSourceStateCode,
 } from '@verax/shared';
-import type { Severity } from '@/design/severity';
+import type { Tone as StatusTone } from '@/components/ui/status';
 import { ApiRequestError } from '@/lib/api-client';
 import { errorMessage } from '@/lib/errors';
 import { isFindingSource } from './aws-sources';
@@ -44,8 +44,8 @@ import { awsCollectionErrorHint, awsConnectionErrorHint } from './labels';
  * Linguagem de cliente: o que aconteceu e o que fazer, sem repetir a mensagem da AWS.
  */
 
-/** O tom de um aviso: a mesma escala das severidades, e `progress` para o que está andando sozinho. */
-export type Tone = Severity | 'progress' | 'idle';
+/** O tom de um aviso: o das peças únicas de estado do painel (E-12). */
+export type Tone = StatusTone;
 
 // --- Estado da conta ---
 

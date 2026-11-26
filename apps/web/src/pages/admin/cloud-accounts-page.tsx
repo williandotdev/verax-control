@@ -26,7 +26,8 @@ import { type Column, DataTable } from '@/components/data-table';
 import { Button } from '@/components/ui/button';
 import { Field, Textarea } from '@/components/ui/field';
 import { Sheet } from '@/components/ui/sheet';
-import { SEVERITY_STYLES } from '@/design/severity';
+import { Notice, Tag, ToneBadge, ToneIcon } from '@/components/ui/status';
+import { type SEVERITY_STYLES } from '@/design/severity';
 import {
   ADMIN_PAGE_SIZE,
   useCloudAccountList,
@@ -67,7 +68,6 @@ import {
 } from '@/features/admin/labels';
 import { useAuthClientConfig } from '@/features/auth/client-config';
 import { useMe } from '@/features/session/session';
-import { cn } from '@/lib/cn';
 import { formatRelative } from '@/lib/format';
 
 const NEW = 'nova';
@@ -97,11 +97,7 @@ const isManagedByVerax = (account: CloudAccount) => account.managedBy === 'verax
 
 /** O selo da conta do console. */
 function ManagedBadge() {
-  return (
-    <span className="inline-block rounded-full border px-1.5 py-0.5 text-[0.7rem] font-medium leading-none">
-      Cadastrada pela Verax
-    </span>
-  );
+  return <Tag>Cadastrada pela Verax</Tag>;
 }
 
 function scopeOf(account: CloudAccount): string | null {
@@ -148,7 +144,7 @@ export function CloudAccountsPage() {
   const selected = list.data?.items.find((account) => account.id === open) ?? null;
   // O aviso da conta excluída: o painel fecha, a linha sai da tabela e o foco vem para cá.
   const [deleted, setDeleted] = useState<CloudAccount | null>(null);
-  const deletedNotice = useRef<HTMLParagraphElement>(null);
+  const deletedNotice = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (deleted) deletedNotice.current?.focus();
   }, [deleted]);
@@ -216,17 +212,14 @@ export function CloudAccountsPage() {
       action={canWrite && <Button onClick={() => setOpen(NEW)}>Cadastrar conta</Button>}
     >
       {deleted && (
-        <p
-          ref={deletedNotice}
-          role="status"
-          tabIndex={-1}
-          className="rounded-md border border-ok/50 bg-ok/10 p-3 text-sm focus:outline-none"
-        >
-          {ACCOUNT_NOUNS[deleted.provider].noun} {deleted.accountId}{' '}
-          {ACCOUNT_NOUNS[deleted.provider].registered.replace('cadastrad', 'excluíd')}. Os achados, os
-          incidentes e o histórico já registrados continuam no painel, e o mesmo ID pode ser cadastrado de
-          novo.
-        </p>
+        <Notice ref={deletedNotice} tone="ok" role="status" tabIndex={-1} className="focus:outline-none">
+          <p>
+            {ACCOUNT_NOUNS[deleted.provider].noun} {deleted.accountId}{' '}
+            {ACCOUNT_NOUNS[deleted.provider].registered === 'cadastrada' ? 'excluída' : 'excluído'}. Os
+            achados, os incidentes e o histórico já registrados continuam no painel, e o mesmo ID pode ser
+            cadastrado de novo.
+          </p>
+        </Notice>
       )}
       <DataTable
         caption="Contas cloud do cliente"
@@ -302,12 +295,10 @@ function ConnectionErrorDetail({ account, code }: { account: CloudAccount; code:
 
 /** Selo "Aguardando / Conectada / Erro": a cor vem com ícone e texto, nunca só a cor. */
 function ConnectionBadge({ account }: { account: CloudAccount }) {
-  const { icon: Icon, tone } = SEVERITY_STYLES[CONNECTION_SEVERITY[account.connection]];
   return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap text-sm">
-      <Icon aria-hidden className={cn('size-4', tone)} />
+    <ToneBadge tone={CONNECTION_SEVERITY[account.connection]} className="whitespace-nowrap">
       {CONNECTION_LABELS[account.connection]}
-    </span>
+    </ToneBadge>
   );
 }
 
@@ -330,7 +321,6 @@ function ConnectionCell({ account, attention }: { account: CloudAccount; attenti
 /** O que vem abaixo do selo: o motivo curto e, na conta AWS conectada, quantas fontes pedem atenção. No cartão do celular, na largura toda. */
 function ConnectionDetail({ account, attention }: { account: CloudAccount; attention: number | null }) {
   const hint = connectionListHint(account);
-  const { icon: WarnIcon, tone } = SEVERITY_STYLES.medium;
   const flagged =
     account.provider === 'aws' && account.connection === 'connected' && attention !== null && attention > 0;
   if (!hint && !flagged) return null;
@@ -339,7 +329,7 @@ function ConnectionDetail({ account, attention }: { account: CloudAccount; atten
       {hint && <span className="block max-w-80 text-xs text-muted-foreground">{hint}</span>}
       {flagged && (
         <span className="flex items-center gap-1 text-xs">
-          <WarnIcon aria-hidden className={cn('size-3.5 shrink-0', tone)} />
+          <ToneIcon tone="medium" className="size-3.5" />
           {attention === 1
             ? '1 fonte precisa de atenção'
             : `${numberFormat.format(attention ?? 0)} fontes precisam de atenção`}
@@ -356,15 +346,13 @@ function ConnectionDetail({ account, attention }: { account: CloudAccount; atten
 function CollectionWarning({ account }: { account: CloudAccount }) {
   const hint = awsCollectionErrorHint(account.collectionError);
   if (account.provider !== 'aws' || hint === null) return null;
-  const { icon: Icon, tone } = SEVERITY_STYLES.medium;
   return (
     <>
       <dt className="text-muted-foreground">Coleta no nó</dt>
       <dd className="space-y-0.5">
-        <span className="inline-flex items-center gap-1 whitespace-nowrap text-sm">
-          <Icon aria-hidden className={cn('size-4', tone)} />
+        <ToneBadge tone="medium" className="whitespace-nowrap">
           Aviso
-        </span>
+        </ToneBadge>
         <p className="text-xs text-muted-foreground">
           {hint} Tipo do aviso: <code className="font-mono">{account.collectionError}</code>.
         </p>
