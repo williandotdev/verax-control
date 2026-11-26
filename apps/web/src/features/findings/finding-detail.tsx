@@ -267,7 +267,12 @@ function ExceptionOffer({ finding, onDone }: { finding: FindingDetail; onDone: (
           Exceção criada: alertas da regra {finding.ruleId} com {chosen?.label.toLowerCase()} {chosen?.value}{' '}
           passam a ser marcados como esperados.
         </p>
-        <OpenAlertsResult resolution={create.data.openAlerts} kind="alert" exceptionId={create.data.id} />
+        <OpenAlertsResult
+          resolution={create.data.openAlerts}
+          kind="alert"
+          exceptionId={create.data.id}
+          nested
+        />
       </div>
     );
   }

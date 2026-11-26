@@ -13,16 +13,19 @@ export function OpenAlertsPreview({ preview }: { preview: ExceptionOpenPreview |
 
 /**
  * O que a criação fez com os alertas em aberto e, se parou no teto, "Resolver os próximos" (com o id da exceção). Sem a
- * contagem (nó de antes), nada.
+ * contagem (nó de antes), nada. Dentro de uma mensagem que já é `status` (`nested`), a linha só é anunciada (`aria-live`), sem
+ * outro `status` ao lado.
  */
 export function OpenAlertsResult({
   resolution,
   kind,
   exceptionId,
+  nested = false,
 }: {
   resolution: ExceptionOpenResolution | undefined;
   kind: ExceptionKind;
   exceptionId?: string;
+  nested?: boolean;
 }) {
   const [total, setTotal] = useState(resolution);
   const more = useResolveMoreOpen(kind, exceptionId ?? '');
@@ -42,7 +45,7 @@ export function OpenAlertsResult({
     });
   return (
     <div className="space-y-2">
-      <p role="status" className="text-sm">
+      <p {...(nested ? { 'aria-live': 'polite' as const } : { role: 'status' })} className="text-sm">
         {openResolutionText(total)}
       </p>
       <FormError error={more.error} />

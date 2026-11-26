@@ -17,7 +17,7 @@ import { createWithOpenAlerts } from './open-alerts-api';
 import { openPreviewText, openResolutionText } from './open-alerts-text';
 
 const server = setupServer();
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterEach(() => {
   server.resetHandlers();
   api.resetCsrf();

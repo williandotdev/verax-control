@@ -219,7 +219,7 @@ function BatchForm({
               result.existing > 0 ? `; ${plural(result.existing, 'já existia', 'já existiam')}` : ''
             }.`}
           >
-            <OpenAlertsResult resolution={result.openAlerts} kind="alert" />
+            <OpenAlertsResult resolution={result.openAlerts} kind="alert" nested />
           </Done>,
         ),
     });
@@ -340,7 +340,7 @@ function WideForm({ target, onDone }: { target: Target; onDone: (message: ReactN
       onSuccess: (created) =>
         onDone(
           <Done message="Exceção ampla criada. Ela aparece na tela Exceções, onde pode ser revogada.">
-            <OpenAlertsResult resolution={created.openAlerts} kind="scoped" exceptionId={created.id} />
+            <OpenAlertsResult resolution={created.openAlerts} kind="scoped" exceptionId={created.id} nested />
           </Done>,
         ),
     });
