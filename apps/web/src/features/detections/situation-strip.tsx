@@ -42,6 +42,7 @@ import {
   validationPhrase,
   vulnerabilityPhrase,
 } from './tower-reason';
+import { compactParts } from './compact-situation';
 import { ALERTS_VIEW, casesSearch, selectionSearch, VULNERABILITIES_VIEW, withChanges } from './url-state';
 
 /**
@@ -118,24 +119,35 @@ export function SituationStrip({
   );
 }
 
-/** Recolhido: as contagens, numa linha. */
+/** Recolhido: as contagens, numa linha, o que pede atenção primeiro. */
 function CompactSituation({ summary }: { summary: TowerSummary }) {
-  const decisions = summary.pendingDecisions.reduce((sum, decision) => sum + decision.count, 0);
-  const radarCases = summary.radar?.cases;
-  const counts = [
-    plural(summary.openIncidents.critical, 'incidente crítico aberto', 'incidentes críticos abertos'),
-    plural(summary.openIncidents.high, 'alto', 'altos'),
-    ...(summary.radar ? [plural(summary.radar.total, 'detecção em 24 h', 'detecções em 24 h')] : []),
-    ...(radarCases ? [plural(radarCases.total, 'caso de detecção', 'casos de detecção')] : []),
-    plural(decisions, 'decisão pendente', 'decisões pendentes'),
-  ];
+  const parts = compactParts(summary);
   return (
     <p
       role="status"
-      aria-label={`Situação: ${towerReason(summary)} ${counts.join(', ')}.`}
+      aria-label={`Situação: ${towerReason(summary)} ${parts
+        .filter((part) => !part.inReason)
+        .map((part) => part.text)
+        .join(', ')}.`}
       className="min-w-0 text-sm text-muted-foreground"
     >
-      <span aria-hidden>{counts.join(' · ')}</span>
+      <span aria-hidden className="inline">
+        {parts.map((part, index) => {
+          const style = part.severity ? SEVERITY_STYLES[part.severity] : null;
+          const Icon = style?.icon;
+          return (
+            <span
+              key={part.text}
+              data-compact-part
+              className={cn(part.optional && 'max-sm:hidden', part.severity && 'font-medium text-foreground')}
+            >
+              {index > 0 && <span className="text-muted-foreground"> · </span>}
+              {Icon && style && <Icon className={cn('mr-1 inline size-4 align-[-3px]', style.tone)} />}
+              {part.text}
+            </span>
+          );
+        })}
+      </span>
     </p>
   );
 }

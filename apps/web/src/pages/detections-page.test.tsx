@@ -524,8 +524,13 @@ describe('Detecções: o resumo da situação', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await userEvent.click(toggle);
     expect(within(strip).getByRole('button', { name: /Mostrar/ })).toHaveAttribute('aria-expanded', 'false');
-    expect(within(strip).getByRole('status', { name: /^Situação: / })).toHaveAccessibleName(
+    const compact = within(strip).getByRole('status', { name: /^Situação: / });
+    expect(compact).toHaveAccessibleName(
       /1 incidente crítico aberto, 2 altos, \d+ detecções em 24 h, \d+ decisões pendentes/,
+    );
+    // R-13: recolhida, a linha começa pelo que pede atenção: a coleta parada e a postura abaixo do limite à vista.
+    expect(compact).toHaveTextContent(
+      /^Coleta parada: GCP · 1 incidente crítico aberto · 2 altos · postura 69, abaixo de 70 · \d+ detecções em 24 h · \d+ decisões pendentes$/,
     );
     const userId = demoMe('analista_cliente').userId;
     expect(window.localStorage.getItem(`verax:deteccoes:resumo:${userId}`)).toBe('recolhido');
