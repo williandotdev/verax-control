@@ -242,3 +242,21 @@ run "apis" {
     error_message = "Desfazer o ambiente não desliga API nenhuma: o Firebase dos painéis depende delas."
   }
 }
+
+run "retorno_do_cloudflare_fora_do_log_de_requisicao" {
+  command = plan
+
+  assert {
+    condition = (
+      strcontains(google_logging_project_exclusion.cloudflare_callback.filter, "run.googleapis.com%2Frequests") &&
+      strcontains(google_logging_project_exclusion.cloudflare_callback.filter, "httpRequest.requestUrl:\"/v1/public/cloudflare/callback\"") &&
+      !strcontains(google_logging_project_exclusion.cloudflare_callback.filter, " OR ")
+    )
+    error_message = "Só o log de requisição do retorno do Cloudflare fica fora, e mais nada."
+  }
+
+  assert {
+    condition     = coalesce(google_logging_project_exclusion.cloudflare_callback.disabled, false) == false
+    error_message = "A exclusão nasce ligada."
+  }
+}

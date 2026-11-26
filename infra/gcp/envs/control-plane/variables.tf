@@ -88,7 +88,7 @@ locals {
   # variáveis (cada uma tem a sua: alert_email, nodes_project_id, firebase_panel_projects...), as que o workflow de
   # implantação reafirma (ROLE, NODE_ENV), a que o Cloud Run reserva (PORT) e os cinco segredos, que vêm do Secret
   # Manager. Recusar é melhor do que ignorar em silêncio (o `merge` de run.tf põe o que o Terraform sabe por último).
-  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|CELL_PUSH_SA_EMAILS|ADMIN_SECRETS_PROJECT_ID|ADMIN_TURNSTILE_.*|ADMIN_CONSOLE_HOSTNAME|SSO_.*|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
+  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|CELL_PUSH_SA_EMAILS|ADMIN_SECRETS_PROJECT_ID|ADMIN_TURNSTILE_.*|ADMIN_CONSOLE_HOSTNAME|SSO_.*|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|CLOUDFLARE_OAUTH_.*|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
 }
 
 variable "service_env" {
@@ -98,7 +98,7 @@ variable "service_env" {
 
   validation {
     condition     = alltrue([for name in keys(var.service_env) : !can(regex(local.reserved_env_keys, name))])
-    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, CELL_PUSH_SA_EMAILS, ADMIN_SECRETS_PROJECT_ID, ADMIN_TURNSTILE_*, ADMIN_CONSOLE_HOSTNAME, SSO_*, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
+    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, CELL_PUSH_SA_EMAILS, ADMIN_SECRETS_PROJECT_ID, ADMIN_TURNSTILE_*, ADMIN_CONSOLE_HOSTNAME, SSO_*, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID, CLOUDFLARE_OAUTH_*): use a variável própria de cada um."
   }
 
   validation {
@@ -224,6 +224,46 @@ variable "admin_hosting_domain" {
   description = "Domínio próprio do console do responsável, com admin_enabled. Os registros de DNS saem em `terraform output cloudflare_dns_records`, junto com os do domínio do plano de controle."
   type        = string
   default     = "admin.veraxsistemas.com.br"
+}
+
+variable "cloudflare_oauth" {
+  description = "Conectar com Cloudflare por OAuth (apps/control-plane/src/cloudflare-oauth): o app registrado no Cloudflare (sem segredo), os escopos pedidos (só leitura, com o da renovação) e os subdomínios dos clientes liberados ([\"*\"] é todos; vazia, ninguém). Vai igual ao cp-public, ao cp-worker e ao cp-admin. Nula (padrão), desligado: os clientes seguem com o token colado. Ex.: { client_id = \"appdeexemplo0001\", scopes = [\"zone.read\", \"offline_access\"], tenant_slugs = [\"cliente-demo\"] }."
+  type = object({
+    client_id    = string
+    scopes       = list(string)
+    tenant_slugs = list(string)
+  })
+  default = null
+
+  validation {
+    condition     = var.cloudflare_oauth == null || can(regex("^[A-Za-z0-9_-]{8,128}$", var.cloudflare_oauth.client_id))
+    error_message = "client_id do app do Cloudflare: 8 a 128 letras, números, _ ou -."
+  }
+
+  # As mesmas regras do app (packages/shared/src/cloudflare-oauth.ts), para um erro aparecer no plano e não na partida.
+  validation {
+    condition = var.cloudflare_oauth == null || try(
+      length(var.cloudflare_oauth.scopes) <= 16 &&
+      length(distinct(var.cloudflare_oauth.scopes)) == length(var.cloudflare_oauth.scopes) &&
+      alltrue([for scope in var.cloudflare_oauth.scopes : length(scope) <= 64 && can(regex("^([a-z0-9][a-z0-9_-]*\\.read|offline_access|offline)$", scope))]) &&
+      anytrue([for scope in var.cloudflare_oauth.scopes : endswith(scope, ".read")]) &&
+      anytrue([for scope in var.cloudflare_oauth.scopes : contains(["offline_access", "offline"], scope)]),
+      false
+    )
+    error_message = "Escopos só de leitura (<recurso>.read), sem repetição, com ao menos um de leitura e o da renovação (offline_access)."
+  }
+
+  validation {
+    condition = var.cloudflare_oauth == null || try(
+      length(distinct(var.cloudflare_oauth.tenant_slugs)) == length(var.cloudflare_oauth.tenant_slugs) &&
+      (
+        var.cloudflare_oauth.tenant_slugs == tolist(["*"]) ||
+        alltrue([for slug in var.cloudflare_oauth.tenant_slugs : can(regex("^[a-z][a-z0-9-]{1,14}[a-z0-9]$", slug)) && substr(slug, 2, 2) != "--"])
+      ),
+      false
+    )
+    error_message = "tenant_slugs são subdomínios de cliente sem repetição, ou [\"*\"] sozinho."
+  }
 }
 
 variable "sso_redirect_uris" {

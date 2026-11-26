@@ -147,7 +147,8 @@ describe('sincronização do nó: constantes', () => {
   it('protocolo 1, rota pública e as capacidades do nó', () => {
     expect(NODE_SYNC_PROTOCOL).toBe(1);
     expect(NODE_SYNC_PATH).toBe('/v1/node-sync');
-    expect(NODE_SYNC_CAPABILITIES).toEqual(['log_sources', 'users']);
+    // `cloudflare_oauth`: aceita pelo plano de controle antes de algum nó a anunciar.
+    expect(NODE_SYNC_CAPABILITIES).toEqual(['log_sources', 'users', 'cloudflare_oauth']);
   });
 
   it('os códigos por fonte e por usuário', () => {
@@ -165,6 +166,30 @@ describe('sincronização do nó: constantes', () => {
     expect(NODE_SYNC_USER_CODES).toContain('users_disabled');
     expect(new Set(NODE_SYNC_SOURCE_CODES).size).toBe(NODE_SYNC_SOURCE_CODES.length);
     expect(new Set(NODE_SYNC_USER_CODES).size).toBe(NODE_SYNC_USER_CODES.length);
+  });
+
+  it('cloudflareOauth: a configuração do app sem segredo, desligada (null) ou ausente; escopo de escrita recusa a resposta', () => {
+    const config = {
+      clientId: 'clientedeteste0001',
+      redirectUri: 'https://conta.exemplo.com.br/v1/public/cloudflare/callback',
+      scopes: ['account-settings.read', 'zone.read', 'offline_access'],
+    };
+    expect(ok(nodeSyncResponseSchema, response())).toBe(true);
+    expect(ok(nodeSyncResponseSchema, response({ cloudflareOauth: null }))).toBe(true);
+    expect(ok(nodeSyncResponseSchema, response({ cloudflareOauth: config }))).toBe(true);
+    for (const changes of [
+      { clientSecret: 'x' },
+      { scopes: ['zone.write', 'zone.read', 'offline_access'] },
+      { scopes: ['zone.read'] },
+      { redirectUri: 'https://outro.exemplo.com.br/' },
+    ]) {
+      expect(ok(nodeSyncResponseSchema, response({ cloudflareOauth: { ...config, ...changes } }))).toBe(
+        false,
+      );
+    }
+    expect(ok(nodeSyncRequestSchema, request({ capabilities: ['log_sources', 'cloudflare_oauth'] }))).toBe(
+      true,
+    );
   });
 
   it('respondsTo: só a capacidade anunciada', () => {

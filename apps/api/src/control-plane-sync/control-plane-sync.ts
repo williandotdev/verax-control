@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import {
+  CLOUDFLARE_OAUTH_CALLBACK_PATH,
+  type CloudflareOauthConfig,
+  cloudflareOauthConfigSchema,
   NODE_SYNC_INTERVAL_SECONDS,
   NODE_SYNC_JITTER_SECONDS,
   NODE_SYNC_MAX_SOURCES,
@@ -27,6 +30,7 @@ import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { VaultKeyring } from '../credentials/credential-keys.js';
+import { Prisma } from '../generated/prisma/client.js';
 import type { TenantPlans } from '../plan/tenant-plan.js';
 import { applySource, type SyncLogger } from './apply-source.js';
 import { applyUser } from './apply-user.js';
@@ -51,6 +55,17 @@ export const CONTROL_PLANE_SYNC_CAPABILITIES = [
   'log_sources',
   'users',
 ] as const satisfies readonly NodeSyncCapability[];
+
+/**
+ * A capacidade que só o nó gerenciado com o cofre e o coletor do Cloudflare anuncia (`announceCloudflareOauth`): a
+ * configuração do "Conectar com Cloudflare" vem na resposta.
+ */
+const CLOUDFLARE_OAUTH_CAPABILITY = 'cloudflare_oauth' satisfies NodeSyncCapability;
+/**
+ * O plano de controle anterior recusa a chamada inteira (400) com uma capacidade que não conhece: o nó a refaz sem ela na
+ * hora e fica este tempo sem anunciá-la (na memória: uma partida nova tenta de novo).
+ */
+export const CLOUDFLARE_OAUTH_REFUSED_MS = 60 * 60 * 1000;
 
 /** As esperas depois de uma falha: o nó não reconhecido (1 h), o cliente não apto (6 h) e as que passam sozinhas. */
 export const UNAUTHENTICATED_RETRY_MS = 60 * 60 * 1000;
@@ -164,6 +179,11 @@ export interface ControlPlaneSyncOptions {
   node: NodeFacts;
   plans: TenantPlans;
   checks: SourceCredentialChecks;
+  /**
+   * Anuncia a capacidade `cloudflare_oauth` e guarda a configuração que vier: só o nó dedicado gerenciado de cliente, com
+   * o cofre e o coletor do Cloudflare (`controlPlaneSyncTask`). Sem informar, não.
+   */
+  announceCloudflareOauth?: boolean;
   logger: SyncLogger;
   /** O token do Google para o audience da rota (só no nó da GCP; `aws/web-identity.ts`, `fetchNodeSyncToken`). */
   idToken?: (audience: string, signal: AbortSignal) => Promise<string>;
@@ -247,6 +267,8 @@ export class ControlPlaneSync {
   private readonly random: () => number;
   /** A próxima chamada, como foi gravada (evita ler o banco a cada 15 s); null antes da primeira leitura. */
   private nextAt: Date | null = null;
+  /** Até quando não anunciar a capacidade do OAuth, depois de um plano de controle que não a conhece. */
+  private oauthRefusedUntil: Date | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -309,11 +331,31 @@ export class ControlPlaneSync {
             if (sequence === null) return report;
             continue;
           }
+          // Um plano de controle anterior não conhece a capacidade: sem ela, as fontes e os usuários seguem como sempre.
+          if (
+            result.code === 'bad_request' &&
+            report.roundTrips < MAX_ROUND_TRIPS &&
+            built.request.capabilities.includes(CLOUDFLARE_OAUTH_CAPABILITY) &&
+            !clockSkewExceeded(result.clockSkewMs)
+          ) {
+            this.oauthRefusedUntil = new Date(this.now().getTime() + CLOUDFLARE_OAUTH_REFUSED_MS);
+            this.options.logger.warn(
+              { code: result.code, status: result.status },
+              'sincronização com o plano de controle: pedido recusado; refeito sem a capacidade cloudflare_oauth',
+            );
+            sequence = await this.claim(false);
+            if (sequence === null) return report;
+            continue;
+          }
           report.error = result.code;
           await this.schedule(this.logFailure(result));
           return report;
         }
         lastResponse = result.response;
+        if (built.request.capabilities.includes(CLOUDFLARE_OAUTH_CAPABILITY)) {
+          await this.keepCloudflareOauth(result.response);
+        }
+        const cloudflareOauth = await this.cloudflareOauthOn();
         if (tenant.kind === 'single') await this.markReported(tenant.id, built.reported);
         let changed = 0;
         if (tenant.kind === 'single') {
@@ -328,6 +370,7 @@ export class ControlPlaneSync {
                 plans: this.options.plans,
                 checks: this.options.checks,
                 node: this.options.node,
+                cloudflareOauth,
                 logger: this.options.logger,
                 now: this.now,
               },
@@ -448,6 +491,52 @@ export class ControlPlaneSync {
     return tenant === undefined ? { kind: 'none' } : { kind: 'single', id: tenant };
   }
 
+  /** As capacidades desta chamada. */
+  private capabilities(): NodeSyncCapability[] {
+    const refused = this.oauthRefusedUntil !== null && this.now() < this.oauthRefusedUntil;
+    return [
+      ...CONTROL_PLANE_SYNC_CAPABILITIES,
+      ...(this.options.announceCloudflareOauth === true && !refused
+        ? [CLOUDFLARE_OAUTH_CAPABILITY as NodeSyncCapability]
+        : []),
+    ];
+  }
+
+  /**
+   * A configuração do "Conectar com Cloudflare" que veio na resposta (só quando a capacidade foi anunciada): a seção que
+   * falta mantém a última (o plano de controle voltou de versão), e `null` desliga novas conexões, sem tocar nas feitas. O
+   * retorno tem de ser o deste plano de controle: outro endereço desliga, com erro no log.
+   */
+  private async keepCloudflareOauth(response: NodeSyncResponse): Promise<void> {
+    const { cloudflareOauth } = response;
+    if (cloudflareOauth === undefined) return;
+    let config: CloudflareOauthConfig | null = cloudflareOauth;
+    if (
+      config !== null &&
+      config.redirectUri !== `${this.options.config.origin}${CLOUDFLARE_OAUTH_CALLBACK_PATH}`
+    ) {
+      this.options.logger.error(
+        { code: 'cloudflare_oauth_redirect_mismatch' },
+        'sincronização com o plano de controle: o retorno do Cloudflare não é o deste plano de controle; desligado',
+      );
+      config = null;
+    }
+    await this.prisma.controlPlaneSync.updateMany({
+      where: { id: SYNC_ROW_ID },
+      data: { cloudflareOauth: config === null ? Prisma.DbNull : { ...config, scopes: [...config.scopes] } },
+    });
+  }
+
+  /** O OAuth está ligado neste nó (a última configuração guardada vale)? */
+  private async cloudflareOauthOn(): Promise<boolean> {
+    if (this.options.announceCloudflareOauth !== true) return false;
+    const row = await this.prisma.controlPlaneSync.findUnique({
+      where: { id: SYNC_ROW_ID },
+      select: { cloudflareOauth: true },
+    });
+    return cloudflareOauthConfigSchema.safeParse(row?.cloudflareOauth ?? null).success;
+  }
+
   /**
    * O pedido inteiro (conferido pelo contrato antes de sair, `postNodeSync`), com os relatos que cabem no limite de
    * tamanho do corpo (`selectReports`).
@@ -458,7 +547,7 @@ export class ControlPlaneSync {
       protocol: NODE_SYNC_PROTOCOL,
       sequence,
       sentAt: this.now().toISOString(),
-      capabilities: [...CONTROL_PLANE_SYNC_CAPABILITIES],
+      capabilities: this.capabilities(),
       node: {
         commit: config.commit,
         platform,

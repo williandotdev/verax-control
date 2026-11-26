@@ -26,6 +26,7 @@ import { type AuditEntry, AuditService } from '../common/audit/audit.service.js'
 import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { syncLegacyAwsSources } from '../aws/onboarding/legacy-sources.js';
+import { detachAccount } from '../cloudflare/oauth/grant-store.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { VaultKeyring } from '../credentials/credential-keys.js';
 import { CredentialRejected, CredentialSourceUnavailable } from '../credentials/credential-check.js';
@@ -74,6 +75,8 @@ export interface SourceApplyContext {
   checks: SourceCredentialChecks;
   /** Os valores do nó que a conta mostra (o `after` da auditoria sai como a API mostra a conta). */
   node: NodeFacts;
+  /** O Cloudflare é conectado por OAuth neste nó: token novo do console é recusado, como no painel. */
+  cloudflareOauth: boolean;
   logger: SyncLogger;
   now: () => Date;
 }
@@ -223,10 +226,21 @@ function auditState(row: AccountRow, node: NodeFacts) {
   return { ...toAccount(row, node), origin: row.origin };
 }
 
-/** A credencial apagada com a conta (a lápide), como o `wipeCredential` do painel. */
-async function wipeCredential(tx: Tx, tenantId: string, id: string): Promise<void> {
+/** A credencial apagada e a concessão do Cloudflare solta com a conta (a lápide), como o `wipeCredential` do painel. */
+async function wipeCredential(tx: Tx, tenantId: string, id: string, now: Date): Promise<void> {
   await lockCredential(tx, id);
   const db = scopeToTenant(tx, tenantId);
+  const detached = await detachAccount(tx, { id, tenantId }, now);
+  if (detached !== null && detached.released) {
+    await audit.write(
+      tx,
+      auditEntry(tenantId, {
+        action: 'cloudflare_grant.release',
+        resourceType: 'cloudflare_grant',
+        resourceId: detached.grantId,
+      }),
+    );
+  }
   const credential = await db.cloudCredential.findUnique({
     where: { cloudAccountId: id },
     select: { kind: true, keyIdSuffix: true, expiresAt: true },
@@ -271,7 +285,7 @@ async function applyAccount(
     const before = await db.cloudAccount.findUnique({ where: { id: source.id }, select: accountSelect });
     if (before === null) return 'removed';
     if (before.origin !== 'control_plane') throw new SourceFailure('account_exists_panel');
-    await wipeCredential(tx, tenantId, source.id);
+    await wipeCredential(tx, tenantId, source.id, now);
     const row = await db.cloudAccount.update({
       where: { id: source.id },
       data: {
@@ -421,6 +435,7 @@ async function applyCredential(
       status: true,
       origin: true,
       pubsubSubscription: true,
+      cloudflareGrantId: true,
     },
   });
   // Só na conta do console, ativa (a falha da conta já foi contada).
@@ -463,6 +478,11 @@ async function applyCredential(
   const keyring = ctx.keyring;
   if (keyring === null) return fail('vault_disabled');
   if (!credentialKindAllowed(credential.kind, ctx.platform)) return fail('credential_kind_not_allowed');
+  // O cliente conectou a conta por OAuth: a credencial do console não a troca.
+  if (account.cloudflareGrantId !== null) return fail('origin_conflict');
+  if (credential.kind === 'cloudflare_api_token' && ctx.cloudflareOauth) {
+    return fail('credential_kind_not_allowed');
+  }
   // A chave da GCP prova a leitura da assinatura cadastrada: sem ela, não há o que conferir.
   if (credential.kind === 'gcp_service_account_key' && account.pubsubSubscription === null) {
     return fail('invalid_spec');
@@ -518,10 +538,12 @@ async function applyCredential(
         const scoped = scopeToTenant(tx, tenantId);
         const still = await scoped.cloudAccount.findUnique({
           where: { id: source.id },
-          select: { status: true, origin: true },
+          select: { status: true, origin: true, cloudflareGrantId: true },
         });
         if (still === null || still.origin !== 'control_plane' || still.status !== 'active')
           return 'unchanged';
+        // Conectada por OAuth enquanto a origem respondia: fica como o cliente deixou.
+        if (still.cloudflareGrantId !== null) return 'conflict';
         const before = await scoped.cloudCredential.findUnique({
           where: { cloudAccountId: source.id },
           select: { ...CREDENTIAL_SUMMARY, origin: true, controlPlaneRevision: true },
@@ -584,6 +606,7 @@ async function applyCredential(
       },
       { timeout: TRANSACTION_TIMEOUT_MS },
     );
+    if (outcome === 'conflict') return await fail('origin_conflict');
     applied = outcome === 'applied';
     return outcome;
   } finally {

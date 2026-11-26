@@ -1,13 +1,18 @@
 import { type ComponentType, createElement } from 'react';
-import { ESCALATION_CONFIRM_PATH, ESCALATION_UNSUBSCRIBE_PATH } from '@verax/shared';
+import {
+  CLOUDFLARE_OAUTH_PANEL_PATH,
+  ESCALATION_CONFIRM_PATH,
+  ESCALATION_UNSUBSCRIBE_PATH,
+} from '@verax/shared';
 import { createBrowserRouter, type RouteObject } from 'react-router';
 import { LegacyRedirect } from '@/features/detections/legacy';
 import { DemoTourMount } from '@/features/tour/entry';
 import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
 import { ChangePasswordPage } from '@/pages/change-password-page';
-// Os links do e-mail de escalonamento leem o token do endereço e o apagam na hora: ficam no arquivo principal, como o
-// login, para nenhuma recarga da página no meio perder o token.
+// Os links do e-mail de escalonamento e a volta do Cloudflare leem o código do endereço e o apagam na hora: ficam no
+// arquivo principal, como o login, para nenhuma recarga da página no meio perder o código.
+import { CloudflareReturnPage } from '@/pages/cloudflare-return-page';
 import { EscalationConfirmPage, EscalationUnsubscribePage } from '@/pages/escalation-link-pages';
 import { ForbiddenPage } from '@/pages/forbidden-page';
 import { ForgotPasswordPage } from '@/pages/forgot-password-page';
@@ -167,6 +172,9 @@ export const routes: RouteObject[] = [
   { path: ESCALATION_CONFIRM_PATH, element: <EscalationConfirmPage /> },
   { path: ESCALATION_UNSUBSCRIBE_PATH, element: <EscalationUnsubscribePage /> },
   { path: '/sem-permissao', element: <ForbiddenPage /> },
+  // O retorno do "Conectar com Cloudflare" (o endereço que o nó anuncia, `CLOUDFLARE_OAUTH_PANEL_PATH`): cuida da sessão
+  // sozinho, sem o redirecionamento do `RequireSession` (o retorno sem sessão é descartado, não retomado depois do login).
+  { path: CLOUDFLARE_OAUTH_PANEL_PATH, element: <CloudflareReturnPage /> },
   {
     element: <RequireSession />,
     children: [

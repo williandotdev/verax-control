@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
-import type { CloudflareToken } from '../credentials/credential-vault.js';
+import type { CloudflareBearer } from './cloudflare-bearer.js';
 import { CLOUDFLARE_API_BASE_URL, isAllowedBaseUrl, rfc3339 } from './cloudflare-token-check.js';
 
 /**
@@ -19,6 +19,9 @@ import { CLOUDFLARE_API_BASE_URL, isAllowedBaseUrl, rfc3339 } from './cloudflare
  * (`errorKind`). Cada tentativa tem tempo limite; 5xx, falha de rede e tempo esgotado são tentados de novo poucas
  * vezes, com espera crescente; 401, 403 e 429 nunca (o 429 devolve a espera pedida pelo `retry-after`, e o coletor
  * só volta depois dela). O corpo é lido até um teto de bytes.
+ *
+ * A exceção do 401 é o acesso por OAuth (`CloudflareBearer.renew`): ele vence em horas, e a recusa vale uma renovação e
+ * um novo envio. O token colado não se renova: o 401 dele sobe na hora.
  */
 
 /** Códigos dos erros da API, gravados como estão em `CloudAccount.connectionError` e no cursor. */
@@ -31,6 +34,8 @@ export type CloudflareErrorCode =
   | 'network'
   | 'bad_response'
   | 'response_too_large'
+  // Só no acesso por OAuth: recusado (401), e a renovação não pôde ser feita agora (não prova que a autorização acabou).
+  | 'oauth_refresh_unavailable'
   // GraphQL de analytics (PR-13): o token sem `Analytics: Read` na zona, a zona sem o conjunto de dados no plano, a
   // janela mais antiga que a retenção, a consulta recusada (formato, limites) e o serviço indisponível.
   | 'security_events_forbidden'
@@ -84,7 +89,7 @@ export function retryAfterMs(header: string | null, now: number = Date.now()): n
 }
 
 /** Lê o corpo até `max` bytes; acima disso, desiste sem guardar o resto. */
-async function readBounded(response: Response, max: number): Promise<{ text: string; bytes: number }> {
+export async function readBounded(response: Response, max: number): Promise<{ text: string; bytes: number }> {
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > max) {
     await response.body?.cancel().catch(() => undefined);
@@ -118,9 +123,27 @@ const zoneSchema = z.object({
   id: z.string().max(64).nullish(),
   name: z.string().min(1).max(253),
   account: z.object({ id: z.string().max(64).nullish() }).nullish(),
+  // Só informação da tela: um plano fora do formato nunca recusa a zona.
+  plan: z
+    .object({ name: z.string().max(256) })
+    .nullish()
+    .catch(null),
 });
 
 const zonesPageSchema = z.object({
+  success: z.literal(true),
+  result: z.array(z.unknown()).max(1000).nullish(),
+  result_info: z.object({ total_pages: z.number().int().min(0).nullish() }).nullish(),
+});
+
+/** Uma conta do Cloudflare, na lista das contas ou dentro de uma zona: só o ID e o nome. */
+const accountSchema = z.object({
+  id: z.string().max(64),
+  name: z.string().max(512).nullish(),
+});
+const zoneAccountSchema = z.object({ account: accountSchema });
+
+const accountsPageSchema = z.object({
   success: z.literal(true),
   result: z.array(z.unknown()).max(1000).nullish(),
   result_info: z.object({ total_pages: z.number().int().min(0).nullish() }).nullish(),
@@ -213,8 +236,17 @@ export interface AccountZones {
   names: Set<string>;
   /** As mesmas zonas pelo ID (32 hexadecimais, o `zoneTag` do GraphQL), com o nome em minúsculas. */
   ids: Map<string, string>;
+  /** O plano de cada zona (pelo ID), como o Cloudflare o chama, quando a resposta o traz. */
+  plans: Map<string, string>;
   /** Todas as páginas lidas (sem bater no teto). */
   complete: boolean;
+}
+
+/** Uma conta que a credencial alcança. */
+export interface ReachableAccount {
+  id: string;
+  /** Como o Cloudflare a chama, sem quebra de linha e cortado; null quando a resposta não traz. */
+  name: string | null;
 }
 
 export interface CloudflareClientOptions {
@@ -235,6 +267,26 @@ export const CLOUDFLARE_MAX_BODY_BYTES = 16 * 1024 * 1024;
 /** Zonas por página (o máximo da API) e teto de páginas por leitura. */
 const ZONES_PER_PAGE = 50;
 const MAX_ZONE_PAGES = 20;
+/** Contas por página e teto de contas lidas numa autorização (o painel liga até 50 de uma vez). */
+const ACCOUNTS_PER_PAGE = 50;
+const MAX_ACCOUNT_PAGES = 2;
+const MAX_REACHABLE_ACCOUNTS = 50;
+const ACCOUNT_NAME_MAX = 120;
+
+/** Uma conta na lista, se o ID é o do Cloudflare (entra no caminho da URL) e ainda cabe. */
+function addAccount(
+  found: Map<string, ReachableAccount>,
+  account: z.infer<typeof accountSchema> | undefined,
+): void {
+  if (account === undefined || !isHex32(account.id)) return;
+  if (found.has(account.id) || found.size >= MAX_REACHABLE_ACCOUNTS) return;
+  const name = [...(account.name ?? '')]
+    .filter((char) => char >= ' ' && char !== '\u007f')
+    .join('')
+    .trim()
+    .slice(0, ACCOUNT_NAME_MAX);
+  found.set(account.id, { id: account.id, name: name === '' ? null : name });
+}
 
 export class CloudflareClient {
   readonly #baseUrl: string;
@@ -261,7 +313,7 @@ export class CloudflareClient {
 
   /** Uma página da auditoria da conta, em ordem crescente de horário. */
   async auditPage(
-    token: CloudflareToken,
+    token: CloudflareBearer,
     accountId: string,
     request: AuditPageRequest,
     signal?: AbortSignal,
@@ -281,9 +333,10 @@ export class CloudflareClient {
   }
 
   /** Zonas da conta, para conferir as zonas cadastradas. */
-  async zones(token: CloudflareToken, accountId: string, signal?: AbortSignal): Promise<AccountZones> {
+  async zones(token: CloudflareBearer, accountId: string, signal?: AbortSignal): Promise<AccountZones> {
     const names = new Set<string>();
     const ids = new Map<string, string>();
+    const plans = new Map<string, string>();
     for (let page = 1; page <= MAX_ZONE_PAGES; page += 1) {
       const query = new URLSearchParams({
         'account.id': accountId,
@@ -301,14 +354,52 @@ export class CloudflareClient {
           const name = zone.data.name.toLowerCase();
           names.add(name);
           // O ID entra no corpo da consulta GraphQL: só o formato do Cloudflare (32 hexadecimais minúsculos).
-          if (isHex32(zone.data.id)) ids.set(zone.data.id, name);
+          if (isHex32(zone.data.id)) {
+            ids.set(zone.data.id, name);
+            const plan = zone.data.plan?.name;
+            if (plan) plans.set(zone.data.id, plan);
+          }
         }
       }
       const totalPages = body.data.result_info?.total_pages ?? undefined;
       const last = totalPages === undefined ? result.length < ZONES_PER_PAGE : page >= totalPages;
-      if (last) return { names, ids, complete: true };
+      if (last) return { names, ids, plans, complete: true };
     }
-    return { names, ids, complete: false };
+    return { names, ids, plans, complete: false };
+  }
+
+  /** As contas que a credencial alcança (`GET /accounts`), até o teto. */
+  async accounts(token: CloudflareBearer, signal?: AbortSignal): Promise<ReachableAccount[]> {
+    const found = new Map<string, ReachableAccount>();
+    for (let page = 1; page <= MAX_ACCOUNT_PAGES; page += 1) {
+      const query = new URLSearchParams({ per_page: String(ACCOUNTS_PER_PAGE), page: String(page) });
+      const { text } = await this.get('/accounts', query, token, signal);
+      const body = accountsPageSchema.safeParse(parseJson(text));
+      if (!body.success) throw new CloudflareApiError('bad_response', 200);
+      const result = body.data.result ?? [];
+      for (const item of result) addAccount(found, accountSchema.safeParse(item).data);
+      const totalPages = body.data.result_info?.total_pages ?? undefined;
+      const last = totalPages === undefined ? result.length < ACCOUNTS_PER_PAGE : page >= totalPages;
+      if (last || found.size >= MAX_REACHABLE_ACCOUNTS) break;
+    }
+    return [...found.values()];
+  }
+
+  /** As contas donas das zonas que a credencial lê (`GET /zones`, sem filtro): para quando a lista das contas não vem. */
+  async zoneAccounts(token: CloudflareBearer, signal?: AbortSignal): Promise<ReachableAccount[]> {
+    const found = new Map<string, ReachableAccount>();
+    for (let page = 1; page <= MAX_ZONE_PAGES; page += 1) {
+      const query = new URLSearchParams({ per_page: String(ZONES_PER_PAGE), page: String(page) });
+      const { text } = await this.get('/zones', query, token, signal);
+      const body = zonesPageSchema.safeParse(parseJson(text));
+      if (!body.success) throw new CloudflareApiError('bad_response', 200);
+      const result = body.data.result ?? [];
+      for (const item of result) addAccount(found, zoneAccountSchema.safeParse(item).data?.account);
+      const totalPages = body.data.result_info?.total_pages ?? undefined;
+      const last = totalPages === undefined ? result.length < ZONES_PER_PAGE : page >= totalPages;
+      if (last || found.size >= MAX_REACHABLE_ACCOUNTS) break;
+    }
+    return [...found.values()];
   }
 
   /**
@@ -322,7 +413,7 @@ export class CloudflareClient {
    * Cloudflare, e quem consulta cobra o orçamento dela ali. Se o gancho lançar, nada é enviado e o erro sobe como está.
    */
   async graphql(
-    token: CloudflareToken,
+    token: CloudflareBearer,
     request: GraphqlRequest,
     signal?: AbortSignal,
     { beforeAttempt }: GraphqlOptions = {},
@@ -350,7 +441,7 @@ export class CloudflareClient {
   private get(
     path: string,
     query: URLSearchParams,
-    token: CloudflareToken,
+    token: CloudflareBearer,
     signal: AbortSignal | undefined,
   ): Promise<{ text: string; bytes: number }> {
     return this.send('GET', path, query, null, token, signal);
@@ -365,19 +456,31 @@ export class CloudflareClient {
     path: string,
     query: URLSearchParams | null,
     body: string | null,
-    token: CloudflareToken,
+    token: CloudflareBearer,
     signal: AbortSignal | undefined,
     beforeAttempt?: (attempt: number) => Promise<void>,
   ): Promise<{ text: string; bytes: number }> {
-    for (let attempt = 0; ; attempt += 1) {
+    let renewed = false;
+    for (let attempt = 0; ;) {
       signal?.throwIfAborted();
       await beforeAttempt?.(attempt);
       try {
         return await this.once(method, path, query, body, token, signal);
       } catch (error) {
+        if (!(error instanceof CloudflareApiError)) throw error;
+        if (error.code === 'credential_rejected' && token.renew !== undefined && !renewed) {
+          renewed = true;
+          const renewal = await token.renew();
+          // O novo envio não gasta uma das novas tentativas das falhas passageiras.
+          if (renewal === 'renewed') continue;
+          if (renewal === 'unavailable')
+            throw new CloudflareApiError('oauth_refresh_unavailable', error.status);
+          throw error;
+        }
         const delay = this.#retryDelaysMs[attempt];
-        if (!(error instanceof CloudflareApiError) || !isRetryable(error) || delay === undefined) throw error;
+        if (!isRetryable(error) || delay === undefined) throw error;
         await sleep(delay, undefined, { signal });
+        attempt += 1;
       }
     }
   }
@@ -387,7 +490,7 @@ export class CloudflareClient {
     path: string,
     query: URLSearchParams | null,
     body: string | null,
-    token: CloudflareToken,
+    token: CloudflareBearer,
     signal: AbortSignal | undefined,
   ): Promise<{ text: string; bytes: number }> {
     const timeout = AbortSignal.timeout(this.#timeoutMs);

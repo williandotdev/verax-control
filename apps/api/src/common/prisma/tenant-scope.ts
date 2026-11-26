@@ -46,6 +46,11 @@ export const TENANT_SCOPED_MODELS = [
   // conta).
   'awsDiscoveryRun',
   'awsSource',
+  // Conexão do Cloudflare por OAuth: as tentativas (o painel começa e conclui, pela sessão) e as concessões, com os tokens
+  // cifrados (o worker grava; a API só solta e manda revogar). As zonas, só o sistema grava (`SYSTEM_WRITTEN_MODELS`).
+  'cloudflareConnectAttempt',
+  'cloudflareGrant',
+  'cloudflareZone',
   // Casos (agrupamento dos alertas), que só o sistema grava (`SYSTEM_WRITTEN_MODELS`), e a triagem em massa: a pessoa
   // pede pela API (pelo escopo da sessão) e o worker executa (pelo escopo do cliente da operação).
   'alertCase',
@@ -79,10 +84,11 @@ const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
  * cliente, `control-plane-sync/deleted-in-panel.ts`). Os casos (`AlertCase`) também: quem abre e sela um caso é o
  * sistema (a pessoa só divide um, por `cases/case-split-store.ts`), e as contagens são dos gatilhos da tabela de alertas; a
  * pessoa trata os alertas. Nos ataques web pelos logs do ALB, o que sai da leitura: os objetos já tratados e o tráfego por
- * país (`weblogs/store/`), a evidência do achado (`alerts/finding-evidence.ts`) e o resumo do dia. No escopo do cliente, só
+ * país (`weblogs/store/`), a evidência do achado (`alerts/finding-evidence.ts`) e o resumo do dia. E as zonas do
+ * Cloudflare (`CloudflareZone`, o que o worker leu de cada uma). No escopo do cliente, só
  * a leitura passa; a gravação é recusada mesmo que um service a tente, e quem grava usa o cliente base, fora do escopo
  * (`tenants/tenant-host.ts`, `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`, `control-plane-sync/`, `cases/`,
- * `weblogs/store/`, `alerts/finding-evidence.ts`).
+ * `weblogs/store/`, `alerts/finding-evidence.ts`, `cloudflare/`).
  */
 export const SYSTEM_WRITTEN_MODELS = [
   'tenantHost',
@@ -94,6 +100,7 @@ export const SYSTEM_WRITTEN_MODELS = [
   'ingestUsageDay',
   'awsVolumeObject',
   'controlPlaneSyncItem',
+  'cloudflareZone',
   'alertCase',
   'webLogObject',
   'findingEvidence',

@@ -52,7 +52,7 @@ export const cellIdSchema = z.string().regex(/^[a-z][a-z0-9-]{1,30}[a-z0-9]$/, {
  * Subdomínio do cliente: a regra do `slugSchema` do plano de controle e do `isTenantSlug` da API e do painel (3 a 16
  * caracteres, sem hífen na 3.ª e na 4.ª posições).
  */
-const slugSchema = z
+export const tenantSlugSchema = z
   .string()
   .regex(/^[a-z][a-z0-9-]{1,14}[a-z0-9]$/, { error: 'subdomínio inválido' })
   .refine((value) => value.slice(2, 4) !== '--', { error: 'subdomínio inválido' });
@@ -207,7 +207,7 @@ export type CellTenantStatus = (typeof CELL_TENANT_STATUSES)[number];
 /** O estado desejado de um cliente na célula: tudo o que o `tenant.upsert` grava, inteiro a cada geração. */
 export const cellTenantStateSchema = z
   .strictObject({
-    slug: slugSchema,
+    slug: tenantSlugSchema,
     name: companyNameSchema,
     /** O endereço da API (`api-<slug>.<domínio>`) e o do painel (`<slug>.control.<domínio>`), no mesmo domínio. */
     hosts: z.strictObject({ api: hostnameSchema, panel: hostnameSchema }),
@@ -309,7 +309,7 @@ export const tenantPurgeCommandSchema = z.strictObject({
   ...commandEnvelope,
   kind: z.literal('tenant.purge'),
   purgeId: ulidSchema,
-  confirmSlug: slugSchema,
+  confirmSlug: tenantSlugSchema,
 });
 
 /** Por que a coleta de um cliente foi pausada pelo responsável (§3.8): volume fora do normal ou decisão dele. */
