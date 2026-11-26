@@ -7737,3 +7737,37 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
   - As regras de login nas instâncias (`HOST_LOGIN_RULES`) entram só com a fonte `wazuh_agent`; as mesmas regras podem disparar
     num grupo do CloudWatch Logs.
   - O teste da API roda no `pnpm test` da API, que exige o banco; ele mesmo não usa banco.
+
+## Auditoria de UX: contas, exceções e cadastros (E-08, E-04, E-10, E-05, E-09, E-13, E-12, E-11) (26/11/2026)
+
+- **O que mudou:** as propostas aprovadas da auditoria de UX de 25/11/2026 nas telas de contas, exceções e cadastros
+  (detalhe em `docs/ARQUITETURA.md`, "Contas, exceções e cadastros depois da auditoria de UX"). E-08: o motivo do erro
+  na lista de Contas cloud e "N fontes precisam de atenção" na conta AWS conectada. E-04: o detalhe da conta AWS
+  conectada abre numa visão geral, com o resto em abas, e o que é igual para um tipo de fonte é dito uma vez. E-10: "O
+  que você autoriza" em linhas com rótulo. E-05: as tabelas de cadastro viram cartões abaixo de 768 px. E-09: o título
+  da regra em Exceções. E-13: uma tela por arquivo e as bibliotecas à parte. E-12 (primeira parte): selo, aviso e
+  etiqueta em `components/ui/status.tsx`, usados em Contas cloud e Exceções. E-11 (nestas telas): 44 px no celular.
+- **API e contratos (compatíveis nos dois sentidos):** duas rotas novas, só de leitura e no escopo da sessão:
+  `GET /v1/cloud-accounts/source-attention` e `GET /v1/alert-exceptions/rule-titles?ruleIds=`. Os contratos estritos da
+  conta e da exceção não ganharam campo (um painel de antes perderia a tela); num nó de antes, as rotas novas dão 404 e
+  o painel mostra o que mostrava. Sem migration.
+- **E-10, as frases do consentimento:** só a forma mudou. "Permite ler …" virou o rótulo "Lê" seguido de "os logs …",
+  "os achados …" e "só os grupos …"; na descoberta, o "Não lê" do começo da segunda frase virou o rótulo. As demais frases
+  foram só agrupadas sob um rótulo, sem mudar nenhuma palavra (o teste remonta o texto de antes e compara). Pede a revisão
+  de quem cuida do DPA e da política de privacidade.
+- **Primeira carga (E-13):** antes, um arquivo de 1.331,6 kB (400,3 kB gzip); depois, o login baixa 718,2 kB (226,0 kB
+  gzip), e Detecções e Contas cloud só quando abertas (250,8 e 180,2 kB). Os links do e-mail de escalonamento ficaram no
+  arquivo principal (leem o token do endereço e o apagam: nenhuma recarga pode perdê-lo). A CSP não muda; o build e o build da
+  demonstração passam pela varredura de segredos.
+- **Dependências novas:** nenhuma.
+- **Testes:** lint (max-warnings 0), formato e tipos sem erros. Contrato: 39 arquivos, 669 testes. API (Postgres
+  próprio, descartado no fim): `cloud-accounts` e `alert-exceptions`, 81 testes (4 novos, com o isolamento por cliente).
+  Painel: a suíte inteira (ver a resposta da tarefa para os números e os testes instáveis sob carga) e os testes de
+  navegador das telas tocadas (onboarding da AWS, buckets, exclusão, ataques web, páginas, exceções de caso, plano,
+  escalonamento, admin master).
+- **Teste manual:** abrir a conta AWS conectada no celular e no computador, nos dois temas; seguir "Ver na tabela" e
+  "Ver a conferência"; conectar uma conta nova até autorizar as primeiras fontes (a passagem para as abas); revisar as
+  linhas de "O que você autoriza".
+- **O que ficou de fora:** E-12 nas outras áreas (Detecções, casos, layout) e E-11 fora destas telas (botões do
+  cabeçalho, filtros e paginação das listas de Detecções). "Como liberar a leitura deste grupo" continua por grupo de
+  logs, porque o comando de cada um é diferente.

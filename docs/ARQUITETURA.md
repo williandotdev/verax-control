@@ -193,6 +193,54 @@ Cloudflare. O certificado gratuito dele cobre só um nível de subdomínio (`*.v
 exigiria o Advanced Certificate Manager, pago à parte (decisão de 02/11/2026). Os painéis não têm esse limite: ficam
 com o proxy desligado e o certificado é do Firebase.
 
+### Contas, exceções e cadastros depois da auditoria de UX (25/11/2026)
+
+O que a auditoria de UX do painel (E-04, E-05, E-08 a E-13) mudou nas telas de contas, exceções e cadastros. Nenhuma
+mudança esconde informação de decisão, tira confirmação, auditoria ou texto de privacidade: as coisas mudam de lugar e
+de forma.
+
+- **Contas cloud, a lista (E-08):** abaixo de "Erro" ou "Aguardando", o motivo curto que o detalhe já mostrava ao lado
+  de "Conexão" (no Cloudflare e na GCP, o do código, quando há). Na conta AWS conectada, "N fontes precisam de
+  atenção": as fontes com a autorização valendo em `stalled`, `permission_error`, `ingestion_error` ou
+  `source_missing` (`AWS_SOURCE_ATTENTION_STATES`, em `packages/shared`). A contagem vem de
+  `GET /v1/cloud-accounts/source-attention` (`cloud_accounts:read`, escopo da sessão, uma consulta agrupada; só as
+  contas com alguma fonte nessa situação). O contrato da conta não ganhou campo: é estrito, e um painel de antes
+  perderia a tela. Num nó de antes, 404, e a lista mostra só o selo.
+- **Contas cloud, o detalhe da conta AWS (E-04):** a conta já conectada (entrou alguma vez e tem fonte autorizada) abre
+  na "Visão geral": uma linha de estado que não contradiz o selo ("Conectada, com 7 fontes que precisam de atenção"),
+  quatro números, o que precisa de atenção (o aviso da coleta no nó, as conferências com falha ou pendentes e as
+  fontes, cada um com o motivo e o link até as ações, sem repetir nenhuma ação) e o resumo do que é lido normalmente.
+  O resto fica em abas, sem perder nada: Fontes lidas, Para autorizar, Ataques web (só com balanceador autorizado),
+  Conexão e pilha (os dados da conta, a situação, as conferências, a pilha, a descoberta) e Avançado (buckets fora do
+  padrão, desativar e excluir). Todas ficam montadas, as escondidas com `hidden`; um link interno (`#aws-conferencias`,
+  a linha de uma fonte, um balanceador, `#aws-buckets`) abre a aba do alvo e rola até ele. A aba fica no endereço
+  (`aba=`). A primeira conexão continua guiada numa página só até a autorização das primeiras fontes; nessa passagem,
+  o foco que ficaria sem lugar vai para a aba aberta. O que é igual para todo um tipo de fonte (o que ele traz, como é
+  coletado, o aviso de volume alto) é dito na primeira fonte do tipo, e não em cada linha; a confirmação da
+  autorização continua com o texto inteiro.
+- **"O que você autoriza" (E-10):** cada autorização em linhas com rótulo (Lê, Onde, Não lê, Não faz, Dado pessoal,
+  Vê), com as mesmas frases de antes (`AWS_AUTHORIZATION_TEXTS`, com teste que remonta o texto de antes). A caixa de
+  cada autorização é descrita pelo texto inteiro, com os rótulos.
+- **Exceções (E-09):** a coluna "Regra" mostra o título da regra, com o número embaixo. O título é o do alerta mais
+  recente da regra no cliente, nos últimos 180 dias: `GET /v1/alert-exceptions/rule-titles?ruleIds=…`
+  (`alert_exceptions:read`, escopo da sessão, até 50 regras, uma consulta por regra). Regra sem alerta na janela, ou
+  nó de antes (404): só o número. O título vem do log e é mostrado como texto. "Nova exceção" diz no topo que o caminho
+  mais fácil é criar a exceção a partir de um alerta ou de um caso.
+- **Cadastros no celular (E-05):** abaixo de 768 px, a tabela comum (`components/data-table.tsx`) mostra cada linha como
+  um cartão (uma lista com o nome da tabela): a coluna `card: 'title'` inteira em cima, a `card: 'status'` ao lado e o
+  resto embaixo, com o nome da coluna; `cardOmit` tira o que é o normal (como "Ativa"). O cartão inteiro aciona o botão
+  do título. Sem coluna `title`, a tabela continua tabela.
+- **Peças únicas (E-12, primeira parte):** o ícone do tom, o selo, o aviso e a etiqueta ficam em
+  `components/ui/status.tsx`; as telas da AWS os usam por `aws-ui.tsx`, e Contas cloud e Exceções já os usam direto
+  ("Vencida em" ganhou o ícone).
+- **Toque (E-11, nestas telas):** abas da conta, links da visão geral, botões da regra e da paginação dos cadastros
+  com 44 px abaixo de 768 px; o cartão inteiro como alvo.
+- **Primeira carga (E-13):** as telas do painel são carregadas quando abertas (`React.lazy` em `routes/router.tsx`,
+  com "Carregando a tela…"); o login e as telas de entrada ficam no arquivo principal, e as bibliotecas num arquivo
+  `vendor` (`build.rolldownOptions.output.codeSplitting`), que só muda com as dependências. A CSP não muda (arquivos do
+  próprio domínio). Os links do e-mail de escalonamento ficam no arquivo principal (leem o token do endereço e o apagam).
+  Nos testes de tela, `src/test/router.ts` pré-carrega as telas (`preloadPages`), só no Vitest.
+
 ### API presa ao endereço do cliente na célula (CE-01)
 
 Na célula compartilhada do Plataforma (`NODE_MODE=cell`; o padrão `dedicated` é o nó de um cliente, como sempre),
