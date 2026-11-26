@@ -1007,6 +1007,8 @@ Resources:
 
   # Só com EnableAlbAccessLogs: o destino do log dos ALB desta região (o ALB só grava em bucket da região dele, e com
   # SSE-S3: não aceita chave do KMS). Bucket e política ficam (Retain) se a opção for desligada: nenhum ALB perde o log.
+  # Trivy AWS-0132 (chave do KMS) não se aplica: o ALB só entrega o log com SSE-S3.
+  # trivy:ignore:AWS-0132
   AlbLogsBucket:
     Type: AWS::S3::Bucket
     Condition: ManagesAlbLogs
