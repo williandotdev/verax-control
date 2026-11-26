@@ -208,11 +208,19 @@
     background: linear-gradient(to top, transparent, color-mix(in srgb, var(--primary) 70%, transparent));
   }
 
+  /* E-14: só a opacidade anima (sem `transform` no SVG, que pedia layout a cada quadro). */
   .radar-echo {
-    transform-box: fill-box;
-    transform-origin: center;
     opacity: 0;
     animation: radar-echo 7s ease-out infinite;
+  }
+
+  /* E-14: um minuto sem ninguém mexer na tela, a varredura e o brilho param; voltam no primeiro movimento. */
+  [data-idle] .radar-sweep {
+    animation-play-state: paused;
+  }
+
+  [data-idle] .radar-echo {
+    animation: none;
   }
 
   .radar-pulse {
@@ -286,13 +294,11 @@
 
 @keyframes radar-echo {
   0% {
-    opacity: 0.55;
-    transform: scale(1);
+    opacity: 0.4;
   }
   35%,
   100% {
     opacity: 0;
-    transform: scale(2.6);
   }
 }
 

@@ -25,6 +25,7 @@ import { SEVERITY_MARKS, SEVERITY_STYLES } from '@/design/severity';
 import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
 import { cn } from '@/lib/cn';
 import { formatCount, formatList, formatRelative, plural } from '@/lib/format';
+import { useIdle } from '@/lib/use-idle';
 import { usePrefersReducedMotion } from '@/lib/use-reduced-motion';
 import { SeverityBadge } from './severity-badge';
 import {
@@ -62,6 +63,10 @@ const SECTOR_CORNERS: Readonly<Record<RadarSector, { x: number; y: number; ancho
 
 /** Quantas detecções a lista ao lado do radar mostra; as outras ficam na tabela. */
 const RECENT_COUNT = 5;
+/** Sem ninguém mexer na tela por um minuto, o radar para de animar (E-14). */
+export const RADAR_IDLE_MS = 60_000;
+/** O tamanho do brilho em relação ao ponto: ele nasce grande e só a opacidade anima (E-14). */
+const ECHO_SCALE = 2.2;
 
 /** Para onde levam a detecção (ou o caso), o incidente dela e o "ver todas": o detalhe e a lista da tela Detecções. */
 export interface RadarLinks {
@@ -419,6 +424,7 @@ function RadarScope({
   onOpen: (id: string) => void;
 }) {
   const [frame, setFrame] = useState<HTMLDivElement | null>(null);
+  const idle = useIdle(RADAR_IDLE_MS);
   const [active, setActive] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const pointerType = useRef<string>('mouse');
@@ -502,7 +508,12 @@ function RadarScope({
   const drawn = [...points].reverse().sort((a, b) => b.scale - a.scale);
 
   return (
-    <div ref={setFrame} className="relative mx-auto aspect-square w-full max-w-[26rem]">
+    // E-14: parado há um minuto, o radar para de animar (a varredura e o brilho) e volta no primeiro movimento.
+    <div
+      ref={setFrame}
+      data-idle={idle || undefined}
+      className="relative mx-auto aspect-square w-full max-w-[26rem]"
+    >
       <div aria-hidden className="absolute inset-[10%] rounded-full border border-border-strong bg-surface" />
       {motion && (
         <div
@@ -739,10 +750,11 @@ const BlipMark = memo(function BlipMark({
     >
       <circle cx={x} cy={y} r={Math.max(16, radius + 4)} className="fill-transparent" />
       {motion && (
+        // E-14: o brilho já nasce no tamanho final e só a opacidade anima: sem `transform` no SVG, nenhum layout por quadro.
         <circle
           cx={x}
           cy={y}
-          r={radius + 1}
+          r={(radius + 1) * ECHO_SCALE}
           className={cn('radar-echo pointer-events-none', marks.fill)}
           style={{ animationDelay: `${echoDelay(point.angle)}ms` }}
         />

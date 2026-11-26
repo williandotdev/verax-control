@@ -1,10 +1,10 @@
 import type { RadarCase, RadarDetection, TowerRadar } from '@verax/shared';
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { createMemoryRouter, MemoryRouter, RouterProvider, useLocation } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DetectionRadar } from './detection-radar';
+import { DetectionRadar, RADAR_IDLE_MS } from './detection-radar';
 
 const NOW = '2026-11-15T12:00:00.000Z';
 const minutesAgo = (minutes: number) => new Date(Date.parse(NOW) - minutes * 60_000).toISOString();
@@ -215,6 +215,29 @@ describe('radar de detecções', () => {
     const pulses = container.querySelectorAll('[data-pulse]');
     expect(pulses).toHaveLength(1);
     expect(pulses[0]?.closest('[data-blip]')).toHaveAttribute('data-blip', id(1));
+  });
+
+  it('E-14: o brilho só muda a opacidade, e um minuto sem movimento para a animação até a próxima interação', () => {
+    vi.useFakeTimers();
+    try {
+      mockReducedMotion(false);
+      const { container } = renderRadar(<DetectionRadar radar={radarOf(DETECTIONS)} generatedAt={NOW} />);
+      const frame = container.querySelector('[data-radar-sweep]')?.parentElement;
+      expect(frame).not.toHaveAttribute('data-idle');
+      // O brilho nasce no tamanho final: nada de `transform` por quadro.
+      for (const echo of container.querySelectorAll('.radar-echo'))
+        expect(echo).not.toHaveAttribute('style', expect.stringContaining('transform'));
+      act(() => {
+        vi.advanceTimersByTime(RADAR_IDLE_MS);
+      });
+      expect(frame).toHaveAttribute('data-idle', 'true');
+      act(() => {
+        window.dispatchEvent(new Event('pointermove'));
+      });
+      expect(frame).not.toHaveAttribute('data-idle');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('com menos movimento pedido: sem varredura, sem brilho e sem pulso; o radar continua completo', () => {
