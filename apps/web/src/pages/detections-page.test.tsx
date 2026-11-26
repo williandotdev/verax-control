@@ -847,6 +847,24 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
 });
 
 describe('Detecções: análise e exportação', () => {
+  it('R-11: a tabela completa do MITRE fica atrás de "Ver tabela completa"; o CSV e o gráfico continuam à vista', async () => {
+    renderAt('/?analise=mitre&periodo=30d');
+    const table = await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' }, SLOW);
+    const details = table.closest('details');
+    expect(details).not.toHaveAttribute('open');
+    expect(
+      within(details!).getByText('Ver tabela completa (14 táticas, com as técnicas)'),
+    ).toBeInTheDocument();
+    const csv = screen.getByRole('button', { name: 'Exportar Táticas e técnicas do MITRE ATT&CK em CSV' });
+    expect(details).not.toContainElement(csv);
+    expect(screen.getByRole('list', { name: 'Táticas com alertas' })).toBeInTheDocument();
+    // A nota sobre os alertas sem tática sai da frente (a matriz não está vazia).
+    expect(screen.getByText(/^A matriz mostra ações de um ataque/).closest('details')).not.toHaveAttribute(
+      'open',
+    );
+    expect(screen.getByText('Por que há alertas sem tática?')).toBeInTheDocument();
+  });
+
   it('MITRE ATT&CK no período da tela; a tática filtra a lista', async () => {
     const router = renderAt('/?analise=mitre&periodo=7d');
     expect(screen.queryByRole('table', { name: /^Alertas do cliente/ })).toBeNull();

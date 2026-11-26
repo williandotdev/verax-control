@@ -14,6 +14,7 @@ import { PieChart } from '@/components/charts/pie-chart';
 import { SeverityBadge } from '@/components/security/severity-badge';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Card } from '@/components/ui/card';
+import { Explainer } from '@/components/ui/explainer';
 import { SEVERITY_MARKS, SEVERITY_STYLES } from '@/design/severity';
 import { PROVIDER_LABELS } from '@/features/admin/labels';
 import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
@@ -148,15 +149,19 @@ export function MitreReportView({
     <Loaded query={report} label="o MITRE ATT&CK">
       {(data) => (
         <>
+          {/* R-11: a nota sai da frente, menos com a matriz vazia, onde ela é a explicação do vazio. */}
           {data.tactics.every((tactic) => tactic.findings === 0) ? (
             <MitreEmptyNote range={range} />
           ) : (
-            <p className="text-xs text-muted-foreground">{NO_TACTIC_EXPLANATION}</p>
+            <Explainer label="Por que há alertas sem tática?">
+              <p className="text-xs">{NO_TACTIC_EXPLANATION}</p>
+            </Explainer>
           )}
           <MitreRadar tactics={data.tactics} tacticHref={tacticHref} />
           <ReportTable
             caption="Táticas e técnicas do MITRE ATT&CK"
             file={'mitre-attck'}
+            collapsed={`Ver tabela completa (${data.tactics.length} táticas, com as técnicas)`}
             rows={tacticShares(data.tactics)}
             rowKey={({ tactic }) => tactic.id}
             columns={[

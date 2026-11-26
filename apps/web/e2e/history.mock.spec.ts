@@ -77,7 +77,8 @@ test.describe('histórico de 12 meses (modo mock)', () => {
         await ready(page, 'Detecções');
         await expect(page.getByRole('combobox', { name: 'Período' })).toHaveValue('12m');
         await expect(page.getByRole('group', { name: /^Gráfico de radar das táticas/ })).toBeVisible();
-        // As 14 táticas, mais o cabeçalho.
+        // As 14 táticas, mais o cabeçalho, atrás de "Ver tabela completa" (R-11).
+        await page.getByText(/^Ver tabela completa \(14 táticas/).click();
         await expect(
           page.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' }).getByRole('row'),
         ).toHaveCount(15);

@@ -1,4 +1,4 @@
-import { Download } from 'lucide-react';
+import { ChevronRight, Download } from 'lucide-react';
 import { type ReactNode, useContext } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/cn';
@@ -80,8 +80,14 @@ export function ReportTable<Row>({
   rowKey,
   file,
   empty = 'Nada no período.',
+  collapsed,
 }: {
   caption: string;
+  /**
+   * Com um rótulo, a tabela fica atrás de um trecho que abre e fecha ("Ver tabela completa"), quando o gráfico e a lista
+   * ao lado já dão a leitura (R-11). O CSV continua à vista.
+   */
+  collapsed?: string;
   columns: readonly ReportColumn<Row>[];
   rows: readonly Row[];
   rowKey: (row: Row, index: number) => string;
@@ -97,51 +103,67 @@ export function ReportTable<Row>({
       {rows.length === 0 ? (
         <p className="rounded-md border p-3 text-sm text-muted-foreground">{empty}</p>
       ) : (
-        // Rola por dentro no celular: o foco pelo teclado deixa ler as colunas da direita sem mouse.
-        <div
-          role="region"
-          aria-label={`Tabela: ${caption}`}
-          tabIndex={0}
-          className="overflow-x-auto rounded-md border focus-visible:outline-2 focus-visible:outline-ring"
-        >
-          <table className="w-full text-sm">
-            <caption className="sr-only">{caption}</caption>
-            <thead className="bg-foreground/[0.03] text-left text-xs text-muted-foreground">
-              <tr>
-                {columns.map((column) => (
-                  <th
-                    key={column.header}
-                    scope="col"
-                    className={cn(
-                      'px-3 py-2 font-medium whitespace-nowrap',
-                      column.align === 'right' && 'text-right',
-                    )}
-                  >
-                    {column.header}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => (
-                <tr key={rowKey(row, index)} className="border-t">
+        <Collapsible label={collapsed}>
+          // Rola por dentro no celular: o foco pelo teclado deixa ler as colunas da direita sem mouse.
+          <div
+            role="region"
+            aria-label={`Tabela: ${caption}`}
+            tabIndex={0}
+            className="overflow-x-auto rounded-md border focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            <table className="w-full text-sm">
+              <caption className="sr-only">{caption}</caption>
+              <thead className="bg-foreground/[0.03] text-left text-xs text-muted-foreground">
+                <tr>
                   {columns.map((column) => (
-                    <td
+                    <th
                       key={column.header}
+                      scope="col"
                       className={cn(
-                        'px-3 py-2 align-top',
-                        column.align === 'right' && 'text-right tabular-nums',
+                        'px-3 py-2 font-medium whitespace-nowrap',
+                        column.align === 'right' && 'text-right',
                       )}
                     >
-                      {column.cell(row)}
-                    </td>
+                      {column.header}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.map((row, index) => (
+                  <tr key={rowKey(row, index)} className="border-t">
+                    {columns.map((column) => (
+                      <td
+                        key={column.header}
+                        className={cn(
+                          'px-3 py-2 align-top',
+                          column.align === 'right' && 'text-right tabular-nums',
+                        )}
+                      >
+                        {column.cell(row)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Collapsible>
       )}
     </ReportSection>
+  );
+}
+
+/** A tabela atrás de um trecho que abre e fecha, ou à vista (sem rótulo). */
+function Collapsible({ label, children }: { label: string | undefined; children: ReactNode }) {
+  if (label === undefined) return children;
+  return (
+    <details className="group">
+      <summary className="inline-flex min-h-6 cursor-pointer list-none items-center gap-1 rounded py-1 text-sm font-medium text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring max-sm:min-h-11 [&::-webkit-details-marker]:hidden">
+        <ChevronRight aria-hidden className="size-4 group-open:rotate-90 motion-safe:transition-transform" />
+        {label}
+      </summary>
+      <div className="mt-2">{children}</div>
+    </details>
   );
 }

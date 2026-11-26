@@ -157,6 +157,9 @@ test.describe('tela Detecções (modo mock)', () => {
           'true',
         );
         await expect(page.getByRole('group', { name: /^Gráfico de radar das táticas/ })).toBeVisible();
+        // R-11: a tabela completa fica atrás de "Ver tabela completa"; aberta, também sem violação.
+        await expect(page.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' })).toBeHidden();
+        await page.getByText(/^Ver tabela completa \(14 táticas/).click();
         await expect(page.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' })).toBeVisible();
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
