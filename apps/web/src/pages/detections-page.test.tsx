@@ -964,6 +964,21 @@ describe('Detecções no computador: a lista ao lado do radar', () => {
 });
 
 describe('Detecções: análise e exportação', () => {
+  it('E-07: "Baixar o relatório do período" abre a impressão só do Resumo; os CSVs continuam', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    renderAt('/?analise=resumo&periodo=30d');
+    const button = await screen.findByRole('button', { name: 'Baixar o relatório do período' }, SLOW);
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(button).toHaveAccessibleDescription(/Salvar como PDF/);
+    expect(button.closest('[data-print-area="resumo"]')).not.toBeNull();
+    await userEvent.click(button);
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(document.documentElement.dataset['printing']).toBe('resumo');
+    window.dispatchEvent(new Event('afterprint'));
+    expect(document.documentElement.dataset['printing']).toBeUndefined();
+    expect(screen.getAllByRole('button', { name: /^Exportar .* em CSV$/ }).length).toBeGreaterThan(0);
+  });
+
   it('R-11: a tabela completa do MITRE fica atrás de "Ver tabela completa"; o CSV e o gráfico continuam à vista', async () => {
     renderAt('/?analise=mitre&periodo=30d');
     const table = await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' }, SLOW);

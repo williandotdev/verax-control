@@ -321,3 +321,23 @@
     animation: none;
   }
 }
+
+/*
+ * A folha de impressão do relatório do período (E-07): com a página marcada por "Baixar o relatório do período", só a
+ * área do Resumo vai para o papel (ou para o PDF do navegador), na largura toda, sem o menu nem os botões.
+ */
+@media print {
+  html[data-printing] body * {
+    visibility: hidden;
+  }
+
+  html[data-printing] [data-print-area],
+  html[data-printing] [data-print-area] * {
+    visibility: visible;
+  }
+
+  html[data-printing] [data-print-area] {
+    position: absolute;
+    inset: 0 0 auto;
+  }
+}

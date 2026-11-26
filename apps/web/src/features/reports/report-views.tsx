@@ -6,13 +6,15 @@ import {
   type ReportWindowPeriod,
   type SummaryReport,
 } from '@verax/shared';
-import { type ReactNode, useContext } from 'react';
+import { Printer } from 'lucide-react';
+import { type ReactNode, useContext, useId } from 'react';
 import { Link } from 'react-router';
 import { INK_RAMP } from '@/components/charts/chart-utils';
 import { LineChart } from '@/components/charts/line-chart';
 import { PieChart } from '@/components/charts/pie-chart';
 import { SeverityBadge } from '@/components/security/severity-badge';
 import { ErrorState, LoadingState } from '@/components/states';
+import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Explainer } from '@/components/ui/explainer';
 import { SEVERITY_MARKS, SEVERITY_STYLES } from '@/design/severity';
@@ -100,6 +102,42 @@ function periodLine(from: string, to: string): string {
   const first = short ? formatMinute(start) : sameYear ? formatDate(start).slice(0, 5) : formatDate(start);
   const last = short ? formatMinute(end) : formatDate(end);
   return `Período: ${first} a ${last} (o do filtro da lista; sem filtro, os últimos 30 dias).`;
+}
+
+/**
+ * "Baixar o relatório do período" (E-07): a folha de impressão do Resumo. Marca a página para o CSS de impressão mostrar
+ * só a área do Resumo, abre a impressão do navegador (que salva em PDF) e tira a marca ao fechar. Os CSVs continuam.
+ */
+function PrintReportButton({ disabled }: { disabled: boolean }) {
+  const hintId = useId();
+  const print = () => {
+    const root = document.documentElement;
+    root.dataset['printing'] = 'resumo';
+    const done = () => {
+      delete root.dataset['printing'];
+      window.removeEventListener('afterprint', done);
+    };
+    window.addEventListener('afterprint', done);
+    window.print();
+  };
+  return (
+    <>
+      <span id={hintId} className="text-xs text-muted-foreground">
+        Abre a impressão do navegador: escolha “Salvar como PDF”.
+      </span>
+      <Button
+        variant="secondary"
+        size="sm"
+        className="max-sm:min-h-11"
+        disabled={disabled}
+        aria-describedby={hintId}
+        onClick={print}
+      >
+        <Printer aria-hidden />
+        Baixar o relatório do período
+      </Button>
+    </>
+  );
 }
 
 /** Por que um alerta pode ficar sem tática, em linguagem simples. */
@@ -312,104 +350,114 @@ function CasesSummary({ cases }: { cases: NonNullable<SummaryReport['cases']> })
 export function SummaryReportView({ range }: { range: ReportRange }) {
   const report = useReport('summary', range, true);
   return (
-    <Loaded query={report} label="o resumo">
-      {(data) => (
-        <>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <Kpi label="Alertas no período" value={formatCount(data.findings.total)} />
-            <Kpi label="Incidentes abertos no período" value={formatCount(data.incidents.opened)} />
-            <Kpi label="Incidentes resolvidos" value={formatCount(data.incidents.resolved)} />
-            <Kpi label="Tempo médio até a validação" value={formatDuration(data.meanTimeToTriageMinutes)} />
-            <Kpi label="Tempo médio até a resolução" value={formatDuration(data.meanTimeToResolveMinutes)} />
-          </div>
-          {data.cases && <CasesSummary cases={data.cases} />}
-          <div className="grid gap-6 lg:grid-cols-3">
-            <ReportTable
-              caption="Alertas por severidade"
-              file={'alertas-por-severidade'}
-              rows={FINDING_SEVERITIES.map((severity) => ({
-                severity,
-                count: data.findings.bySeverity[severity],
-              }))}
-              rowKey={(row) => row.severity}
-              columns={[
-                {
-                  header: 'Severidade',
-                  cell: (row) => <SeverityBadge severity={row.severity} />,
-                  csv: (row) => SEVERITY_STYLES[row.severity].label,
-                },
-                { header: 'Alertas', cell: (row) => row.count, csv: (row) => row.count, align: 'right' },
-              ]}
-            />
+    // E-07: o Resumo é a área que vai para a folha de impressão (o navegador salva em PDF), sem biblioteca nova.
+    <div data-print-area="resumo" className="space-y-4">
+      <div className="flex flex-wrap items-center justify-end gap-2 print:hidden">
+        <PrintReportButton disabled={!report.data || report.isPlaceholderData} />
+      </div>
+      <p className="hidden text-lg font-semibold print:block">Verax Control · Relatório do período</p>
+      <Loaded query={report} label="o resumo">
+        {(data) => (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <Kpi label="Alertas no período" value={formatCount(data.findings.total)} />
+              <Kpi label="Incidentes abertos no período" value={formatCount(data.incidents.opened)} />
+              <Kpi label="Incidentes resolvidos" value={formatCount(data.incidents.resolved)} />
+              <Kpi label="Tempo médio até a validação" value={formatDuration(data.meanTimeToTriageMinutes)} />
+              <Kpi
+                label="Tempo médio até a resolução"
+                value={formatDuration(data.meanTimeToResolveMinutes)}
+              />
+            </div>
+            {data.cases && <CasesSummary cases={data.cases} />}
+            <div className="grid gap-6 lg:grid-cols-3">
+              <ReportTable
+                caption="Alertas por severidade"
+                file={'alertas-por-severidade'}
+                rows={FINDING_SEVERITIES.map((severity) => ({
+                  severity,
+                  count: data.findings.bySeverity[severity],
+                }))}
+                rowKey={(row) => row.severity}
+                columns={[
+                  {
+                    header: 'Severidade',
+                    cell: (row) => <SeverityBadge severity={row.severity} />,
+                    csv: (row) => SEVERITY_STYLES[row.severity].label,
+                  },
+                  { header: 'Alertas', cell: (row) => row.count, csv: (row) => row.count, align: 'right' },
+                ]}
+              />
+              <ReportSection
+                caption="Alertas por status"
+                file={'alertas-por-status'}
+                rows={statusRows(data.findings.byStatus)}
+                csv={[
+                  { header: 'Status', csv: (row) => FINDING_STATUS_LABELS[row.status].label },
+                  { header: 'Alertas', csv: (row) => row.count },
+                ]}
+              >
+                <PieChart
+                  title="Alertas por status"
+                  className={CHART_FRAME}
+                  unit={ALERTS}
+                  columns={{ category: 'Status', value: 'Alertas' }}
+                  empty="Nenhum alerta no período."
+                  slices={statusRows(data.findings.byStatus).map((row) => ({
+                    key: row.status,
+                    label: FINDING_STATUS_LABELS[row.status].label,
+                    icon: FINDING_STATUS_LABELS[row.status].icon,
+                    value: row.count,
+                    ...STATUS_TONES[row.status],
+                  }))}
+                />
+              </ReportSection>
+              <ReportTable
+                caption="Alertas por fonte"
+                file={'alertas-por-fonte'}
+                rows={data.findings.bySource}
+                rowKey={(row) => row.source}
+                columns={[
+                  {
+                    header: 'Fonte',
+                    cell: (row) => sourceLabel(row.source),
+                    csv: (row) => sourceLabel(row.source),
+                  },
+                  { header: 'Alertas', cell: (row) => row.count, csv: (row) => row.count, align: 'right' },
+                ]}
+              />
+            </div>
             <ReportSection
-              caption="Alertas por status"
-              file={'alertas-por-status'}
-              rows={statusRows(data.findings.byStatus)}
+              caption="Alertas por dia"
+              file={'alertas-por-dia'}
+              rows={[...data.daily].reverse()}
               csv={[
-                { header: 'Status', csv: (row) => FINDING_STATUS_LABELS[row.status].label },
-                { header: 'Alertas', csv: (row) => row.count },
+                { header: 'Dia', csv: (row) => row.date },
+                ...FINDING_SEVERITIES.map((severity) => ({
+                  header: SEVERITY_STYLES[severity].label,
+                  csv: (row: (typeof data.daily)[number]) => row[severity],
+                })),
               ]}
             >
-              <PieChart
-                title="Alertas por status"
+              <LineChart
+                title="Alertas por dia"
                 className={CHART_FRAME}
+                rows={data.daily}
                 unit={ALERTS}
-                columns={{ category: 'Status', value: 'Alertas' }}
                 empty="Nenhum alerta no período."
-                slices={statusRows(data.findings.byStatus).map((row) => ({
-                  key: row.status,
-                  label: FINDING_STATUS_LABELS[row.status].label,
-                  icon: FINDING_STATUS_LABELS[row.status].icon,
-                  value: row.count,
-                  ...STATUS_TONES[row.status],
+                series={FINDING_SEVERITIES.map((severity) => ({
+                  key: severity,
+                  label: SEVERITY_STYLES[severity].label,
+                  icon: SEVERITY_STYLES[severity].icon,
+                  iconClass: SEVERITY_STYLES[severity].tone,
+                  ...SEVERITY_MARKS[severity],
                 }))}
               />
             </ReportSection>
-            <ReportTable
-              caption="Alertas por fonte"
-              file={'alertas-por-fonte'}
-              rows={data.findings.bySource}
-              rowKey={(row) => row.source}
-              columns={[
-                {
-                  header: 'Fonte',
-                  cell: (row) => sourceLabel(row.source),
-                  csv: (row) => sourceLabel(row.source),
-                },
-                { header: 'Alertas', cell: (row) => row.count, csv: (row) => row.count, align: 'right' },
-              ]}
-            />
-          </div>
-          <ReportSection
-            caption="Alertas por dia"
-            file={'alertas-por-dia'}
-            rows={[...data.daily].reverse()}
-            csv={[
-              { header: 'Dia', csv: (row) => row.date },
-              ...FINDING_SEVERITIES.map((severity) => ({
-                header: SEVERITY_STYLES[severity].label,
-                csv: (row: (typeof data.daily)[number]) => row[severity],
-              })),
-            ]}
-          >
-            <LineChart
-              title="Alertas por dia"
-              className={CHART_FRAME}
-              rows={data.daily}
-              unit={ALERTS}
-              empty="Nenhum alerta no período."
-              series={FINDING_SEVERITIES.map((severity) => ({
-                key: severity,
-                label: SEVERITY_STYLES[severity].label,
-                icon: SEVERITY_STYLES[severity].icon,
-                iconClass: SEVERITY_STYLES[severity].tone,
-                ...SEVERITY_MARKS[severity],
-              }))}
-            />
-          </ReportSection>
-        </>
-      )}
-    </Loaded>
+          </>
+        )}
+      </Loaded>
+    </div>
   );
 }
 
