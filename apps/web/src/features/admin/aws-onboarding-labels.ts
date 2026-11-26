@@ -784,35 +784,85 @@ export const AWS_LOG_GROUP_CATEGORY_LABELS: Readonly<Record<AwsLogGroupCategory,
 
 // --- O que o cliente autoriza ---
 
+/** Uma linha do que o cliente autoriza: o rótulo ("Lê", "Onde", "Não lê", "Dado pessoal") e o texto. */
+export interface AuthorizationLine {
+  label: string;
+  text: string;
+}
+
+/**
+ * Uma autorização do papel de leitura (E-10 da auditoria de UX): o que permite e o que não permite, em linhas com rótulo
+ * no lugar de um parágrafo corrido. É texto de consentimento: só a forma mudou; as frases são as mesmas de antes (a
+ * lista do que foi dividido ou juntado está no registro da mudança, em `docs/STATUS.md`).
+ */
 interface AuthorizationText {
   label: string;
-  /** O que permite e o que não permite, num parágrafo. */
-  description: string;
+  lines: readonly AuthorizationLine[];
+}
+
+/** O texto corrido de uma autorização ("Lê: … Onde: …"), para o leitor de tela e para quem precisa do texto inteiro. */
+export function authorizationDescription(text: Pick<AuthorizationText, 'lines'>): string {
+  return text.lines.map((line) => `${line.label}: ${line.text}`).join(' ');
 }
 
 export const AWS_AUTHORIZATION_TEXTS: Readonly<Record<AwsReaderAuthorization, AuthorizationText>> = {
   'service-logs': {
     label: 'Logs de serviços da AWS no S3',
-    description:
-      'Permite ler os logs que a própria AWS grava no S3 para esta conta: CloudTrail, VPC Flow Logs, WAF e o export do GuardDuty; e, onde a detecção de ataques web estiver ligada, os logs de acesso dos balanceadores de aplicação (ALB) que você autorizar, um a um. O Verax lê o conteúdo só do que está na pasta AWSLogs/<conta>/, em qualquer bucket, e você não informa bucket nenhum. Para achar essa pasta, ele lista os nomes do primeiro nível dos buckets: só os nomes, nunca o conteúdo. Nenhum outro arquivo seu é lido. Dos logs do ALB, o Verax analisa todas as linhas e não guarda nenhuma: fica só a evidência mascarada de um ataque, com a indicação do arquivo no seu próprio S3. Essa análise trata os endereços IP de quem visita a sua aplicação.',
+    lines: [
+      {
+        label: 'Lê',
+        text: 'os logs que a própria AWS grava no S3 para esta conta: CloudTrail, VPC Flow Logs, WAF e o export do GuardDuty; e, onde a detecção de ataques web estiver ligada, os logs de acesso dos balanceadores de aplicação (ALB) que você autorizar, um a um.',
+      },
+      {
+        label: 'Onde',
+        text: 'O Verax lê o conteúdo só do que está na pasta AWSLogs/<conta>/, em qualquer bucket, e você não informa bucket nenhum. Para achar essa pasta, ele lista os nomes do primeiro nível dos buckets: só os nomes, nunca o conteúdo.',
+      },
+      { label: 'Não lê', text: 'Nenhum outro arquivo seu é lido.' },
+      {
+        label: 'Dado pessoal',
+        text: 'Dos logs do ALB, o Verax analisa todas as linhas e não guarda nenhuma: fica só a evidência mascarada de um ataque, com a indicação do arquivo no seu próprio S3. Essa análise trata os endereços IP de quem visita a sua aplicação.',
+      },
+    ],
   },
   findings: {
     label: 'Achados de segurança',
-    description:
-      'Permite ler os achados do GuardDuty, do Security Hub, do Inspector e do IAM Access Analyzer. Não liga nenhum desses serviços (ligar tem custo na AWS, e a decisão é sua) e não altera, arquiva nem apaga achado nenhum.',
+    lines: [
+      {
+        label: 'Lê',
+        text: 'os achados do GuardDuty, do Security Hub, do Inspector e do IAM Access Analyzer.',
+      },
+      {
+        label: 'Não faz',
+        text: 'Não liga nenhum desses serviços (ligar tem custo na AWS, e a decisão é sua) e não altera, arquiva nem apaga achado nenhum.',
+      },
+    ],
   },
   'log-groups': {
     label: 'Grupos do CloudWatch Logs marcados',
-    description:
-      'Permite ler só os grupos de logs em que você puser a etiqueta verax-control = leitura, um a um. Sem a etiqueta, o Verax vê o nome e o tamanho do grupo, nunca o conteúdo. Logs de aplicação podem conter dados pessoais: por isso a escolha é sua, grupo a grupo.',
+    lines: [
+      {
+        label: 'Lê',
+        text: 'só os grupos de logs em que você puser a etiqueta verax-control = leitura, um a um.',
+      },
+      { label: 'Não lê', text: 'Sem a etiqueta, o Verax vê o nome e o tamanho do grupo, nunca o conteúdo.' },
+      {
+        label: 'Dado pessoal',
+        text: 'Logs de aplicação podem conter dados pessoais: por isso a escolha é sua, grupo a grupo.',
+      },
+    ],
   },
 };
 
 /** A parte que vale sempre: sem ela não há o que mostrar nesta tela. */
 export const AWS_DISCOVERY_AUTHORIZATION_TEXT: AuthorizationText = {
   label: 'Descoberta e postura (sempre ligada)',
-  description:
-    'Para mostrar aqui as fontes de log que existem na conta e alimentar Ativos e Postura, o Verax vê configuração e nomes. Não lê evento de log, achado, arquivo nem dado de banco.',
+  lines: [
+    {
+      label: 'Vê',
+      text: 'Para mostrar aqui as fontes de log que existem na conta e alimentar Ativos e Postura, o Verax vê configuração e nomes.',
+    },
+    { label: 'Não lê', text: 'evento de log, achado, arquivo nem dado de banco.' },
+  ],
 };
 
 /** O que vale para as três: nada é criado nem alterado, e como tirar o acesso. */

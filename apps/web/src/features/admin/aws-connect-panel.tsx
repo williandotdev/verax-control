@@ -28,6 +28,7 @@ import {
   AWS_AUTHORIZATION_FOOTNOTE,
   AWS_AUTHORIZATION_TEXTS,
   AWS_DISCOVERY_AUTHORIZATION_TEXT,
+  type AuthorizationLine,
   AWS_PREFILL_PROBLEM_TEXTS,
   awsOnboardingErrorText,
 } from '@/features/admin/aws-onboarding-labels';
@@ -61,7 +62,7 @@ export function AwsAuthorizationChoices({
         <ToneIcon tone="ok" className="mt-0.5" />
         <div className="space-y-0.5">
           <p className="font-medium">{AWS_DISCOVERY_AUTHORIZATION_TEXT.label}</p>
-          <p className="text-xs text-muted-foreground">{AWS_DISCOVERY_AUTHORIZATION_TEXT.description}</p>
+          <AuthorizationLines lines={AWS_DISCOVERY_AUTHORIZATION_TEXT.lines} />
         </div>
       </div>
       {AWS_READER_AUTHORIZATIONS.map((authorization) => {
@@ -82,15 +83,30 @@ export function AwsAuthorizationChoices({
               <label htmlFor={fieldId} className="font-medium">
                 {text.label}
               </label>
-              <p id={`${fieldId}-dica`} className="text-xs text-muted-foreground">
-                {text.description}
-              </p>
+              <AuthorizationLines id={`${fieldId}-dica`} lines={text.lines} />
             </div>
           </div>
         );
       })}
       <p className="text-xs text-muted-foreground">{AWS_AUTHORIZATION_FOOTNOTE}</p>
     </fieldset>
+  );
+}
+
+/**
+ * O que uma autorização permite e não permite, em linhas com rótulo (E-10): o rótulo em destaque e o texto ao lado; no
+ * celular, um embaixo do outro. É uma lista de definições, lida inteira como a descrição da caixa de marcar.
+ */
+function AuthorizationLines({ lines, id }: { lines: readonly AuthorizationLine[]; id?: string }) {
+  return (
+    <dl id={id} className="grid gap-x-2 gap-y-1 text-xs sm:grid-cols-[auto_1fr]">
+      {lines.map((line) => (
+        <div key={line.label} className="contents">
+          <dt className="font-medium text-foreground">{line.label}:</dt>
+          <dd className="text-muted-foreground">{line.text}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
