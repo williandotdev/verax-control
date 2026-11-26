@@ -100,6 +100,11 @@ export function findingRow(
     // Só com a exceção ampla: a imagem anterior do nó, que não conhece a coluna, grava a mesma linha sem ela.
     ...(wide !== null && { scopedExceptionId: wide.id }),
     caseGroup: draft.group === undefined ? null : boundedCaseGroup(draft.group),
+    // Só com a alteração: a imagem anterior do nó, que não conhece as colunas, grava a mesma linha sem elas.
+    ...(draft.change && {
+      change: draft.change.data as Prisma.InputJsonObject,
+      changeSubject: draft.change.subject,
+    }),
   };
 }
 

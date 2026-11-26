@@ -1,6 +1,10 @@
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import {
+  FINDING_CHANGE_REPEAT_DAYS,
   FINDING_SOURCES,
+  type FindingChange,
+  type FindingChangeContext,
+  findingChangeSchema,
   type Finding,
   type FindingComment,
   type FindingCommentCreate,
@@ -229,6 +233,71 @@ export class FindingsService {
       evidence: { ...parsed.data, firstSeenAt: row.evidence.firstSeenAt.toISOString() },
       samplesPurgedAt: row.evidence.samplesPurgedAt?.toISOString() ?? null,
     };
+  }
+
+  /**
+   * O que mudou no evento do alerta, para a seção "O que aconteceu" do detalhe (a explicação em português sai no painel, de
+   * `explainFinding`): a alteração gravada na chegada, o estado anterior conhecido do mesmo objeto (o alerta anterior com a
+   * mesma chave, `changeSubject`, no mesmo cliente e na mesma conta) e quantos alertas a mesma identidade gerou na mesma
+   * regra nos últimos 30 dias (a sugestão de exceção para a automação que repete a mesma coisa).
+   *
+   * Rota à parte do detalhe, como a evidência: o contrato do detalhe é estrito, e o painel novo num nó de antes recebe 404 e
+   * explica pelo evento bruto. O que vem do banco passa pelo schema estrito antes de sair; fora do formato (outra versão do
+   * nó), vira `null` e o aviso vai para o log.
+   */
+  async change(id: string, now = new Date()): Promise<FindingChangeContext> {
+    const db = this.prisma.scoped();
+    const row = await db.finding.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        accountId: true,
+        occurredAt: true,
+        ruleId: true,
+        actorUser: true,
+        change: true,
+        changeSubject: true,
+      },
+    });
+    if (!row) throw new ApiError(HttpStatus.NOT_FOUND, NOT_FOUND);
+    const change = this.parseChange(row.id, row.change);
+    const since = new Date(now.getTime() - FINDING_CHANGE_REPEAT_DAYS * 24 * 60 * 60 * 1000);
+    const [earlier, count] = await Promise.all([
+      change === null || row.changeSubject === null
+        ? null
+        : db.finding.findFirst({
+            where: {
+              id: { not: row.id },
+              accountId: row.accountId,
+              changeSubject: row.changeSubject,
+              occurredAt: { lt: row.occurredAt },
+            },
+            orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+            select: { id: true, occurredAt: true, change: true },
+          }),
+      row.actorUser === null
+        ? 0
+        : db.finding.count({
+            where: { ruleId: row.ruleId, actorUser: row.actorUser, occurredAt: { gte: since } },
+          }),
+    ]);
+    const previousChange = earlier ? this.parseChange(earlier.id, earlier.change) : null;
+    return {
+      change,
+      previous:
+        earlier && previousChange
+          ? { findingId: earlier.id, occurredAt: earlier.occurredAt.toISOString(), change: previousChange }
+          : null,
+      repeats: { days: FINDING_CHANGE_REPEAT_DAYS, count },
+    };
+  }
+
+  private parseChange(findingId: string, value: unknown): FindingChange | null {
+    if (value === null || value === undefined) return null;
+    const parsed = findingChangeSchema.safeParse(value);
+    if (parsed.success) return parsed.data;
+    this.logger.warn({ findingId }, 'alteração fora do formato desta versão');
+    return null;
   }
 
   /** Muda o status (T5.5). O comentário opcional explica a decisão e entra na mesma transação e auditoria. */
