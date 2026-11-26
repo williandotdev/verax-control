@@ -24,7 +24,6 @@ const LAZY_PAGES = [
   'unowned-alerts-page',
   'account-page',
   'mfa-enroll-page',
-  'escalation-link-pages',
 ];
 
 describe('roteador: cada tela do painel no arquivo dela (E-13)', () => {

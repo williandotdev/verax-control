@@ -86,8 +86,12 @@ export default defineConfig(({ mode }) => {
     ...(mode === 'mock' && { optimizeDeps: { include: ['msw/browser'] } }),
     server: {
       // Transforma o app (a entrada e tudo o que ela importa) assim que o servidor de desenvolvimento sobe, em vez de
-      // esperar o primeiro navegador pedir: os testes de navegador abrem 6 páginas ao mesmo tempo logo no início.
-      warmup: { clientFiles: ['./src/main.tsx'] },
+      // esperar o primeiro navegador pedir: os testes de navegador abrem 6 páginas ao mesmo tempo logo no início. As
+      // telas carregadas por import() (E-13) entram também: sem isso, a primeira abertura de cada uma compilava no meio
+      // do teste.
+      warmup: {
+        clientFiles: ['./src/main.tsx', './src/pages/**/*-page.tsx'],
+      },
     },
     // No build único, o preview manda a política-modelo, com `{tenant}`: a de cada site sai na publicação, e o e2e
     // `test:e2e:sites` serve o mesmo `dist` como o Firebase Hosting, um site por cliente.

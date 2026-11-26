@@ -6,6 +6,9 @@ import { DemoTourMount } from '@/features/tour/entry';
 import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
 import { ChangePasswordPage } from '@/pages/change-password-page';
+// Os links do e-mail de escalonamento leem o token do endereço e o apagam na hora: ficam no arquivo principal, como o
+// login, para nenhuma recarga da página no meio perder o token.
+import { EscalationConfirmPage, EscalationUnsubscribePage } from '@/pages/escalation-link-pages';
 import { ForbiddenPage } from '@/pages/forbidden-page';
 import { ForgotPasswordPage } from '@/pages/forgot-password-page';
 import { LoginPage } from '@/pages/login-page';
@@ -84,14 +87,6 @@ const AccountPage = page(
 const MfaEnrollPage = page(
   () => import('@/pages/mfa-enroll-page'),
   (m) => m.MfaEnrollPage,
-);
-const EscalationConfirmPage = page(
-  () => import('@/pages/escalation-link-pages'),
-  (m) => m.EscalationConfirmPage,
-);
-const EscalationUnsubscribePage = page(
-  () => import('@/pages/escalation-link-pages'),
-  (m) => m.EscalationUnsubscribePage,
 );
 
 /** Catálogo do design system: só no build de desenvolvimento (o Vite remove este ramo do build final). */
@@ -176,22 +171,8 @@ export const routes: RouteObject[] = [
   { path: '/esqueci-senha', element: <ForgotPasswordPage /> },
   { path: '/redefinir-senha', element: <SetPasswordPage /> },
   // Os links do e-mail ao contato de escalonamento (D8): públicos, sem login.
-  {
-    path: ESCALATION_CONFIRM_PATH,
-    element: (
-      <Loaded>
-        <EscalationConfirmPage />
-      </Loaded>
-    ),
-  },
-  {
-    path: ESCALATION_UNSUBSCRIBE_PATH,
-    element: (
-      <Loaded>
-        <EscalationUnsubscribePage />
-      </Loaded>
-    ),
-  },
+  { path: ESCALATION_CONFIRM_PATH, element: <EscalationConfirmPage /> },
+  { path: ESCALATION_UNSUBSCRIBE_PATH, element: <EscalationUnsubscribePage /> },
   { path: '/sem-permissao', element: <ForbiddenPage /> },
   {
     element: <RequireSession />,
