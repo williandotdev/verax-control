@@ -21,6 +21,7 @@ import { useMe } from '@/features/session/session';
 import { errorMessage } from '@/lib/errors';
 import { formatRelative, formatTimestamp } from '@/lib/format';
 import { FindingEvidenceSection } from './finding-evidence';
+import { FindingExplanationSection } from './finding-explanation';
 import { FindingStatusBadge } from './finding-status-badge';
 import { useAddFindingComment, useCreateAlertException, useUpdateFindingStatus } from './findings-api';
 
@@ -41,7 +42,8 @@ const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
 };
 
 /**
- * Detalhe do alerta (tela Detecções, no painel ao lado da lista): os campos, o MITRE, o incidente ou a validação
+ * Detalhe do alerta (tela Detecções, no painel ao lado da lista): no topo, "O que aconteceu" (o alerta explicado em
+ * português, `finding-explanation.tsx`); depois, os campos, o MITRE, o incidente ou a validação
  * (promover a incidente, anexar a um incidente aberto), a triagem com a exceção, os comentários e o evento bruto. O alerta
  * dos logs do ALB não tem evento bruto (nenhuma linha do log fica guardada): no lugar dele, a evidência.
  */
@@ -80,7 +82,8 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
         <FindingStatusBadge status={finding.status} />
       </div>
 
-      {/* E-03: a decisão num quadro só, logo abaixo dos selos (no alerta do balanceador, antes da evidência). */}
+      <FindingExplanationSection finding={finding} />
+      {/* E-03: a decisão num quadro só, logo depois de "O que aconteceu" (no alerta do balanceador, antes da evidência). */}
       {finding.incidentId && (
         <p className="rounded-md border bg-foreground/[0.03] p-3 text-sm">
           Este alerta foi confirmado como parte de um incidente.{' '}

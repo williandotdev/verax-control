@@ -2215,6 +2215,59 @@ O detalhe relê o alerta no indexer (30 dias) e o devolve saneado. Nada disto mu
   num parâmetro de nome neutro não tem como ser visto; um id aleatório que não é segredo e um número de 11 ou 14 dígitos
   saem mascarados. A lista completa está no começo de `raw-url-mask.ts`.
 
+## O alerta explicado: "O que aconteceu" (26/11/2026)
+
+O detalhe do alerta abre com uma explicação em português, por modelos de texto fixos (sem LLM): quem fez (uma pessoa, uma
+automação como "a função Lambda X", um serviço da AWS, a conta root), em que objeto (o nome e o id da lista de IPs, da
+regra, do grupo de segurança, do bucket, da trilha, da chave), o que mudou (com o antes e o depois quando o estado anterior
+é conhecido), por que importa e o que conferir. Para a automação que repete a mesma coisa, sugere a exceção em vez da triagem
+um por um.
+
+- **O que é guardado (`Finding.change`, `findingChangeSchema` em `packages/shared/src/finding-change.ts`):** na chegada do
+  alerta da trilha (Wazuh, `wazuh-alert.ts`), `extractFindingChange` lê do `requestParameters`, do `responseElements` e do
+  `additionalEventData` só campos de uma lista fechada, evento por evento: o objeto (tipo, id, nome, escopo), valores curtos
+  (a política anexada, a ação padrão, os dias até apagar a chave) e listas (os endereços da lista de IPs, as regras do WAF
+  como `nome|ação`, as permissões do grupo de segurança como `protocolo|de|até|origem`). Nunca o documento de política (dele
+  sai só o que concede: "qualquer um", "tudo em tudo"), senha, token, `userData`, descrição livre, URL (a localização da lista
+  do GuardDuty), cabeçalho ou o `userAgent` (dele sai só por onde a ação veio: `lambda`, `ecs`, `ec2`, `aws_service`,
+  `cloudformation`, `console`, `cli`, `sdk`, `terraform`). Cada texto passa pelo formato do campo (id, nome, ARN, faixa de IP)
+  e não tem caractere de controle.
+- **Tetos:** 300 endereços por lista de IPs, 100 itens nas outras listas, 160 caracteres por item, 512 por valor, 16 valores
+  e 4 listas; o JSON inteiro até 16 KiB (`MAX_FINDING_CHANGE_BYTES`, medido como o banco mede). Passou do teto, as listas
+  maiores são cortadas pela metade até caber, e o total visto fica guardado (a tela diz "só os N primeiros foram guardados").
+  O banco confere o teto por CHECK.
+- **O antes (`Finding.changeSubject`):** quando a alteração traz o estado inteiro do objeto (a lista de IPs, a Web ACL e o
+  grupo de regras do WAF v2: o `UpdateIPSet` traz a lista nova inteira, e não a antiga), a chave
+  `<serviço>/<tipo>/<escopo>/<região>/<id>` acha o alerta anterior do mesmo objeto, no mesmo cliente e na mesma conta, e a
+  comparação diz o que entrou e o que saiu ("incluiu 3 endereços e retirou 1"); nas regras do WAF, também a regra que trocou
+  de ação. Sem alerta anterior, a tela diz que o estado anterior não está disponível e mostra a lista de agora (até 20 itens,
+  o resto contado). Com uma das listas cortada no teto, não compara. No WAF clássico e no grupo de segurança, o próprio
+  evento diz o que entrou e o que saiu. O "antes" só existe para o que virou alerta: uma mudança no meio que não gerou alerta
+  (ou que caiu fora do histórico do plano) não aparece.
+- **Rota:** `GET /v1/findings/:id/change` (`findings:read`, cliente da sessão), à parte do detalhe (o contrato dele é estrito):
+  `{ change, previous, repeats }`, com `repeats` = quantos alertas a mesma identidade gerou na mesma regra nos últimos 30 dias.
+  O que está no banco passa pelo schema antes de sair; fora do formato (outra versão), vira `null` e o aviso vai para o log.
+- **Painel (`apps/web/src/features/findings/finding-explanation.tsx`):** a explicação sai de `explainFinding`
+  (`packages/shared/src/finding-explanation.ts`), no painel, com a alteração da rota. Num nó de antes (404) ou num alerta
+  gravado antes da coluna, a mesma redução roda sobre o evento bruto do detalhe; sem nenhum dos dois, a explicação usa só os
+  campos do alerta e avisa. Tudo é texto (nunca HTML).
+- **Famílias:** WAF (listas de IPs, Web ACL, grupos de regras, apagar, desassociar, log), IAM (chave de acesso, políticas
+  anexadas e embutidas, versão de política, papel e confiança, usuário, senha de console, grupo, MFA), grupos de segurança
+  (liberar e fechar entrada e saída, `ModifySecurityGroupRules`), S3 (política, ACL, bloqueio de acesso público), CloudTrail
+  (parar, apagar, alterar a trilha; CloudTrail Lake), configuração do GuardDuty (detector, filtro que arquiva, lista de IPs
+  confiáveis, central), achados do GuardDuty (pelo tipo), login no console (root, MFA, falha), KMS (desativar, agendar
+  exclusão, política, concessão), snapshot e imagem pública, domínio e organização; o resto da trilha tem a explicação
+  genérica. Alertas dos agentes, da GCP, do Cloudflare e do ALB não têm a seção.
+- **Quem fez:** pelo ARN e pelo tipo da identidade e pelo `via`: o papel assumido por uma função Lambda (a sessão é o nome da
+  função), por uma instância EC2 (a sessão é o id dela), pelo ECS, pelo CloudFormation ou pelo Terraform é uma automação; o
+  papel `AWSServiceRoleFor*` ou o `invokedBy` é um serviço da AWS; o papel `AWSReservedSSO_*` é uma pessoa (login único); o
+  usuário IAM pelo console é uma pessoa e, pela linha de comando ou por programa, pode ser os dois.
+- **Exceção sugerida:** automação ou serviço com 3 ou mais alertas da mesma regra em 30 dias: marcar como legítimo e criar a
+  exceção por "Usuário" (a de sempre, T3.5). A exceção ampla só é citada nas regras que a aceitam (as 100300 a 100324 não
+  aceitam, D8).
+- **Diferença de versão:** só acrescenta (duas colunas que aceitam nulo, um índice parcial e um CHECK `NOT VALID`, migration
+  `20261205120000_finding_change`). A imagem anterior do nó grava a linha sem as colunas; o painel de antes não chama a rota.
+
 ## País de um endereço IP (`apps/api/src/geo/`)
 
 _(decisão de 24/11/2026: embutir a base pública; no código, ainda sem uso. Vai alimentar o mapa de origem das requisições,

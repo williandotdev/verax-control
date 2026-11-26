@@ -436,8 +436,8 @@ describe('Detecções: o detalhe e a triagem', () => {
       within(decision).getByRole('button', { name: 'Anexar a um incidente aberto' }),
     ).toBeInTheDocument();
     expect(within(decision).getByRole('button', { name: 'Marcar como resolvido' })).toBeInTheDocument();
-    // A decisão vem antes dos campos do evento.
-    const fields = panel.querySelector('dl');
+    // A decisão vem antes dos campos do evento (a lista com "Quando"; "O que aconteceu" vem antes dela, e tem a sua).
+    const fields = within(panel).getAllByText('Quando', { selector: 'dt' }).at(-1)?.closest('dl');
     expect(decision.compareDocumentPosition(fields!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     // O porquê vai junto com a decisão e fica nos comentários.

@@ -529,8 +529,9 @@ describe(`migration ${MIGRATION}`, () => {
     });
 
     it('as colunas que a imagem anterior conhece são as do model de hoje, menos as novas', () => {
-      // Menos as colunas de migrations posteriores (a da exceção ampla, `scoped-exceptions-migration.test.ts`).
-      const later = new Set(['scopedExceptionId']);
+      // Menos as colunas de migrations posteriores (a da exceção ampla, `scoped-exceptions-migration.test.ts`, e a da
+      // alteração do evento, `20261205120000_finding_change`).
+      const later = new Set(['scopedExceptionId', 'change', 'changeSubject']);
       const today = Object.keys(Prisma.FindingScalarFieldEnum)
         .filter((name) => !later.has(name))
         .sort();

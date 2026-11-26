@@ -14,6 +14,7 @@ import {
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { keyOf } from './case-store';
+import { demoFindingChange } from './finding-change';
 import { demoFindingEvidence } from './finding-evidence';
 import { demoFindings } from './findings-fixtures';
 import type { MockState } from './handlers';
@@ -134,6 +135,16 @@ export function createFindingHandlers(
       const finding = scope.findings.find((candidate) => candidate.id === params['id']);
       return finding
         ? HttpResponse.json(demoFindingEvidence(finding))
+        : problem(404, 'Alerta não encontrado');
+    }),
+
+    // O que mudou no evento do alerta: rota à parte do detalhe, como na API.
+    http.get(url('/v1/findings/:id/change'), ({ params }) => {
+      const scope = scoped();
+      if ('error' in scope) return scope.error;
+      const finding = scope.findings.find((candidate) => candidate.id === params['id']);
+      return finding
+        ? HttpResponse.json(demoFindingChange(finding, scope.findings))
         : problem(404, 'Alerta não encontrado');
     }),
 

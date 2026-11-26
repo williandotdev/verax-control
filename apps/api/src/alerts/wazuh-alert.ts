@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { extractFindingChange, type FindingChange } from '@verax/shared';
 import { z } from 'zod';
 
 /**
@@ -97,6 +98,12 @@ export interface WazuhAwsAlert {
   };
   /** Recurso afetado, como `tipo:identificador` (ex.: `s3:meu-bucket`, `ec2:i-0abc`, `eni:eni-0abc`). */
   resource?: string;
+  /**
+   * Só no CloudTrail: a alteração registrada no evento, reduzida e saneada (`extractFindingChange` de `@verax/shared`: só
+   * campos de uma lista fechada, sem documento de política, senha, token nem texto livre). Ausente quando o serviço ou a
+   * chamada não estão na lista.
+   */
+  change?: FindingChange;
 }
 
 export type ParsedAlert =
@@ -301,6 +308,7 @@ function cloudTrailDetails(aws: Record<string, unknown>): Partial<WazuhAwsAlert>
       // Chamadas feitas por serviços da AWS trazem o nome do serviço, não um IP.
       ip: ip(aws['sourceIPAddress']),
     },
+    change: extractFindingChange(aws) ?? undefined,
     resource: firstOf(
       bucket && `s3:${bucket}`,
       instance && `ec2:${instance}`,
@@ -595,6 +603,7 @@ export function parseWazuhAlert(document: unknown): ParsedAlert {
       lastSeenAt: identity?.lastSeenAt ?? details.lastSeenAt,
       actor: details.actor ?? {},
       resource: details.resource,
+      ...(details.change && { change: details.change }),
     },
   };
 }

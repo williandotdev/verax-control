@@ -7953,6 +7953,48 @@ cloudflare-oauth-steps.tsx,zone-health.tsx,labels.ts,oauth-return.ts,oauth-retur
   cabeçalho, filtros e paginação das listas de Detecções). "Como liberar a leitura deste grupo" continua por grupo de
   logs, porque o comando de cada um é diferente.
 
+## O alerta explicado: "O que aconteceu" no detalhe (26/11/2026)
+
+- **O que foi feito:** pedido do responsável a partir do alerta "Regras do WAF alteradas" (`UpdateIPSet`, regra 100323) feito
+  por uma automação: o painel não dizia qual lista mudou, o que havia antes nem o que a automação fez. Agora o alerta da
+  trilha guarda, na chegada, a alteração reduzida e saneada (`Finding.change`) e a chave do objeto (`Finding.changeSubject`);
+  a rota `GET /v1/findings/:id/change` devolve a alteração, o estado anterior do mesmo objeto e quantas vezes a mesma
+  identidade disparou a regra em 30 dias; e o detalhe abre com "O que aconteceu" (quem, o quê, antes e depois, por que importa,
+  o que conferir e, para a automação repetitiva, a exceção por "Usuário"). Textos por modelos fixos, sem LLM. Seção nova em
+  `docs/ARQUITETURA.md`, "O alerta explicado".
+- **Arquivos:** `packages/shared/src/finding-change.ts`, `finding-explanation.ts` (e teste), `index.ts`;
+  `apps/api/prisma/schema.prisma`, migration `20261205120000_finding_change`; `apps/api/src/alerts/wazuh-alert.ts`,
+  `finding-draft.ts`, `finding-store.ts`; `apps/api/src/findings/findings.service.ts`, `findings.controller.ts`;
+  `apps/api/test/finding-change.test.ts`, `alert-cases-migration.test.ts` (colunas posteriores); `apps/web/src/features/findings/finding-explanation.tsx`
+  (e teste), `finding-detail.tsx`, `findings-api.ts`; `apps/web/src/mocks/finding-change.ts`, `findings-handlers.ts`;
+  `apps/web/e2e/explicacao.mock.spec.ts`; `docs/ARQUITETURA.md`.
+- **Migration (revisar):** só acrescenta. `Finding.change` (JSONB, nulo) e `Finding.changeSubject` (VARCHAR 320, nulo), o CHECK
+  `Finding_change_check` como `NOT VALID` (JSON objeto até 16 KiB; chave só com alteração) e o índice parcial
+  `Finding_change_subject_idx` (`tenantId`, `changeSubject`, `occurredAt DESC`) onde a chave existe. A imagem anterior do nó
+  grava sem as colunas.
+- **O que é guardado e os tetos:** lista fechada de campos por evento; nunca documento de política, senha, token, `userData`,
+  descrição, URL ou `userAgent`. 300 endereços, 100 itens nas outras listas, 160 caracteres por item, 512 por valor, 16 valores,
+  4 listas, 16 KiB no total (listas cortadas até caber, com o total guardado).
+- **Famílias:** WAF (v2 e clássico), IAM, grupos de segurança, S3, CloudTrail, configuração do GuardDuty, achados do GuardDuty,
+  login no console, KMS, snapshot e imagem pública, domínio, organização; genérica para o resto da trilha.
+- **Dependências novas:** nenhuma.
+- **Testes:** `pnpm lint` (max-warnings 0) e `pnpm typecheck` sem erros. Contrato: 39 arquivos, 768 testes (36 novos). API com
+  Postgres próprio em contêiner descartável: `finding-change.test.ts` (7, novo) e os que tocam os alertas, os achados e as
+  migrations (`test/alerts`, `alert-sync`, `api-standards`, `finding-evidence`, `findings`, `finding-store`, `aws-findings`,
+  `scoped-exceptions-migration`, `alert-cases-migration`), todos verdes. Painel: 88 arquivos, 1.286 testes (6 novos). Playwright
+  (mock): `explicacao.mock.spec.ts`, 7 testes (axe nos dois temas a 360, 768 e 1280 px, sem rolagem de lado).
+- **Teste manual:** abrir um alerta de `UpdateIPSet` real duas vezes seguidas da mesma lista e conferir o "Antes e depois"; um
+  alerta antigo (antes da versão) deve explicar pelo evento bruto, sem o antes.
+- **Riscos e dúvidas:**
+  - O antes só existe para o que virou alerta: alterações sem alerta no meio, ou fora do histórico do plano, não aparecem, e a
+    comparação pode juntar várias mudanças.
+  - Lista de IPs acima de 300 endereços não é comparada (a tela diz por quê).
+  - A identificação de automação depende do `userAgent` (Lambda, ECS) e do nome da sessão; uma Lambda que troca o
+    `userAgent` aparece como "quem usou o papel X".
+  - A regra 100323 não aceita exceção ampla (D8): a sugestão é a exceção por usuário.
+  - A demonstração não tem um alerta de `UpdateIPSet` (acrescentar um mudaria as contagens dos outros testes); o antes e depois
+    está coberto nos testes unitários do painel e no teste da API.
+
 ## Exceção nova resolve os alertas em aberto que cobre (decisão do responsável de 26/11/2026)
 
 - **O que mudou:** criar uma exceção (de usuário, IP ou recurso, pela tela Exceções, pela oferta no detalhe do alerta ou em
