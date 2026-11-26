@@ -24,6 +24,15 @@ export interface NavItem {
   permission: Permission;
   /** Etiqueta curta ao lado do nome, como "Novo". Só visual: tire quando deixar de valer. */
   badge?: string;
+  /**
+   * Outras telas da mesma entrada (as abas de "Fontes"): a entrada aparece para quem pode ver qualquer uma delas, leva à
+   * primeira que a pessoa pode ver e fica marcada em todas.
+   */
+  alternates?: readonly { to: string; permission: Permission }[];
+  /** Os endereços em que a entrada fica marcada (preenchido por `visibleNavigation`). */
+  match?: readonly string[];
+  /** Tela com rota própria que não tem entrada no menu: aparece como aba de outra (`alternates`). */
+  menu?: false;
 }
 
 export interface NavGroup {
@@ -42,17 +51,20 @@ export const NAVIGATION: NavGroup[] = [
       { to: '/ativos', label: 'Ativos e identidades', icon: Boxes, permission: 'assets:read' },
     ],
   },
-  // R-09: três grupos curtos no lugar de "Administração" (nenhum endereço muda). Quem só lê deixa de ver "Administração".
+  // R-09: grupos curtos no lugar de "Administração" (nenhum endereço muda). Quem só lê deixa de ver "Administração".
+  // "Fontes" (26/11/2026) junta Contas cloud e Agentes numa entrada só, com uma aba para cada (`sources-tabs.tsx`).
   {
-    label: 'Fontes',
+    label: 'Fontes e regras',
     items: [
-      { to: '/cadastros/contas', label: 'Contas cloud', icon: Cloud, permission: 'cloud_accounts:read' },
-      { to: '/cadastros/agentes', label: 'Agentes', icon: Server, permission: 'agents:read' },
-    ],
-  },
-  {
-    label: 'Regras',
-    items: [
+      {
+        to: '/cadastros/contas',
+        label: 'Fontes',
+        icon: Cloud,
+        permission: 'cloud_accounts:read',
+        alternates: [{ to: '/cadastros/agentes', permission: 'agents:read' }],
+      },
+      // A rota dos agentes continua (os links de antes valem), como aba de "Fontes", sem entrada própria no menu.
+      { to: '/cadastros/agentes', label: 'Agentes', icon: Server, permission: 'agents:read', menu: false },
       {
         to: '/cadastros/protecao',
         label: 'Lista de proteção',
@@ -88,6 +100,15 @@ export const NAVIGATION: NavGroup[] = [
 export function visibleNavigation(permissions: readonly Permission[]): NavGroup[] {
   return NAVIGATION.map((group) => ({
     ...group,
-    items: group.items.filter((item) => permissions.includes(item.permission)),
+    items: group.items.flatMap((item) => {
+      if (item.menu === false) return [];
+      const routes = [{ to: item.to, permission: item.permission }, ...(item.alternates ?? [])];
+      const allowed = routes.filter((route) => permissions.includes(route.permission));
+      const first = allowed[0];
+      if (first === undefined) return [];
+      return [
+        { ...item, to: first.to, permission: first.permission, match: allowed.map((route) => route.to) },
+      ];
+    }),
   })).filter((group) => group.items.length > 0);
 }

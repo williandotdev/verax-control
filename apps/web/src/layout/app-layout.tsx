@@ -13,6 +13,7 @@ import { NARROW_QUERY, useMediaQuery } from '@/lib/use-media-query';
 import { visibleNavigation } from './navigation';
 import { useMenuCollapsed } from './menu-collapsed';
 import { Sidebar } from './sidebar';
+import { SourcesTabs } from './sources-tabs';
 import { TenantSwitcher } from './tenant-switcher';
 
 /**
@@ -178,6 +179,7 @@ export function AppLayout() {
           )}
           <main id="conteudo" tabIndex={-1} className="flex-1 p-4 focus:outline-none md:p-6">
             {/* Trocar de cliente remonta a página: nenhuma tela segura na mão (como dado provisório) o que era do outro. */}
+            <SourcesTabs permissions={me.permissions} />
             <Outlet key={me.scopeTenantId ?? 'nenhum'} />
           </main>
         </div>

@@ -20,8 +20,7 @@ test.describe('estrutura e navegação (modo mock)', () => {
       'Postura cloud',
       'Ativos e identidades',
       // R-09: Fontes, Regras e Conta no lugar de "Administração"; Clientes no grupo da Verax.
-      'Contas cloud',
-      'Agentes',
+      'Fontes',
       'Lista de proteção',
       'Exceções',
       'Usuários',

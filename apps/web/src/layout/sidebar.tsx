@@ -1,6 +1,6 @@
 import { ChevronsLeft, ChevronsRight, KeyRound, type LucideIcon, X } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { NavLink } from 'react-router';
+import { NavLink, useLocation } from 'react-router';
 import { BrandLockup, PRODUCT_NAME, VeraxSymbol } from '@/components/brand/logo';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/cn';
@@ -92,15 +92,19 @@ export function Sidebar({
   onClose,
   footer,
 }: SidebarProps) {
+  const { pathname } = useLocation();
   const sections: { label: string; content: ReactNode }[] = groups.map((group) => ({
     label: group.label,
-    content: group.items.map(({ to, label, icon, badge }) => (
+    content: group.items.map(({ to, label, icon, badge, match }) => (
       <li key={to} className="relative">
         <NavLink
           to={to}
           end={to === '/'}
           title={collapsed ? label : undefined}
-          className={({ isActive }) => itemClass(collapsed, isActive, badge !== undefined)}
+          // "Fontes" fica marcada em qualquer aba dela.
+          className={({ isActive }) =>
+            itemClass(collapsed, isActive || (match?.includes(pathname) ?? false), badge !== undefined)
+          }
         >
           <ItemContent icon={icon} label={label} collapsed={collapsed} />
         </NavLink>

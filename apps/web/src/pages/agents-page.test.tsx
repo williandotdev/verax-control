@@ -52,10 +52,12 @@ describe('Agentes', () => {
     expect(within(rest.closest('details')!).getByText('Como funciona')).toBeInTheDocument();
   });
 
-  it('fica no menu, no grupo Fontes, para todos os papéis', async () => {
+  it('fica em "Fontes", na aba dela, para todos os papéis', async () => {
     renderAt('/cadastros/agentes', { me: demoMe('leitura') });
     const nav = await screen.findByRole('navigation', { name: /principal|menu/i });
-    expect(within(nav).getByRole('link', { name: /Agentes/ })).toHaveAttribute('href', '/cadastros/agentes');
+    expect(within(nav).getByRole('link', { name: 'Fontes' })).toHaveAttribute('href', '/cadastros/contas');
+    const tabs = await screen.findByRole('navigation', { name: 'Fontes' });
+    expect(within(tabs).getByRole('link', { name: 'Agentes' })).toHaveAttribute('href', '/cadastros/agentes');
   });
 
   it('pronto: "Instalar novo agente" abre a instalação guiada, com a senha mascarada até o "Mostrar senha"', async () => {

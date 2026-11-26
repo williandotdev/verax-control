@@ -7,14 +7,10 @@ const groupsOf = (role: (typeof ROLES)[number]) =>
 
 describe('menu (R-09)', () => {
   it('três grupos curtos no lugar de "Administração", com os mesmos endereços', () => {
-    expect(NAVIGATION.map((group) => group.label)).toEqual([
-      'Operação',
-      'Fontes',
-      'Regras',
-      'Conta',
-      'Verax',
-    ]);
-    for (const group of NAVIGATION) expect(group.items.length).toBeLessThanOrEqual(4);
+    expect(NAVIGATION.map((group) => group.label)).toEqual(['Operação', 'Fontes e regras', 'Conta', 'Verax']);
+    for (const group of visibleNavigation(permissionsOf('admin_verax'))) {
+      expect(group.items.length).toBeLessThanOrEqual(4);
+    }
     const addresses = NAVIGATION.flatMap((group) => group.items.map((item) => item.to)).sort();
     expect(addresses).toEqual(
       [

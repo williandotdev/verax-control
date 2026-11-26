@@ -57,7 +57,8 @@ describe('rotas internas', () => {
 
 describe('menu e cabeçalho por papel', () => {
   // Contas cloud, Agentes, Lista de proteção e Exceções: leitura liberada para todos (matriz de permissões).
-  const shared = ['Contas cloud', 'Agentes', 'Lista de proteção', 'Exceções'];
+  // "Fontes" (26/11/2026) junta Contas cloud e Agentes numa entrada só.
+  const shared = ['Fontes', 'Lista de proteção', 'Exceções'];
   const operation = ['Detecções', 'Postura cloud', 'Ativos e identidades'];
   const expectedMenu: Record<Role, string[]> = {
     // R-09: Fontes, Regras e Conta no lugar de "Administração"; os clientes, no grupo da Verax.
@@ -185,6 +186,40 @@ describe('menu no celular', () => {
     await router.navigate(-1);
     await waitFor(() => expect(router.state.location.pathname).toBe('/'));
     expect(document.getElementById('menu-principal')).toHaveAttribute('data-open', 'false');
+  });
+});
+
+describe('"Fontes": Contas cloud e Agentes numa entrada só', () => {
+  it('a entrada leva às contas, fica marcada nas duas abas, e cada aba mantém o endereço de antes', async () => {
+    const { router } = renderApp('/cadastros/agentes', demoMe('analista_cliente'));
+    const fontes = within(await menu()).getByRole('link', { name: 'Fontes' });
+    expect(fontes).toHaveAttribute('href', '/cadastros/contas');
+    expect(within(await menu()).queryByRole('link', { name: 'Agentes' })).toBeNull();
+    const tabs = await screen.findByRole('navigation', { name: 'Fontes' });
+    expect(within(tabs).getByRole('link', { name: 'Agentes' })).toHaveAttribute('aria-current', 'page');
+    expect(fontes.className).toContain('font-semibold');
+    await userEvent.click(within(tabs).getByRole('link', { name: 'Contas cloud' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/cadastros/contas'));
+    expect(within(tabs).getByRole('link', { name: 'Contas cloud' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('quem vê só uma das telas vê só ela, sem abas; quem não vê nenhuma não tem "Fontes"', async () => {
+    const me = demoMe('analista_cliente');
+    const onlyAgents = { ...me, permissions: me.permissions.filter((p) => p !== 'cloud_accounts:read') };
+    renderApp('/cadastros/agentes', onlyAgents);
+    expect(within(await menu()).getByRole('link', { name: 'Fontes' })).toHaveAttribute(
+      'href',
+      '/cadastros/agentes',
+    );
+    const tabs = await screen.findByRole('navigation', { name: 'Fontes' });
+    expect(within(tabs).queryByRole('link')).toBeNull();
+    cleanup();
+    const neither = {
+      ...me,
+      permissions: me.permissions.filter((p) => p !== 'cloud_accounts:read' && p !== 'agents:read'),
+    };
+    renderApp('/', neither);
+    expect(within(await menu()).queryByRole('link', { name: 'Fontes' })).toBeNull();
   });
 });
 
