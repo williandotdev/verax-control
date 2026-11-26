@@ -18,7 +18,7 @@ import {
   SourceLocation,
   SourceRegion,
 } from '@/features/admin/aws-source-parts';
-import { awsAuthorizedSourceAnchor, groupAwsSources } from '@/features/admin/aws-sources';
+import { awsAuthorizedSourceAnchor, groupAwsSources, isFirstOfKind } from '@/features/admin/aws-sources';
 import { awsConnectionErrorHint } from '@/features/admin/labels';
 import { ScrollTable, Section, Tag, ToneBadge } from '@/features/admin/aws-ui';
 import { webAttacksAnchor } from '@/features/web-attacks/anchors';
@@ -130,7 +130,7 @@ export function AwsSourceMonitor({
           </tr>
         </thead>
         <tbody className="tabular-nums">
-          {authorized.map((source) => {
+          {authorized.map((source, index) => {
             const health = awsSourceHealthText(source);
             const legacy = source.origin === 'legacy';
             const name = awsSourceName(source);
@@ -160,7 +160,8 @@ export function AwsSourceMonitor({
                       {source.sensitive && <SensitiveTag />}
                     </p>
                     <SourceLocation source={source} />
-                    {!legacy && <SourceCollectionNote source={source} />}
+                    {/* Como o tipo é coletado: uma vez, na primeira fonte do tipo (E-04). */}
+                    {!legacy && isFirstOfKind(authorized, index) && <SourceCollectionNote source={source} />}
                     {source.collectFrom !== null && (
                       <p className="text-xs text-muted-foreground">
                         Coleta desde {formatDay(source.collectFrom)}

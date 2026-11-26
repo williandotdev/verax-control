@@ -6,11 +6,14 @@ import {
   type CloudAccount,
   needsAwsSourceAttention,
 } from '@verax/shared';
-import { useCallback, useEffect, useRef } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef } from 'react';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { SOURCE_ATTENTION_KEY } from '@/features/admin/admin-api';
 import { useAwsChoice } from '@/features/admin/aws-choice';
+import { AwsAccountOverview } from '@/features/admin/aws-account-overview';
+import { type AwsAccountTabItem, AwsAccountTabs } from '@/features/admin/aws-account-tabs';
+import type { AwsAccountTab } from '@/features/admin/aws-account-view';
 import { AwsConnectPanel, AwsWaitingPanel } from '@/features/admin/aws-connect-panel';
 import { AwsDiscoveryResults } from '@/features/admin/aws-discovery-results';
 import { useSourceRetry } from '@/features/admin/aws-hooks';
@@ -20,6 +23,7 @@ import { awsOnboardingErrorText } from '@/features/admin/aws-onboarding-labels';
 import { AwsOnboardingChecks, AwsOnboardingStatus } from '@/features/admin/aws-onboarding-status';
 import { AwsSourceGroups } from '@/features/admin/aws-source-groups';
 import { AwsSourceMonitor } from '@/features/admin/aws-source-monitor';
+import { groupAwsSources } from '@/features/admin/aws-sources';
 import { AwsStackStatus } from '@/features/admin/aws-stack-status';
 import { Section } from '@/features/admin/aws-ui';
 import { WebAttacksSection } from '@/features/web-attacks/web-attacks-section';
@@ -115,7 +119,29 @@ function ReconnectPanel({ account, canWrite }: { account: CloudAccount; canWrite
  * baixado de novo é o mesmo: nunca volta sozinha para as três ligadas. A gravação da escolha é uma só para a tela
  * inteira (`useAwsChoice`): um pedido de cada vez, e o arquivo sempre com a escolha que a API confirmou.
  */
-export function AwsOnboardingSection({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+/**
+ * O que o detalhe da conta põe nas abas (E-04): os dados da conta (conexão, última coleta, papel de leitura), que vão
+ * para "Conexão e pilha", e o fim do detalhe (buckets fora do padrão, desativar e excluir), que vai para "Avançado".
+ * Sem as abas (a primeira conexão, guiada do passo 1 ao 3), os dois ficam acima e abaixo da seção, como sempre.
+ */
+export interface AwsAccountLayout {
+  facts: ReactNode;
+  advanced: ReactNode;
+  /** A aba aberta e a troca dela (`useAwsAccountTab`, no endereço). */
+  tab: AwsAccountTab;
+  onTabChange: (tab: AwsAccountTab) => void;
+}
+
+export function AwsOnboardingSection({
+  account,
+  canWrite,
+  layout,
+}: {
+  account: CloudAccount;
+  canWrite: boolean;
+  /** O detalhe da conta: com ele, a conta já conectada abre em abas. */
+  layout?: AwsAccountLayout;
+}) {
   const query = useAwsOnboarding(account.id);
   // O que as caixas mostram, a escolha que a API confirmou e a gravação entre as duas.
   const choice = useAwsChoice(account.id, query.data);
@@ -129,9 +155,19 @@ export function AwsOnboardingSection({ account, canWrite }: { account: CloudAcco
   );
 
   if (query.error && !query.data) {
-    return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
+    return (
+      <Framed layout={layout}>
+        <ErrorState error={query.error} onRetry={() => void query.refetch()} />
+      </Framed>
+    );
   }
-  if (!query.data) return <LoadingState rows={3} label="Carregando a conexão da conta" />;
+  if (!query.data) {
+    return (
+      <Framed layout={layout}>
+        <LoadingState rows={3} label="Carregando a conexão da conta" />
+      </Framed>
+    );
+  }
 
   const onboarding = query.data;
   const { state } = onboarding;
@@ -154,8 +190,113 @@ export function AwsOnboardingSection({ account, canWrite }: { account: CloudAcco
     />
   );
 
+  // A conta já conectada (entrou alguma vez e tem fonte autorizada) abre em abas. A primeira conexão segue o passo a
+  // passo, do "Conectar" à autorização das primeiras fontes, numa página só.
+  const { authorized, groups } = groupAwsSources(onboarding.sources);
+  if (layout && connectedBefore && authorized.length > 0) {
+    const balancers = authorized.filter((source) => source.kind === 'elb_logs' && source.collectable).length;
+    const listed = discovered || onboarding.sources.length > 0;
+    const items: AwsAccountTabItem[] = [
+      {
+        value: 'visao-geral',
+        label: 'Visão geral',
+        content: (
+          <>
+            {/* O que há para fazer agora fica no topo: o tempo esgotado, a reconexão e a espera pela pilha. */}
+            {!keyMode && state === 'authorization_timeout' && connectPanel(true)}
+            {!keyMode && state === 'not_started' && <ReconnectPanel account={account} canWrite={canWrite} />}
+            {!keyMode && waitingForStack && (
+              <AwsWaitingPanel
+                account={account}
+                onboarding={onboarding}
+                canWrite={canWrite}
+                choice={choice}
+              />
+            )}
+            <AwsAccountOverview
+              account={account}
+              onboarding={onboarding}
+              onShowSources={() => layout.onTabChange('fontes')}
+            />
+          </>
+        ),
+      },
+      {
+        value: 'fontes',
+        label: 'Fontes lidas',
+        count: authorized.length,
+        content:
+          authorized.length > 0 ? (
+            <AwsSourceMonitor account={account} onboarding={onboarding} canWrite={canWrite} retry={retry} />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Nenhuma fonte autorizada ainda. As que a descoberta encontrou estão em &ldquo;Para
+              autorizar&rdquo;.
+            </p>
+          ),
+      },
+      {
+        value: 'autorizar',
+        label: 'Para autorizar',
+        count: groups.available.length,
+        content: listed ? (
+          <AwsSourceGroups account={account} onboarding={onboarding} canWrite={canWrite} retry={retry} />
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            As fontes de log da conta aparecem aqui quando a descoberta terminar.
+          </p>
+        ),
+      },
+      ...(balancers > 0
+        ? [
+            {
+              value: 'ataques-web',
+              label: 'Ataques web',
+              count: balancers,
+              content: <WebAttacksSection account={account} onboarding={onboarding} canWrite={canWrite} />,
+            } satisfies AwsAccountTabItem,
+          ]
+        : []),
+      {
+        value: 'conexao',
+        label: keyMode ? 'Conexão e usuário' : 'Conexão e pilha',
+        content: (
+          <>
+            {layout.facts}
+            <AwsOnboardingStatus account={account} onboarding={onboarding} canWrite={canWrite} />
+            {keyMode && (
+              <details className="space-y-3" open={outside ? true : undefined}>
+                <summary className="cursor-pointer text-sm font-medium">
+                  Chave de leitura e políticas do usuário
+                </summary>
+                {keySteps}
+              </details>
+            )}
+            {account.status === 'active' && (
+              <AwsOnboardingChecks account={account} onboarding={onboarding} canWrite={canWrite} />
+            )}
+            <AwsStackStatus account={account} onboarding={onboarding} canWrite={canWrite} />
+            <AwsDiscoveryResults account={account} onboarding={onboarding} canWrite={canWrite} />
+            {!keyMode && (state === 'disconnected' || state === 'not_started') && (
+              <details className="space-y-3">
+                <summary className="cursor-pointer text-sm font-medium">
+                  A pilha foi apagada da conta? Criar de novo
+                </summary>
+                {connectPanel(true)}
+              </details>
+            )}
+          </>
+        ),
+      },
+      { value: 'avancado', label: 'Avançado', content: layout.advanced },
+    ];
+    // Sem balanceador autorizado, a aba "Ataques web" não existe: o endereço que apontava para ela abre a visão geral.
+    const shown = items.some((item) => item.value === layout.tab) ? layout.tab : 'visao-geral';
+    return <AwsAccountTabs tab={shown} onTabChange={layout.onTabChange} items={items} />;
+  }
+
   return (
-    <div className="space-y-5">
+    <Framed layout={layout}>
       <AwsOnboardingStatus account={account} onboarding={onboarding} canWrite={canWrite} />
 
       {/* Na VM própria: os passos da chave, abertos enquanto a conta não conecta e recolhidos depois. */}
@@ -205,6 +346,17 @@ export function AwsOnboardingSection({ account, canWrite }: { account: CloudAcco
           {connectPanel(true)}
         </details>
       )}
-    </div>
+    </Framed>
+  );
+}
+
+/** Sem abas: os dados da conta acima da seção e o fim do detalhe abaixo, na ordem de sempre. */
+function Framed({ layout, children }: { layout: AwsAccountLayout | undefined; children: ReactNode }) {
+  return (
+    <>
+      {layout?.facts}
+      <div className="space-y-5">{children}</div>
+      {layout?.advanced}
+    </>
   );
 }

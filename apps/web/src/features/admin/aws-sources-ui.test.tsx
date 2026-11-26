@@ -831,12 +831,17 @@ describe('fontes autorizadas: a saúde de cada uma, revogar e tentar de novo', (
     expect(cells(rowOf(monitor, /\/aplicacao\/auditoria/))[1]).toBe(
       `Falha de ingestão${AWS_WAZUH_SOURCE_STATE_CODE_TEXTS.log_group_name_conflict}`,
     );
-    // Na linha de cada flow log e de cada grupo, o que o Verax lê e o que esperar; na trilha e no bucket do cadastro, não.
-    for (const name of [/fl-coletando/, /fl-parado/, /fl-mexico/]) {
-      expect(within(monitor).getByRole('rowheader', { name })).toHaveTextContent(
-        AWS_SOURCE_COLLECTION_NOTES.vpc_flow_logs ?? '',
-      );
-    }
+    // O que o Verax lê dos flow logs e o que esperar dos grupos: uma vez por tipo, na primeira linha dele (E-04), e não
+    // em cada flow log; na trilha e no bucket do cadastro, não.
+    const flowLogRows = [/fl-coletando/, /fl-parado/, /fl-mexico/].map((name) =>
+      within(monitor).getByRole('rowheader', { name }),
+    );
+    expect(
+      flowLogRows.filter((row) =>
+        row.textContent?.includes(AWS_SOURCE_COLLECTION_NOTES.vpc_flow_logs ?? '-'),
+      ),
+    ).toHaveLength(1);
+    expect(within(monitor).getAllByText(AWS_SOURCE_COLLECTION_NOTES.vpc_flow_logs ?? '-')).toHaveLength(1);
     expect(within(monitor).getByRole('rowheader', { name: /\/aplicacao\/auditoria/ })).toHaveTextContent(
       AWS_SOURCE_COLLECTION_NOTES.cloudwatch_log_group ?? '',
     );

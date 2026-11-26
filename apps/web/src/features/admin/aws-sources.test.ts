@@ -20,10 +20,12 @@ import {
   isAuthorizableSource,
   isCoveredByGuardDutyApi,
   isFindingSource,
+  isFirstOfKind,
   isHighVolumeSource,
   isRecommendedSource,
   lastVerifiedAt,
   matchesLogGroupSearch,
+  repeatsHighVolumeNote,
 } from './aws-sources';
 
 const ACCOUNT = '018f2c1e-0000-7000-8000-0000000c0aaa';
@@ -297,5 +299,26 @@ describe('releitura do estado: só enquanto uma mudança é esperada', () => {
     for (const state of AWS_ONBOARDING_STATES) {
       expect([false, AWS_ONBOARDING_FAST_POLL_MS, AWS_ONBOARDING_SLOW_POLL_MS]).toContain(interval(state));
     }
+  });
+});
+
+describe('o que é igual para todo um tipo é dito uma vez (E-04)', () => {
+  it('a primeira fonte de cada tipo, numa lista em ordem', () => {
+    const list = [
+      sourceFixture('cloudtrail'),
+      sourceFixture('vpc_flow_logs', { notes: ['high_volume'] }),
+      sourceFixture('vpc_flow_logs', { notes: ['high_volume'] }),
+      sourceFixture('vpc_flow_logs'),
+      sourceFixture('elb_logs'),
+    ];
+    expect(list.map((_, index) => isFirstOfKind(list, index))).toEqual([true, true, false, false, true]);
+    // O aviso de volume alto da segunda linha vale para a terceira; a quarta não tem o aviso.
+    expect(list.map((_, index) => repeatsHighVolumeNote(list, index))).toEqual([
+      false,
+      false,
+      true,
+      false,
+      false,
+    ]);
   });
 });

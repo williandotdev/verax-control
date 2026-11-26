@@ -37,11 +37,28 @@ async function violations(page: Page): Promise<string[]> {
 
 /** A folga, em px, que o axe dá antes de tratar um quadro como rolável (`scrollable-region-focusable`). */
 const AXE_SCROLL_TOLERANCE_PX = 13;
-/** Os quadros de tabela da conta conectada da demonstração, pelo nome de cada um, na ordem da tela. */
+/** Os quadros de tabela da conta conectada da demonstração, pelo nome de cada um, com a aba que guarda cada um (E-04). */
 const TABLE_FRAMES = [
-  'Tabela: O que a descoberta não conseguiu ler',
-  'Tabela: Saúde da coleta de cada fonte autorizada',
+  { name: 'Tabela: O que a descoberta não conseguiu ler', tab: 'Conexão e pilha' },
+  { name: 'Tabela: Saúde da coleta de cada fonte autorizada', tab: 'Fontes lidas' },
 ] as const;
+
+/** Troca a aba do detalhe da conta já conectada pelo nome dela (sem a contagem). */
+async function showTab(sheet: Locator, name: string) {
+  await sheet.getByRole('tab', { name, exact: false }).click();
+}
+
+/** Nem a página nem o painel rolam de lado. */
+async function expectNoSidewaysScroll(page: Page, sheet: Locator) {
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
+  ).toBeLessThanOrEqual(1);
+  const overflow = await sheet.evaluate((dialog) => {
+    const scroller = dialog.querySelector('.overflow-y-auto');
+    return scroller ? scroller.scrollWidth - scroller.clientWidth : 0;
+  });
+  expect(overflow).toBeLessThanOrEqual(1);
+}
 
 /**
  * A conta conectada da demonstração numa tela de celular, carregada: nem a página nem o painel rolam de lado (só as
@@ -52,17 +69,16 @@ async function openOnPhone(page: Page, role: string, width: number): Promise<Loc
   await page.setViewportSize({ width, height: 800 });
   await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
   const sheet = page.getByRole('dialog', { name: AWS_DIALOG });
-  await expect(sheet.getByRole('region', { name: 'Fontes autorizadas' })).toBeVisible();
-  await expect(sheet.getByRole('region', { name: 'Fontes de log' })).toBeVisible();
+  // A visão geral, e cada aba com tabela ou lista longa: nenhuma rola de lado.
+  await expect(sheet.getByRole('region', { name: 'Visão geral da conta' })).toBeVisible();
   await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
-  expect(
-    await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
-  ).toBeLessThanOrEqual(1);
-  const overflow = await sheet.evaluate((dialog) => {
-    const scroller = dialog.querySelector('.overflow-y-auto');
-    return scroller ? scroller.scrollWidth - scroller.clientWidth : 0;
-  });
-  expect(overflow).toBeLessThanOrEqual(1);
+  await expectNoSidewaysScroll(page, sheet);
+  await showTab(sheet, 'Para autorizar');
+  await expect(sheet.getByRole('region', { name: 'Fontes de log' })).toBeVisible();
+  await expectNoSidewaysScroll(page, sheet);
+  await showTab(sheet, 'Fontes lidas');
+  await expect(sheet.getByRole('region', { name: 'Fontes autorizadas' })).toBeVisible();
+  await expectNoSidewaysScroll(page, sheet);
   return sheet;
 }
 
@@ -206,32 +222,42 @@ test.describe('onboarding self-service da AWS (modo mock)', () => {
       await confirmation.getByRole('checkbox', { name: /^Confirmo que o Verax pode ler/ }).check();
       await confirm.click();
 
+      // Autorizadas as primeiras fontes, o passo a passo termina: a conta passa a abrir em abas (E-04), na visão
+      // geral, e o foco vai para a aba aberta (o botão confirmado saiu da tela).
+      await expect(sheet.getByRole('tab', { name: 'Visão geral' })).toBeFocused();
+      expect(await violations(page)).toEqual([]);
       // Autorizadas: aguardando o coletor, e a conta configurando. Nada de "tudo certo" antes da hora.
+      await showTab(sheet, 'Conexão e pilha');
+      await expect(status).toContainText('Configurando coletores');
+      await showTab(sheet, 'Fontes lidas');
       const monitor = sheet.getByRole('region', { name: 'Fontes autorizadas' });
       await expect(monitor.getByRole('rowheader', { name: /management-events/ })).toBeVisible();
       await expect(monitor.getByRole('rowheader', { name: /\/aplicacao\/auditoria/ })).toContainText(
         'Sensível',
       );
-      await expect(status).toContainText('Configurando coletores');
+      await showTab(sheet, 'Para autorizar');
       await expect(
         sources.getByRole('checkbox', { name: /CloudTrail \(trilha\) · management-events/ }),
       ).toHaveCount(0);
       expect(await violations(page)).toEqual([]);
 
       // Os coletores da demonstração começam a ler: todas coletando, e só então o estado é "Coletando eventos".
+      await showTab(sheet, 'Conexão e pilha');
       await expect(status).toContainText('Coletando eventos', { timeout: STEP_TIMEOUT });
       await expect(status).not.toContainText('pendências');
-      await expect(monitor.getByText('Coletando', { exact: true })).toHaveCount(3);
       await expect(
         situation.getByRole('list', { name: 'Passos da conexão' }).locator('[aria-current="step"]'),
       ).toContainText('Coletando eventos');
       expect(await violations(page)).toEqual([]);
+      await showTab(sheet, 'Fontes lidas');
+      await expect(monitor.getByText('Coletando', { exact: true })).toHaveCount(3);
 
       // Retirar a autorização pede a confirmação, e a fonte volta para as disponíveis.
       await monitor.getByRole('button', { name: /^Revogar: GuardDuty \(API\)/ }).click();
       expect(await violations(page)).toEqual([]);
       await monitor.getByRole('button', { name: 'Confirmar revogação' }).click();
       await expect(monitor.getByRole('rowheader', { name: /GuardDuty \(API\)/ })).toHaveCount(0);
+      await showTab(sheet, 'Para autorizar');
       await expect(sources.getByRole('region', { name: /^Disponíveis para coletar/ })).toContainText(
         'Autorização retirada em',
       );
@@ -309,23 +335,21 @@ test.describe('onboarding self-service da AWS (modo mock)', () => {
     // Nesta largura os dois quadros rolam de lado em qualquer sistema, bem além da folga que o axe dá antes de tratar
     // um quadro como rolável (a 360 px, o das leituras que ficaram de fora só passa dela com a fonte do Linux). É o
     // que faz a regra `scrollable-region-focusable` valer aqui, e não só na integração contínua.
-    const frames = sheet.locator('.overflow-x-auto');
-    await expect(frames).toHaveCount(TABLE_FRAMES.length);
-    const overflows = await frames.evaluateAll((elements) =>
-      elements.map((element) => element.scrollWidth - element.clientWidth),
-    );
-    expect(Math.min(...overflows)).toBeGreaterThan(2 * AXE_SCROLL_TOLERANCE_PX);
-    expect(await violations(page)).toEqual([]);
     // Cada quadro é uma região com o nome da tabela dele, alcançável pelo teclado (sem mouse, é o foco no quadro que
-    // deixa rolar até as colunas da direita).
-    for (const name of TABLE_FRAMES) {
+    // deixa rolar até as colunas da direita). Cada um fica numa aba (E-04).
+    await expect(sheet.locator('.overflow-x-auto')).toHaveCount(TABLE_FRAMES.length);
+    for (const { name, tab } of TABLE_FRAMES) {
+      await showTab(sheet, tab);
       const frame = sheet.getByRole('region', { name, exact: true });
+      const overflow = await frame.evaluate((element) => element.scrollWidth - element.clientWidth);
+      expect(overflow).toBeGreaterThan(2 * AXE_SCROLL_TOLERANCE_PX);
+      expect(await violations(page)).toEqual([]);
       await expect(frame).toHaveAttribute('tabindex', '0');
       await frame.focus();
       await expect(frame).toBeFocused();
     }
     // Com o foco no quadro, as setas rolam a tabela.
-    const monitor = sheet.getByRole('region', { name: TABLE_FRAMES[1], exact: true });
+    const monitor = sheet.getByRole('region', { name: TABLE_FRAMES[1].name, exact: true });
     await page.keyboard.press('ArrowRight');
     await expect.poll(() => monitor.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
   });
@@ -338,9 +362,11 @@ test.describe('onboarding self-service da AWS (modo mock)', () => {
     await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     const sheet = page.getByRole('dialog', { name: AWS_DIALOG });
+    await showTab(sheet, 'Conexão e pilha');
     await expect(
       sheet.getByRole('region', { name: 'Situação da conexão' }).getByRole('status'),
     ).toContainText('Erro de permissão');
+    await showTab(sheet, 'Fontes lidas');
     const monitor = sheet.getByRole('region', { name: 'Fontes autorizadas' });
     // Sem achado nenhum, limitada pela AWS, sem a permissão de leitura e desligada na conta.
     await expect(monitor).toContainText('Sincronizada, sem achados novos');
@@ -366,14 +392,20 @@ test.describe('onboarding self-service da AWS (modo mock)', () => {
     await useRole(page, 'leitura');
     await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
     const sheet = page.getByRole('dialog', { name: AWS_DIALOG });
+    await showTab(sheet, 'Conexão e pilha');
     await expect(
       sheet.getByRole('region', { name: 'Situação da conexão' }).getByRole('status'),
     ).toContainText('Erro de permissão');
+    await showTab(sheet, 'Fontes lidas');
     await expect(sheet.getByRole('region', { name: 'Fontes autorizadas' })).toBeVisible();
-    await expect(
-      sheet.getByRole('button', { name: /Verificar|Conectar|Autorizar|Revogar|Descobrir|Tentar/ }),
-    ).toHaveCount(0);
     await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
-    expect(await violations(page)).toEqual([]);
+    // Em nenhuma aba.
+    for (const tab of await sheet.getByRole('tab').all()) {
+      await tab.click();
+      await expect(
+        sheet.getByRole('button', { name: /Verificar|Conectar|Autorizar|Revogar|Descobrir|Tentar/ }),
+      ).toHaveCount(0);
+      expect(await violations(page)).toEqual([]);
+    }
   });
 });

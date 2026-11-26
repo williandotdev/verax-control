@@ -44,6 +44,7 @@ import {
 } from '@/features/admin/aws-log-buckets';
 import { AwsLogBuckets, LogBucketsEditor } from '@/features/admin/aws-log-buckets-editor';
 import { AWS_DEFAULT_REGION, AWS_REGION_OPTIONS } from '@/features/admin/aws-onboarding-labels';
+import { AWS_ACCOUNT_FACTS_ID, useAwsAccountTab } from '@/features/admin/aws-account-view';
 import { AwsOnboardingSection } from '@/features/admin/aws-onboarding-section';
 import { CommandBlock } from '@/features/admin/command-block';
 import { DeleteCloudAccount } from '@/features/admin/delete-cloud-account';
@@ -141,6 +142,7 @@ export function CloudAccountsPage() {
       const next = new URLSearchParams(previous);
       if (value) next.set('conta', value);
       else next.delete('conta');
+      next.delete('aba');
       return next;
     });
   const selected = list.data?.items.find((account) => account.id === open) ?? null;
@@ -558,6 +560,21 @@ function AccountDetail({
   // credencial e o "Verificar" continuam com o cliente.
   const managed = isManagedByVerax(account);
   const canEditSource = canWrite && !managed;
+  const [tab, setTab] = useAwsAccountTab();
+  const monitoring = canWrite && (
+    <div className="space-y-2">
+      <Button
+        variant="secondary"
+        disabled={managed || update.isPending}
+        onClick={() => update.mutate({ status: account.status === 'active' ? 'inactive' : 'active' })}
+      >
+        {account.status === 'active' ? 'Desativar monitoramento' : 'Reativar monitoramento'}
+      </Button>
+      <FormError error={update.error} />
+    </div>
+  );
+  // Excluir vale também na conta que a Verax cadastrou: a Verax é avisada pela sincronização do nó.
+  const deletion = canWrite && <DeleteCloudAccount account={account} onDeleted={onDeleted} />;
   return (
     <div className="space-y-5">
       {managed && (
@@ -569,56 +586,66 @@ function AccountDetail({
           </p>
         </div>
       )}
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-        <dt className="text-muted-foreground">Conexão</dt>
-        <dd className="space-y-0.5">
-          <ConnectionBadge account={account} />
-          <p className="text-xs text-muted-foreground">
-            {connectionHint(account)}
-            {account.connectionError && (
-              <ConnectionErrorDetail account={account} code={account.connectionError} />
-            )}
-          </p>
-        </dd>
-        <CollectionWarning account={account} />
-        <dt className="text-muted-foreground">Última coleta</dt>
-        <dd>{account.lastCollectedAt ? formatRelative(account.lastCollectedAt) : 'nenhuma ainda'}</dd>
-        <dt className="text-muted-foreground">Último evento</dt>
-        <dd>{account.lastEventAt ? formatRelative(account.lastEventAt) : 'nenhum ainda'}</dd>
-        <dt className="text-muted-foreground">{SCOPE_LABELS[account.provider]}</dt>
-        <dd className="break-all">{scopeOf(account) ?? MISSING_SCOPE[account.provider]}</dd>
-        {account.readerRoleArn && (
-          <>
-            <dt className="text-muted-foreground">Papel de leitura</dt>
-            <dd className="break-all font-mono text-xs">{account.readerRoleArn}</dd>
-          </>
-        )}
-      </dl>
       {account.provider === 'aws' ? (
-        <>
-          {/* Conectar, descobrir e autorizar as fontes são do cliente também na conta que a Verax cadastrou. */}
-          <AwsOnboardingSection account={account} canWrite={canWrite} />
-          <AwsAdvancedBuckets account={account} canWrite={canEditSource} managed={managed} />
-        </>
+        // Conectar, descobrir e autorizar as fontes são do cliente também na conta que a Verax cadastrou. Na conta já
+        // conectada, os dados abaixo vão para a aba "Conexão e pilha" e o fim do detalhe, para "Avançado" (E-04).
+        <AwsOnboardingSection
+          account={account}
+          canWrite={canWrite}
+          layout={{
+            tab,
+            onTabChange: setTab,
+            facts: <AccountFacts account={account} />,
+            advanced: (
+              <>
+                <AwsAdvancedBuckets account={account} canWrite={canEditSource} managed={managed} />
+                {monitoring}
+                {deletion}
+              </>
+            ),
+          }}
+        />
       ) : (
-        <ProviderSteps account={account} canWrite={canWrite} canEditSource={canEditSource} />
+        <>
+          <AccountFacts account={account} />
+          <ProviderSteps account={account} canWrite={canWrite} canEditSource={canEditSource} />
+          {canWrite && <EditSource account={account} disabled={managed} />}
+          {monitoring}
+          {deletion}
+        </>
       )}
-      {canWrite && account.provider !== 'aws' && <EditSource account={account} disabled={managed} />}
-      {canWrite && (
-        <div className="space-y-2">
-          <Button
-            variant="secondary"
-            disabled={managed || update.isPending}
-            onClick={() => update.mutate({ status: account.status === 'active' ? 'inactive' : 'active' })}
-          >
-            {account.status === 'active' ? 'Desativar monitoramento' : 'Reativar monitoramento'}
-          </Button>
-          <FormError error={update.error} />
-        </div>
-      )}
-      {/* Excluir vale também na conta que a Verax cadastrou: a Verax é avisada pela sincronização do nó. */}
-      {canWrite && <DeleteCloudAccount account={account} onDeleted={onDeleted} />}
     </div>
+  );
+}
+
+/** Os dados da conta: a conexão (com o motivo do erro), a coleta no nó, as datas, o escopo e o papel de leitura. */
+function AccountFacts({ account }: { account: CloudAccount }) {
+  return (
+    <dl id={AWS_ACCOUNT_FACTS_ID} className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+      <dt className="text-muted-foreground">Conexão</dt>
+      <dd className="space-y-0.5">
+        <ConnectionBadge account={account} />
+        <p className="text-xs text-muted-foreground">
+          {connectionHint(account)}
+          {account.connectionError && (
+            <ConnectionErrorDetail account={account} code={account.connectionError} />
+          )}
+        </p>
+      </dd>
+      <CollectionWarning account={account} />
+      <dt className="text-muted-foreground">Última coleta</dt>
+      <dd>{account.lastCollectedAt ? formatRelative(account.lastCollectedAt) : 'nenhuma ainda'}</dd>
+      <dt className="text-muted-foreground">Último evento</dt>
+      <dd>{account.lastEventAt ? formatRelative(account.lastEventAt) : 'nenhum ainda'}</dd>
+      <dt className="text-muted-foreground">{SCOPE_LABELS[account.provider]}</dt>
+      <dd className="break-all">{scopeOf(account) ?? MISSING_SCOPE[account.provider]}</dd>
+      {account.readerRoleArn && (
+        <>
+          <dt className="text-muted-foreground">Papel de leitura</dt>
+          <dd className="break-all font-mono text-xs">{account.readerRoleArn}</dd>
+        </>
+      )}
+    </dl>
   );
 }
 

@@ -35,12 +35,23 @@ async function enter(page: Page, role: string, theme: Theme = 'light', webLogs: 
   await skipDemoTour(page);
 }
 
-async function openAccount(page: Page): Promise<Locator> {
-  await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
+/**
+ * Abre a conta já conectada na aba pedida (E-04): "Para autorizar" guarda as fontes de log; "Ataques web", os
+ * balanceadores.
+ */
+async function openAccount(page: Page, tab: 'autorizar' | 'ataques-web' = 'autorizar'): Promise<Locator> {
+  await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}&aba=${tab}`);
   const sheet = page.getByRole('dialog', { name: AWS_DIALOG });
-  await expect(sheet.getByRole('region', { name: 'Fontes de log' })).toBeVisible();
+  await expect(
+    sheet.getByRole('region', { name: tab === 'autorizar' ? 'Fontes de log' : 'Ataques web' }),
+  ).toBeVisible();
   await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
   return sheet;
+}
+
+/** Troca a aba do detalhe da conta pelo nome dela (sem a contagem). */
+async function showTab(sheet: Locator, name: string) {
+  await sheet.getByRole('tab', { name, exact: false }).click();
 }
 
 /** As violações dentro de um pedaço da tela (a conta inteira tem centenas de linhas, e cada cenário olha o seu). */
@@ -79,7 +90,7 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
         test.setTimeout(120_000);
         await page.setViewportSize({ width, height: 900 });
         await enter(page, 'admin_cliente', theme);
-        const sheet = await openAccount(page);
+        const sheet = await openAccount(page, 'ataques-web');
         const section = sheet.getByRole('region', { name: 'Ataques web' });
         const sources = sheet.getByRole('region', { name: 'Fontes de log' });
 
@@ -94,10 +105,12 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
         await section.getByRole('button', { name: 'Declarar uma rota: api-alb' }).click();
         await section.getByRole('button', { name: 'Incluir fonte confiável' }).click();
         await section.getByText('O que esta detecção não vê').click();
-        await sources.getByText('Como ligar o log de acesso do site-alb').click();
         await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
         await expectNoSidewaysScroll(page, sheet);
         expect(await violations(page, '#aws-ataques-web')).toEqual([]);
+        await showTab(sheet, 'Para autorizar');
+        await sources.getByText('Como ligar o log de acesso do site-alb').click();
+        await expectNoSidewaysScroll(page, sheet);
         expect(await violations(page, '#aws-fontes')).toEqual([]);
 
         // A confirmação, com as duas ciências, e a janela de começar a alertar por cima do painel.
@@ -107,6 +120,7 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
         await expect(sources.getByRole('checkbox', { name: /^Entendi:/ })).toHaveCount(2);
         await expectNoSidewaysScroll(page, sheet);
         expect(await violations(page, '#aws-fontes')).toEqual([]);
+        await showTab(sheet, 'Ataques web');
         await section.getByRole('button', { name: 'Começar a alertar: checkout-alb' }).click();
         const dialog = page.getByRole('dialog', { name: 'Começar a alertar: checkout-alb' });
         await expect(dialog).toContainText('pelo menos 6 alertas teriam sido abertos');
@@ -141,13 +155,20 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
     test.setTimeout(120_000);
     await enter(page, 'admin_cliente');
     await page.setViewportSize({ width: 1280, height: 900 });
-    const sheet = await openAccount(page);
+    const sheet = await openAccount(page, 'ataques-web');
     const section = sheet.getByRole('region', { name: 'Ataques web' });
     const sources = sheet.getByRole('region', { name: 'Fontes de log' });
     for (const name of ['loja-alb', 'api-alb', 'checkout-alb']) await balancer(section, name).click();
     await section.getByRole('button', { name: 'Incluir fonte confiável' }).click();
+    const widths = [320, 360, 414, 600, 768, 1024, 1280, 1600, 1920];
+    for (const width of widths) {
+      await page.setViewportSize({ width, height: 900 });
+      await expectNoSidewaysScroll(page, sheet);
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await showTab(sheet, 'Para autorizar');
     await sources.getByText('Como ligar o log de acesso do site-alb').click();
-    for (const width of [320, 360, 414, 600, 768, 1024, 1280, 1600, 1920]) {
+    for (const width of widths) {
       await page.setViewportSize({ width, height: 900 });
       await expectNoSidewaysScroll(page, sheet);
     }
@@ -191,13 +212,15 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
     await acknowledgement.check();
     await confirm.click();
 
+    await showTab(sheet, 'Ataques web');
     const section = sheet.getByRole('region', { name: 'Ataques web' });
     await expect(balancer(section, 'relatorios-alb')).toContainText('Observando');
     await balancer(section, 'catalogo-alb').click();
     const mode = section.getByRole('region', { name: 'Modo do catalogo-alb' });
     await expect(mode.getByRole('status')).toContainText('Observando: faltam 72 h');
     await expect(mode.getByRole('button', { name: 'Começar a alertar: catalogo-alb' })).toBeDisabled();
-    // Na tabela, a linha leva até aqui.
+    // Na tabela das fontes lidas, a linha leva até aqui.
+    await showTab(sheet, 'Fontes lidas');
     await expect(sheet.getByRole('link', { name: 'Ver em Ataques web: catalogo-alb' })).toHaveAttribute(
       'href',
       /^#ataques-web-/,
@@ -208,7 +231,7 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
     page,
   }) => {
     await enter(page, 'admin_cliente');
-    const sheet = await openAccount(page);
+    const sheet = await openAccount(page, 'ataques-web');
     const section = sheet.getByRole('region', { name: 'Ataques web' });
     const header = balancer(section, 'checkout-alb');
     await header.focus();
@@ -235,7 +258,7 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
 
   test('rotas e fontes confiáveis: incluir, ver o erro no campo, alterar e remover', async ({ page }) => {
     await enter(page, 'admin_cliente');
-    const sheet = await openAccount(page);
+    const sheet = await openAccount(page, 'ataques-web');
     const section = sheet.getByRole('region', { name: 'Ataques web' });
     await balancer(section, 'loja-alb').click();
     await section.getByRole('button', { name: 'Declarar uma rota: loja-alb' }).click();
@@ -271,7 +294,7 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
 
   test('quem só lê vê tudo e não muda nada', async ({ page }) => {
     await enter(page, 'analista_cliente');
-    const sheet = await openAccount(page);
+    const sheet = await openAccount(page, 'ataques-web');
     const section = sheet.getByRole('region', { name: 'Ataques web' });
     await balancer(section, 'api-alb').click();
     await expect(section.getByText('POST api.exemplo.com.br/v1/entrar')).toBeVisible();
@@ -281,6 +304,7 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
         name: /Alterar|Remover|Renovar|Incluir|Declarar|Salvar|alertar|observar/,
       }),
     ).toHaveCount(0);
+    await showTab(sheet, 'Para autorizar');
     const sources = sheet.getByRole('region', { name: 'Fontes de log' });
     await expect(sources.getByRole('button', { name: /Estimar/ })).toHaveCount(0);
     await expect(sources.getByText('aparecem para quem administra o cliente').first()).toBeVisible();
@@ -293,10 +317,13 @@ test.describe('ataques web pelos logs do ALB (modo mock)', () => {
     await enter(page, 'admin_cliente', 'light', 'off');
     const sheet = await openAccount(page);
     await expect(sheet.getByRole('region', { name: 'Ataques web' })).toHaveCount(0);
+    await expect(sheet.getByRole('tab', { name: /^Ataques web/ })).toHaveCount(0);
     const sources = sheet.getByRole('region', { name: 'Fontes de log' });
     await expect(sources.getByRole('button', { name: /Estimar/ })).toHaveCount(0);
     await expect(sources.getByText(/[Ee]stimativa de volume/)).toHaveCount(0);
     await expect(sources.getByRole('region', { name: /^Ainda não coletadas/ })).toContainText('catalogo-alb');
+    await showTab(sheet, 'Fontes lidas');
+    await expect(sheet.getByRole('region', { name: 'Fontes autorizadas' })).toBeVisible();
     await expect(sheet.getByRole('link', { name: /Ver em Ataques web/ })).toHaveCount(0);
     await expect(sheet.getByRole('alert')).toHaveCount(0);
     expect(errors).toEqual([]);
