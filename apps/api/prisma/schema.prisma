@@ -862,6 +862,14 @@ model Finding {
   /// Última operação de triagem em massa que mudou o alerta (`TriageOperation`). Sem chave estrangeira: o cabeçalho da
   /// operação tem retenção própria, e o alerta pode viver mais que ele.
   triageOpId      String?               @db.Uuid
+  /// Só nos alertas da trilha da AWS: a alteração registrada no evento, reduzida e saneada na chegada (`findingChangeSchema`
+  /// de `@verax/shared`, no máximo 16 KiB, conferido por CHECK no banco): o objeto alterado, o que mudou e por onde a ação
+  /// veio. Nunca documento de política, senha, token ou texto livre. A seção "O que aconteceu" do detalhe sai daqui.
+  change          Json?
+  /// A chave do objeto alterado quando a alteração traz o estado inteiro dele (a lista de IPs, a Web ACL ou o grupo de regras
+  /// do WAF v2): o alerta anterior com a mesma chave, no mesmo cliente e na mesma conta, é o "antes". Índice parcial só no
+  /// banco (`Finding_change_subject_idx`, migration `20261205120000_finding_change`).
+  changeSubject   String?               @db.VarChar(320)
   createdAt       DateTime              @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime              @updatedAt @db.Timestamptz(3)
   comments        FindingComment[]

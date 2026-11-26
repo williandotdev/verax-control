@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/c
 import {
   type Finding,
   type FindingComment,
+  type FindingChangeContext,
   type FindingCommentCreate,
   findingCommentCreateSchema,
   type FindingDetail,
@@ -59,6 +60,12 @@ export class FindingsController {
   @RequirePermission('findings:read')
   evidence(@Param('id', { schema: findingIdSchema }) id: string): Promise<FindingEvidence> {
     return this.findings.evidence(id);
+  }
+
+  @Get(':id/change')
+  @RequirePermission('findings:read')
+  change(@Param('id', { schema: findingIdSchema }) id: string): Promise<FindingChangeContext> {
+    return this.findings.change(id);
   }
 
   @Patch(':id/status')

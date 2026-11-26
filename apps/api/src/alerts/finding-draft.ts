@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
-import { type FindingSeverity, type FindingSource, wazuhAgentRef } from '@verax/shared';
+import {
+  type FindingChange,
+  findingChangeSubject,
+  type FindingSeverity,
+  type FindingSource,
+  wazuhAgentRef,
+} from '@verax/shared';
 import type { WazuhAgentAlert } from './agent-alert.js';
 import type { AgentAlertOwner } from './agent-owner.js';
 import type { AlertOwner } from './alert-owner.js';
@@ -89,6 +95,11 @@ export interface FindingDraft {
   evidence?: WebEvidence;
   /** Só neles: as chaves do ataque. Aceito e não gravado: o caso sai das colunas do achado (`cases/case-key.ts`). */
   correlation?: WebCorrelation;
+  /**
+   * Só nos alertas da trilha da AWS (Wazuh): a alteração registrada no evento (`Finding.change`) e a chave do objeto
+   * alterado (`Finding.changeSubject`), quando a alteração traz o estado inteiro dele (`findingChangeSubject`).
+   */
+  change?: { data: FindingChange; subject: string | null };
 }
 
 /**
@@ -213,6 +224,9 @@ export function toFindingDraft(
     mitreTactics: unique(mitre.tactics),
     mitreTechniques: unique(mitre.techniques),
     ...(recurrence && { recurrence }),
+    ...(alert.change && {
+      change: { data: alert.change, subject: findingChangeSubject(alert.change, alert.region ?? null) },
+    }),
   };
 }
 
