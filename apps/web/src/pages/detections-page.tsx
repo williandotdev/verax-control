@@ -477,7 +477,7 @@ function DetectionsContent({
       data-tour="deteccoes-analise"
       aria-label="Como ver as detecções"
       // E-02: no celular, uma fileira só, que desliza de lado (a última aba aparece cortada, de propósito).
-      className="flex gap-1 border-b max-md:-mx-4 max-md:flex-nowrap max-md:overflow-x-auto max-md:px-4 md:flex-wrap"
+      className="flex gap-1 border-b max-md:flex-nowrap max-md:overflow-x-auto md:flex-wrap"
     >
       {ANALYSIS_TABS.map((tab) => (
         <Tabs.Trigger

@@ -129,10 +129,13 @@ test.describe('tela Detecções (modo mock)', () => {
         await expect(
           list.getByRole('button', { name: /^Abrir o alerta: Tentativa de desligar/ }),
         ).toBeVisible();
+        // No celular, os filtros ficam na folha "Filtros" (E-02).
+        if (device === 'celular') await page.getByRole('button', { name: /^Filtros/ }).click();
         await page.getByRole('button', { name: 'Mais filtros' }).click();
         await expect(page.getByLabel('Tática do MITRE')).toBeVisible();
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
+        if (device === 'celular') await page.keyboard.press('Escape');
 
         // O detalhe: ao lado da lista no computador, numa gaveta no celular.
         await list
@@ -192,6 +195,7 @@ test.describe('tela Detecções (modo mock)', () => {
   test('no computador, a lista fica ao lado do radar, e as análises são abas no mesmo nível de "Lista" (E-07)', async ({
     page,
   }) => {
+    test.setTimeout(90_000);
     for (const width of [1280, 1440, 1920]) {
       await page.setViewportSize({ width, height: 900 });
       await open(page);

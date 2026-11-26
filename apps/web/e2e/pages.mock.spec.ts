@@ -211,6 +211,9 @@ test.describe('revisão de UX (modo mock)', () => {
       await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
       await open(page, '/ativos', 'Ativos e identidades');
       const band = page.getByRole('region', { name: 'Coleta parcial' });
+      // R-10: numa linha à vista; a lista e o motivo, a um clique.
+      await expect(band).toContainText('Coleta parcial: a AWS recusou 2 leituras na conta 111122223333.');
+      await band.getByText('Ver quais e como corrigir').click();
       await expect(band).toContainText('Conta 111122223333');
       await expect(band.getByRole('listitem')).toContainText([
         'Instâncias EC2 em us-east-1: a AWS recusou a leitura (UnauthorizedOperation).',
@@ -237,6 +240,11 @@ test.describe('revisão de UX (modo mock)', () => {
         await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
         await open(page, '/postura', 'Postura cloud');
         const band = page.getByRole('region', { name: 'Varredura parcial' });
+        // R-10: à vista, que a leitura foi parcial e que o não lido não conta como aprovado; a lista, a um clique.
+        await expect(band).toContainText(
+          'As checagens que dependem delas ficam fora da nota e não contam como aprovadas.',
+        );
+        await band.getByText('Ver as 3 leituras e como corrigir').click();
         await expect(band).toContainText('Conta 111122223333');
         await expect(band.getByRole('listitem')).toContainText([
           'Instâncias EC2 em us-east-1: a AWS recusou a leitura (UnauthorizedOperation).',

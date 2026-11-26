@@ -49,6 +49,8 @@ test.describe('histórico de 12 meses (modo mock)', () => {
         }, theme);
         await page.goto('/?visao=alertas');
         await ready(page, 'Detecções');
+        // No celular, os filtros ficam na folha "Filtros" (E-02).
+        if (device === 'celular') await page.getByRole('button', { name: /^Filtros/ }).click();
         const period = page.getByRole('combobox', { name: 'Período' });
         await expect(period.getByRole('option', { name: 'Últimos 12 meses' })).toBeAttached();
         // A lista fica esmaecida enquanto busca o período novo. O endereço muda antes de a tela marcar a busca
@@ -61,6 +63,7 @@ test.describe('histórico de 12 meses (modo mock)', () => {
         await period.selectOption('12m');
         await expect(page).toHaveURL(/\/\?visao=alertas&periodo=12m$/);
         await loaded;
+        if (device === 'celular') await page.keyboard.press('Escape');
         await expect(page.getByRole('table', { name: 'Alertas do cliente' })).toBeVisible();
         await ready(page, 'Detecções');
         expect(await violations(page)).toEqual([]);
@@ -75,7 +78,13 @@ test.describe('histórico de 12 meses (modo mock)', () => {
         }, theme);
         await page.goto('/?analise=mitre&periodo=12m');
         await ready(page, 'Detecções');
+        if (device === 'celular') {
+          // No celular, o período fica na folha "Filtros" (E-02), e a etiqueta dele à vista.
+          await expect(page.getByRole('button', { name: /^Últimos 12 meses/ })).toBeVisible();
+          await page.getByRole('button', { name: /^Filtros/ }).click();
+        }
         await expect(page.getByRole('combobox', { name: 'Período' })).toHaveValue('12m');
+        if (device === 'celular') await page.keyboard.press('Escape');
         await expect(page.getByRole('group', { name: /^Gráfico de radar das táticas/ })).toBeVisible();
         // As 14 táticas, mais o cabeçalho, atrás de "Ver tabela completa" (R-11).
         await page.getByText(/^Ver tabela completa \(14 táticas/).click();
