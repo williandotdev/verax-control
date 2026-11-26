@@ -1,11 +1,14 @@
 import { type DetectionFilters, FINDING_PERIODS, hasContentFilter, type Permission } from '@verax/shared';
-import { Download } from 'lucide-react';
+import { Download, SlidersHorizontal, X } from 'lucide-react';
 import { Tabs } from 'radix-ui';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { EmptyState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { Explainer } from '@/components/ui/explainer';
+import { Sheet } from '@/components/ui/sheet';
+import { SEVERITY_STYLES } from '@/design/severity';
+import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
 import { BulkAlertsList } from '@/features/cases/alerts-bulk';
 import { CaseFilterBar } from '@/features/cases/case-filter-bar';
 import { caseListQuery } from '@/features/cases/case-query';
@@ -24,7 +27,11 @@ import { SituationStrip } from '@/features/detections/situation-strip';
 import { useStripPreference } from '@/features/detections/strip-preference';
 import {
   ANALYSIS_SLUGS,
+  CUSTOM_PERIOD,
+  DETECTION_PARAMS,
   type DetectionAnalysis,
+  FILTER_KEYS,
+  PERIOD_CHOICE_LABELS,
   type DetectionSelection,
   type DetectionView,
   parentCaseOf,
@@ -48,7 +55,7 @@ import {
 } from '@/features/reports/report-views';
 import type { ReportRange } from '@/features/reports/reports-api';
 import { useMe } from '@/features/session/session';
-import { SIDE_PANEL_QUERY, useMediaQuery, WIDE_LIST_QUERY } from '@/lib/use-media-query';
+import { NARROW_QUERY, SIDE_PANEL_QUERY, useMediaQuery, WIDE_LIST_QUERY } from '@/lib/use-media-query';
 import { errorMessage } from '@/lib/errors';
 import { cn } from '@/lib/cn';
 import { plural } from '@/lib/format';
@@ -184,6 +191,8 @@ function DetectionsContent({
   const decided = !cases.loading || viewIsDecided(params);
   const casesShown = view === 'cases' || view === 'vulnerabilities';
   const side = useMediaQuery(SIDE_PANEL_QUERY);
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const wide = useMediaQuery(WIDE_LIST_QUERY);
   const [stripExpanded, setStripExpanded] = useStripPreference(userId);
   // As análises são abas no mesmo nível de "Lista" em toda largura (E-07): escolher uma troca a área da lista; o radar e a
@@ -347,7 +356,7 @@ function DetectionsContent({
       analysis={!listing}
     />
   );
-  const filterBar =
+  const fullFilterBar =
     casesShown && listing ? (
       <CaseFilterBar
         key={view}
@@ -361,6 +370,31 @@ function DetectionsContent({
     ) : (
       commonFilterBar
     );
+  const exportButton = listing && (
+    <ExportButton
+      run={() =>
+        casesShown
+          ? exportCases(caseListQuery({ view, filters, cases: caseState, page: 1, pageSize: PAGE_SIZE }))
+          : view === 'incidents'
+            ? exportIncidents(filters, state.sort)
+            : exportFindings(filters)
+      }
+      file={EXPORT_FILES[view]}
+    />
+  );
+  const filterBar = narrow ? (
+    <MobileFilters
+      params={params}
+      open={filtersOpen}
+      onOpenChange={setFiltersOpen}
+      onRemove={(key) => update({ [key]: null, ...(key === 'period' && { from: null, to: null }) })}
+      exportButton={exportButton}
+    >
+      {fullFilterBar}
+    </MobileFilters>
+  ) : (
+    fullFilterBar
+  );
   const commonList =
     view === 'incidents' ? (
       <IncidentsList
@@ -423,13 +457,14 @@ function DetectionsContent({
     <Tabs.List
       data-tour="deteccoes-analise"
       aria-label="Como ver as detecções"
-      className="flex flex-wrap gap-1 border-b"
+      // E-02: no celular, uma fileira só, que desliza de lado (a última aba aparece cortada, de propósito).
+      className="flex gap-1 border-b max-md:-mx-4 max-md:flex-nowrap max-md:overflow-x-auto max-md:px-4 md:flex-wrap"
     >
       {ANALYSIS_TABS.map((tab) => (
         <Tabs.Trigger
           key={tab.value}
           value={tab.value}
-          className="-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-muted-foreground hover:text-foreground data-[state=active]:border-foreground data-[state=active]:font-medium data-[state=active]:text-foreground"
+          className="-mb-px shrink-0 border-b-2 border-transparent px-3 py-2 text-sm whitespace-nowrap text-muted-foreground hover:text-foreground data-[state=active]:border-foreground data-[state=active]:font-medium data-[state=active]:text-foreground max-md:min-h-11"
         >
           {tab.label}
         </Tabs.Trigger>
@@ -482,25 +517,7 @@ function DetectionsContent({
 
   const operations = listing && cases.mode !== 'off' && view !== 'incidents' && <OperationsPanel />;
   return (
-    <Shell
-      casesOn={cases.mode !== 'off'}
-      actions={
-        listing && (
-          <ExportButton
-            run={() =>
-              casesShown
-                ? exportCases(
-                    caseListQuery({ view, filters, cases: caseState, page: 1, pageSize: PAGE_SIZE }),
-                  )
-                : view === 'incidents'
-                  ? exportIncidents(filters, state.sort)
-                  : exportFindings(filters)
-            }
-            file={EXPORT_FILES[view]}
-          />
-        )
-      }
-    >
+    <Shell casesOn={cases.mode !== 'off'} actions={!narrow && exportButton}>
       {originBand}
       <div
         className={cn(
@@ -564,6 +581,92 @@ function DetectionsContent({
       </div>
       {!side && <DetectionDetailPanel selection={selection} side={false} onClose={close} onBack={back} />}
     </Shell>
+  );
+}
+
+/** O rótulo de um filtro ativo, para a etiqueta que dá para remover (celular). */
+function filterChipLabel(key: (typeof FILTER_KEYS)[number], value: string): string {
+  switch (key) {
+    case 'period':
+      return value === CUSTOM_PERIOD
+        ? 'Período personalizado'
+        : (PERIOD_CHOICE_LABELS[value as keyof typeof PERIOD_CHOICE_LABELS] ?? value);
+    case 'severity':
+      return `Severidade: ${SEVERITY_STYLES[value as keyof typeof SEVERITY_STYLES]?.label ?? value}`;
+    case 'status':
+      return `Status: ${FINDING_STATUS_LABELS[value as keyof typeof FINDING_STATUS_LABELS]?.label ?? value}`;
+    case 'source':
+      return `Fonte: ${FINDING_SOURCE_LABELS[value as keyof typeof FINDING_SOURCE_LABELS] ?? value}`;
+    case 'accountId':
+      return `Conta: ${value}`;
+    case 'tactic':
+      return `Tática: ${value}`;
+    case 'technique':
+      return `Técnica: ${value}`;
+    case 'q':
+      return `Busca: ${value}`;
+    case 'unassigned':
+      return 'Sem responsável';
+    default:
+      return value;
+  }
+}
+
+/**
+ * Os filtros no celular (E-02): um botão "Filtros" abre os mesmos campos numa folha, com o "Exportar CSV"; os filtros
+ * ativos ficam à vista como etiquetas que dá para remover. Nada some: "Limpar filtros" continua na folha.
+ */
+function MobileFilters({
+  params,
+  open,
+  onOpenChange,
+  onRemove,
+  exportButton,
+  children,
+}: {
+  params: URLSearchParams;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onRemove: (key: (typeof FILTER_KEYS)[number]) => void;
+  exportButton: ReactNode;
+  children: ReactNode;
+}) {
+  const active = FILTER_KEYS.filter((key) => key !== 'from' && key !== 'to').flatMap((key) => {
+    const value = params.get(DETECTION_PARAMS[key]);
+    return value ? [{ key, label: filterChipLabel(key, value) }] : [];
+  });
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="secondary"
+          className="min-h-11"
+          aria-haspopup="dialog"
+          onClick={() => onOpenChange(true)}
+        >
+          <SlidersHorizontal aria-hidden />
+          Filtros{active.length > 0 && ` (${active.length})`}
+        </Button>
+        {active.map(({ key, label }) => (
+          <button
+            key={key}
+            type="button"
+            className="inline-flex min-h-11 items-center gap-1 rounded-full border px-3 text-sm hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-ring"
+            onClick={() => onRemove(key)}
+          >
+            {label}
+            <X aria-hidden className="size-4" />
+            <span className="sr-only">: remover o filtro</span>
+          </button>
+        ))}
+      </div>
+      <Sheet open={open} onOpenChange={onOpenChange} title="Filtros">
+        <div className="space-y-4">
+          {children}
+          {exportButton}
+        </div>
+      </Sheet>
+    </div>
   );
 }
 

@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from 'react';
 
+/** O celular: abaixo de 768 px, o menu vira gaveta e a tela Detecções troca para o arranjo do celular (E-02). */
+export const NARROW_QUERY = '(max-width: 47.99rem)';
 /** Tela larga o bastante para o painel ficar ao lado da lista (o menu lateral ocupa 15rem). */
 export const SIDE_PANEL_QUERY = '(min-width: 80rem)';
 /** Tela larga o bastante para a lista caber inteira, com todas as colunas, ao lado do radar. */

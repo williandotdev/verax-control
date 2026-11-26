@@ -32,7 +32,7 @@ export interface ListPage<T> {
 }
 
 export const HEAD = 'px-3 py-2 text-left font-medium';
-export const CELL = 'px-3 py-2 align-top';
+export const CELL = 'px-3 py-2 align-top max-md:py-3';
 /**
  * Ao lado do radar ou do detalhe (`data-fill`, em `detections-page.tsx`), a lista ocupa a altura do quadro da esquerda: cada
  * elemento entre a coluna e a tabela leva esta classe, e só a tabela rola.
@@ -77,18 +77,25 @@ export function OpenButton({
   onOpen,
   children,
   label,
+  rowTarget = false,
 }: {
   selected: boolean;
   onOpen: (opener: HTMLElement) => void;
   children: ReactNode;
   label: string;
+  /** No celular, o toque em qualquer ponto da linha abre o item (a linha precisa ser `max-md:relative`). */
+  rowTarget?: boolean;
 }) {
   return (
     <button
       type="button"
       aria-label={label}
       aria-current={selected ? 'true' : undefined}
-      className="text-left font-medium hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      className={cn(
+        'text-left font-medium hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
+        // E-02: no celular, a linha inteira é o alvo do toque (a área do botão cobre a linha, que precisa ser `relative`).
+        rowTarget && "max-md:after:absolute max-md:after:inset-0 max-md:after:content-['']",
+      )}
       onClick={(event) => onOpen(event.currentTarget)}
     >
       {children}
@@ -501,7 +508,10 @@ export function AlertsList({
     >
       {(rows) =>
         rows.map((row) => (
-          <tr key={row.id} className={cn('border-t', selection?.id === row.id && 'bg-primary/5')}>
+          <tr
+            key={row.id}
+            className={cn('border-t max-md:relative', selection?.id === row.id && 'bg-primary/5')}
+          >
             {select && <SelectCell select={select} rows={rows} row={row} label={row.title} />}
             <td className={cn(CELL, WIDE)}>
               <SeverityBadge severity={row.severity} />
@@ -511,6 +521,7 @@ export function AlertsList({
                 selected={selection?.id === row.id}
                 label={`Abrir o alerta: ${row.title}`}
                 onOpen={(opener) => onOpen({ kind: 'finding', id: row.id }, opener)}
+                rowTarget
               >
                 {row.title}
               </OpenButton>

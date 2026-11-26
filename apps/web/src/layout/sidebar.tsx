@@ -14,6 +14,8 @@ interface SidebarProps {
   onCollapsedChange: (collapsed: boolean) => void;
   /** Fecha a gaveta do celular. */
   onClose: () => void;
+  /** No celular, embaixo do menu: a conta, o tema e "Sair" (E-02). */
+  footer?: ReactNode;
 }
 
 /** Classe de um item: ícone e nome; o da página atual em negrito, sobre um fundo claro discreto. */
@@ -82,7 +84,14 @@ function GroupLabel({ children, collapsed }: { children: string; collapsed: bool
  * Menu lateral no navy da marca: seções com o título pequeno em caixa alta, itens com ícone de traço fino e, no topo,
  * a marca com o botão de recolher.
  */
-export function Sidebar({ groups, adminMasterUrl, collapsed, onCollapsedChange, onClose }: SidebarProps) {
+export function Sidebar({
+  groups,
+  adminMasterUrl,
+  collapsed,
+  onCollapsedChange,
+  onClose,
+  footer,
+}: SidebarProps) {
   const sections: { label: string; content: ReactNode }[] = groups.map((group) => ({
     label: group.label,
     content: group.items.map(({ to, label, icon, badge }) => (
@@ -157,6 +166,7 @@ export function Sidebar({ groups, adminMasterUrl, collapsed, onCollapsedChange, 
           </div>
         ))}
       </nav>
+      {footer}
     </>
   );
 }

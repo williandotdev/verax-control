@@ -25,7 +25,8 @@ import { getWithCases } from '@/features/cases/cases-api';
 import { useCasesContext } from '@/features/cases/cases-context';
 import { useMe } from '@/features/session/session';
 import { cn } from '@/lib/cn';
-import { formatDuration, formatList, formatRelative, plural } from '@/lib/format';
+import { NARROW_QUERY, useMediaQuery } from '@/lib/use-media-query';
+import { formatCount, formatDuration, formatList, formatRelative, plural } from '@/lib/format';
 import {
   allCollecting,
   COLLECTION_SOURCE_LABELS,
@@ -44,7 +45,14 @@ import {
   vulnerabilityPhrase,
 } from './tower-reason';
 import { compactParts } from './compact-situation';
-import { ALERTS_VIEW, casesSearch, selectionSearch, VULNERABILITIES_VIEW, withChanges } from './url-state';
+import {
+  ALERTS_VIEW,
+  casesSearch,
+  INCIDENTS_VIEW,
+  selectionSearch,
+  VULNERABILITIES_VIEW,
+  withChanges,
+} from './url-state';
 
 /**
  * O resumo da situação no topo da tela Detecções (o que era a Torre, enxuto): o radar das últimas 24 horas em
@@ -78,6 +86,7 @@ export function SituationStrip({
   const contentId = useId();
   const titleId = useId();
   const summary = tower.data;
+  const narrow = useMediaQuery(NARROW_QUERY);
 
   return (
     <section
@@ -90,7 +99,7 @@ export function SituationStrip({
           <h2 id={titleId} className="text-base font-semibold">
             Situação agora
           </h2>
-          {summary && !expanded && <CompactSituation summary={summary} />}
+          {summary && !expanded && !narrow && <CompactSituation summary={summary} />}
           {summary && expanded && (
             <p className="text-xs text-muted-foreground">Atualizada {formatRelative(summary.generatedAt)}</p>
           )}
@@ -107,6 +116,9 @@ export function SituationStrip({
           <span className="sr-only"> o resumo da situação</span>
         </Button>
       </header>
+      {summary && !expanded && narrow && (
+        <MobileSituation summary={summary} onMore={() => onExpandedChange(true)} />
+      )}
       <div id={contentId} hidden={!expanded} className="border-t p-4">
         {tower.isError ? (
           <ErrorState error={tower.error} onRetry={() => void tower.refetch()} />
@@ -117,6 +129,129 @@ export function SituationStrip({
         )}
       </div>
     </section>
+  );
+}
+
+/** Uma linha tocável do resumo do celular: o ícone da severidade, o texto e a seta. */
+function MobileRow({
+  severity,
+  title,
+  detail,
+  to,
+  onClick,
+  expands = false,
+}: {
+  severity: Severity;
+  title: string;
+  detail?: string;
+  to?: To;
+  onClick?: () => void;
+  /** Abre o quadro, em vez de levar a outro lugar. */
+  expands?: boolean;
+}) {
+  const { icon: Icon, tone, label } = SEVERITY_STYLES[severity];
+  const content = (
+    <>
+      <Icon aria-hidden className={cn('mt-0.5 size-5 shrink-0', tone)} />
+      <span className="min-w-0 flex-1">
+        <span className="sr-only">{label}: </span>
+        <span className="block font-medium">{title}</span>
+        {detail && <span className="block text-xs text-muted-foreground">{detail}</span>}
+      </span>
+      {expands ? (
+        <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      ) : (
+        <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      )}
+    </>
+  );
+  const className =
+    'flex min-h-12 w-full items-start gap-3 px-4 py-3 text-left text-sm hover:bg-foreground/5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring';
+  return (
+    <li className="border-t">
+      {to === undefined ? (
+        <button
+          type="button"
+          className={className}
+          onClick={onClick}
+          aria-expanded={expands ? false : undefined}
+        >
+          {content}
+        </button>
+      ) : (
+        <Link to={to} className={className}>
+          {content}
+        </Link>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Recolhido no celular (E-02): linhas tocáveis com o incidente mais grave, o que espera validação e a coleta; a última
+ * abre o quadro, com a postura à vista. A coleta parada fica sempre à vista (R-13).
+ */
+function MobileSituation({ summary, onMore }: { summary: TowerSummary; onMore: () => void }) {
+  const { critical, high } = summary.openIncidents;
+  const unassigned = summary.pendingDecisions.find((decision) => decision.kind === 'unassigned_incident');
+  const incidentDetail = [
+    ...(critical > 0 && high > 0 ? [`e ${plural(high, 'alto', 'altos')}`] : []),
+    ...(unassigned ? [`${formatCount(unassigned.count)} sem responsável`] : []),
+  ].join(' · ');
+  const waiting = summary.pendingDecisions.find(
+    (decision) =>
+      decision.kind === 'untriaged_case' ||
+      decision.kind === 'untriaged_vulnerability_case' ||
+      decision.kind === 'untriaged_finding',
+  );
+  const proof = collectionProof(summary);
+  const warnings = collectionWarnings(summary);
+  const stalled = (proof?.stalled.length ?? 0) > 0 || summary.reasons.includes('collection_stalled');
+  const { score, warningBelow } = summary.posture;
+  const label = `Situação: ${towerReason(summary)} ${compactParts(summary)
+    .filter((part) => !part.inReason)
+    .map((part) => part.text)
+    .join(', ')}.`;
+  return (
+    <div role="status" aria-label={label}>
+      <ul aria-label="Resumo da situação">
+        <MobileRow
+          severity={critical > 0 ? 'critical' : high > 0 ? 'high' : 'ok'}
+          title={
+            critical > 0
+              ? plural(critical, 'incidente crítico aberto', 'incidentes críticos abertos')
+              : high > 0
+                ? plural(high, 'incidente alto aberto', 'incidentes altos abertos')
+                : 'Nenhum incidente crítico ou alto aberto'
+          }
+          detail={incidentDetail || undefined}
+          to={`/?visao=${INCIDENTS_VIEW}`}
+        />
+        {waiting && (
+          <MobileRow
+            severity="high"
+            title={DECISIONS[waiting.kind].title(waiting.count, summary)}
+            to={DECISIONS[waiting.kind].links(summary)[0]?.to ?? '/'}
+          />
+        )}
+        <MobileRow
+          severity={stalled ? 'high' : warnings > 0 ? 'medium' : 'ok'}
+          title={collectionText(summary)}
+          onClick={onMore}
+          expands
+        />
+        <MobileRow
+          severity={score === null ? 'low' : scoreSeverity(score, { warning: warningBelow, critical: 40 })}
+          title={[
+            ...(score === null ? [] : [`Postura ${score} de 100`]),
+            ...(summary.radar ? ['radar'] : []),
+            'decisões',
+          ].join(' · ')}
+          onClick={onMore}
+          expands
+        />
+      </ul>
+    </div>
   );
 }
 
@@ -381,6 +516,19 @@ function PostureChip({ posture }: { posture: TowerSummary['posture'] }) {
   );
 }
 
+/** O estado da coleta numa linha: "Coleta parada: GCP", "Coleta ativa em 4 de 4 fontes". */
+function collectionText(summary: TowerSummary): string {
+  const proof = collectionProof(summary);
+  if (proof === null) {
+    return summary.reasons.includes('collection_stalled')
+      ? 'Coleta parada'
+      : `Coleta: ${plural(summary.coverage.connectedAccounts, 'conta conectada', 'contas conectadas')}`;
+  }
+  if (proof.configured === 0) return 'Nenhuma fonte conectada';
+  if (proof.stalled.length > 0) return `Coleta parada: ${formatList(proof.stalled)}`;
+  return `Coleta ativa em ${proof.active} de ${proof.configured} ${proof.configured === 1 ? 'fonte' : 'fontes'}`;
+}
+
 /** O que a saúde da coleta pede de atenção: fonte parada, conta silenciosa, AWS parada ou o medidor bloqueado. */
 function collectionWarnings(summary: TowerSummary): number {
   const proof = collectionProof(summary);
@@ -399,14 +547,7 @@ function CollectionIndicator({ summary }: { summary: TowerSummary }) {
   const warnings = collectionWarnings(summary);
   const severity: Severity = proof && proof.stalled.length > 0 ? 'high' : warnings > 0 ? 'medium' : 'ok';
   const { icon: Icon, tone } = SEVERITY_STYLES[severity];
-  const text =
-    proof === null
-      ? `Coleta: ${plural(summary.coverage.connectedAccounts, 'conta conectada', 'contas conectadas')}`
-      : proof.configured === 0
-        ? 'Nenhuma fonte conectada'
-        : proof.stalled.length > 0
-          ? `Coleta parada: ${formatList(proof.stalled)}`
-          : `Coleta ativa em ${proof.active} de ${proof.configured} ${proof.configured === 1 ? 'fonte' : 'fontes'}`;
+  const text = collectionText(summary);
   return (
     <>
       <Button

@@ -9,6 +9,7 @@ import { buttonVariants } from '@/components/ui/button-variants';
 import { useAuthClientConfig } from '@/features/auth/client-config';
 import { useMe, useSignOut } from '@/features/session/session';
 import { cn } from '@/lib/cn';
+import { NARROW_QUERY, useMediaQuery } from '@/lib/use-media-query';
 import { visibleNavigation } from './navigation';
 import { useMenuCollapsed } from './menu-collapsed';
 import { Sidebar } from './sidebar';
@@ -27,6 +28,7 @@ export function AppLayout() {
   const { pathname } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useMenuCollapsed();
+  const narrow = useMediaQuery(NARROW_QUERY);
   // Qualquer navegação (link, voltar ou avançar do navegador) fecha a gaveta. Ajuste de estado durante a
   // renderização, como recomenda o React para zerar estado quando um valor muda, sem efeito.
   const [lastPath, setLastPath] = useState(pathname);
@@ -47,6 +49,21 @@ export function AppLayout() {
   if (!me) return null;
 
   const groups = visibleNavigation(me.permissions);
+  const canSwitch = me.permissions.includes('session:switch_tenant');
+  const signOutButton = (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="max-md:min-h-11"
+      disabled={signOut.isPending}
+      onClick={() =>
+        signOut.mutate(undefined, { onSettled: () => void navigate('/login', { replace: true }) })
+      }
+    >
+      <LogOut aria-hidden />
+      Sair
+    </Button>
+  );
   // O console do responsável (o "Admin master"), só para o admin_verax onde a equipe entra (o endereço dela na célula
   // ou o nó dedicado da Verax): a API diz onde ele fica.
   // Abre o console na mesma aba, com a sessão dele (a entrada única); as permissões são as do próprio console.
@@ -99,20 +116,29 @@ export function AppLayout() {
             collapsed={collapsed}
             onCollapsedChange={setCollapsed}
             onClose={() => setMenuOpen(false)}
+            footer={
+              narrow && (
+                <div className="space-y-3 border-t border-foreground/10 px-5 py-4">
+                  <div className="text-sm">
+                    <p className="font-medium wrap-anywhere">{me.email}</p>
+                    <p className="text-xs text-muted-foreground">{ROLE_LABELS[me.role]}</p>
+                  </div>
+                  <ThemeToggle />
+                  {signOutButton}
+                </div>
+              )
+            }
           />
         </aside>
 
         <div className="flex min-w-0 flex-col">
-          {/* No celular o menu lateral, que leva a marca, fica fechado: ela vai numa faixa no topo, como no site. */}
-          <div className="brand-surface px-4 py-3 md:hidden">
-            <BrandLockup />
-          </div>
-          <header className="flex flex-wrap items-end justify-between gap-3 border-b bg-surface px-4 py-3 md:px-6">
-            <div className="flex items-end gap-2">
+          {narrow ? (
+            // E-02: no celular, uma barra só, na cor da marca: "Menu", a marca e a conta. O tema e "Sair" ficam no menu.
+            <div className="brand-surface flex items-center justify-between gap-2 px-2 py-1.5">
               <Button
-                variant="secondary"
+                variant="ghost"
                 size="sm"
-                className="md:hidden"
+                className="min-h-11"
                 aria-expanded={menuOpen}
                 aria-controls="menu-principal"
                 onClick={() => setMenuOpen(true)}
@@ -120,32 +146,36 @@ export function AppLayout() {
                 <Menu aria-hidden />
                 Menu
               </Button>
-              {me.permissions.includes('session:switch_tenant') && <TenantSwitcher me={me} />}
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="hidden text-right sm:block">
-                <p className="text-sm font-medium">{me.email}</p>
-                <p className="text-xs text-muted-foreground">{ROLE_LABELS[me.role]}</p>
-              </div>
-              {/* A própria conta e a preferência de aviso por e-mail (fase 2, PR-17'). */}
-              <Link to="/minha-conta" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
-                <UserRound aria-hidden />
-                <span className="sr-only sm:not-sr-only">Minha conta</span>
-              </Link>
-              <ThemeToggle />
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={signOut.isPending}
-                onClick={() =>
-                  signOut.mutate(undefined, { onSettled: () => void navigate('/login', { replace: true }) })
-                }
+              <BrandLockup />
+              <Link
+                to="/minha-conta"
+                className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'size-11')}
               >
-                <LogOut aria-hidden />
-                Sair
-              </Button>
+                <UserRound aria-hidden />
+                <span className="sr-only">Minha conta</span>
+              </Link>
             </div>
-          </header>
+          ) : null}
+          {(!narrow || canSwitch) && (
+            <header className="flex flex-wrap items-end justify-between gap-3 border-b bg-surface px-4 py-3 md:px-6">
+              <div className="flex items-end gap-2">{canSwitch && <TenantSwitcher me={me} />}</div>
+              {!narrow && (
+                <div className="flex items-center gap-3">
+                  <div className="hidden text-right sm:block">
+                    <p className="text-sm font-medium">{me.email}</p>
+                    <p className="text-xs text-muted-foreground">{ROLE_LABELS[me.role]}</p>
+                  </div>
+                  {/* A própria conta e a preferência de aviso por e-mail (fase 2, PR-17'). */}
+                  <Link to="/minha-conta" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
+                    <UserRound aria-hidden />
+                    <span className="sr-only sm:not-sr-only">Minha conta</span>
+                  </Link>
+                  <ThemeToggle />
+                  {signOutButton}
+                </div>
+              )}
+            </header>
+          )}
           <main id="conteudo" tabIndex={-1} className="flex-1 p-4 focus:outline-none md:p-6">
             {/* Trocar de cliente remonta a página: nenhuma tela segura na mão (como dado provisório) o que era do outro. */}
             <Outlet key={me.scopeTenantId ?? 'nenhum'} />

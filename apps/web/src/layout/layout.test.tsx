@@ -12,6 +12,7 @@ import { createQueryClient } from '@/lib/query-client';
 import { DEMO_TENANTS, demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
+import { NARROW_QUERY } from '@/lib/use-media-query';
 import { MENU_ICONS_QUERY } from './menu-collapsed';
 
 const server = setupServer();
@@ -131,7 +132,38 @@ it('sair encerra a sessão e volta ao login', async () => {
 });
 
 describe('menu no celular', () => {
+  const original = window.matchMedia.bind(window);
+  const narrow = () => {
+    window.matchMedia = vi.fn((query: string) => ({
+      matches: query === NARROW_QUERY,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  };
+  afterEach(() => {
+    window.matchMedia = original;
+  });
+
+  it('E-02: uma barra só (Menu, a marca e a conta); o tema e "Sair" ficam no menu', async () => {
+    narrow();
+    renderApp('/', demoMe('analista_cliente'));
+    const open = await screen.findByRole('button', { name: 'Menu' });
+    expect(open.parentElement).toContainElement(screen.getByRole('link', { name: 'Minha conta' }));
+    // Sem o seletor de cliente, a segunda barra (a do cabeçalho) nem aparece.
+    expect(document.querySelector('header.border-b')).toBeNull();
+    const drawer = document.getElementById('menu-principal')!;
+    expect(within(drawer).getByRole('radiogroup', { name: 'Tema' })).toBeInTheDocument();
+    expect(within(drawer).getByRole('button', { name: 'Sair' })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Sair' })).toHaveLength(1);
+  });
+
   it('abre como gaveta, fecha com Esc e ao navegar', async () => {
+    narrow();
     const { router } = renderApp('/', demoMe('analista_cliente'));
     const open = await screen.findByRole('button', { name: 'Menu' });
     const drawer = document.getElementById('menu-principal');

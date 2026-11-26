@@ -13,7 +13,7 @@ import { DEMO_TENANTS, demoMe, demoTower } from '@/mocks/fixtures';
 import { DEMO_INCIDENTS } from '@/mocks/findings-fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { STACKED_QUERY } from '@/features/detections/strip-preference';
-import { SIDE_PANEL_QUERY } from '@/lib/use-media-query';
+import { NARROW_QUERY, SIDE_PANEL_QUERY } from '@/lib/use-media-query';
 import { routes } from '@/routes/router';
 
 const server = setupServer();
@@ -272,6 +272,45 @@ describe('Detecções: a lista', () => {
     expect(
       await screen.findByRole('button', { name: /Tentar de novo/ }, { timeout: 10_000 }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('Detecções no celular (E-02)', () => {
+  const phone = () =>
+    mockMedia((query) => query === NARROW_QUERY || query === STACKED_QUERY || query === MENU_NARROW);
+  const MENU_NARROW = '(max-width: 47.99rem)';
+
+  it('o resumo recolhido vira linhas tocáveis: o incidente, o que validar, a coleta parada e o resto', async () => {
+    phone();
+    renderAt('/');
+    const strip = await screen.findByRole('region', { name: 'Situação agora' });
+    const rowsList = await within(strip).findByRole('list', { name: 'Resumo da situação' });
+    const items = within(rowsList).getAllByRole('listitem');
+    expect(items[0]).toHaveTextContent(/^Crítico: 1 incidente crítico abertoe 2 altos · 1 sem responsável$/);
+    expect(within(items[0]!).getByRole('link')).toHaveAttribute('href', '/?visao=incidentes');
+    expect(within(rowsList).getByText(/alertas? altos? ou críticos? para validar$/)).toBeInTheDocument();
+    // A coleta parada continua à vista (R-13); a última linha abre o quadro.
+    expect(within(rowsList).getByText('Coleta parada: GCP')).toBeInTheDocument();
+    await userEvent.click(within(rowsList).getByRole('button', { name: /Postura 69 de 100/ }));
+    expect(within(strip).getByRole('button', { name: /Recolher/ })).toHaveAttribute('aria-expanded', 'true');
+    window.localStorage.clear();
+  });
+
+  it('os filtros ficam atrás de "Filtros", com o CSV; os ativos viram etiquetas que dá para remover', async () => {
+    phone();
+    const router = renderAt('/?severidade=critical&status=new');
+    const chip = await screen.findByRole('button', { name: /^Severidade: Crítico/ }, SLOW);
+    expect(screen.queryByLabelText('Severidade')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Status: Novo/ })).toBeInTheDocument();
+    await userEvent.click(chip);
+    await waitFor(() => expect(search(router).get('severidade')).toBeNull());
+    expect(search(router).get('status')).toBe('new');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Filtros (1)' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Filtros' });
+    expect(within(sheet).getByLabelText('Severidade')).toBeInTheDocument();
+    expect(within(sheet).getByRole('button', { name: /Exportar CSV/ })).toBeInTheDocument();
+    window.localStorage.clear();
   });
 });
 
