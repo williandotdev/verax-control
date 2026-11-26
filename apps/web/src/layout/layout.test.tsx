@@ -59,17 +59,18 @@ describe('menu e cabeçalho por papel', () => {
   const shared = ['Contas cloud', 'Agentes', 'Lista de proteção', 'Exceções'];
   const operation = ['Detecções', 'Postura cloud', 'Ativos e identidades'];
   const expectedMenu: Record<Role, string[]> = {
+    // R-09: Fontes, Regras e Conta no lugar de "Administração"; os clientes, no grupo da Verax.
     admin_verax: [
       ...operation,
-      'Clientes',
-      'Usuários',
       ...shared,
+      'Usuários',
       'Plano e uso',
       'Escalonamento',
       'Auditoria',
+      'Clientes',
       'Alertas sem dono',
     ],
-    admin_cliente: [...operation, 'Usuários', ...shared, 'Plano e uso', 'Escalonamento', 'Auditoria'],
+    admin_cliente: [...operation, ...shared, 'Usuários', 'Plano e uso', 'Escalonamento', 'Auditoria'],
     analista_cliente: [...operation, ...shared],
     leitura: [...operation, ...shared],
   };

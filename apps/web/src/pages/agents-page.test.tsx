@@ -52,7 +52,7 @@ describe('Agentes', () => {
     expect(within(rest.closest('details')!).getByText('Como funciona')).toBeInTheDocument();
   });
 
-  it('fica no menu de Administração, para todos os papéis', async () => {
+  it('fica no menu, no grupo Fontes, para todos os papéis', async () => {
     renderAt('/cadastros/agentes', { me: demoMe('leitura') });
     const nav = await screen.findByRole('navigation', { name: /principal|menu/i });
     expect(within(nav).getByRole('link', { name: /Agentes/ })).toHaveAttribute('href', '/cadastros/agentes');

@@ -42,13 +42,17 @@ export const NAVIGATION: NavGroup[] = [
       { to: '/ativos', label: 'Ativos e identidades', icon: Boxes, permission: 'assets:read' },
     ],
   },
+  // R-09: três grupos curtos no lugar de "Administração" (nenhum endereço muda). Quem só lê deixa de ver "Administração".
   {
-    label: 'Administração',
+    label: 'Fontes',
     items: [
-      { to: '/cadastros/clientes', label: 'Clientes', icon: Building2, permission: 'tenants:read' },
-      { to: '/cadastros/usuarios', label: 'Usuários', icon: Users, permission: 'users:read' },
       { to: '/cadastros/contas', label: 'Contas cloud', icon: Cloud, permission: 'cloud_accounts:read' },
       { to: '/cadastros/agentes', label: 'Agentes', icon: Server, permission: 'agents:read' },
+    ],
+  },
+  {
+    label: 'Regras',
+    items: [
       {
         to: '/cadastros/protecao',
         label: 'Lista de proteção',
@@ -56,6 +60,12 @@ export const NAVIGATION: NavGroup[] = [
         permission: 'protected_resources:read',
       },
       { to: '/cadastros/excecoes', label: 'Exceções', icon: BellOff, permission: 'alert_exceptions:read' },
+    ],
+  },
+  {
+    label: 'Conta',
+    items: [
+      { to: '/cadastros/usuarios', label: 'Usuários', icon: Users, permission: 'users:read' },
       { to: '/cadastros/plano', label: 'Plano e uso', icon: Gauge, permission: 'plan:read' },
       {
         to: '/cadastros/escalonamento',
@@ -69,6 +79,7 @@ export const NAVIGATION: NavGroup[] = [
   {
     label: 'Verax',
     items: [
+      { to: '/cadastros/clientes', label: 'Clientes', icon: Building2, permission: 'tenants:read' },
       { to: '/alertas-sem-dono', label: 'Alertas sem dono', icon: Inbox, permission: 'unowned_alerts:read' },
     ],
   },

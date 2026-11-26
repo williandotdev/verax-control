@@ -73,7 +73,7 @@ const usage = (overrides: Partial<PlanUsage['usage']>, plan = DEMO_PLAN): PlanUs
 });
 
 describe('Plano e uso', () => {
-  it('fica em Administração, só para quem administra', async () => {
+  it('fica no menu, no grupo Conta, só para quem administra', async () => {
     renderAt('/cadastros/plano', { me: demoMe('admin_cliente') });
     const nav = await screen.findByRole('navigation', { name: 'Menu principal' });
     expect(within(nav).getByRole('link', { name: /Plano e uso/ })).toHaveAttribute(
