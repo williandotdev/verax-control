@@ -19,6 +19,7 @@ import { useMe } from '@/features/session/session';
 import { errorMessage } from '@/lib/errors';
 import { formatRelative, formatTimestamp } from '@/lib/format';
 import { FindingEvidenceSection } from './finding-evidence';
+import { FindingExplanationSection } from './finding-explanation';
 import { FindingStatusBadge } from './finding-status-badge';
 import { useAddFindingComment, useCreateAlertException, useUpdateFindingStatus } from './findings-api';
 
@@ -39,7 +40,8 @@ const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
 };
 
 /**
- * Detalhe do alerta (tela Detecções, no painel ao lado da lista): os campos, o MITRE, o incidente ou a validação
+ * Detalhe do alerta (tela Detecções, no painel ao lado da lista): no topo, "O que aconteceu" (o alerta explicado em
+ * português, `finding-explanation.tsx`); depois, os campos, o MITRE, o incidente ou a validação
  * (promover a incidente, anexar a um incidente aberto), a triagem com a exceção, os comentários e o evento bruto. O alerta
  * dos logs do ALB não tem evento bruto (nenhuma linha do log fica guardada): no lugar dele, a evidência.
  */
@@ -77,6 +79,8 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
         <SeverityBadge severity={finding.severity} />
         <FindingStatusBadge status={finding.status} />
       </div>
+
+      <FindingExplanationSection finding={finding} />
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
         {fields

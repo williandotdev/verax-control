@@ -3,6 +3,7 @@ import {
   type AlertExceptionCreate,
   alertExceptionSchema,
   cloudAccountSchema,
+  findingChangeContextSchema,
   findingCommentSchema,
   findingDetailSchema,
   findingEvidenceSchema,
@@ -49,6 +50,25 @@ export function useFindingEvidence(id: string) {
     queryFn: async () => {
       try {
         return await api.get(`/v1/findings/${encodeURIComponent(id)}/evidence`, findingEvidenceSchema);
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status === 404) return null;
+        throw error;
+      }
+    },
+  });
+}
+
+/**
+ * O que mudou no evento do alerta (`GET /v1/findings/:id/change`), para a seção "O que aconteceu": a alteração gravada, o
+ * estado anterior do mesmo objeto e quantas vezes a mesma identidade disparou a regra. Rota à parte do detalhe: o nó de antes
+ * responde 404, e a seção explica pelo evento bruto (`null`).
+ */
+export function useFindingChange(id: string) {
+  return useQuery({
+    queryKey: ['finding-change', id],
+    queryFn: async () => {
+      try {
+        return await api.get(`/v1/findings/${encodeURIComponent(id)}/change`, findingChangeContextSchema);
       } catch (error) {
         if (error instanceof ApiRequestError && error.status === 404) return null;
         throw error;

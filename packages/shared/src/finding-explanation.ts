@@ -429,8 +429,15 @@ const WAF_WHY_IP_SET =
 const WAF_WHY_RULES =
   'A Web ACL é o conjunto de regras do firewall do site. Tirar uma regra, ou trocar "bloquear" por "só contar", deixa passar ataques que antes eram barrados.';
 
+/** O tipo do objeto pelo nome da chamada, quando não há a alteração (nó de antes, evento fora da retenção). */
+function wafKindOf(event: string): string {
+  if (event.includes('IPSet')) return 'waf_ip_set';
+  if (event.includes('RuleGroup')) return 'waf_rule_group';
+  return event.includes('WebACL') || event.includes('LoggingConfiguration') ? 'waf_web_acl' : '';
+}
+
 function waf(event: string, change: FindingChange | null, previous: ExplainInput['previous']): FamilyText {
-  const kind = change?.target?.kind ?? '';
+  const kind = change?.target?.kind ?? wafKindOf(event);
   const label = objectLabel(change);
   const scope = change?.target?.scope;
   const facts: ExplanationFact[] = [];
