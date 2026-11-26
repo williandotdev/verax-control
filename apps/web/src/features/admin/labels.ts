@@ -81,7 +81,7 @@ export function connectionHint(
 /**
  * O que o código do erro de coleta do Cloudflare quer dizer, quando há uma explicação para quem administra a conta
  * (fase 2, PR-12 e PR-13). Os demais códigos aparecem só como tipo do erro. Os que param a coleta
- * (`isCloudflareBlockingError`) pedem outro token.
+ * (`isCloudflareBlockingError`) pedem outro token ou, na conta conectada por OAuth, conectar de novo.
  */
 const CLOUDFLARE_CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
   credential_rejected: 'O Cloudflare recusou o token (inválido ou revogado).',
@@ -90,6 +90,13 @@ const CLOUDFLARE_CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
   credential_expired: 'O token venceu.',
   credential_disabled: 'O token foi desativado no Cloudflare.',
   credential_unreadable: 'O nó não conseguiu abrir o token guardado. Cole o token de novo.',
+  oauth_reconnect_required:
+    'A autorização no Cloudflare foi revogada ou venceu, e o Verax não consegue renovar o token de acesso dela.',
+  oauth_client_rejected:
+    'O Cloudflare recusou o aplicativo da Verax ao renovar o acesso. É com a Verax: a coleta tenta de novo a cada hora.',
+  oauth_refresh_unavailable:
+    'O Cloudflare não renovou o acesso agora; a coleta tenta de novo em alguns minutos.',
+  oauth_unreadable: 'O nó não conseguiu abrir a autorização guardada. Fale com a Verax.',
   rate_limited:
     'O Cloudflare limitou as requisições deste token; a coleta volta depois da espera pedida por ele.',
   timeout: 'O Cloudflare não respondeu a tempo; a coleta tenta de novo em instantes.',

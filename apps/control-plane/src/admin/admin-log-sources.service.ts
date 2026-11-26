@@ -44,7 +44,9 @@ import {
 import { type CredentialPayload, sealCredential } from '@verax/vault-envelope';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service.js';
+import { cloudflareOauthSettings, isTenantReleased } from '../cloudflare-oauth/cloudflare-oauth-settings.js';
 import { CLOCK, type Clock } from '../common/clock.js';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { forgetLiveSecret, registerLiveSecret } from '../common/logger/sanitize.js';
 import { isUlid } from '../common/ulid.js';
@@ -58,12 +60,14 @@ import {
   parseDocument,
 } from '../firestore/document-store.js';
 import {
+  announcesCloudflareOauth,
   LOG_SOURCE_SECRET_TTL_MS,
   type LogSource,
   type LogSourceReport,
   logSourceReportSchema,
   logSourceSchema,
   logSourceSecretSchema,
+  NODE_SYNC_CLOUDFLARE_OAUTH_DOC,
   NODE_SYNC_DESIRED_DOC,
   NODE_SYNC_STATE_DOC,
   nodeSyncDesiredSchema,
@@ -113,6 +117,7 @@ export type LogSourceRefusalCode =
   | 'gcp_unsupported_managed'
   | 'credential_provider_mismatch'
   | 'credential_kind_not_allowed'
+  | 'cloudflare_oauth_only'
   | 'source_not_found'
   | 'source_exists'
   | 'source_limit'
@@ -154,6 +159,12 @@ const REFUSALS: Readonly<
     message:
       'Este tipo de credencial não vale no nó deste cliente: no nó gerenciado, a AWS é lida pelo papel sem chave (a pilha do CloudFormation).',
     issue: { path: 'credential.kind', message: 'Tipo de credencial que o nó deste cliente não aceita.' },
+  },
+  cloudflare_oauth_only: {
+    status: HttpStatus.CONFLICT,
+    message:
+      'Neste cliente o Cloudflare é conectado pelo próprio cliente, no painel dele ("Conectar com Cloudflare"): o console não envia token novo. A conta que já coleta com token segue coletando.',
+    issue: { path: 'credential.kind', message: 'O cliente conecta o Cloudflare no painel dele.' },
   },
   source_not_found: { status: HttpStatus.NOT_FOUND, message: 'Fonte não encontrada.' },
   source_exists: {
@@ -449,6 +460,8 @@ export function readKeysOf(spec: CloudAccountCreate, nodeEgressIps: readonly str
 /** O que a leitura das fontes de um cliente traz (o mesmo dentro e fora da transação). */
 interface Snapshot {
   state: NodeSyncState | undefined;
+  /** O nó anunciou a conexão do Cloudflare por OAuth na última chamada. */
+  cloudflareOauth: boolean;
   generation: number;
   sources: Map<string, LogSource>;
 }
@@ -472,7 +485,8 @@ interface Sealed {
  * API Key do Cloudflare e a chave temporária da AWS são recusadas), o tipo tem de valer na plataforma do nó
  * (`credentialKindAllowed`: no gerenciado, só o Cloudflare) e só é cifrada para o nó que já sincronizou com o cofre:
  * a chave pública do cofre que o nó informou (com a impressão digital conferida de novo aqui), amarrada ao id do
- * cliente no banco do nó, ao id da fonte, ao tipo e à conta (`@verax/vault-envelope`). O texto claro fica na memória
+ * cliente no banco do nó, ao id da fonte, ao tipo e à conta (`@verax/vault-envelope`). O token do Cloudflare é recusado
+ * no cliente que o conecta por OAuth (`isOauthOnly`). O texto claro fica na memória
  * deste pedido, na máscara do logger desde antes do primeiro `await`, e nunca vai à resposta, à auditoria, ao log nem
  * ao Firestore: só o envelope e os metadados.
  *
@@ -487,6 +501,7 @@ export class AdminLogSourcesService {
     private readonly audit: AuditService,
     @Inject(ADMIN_TENANT_LIMITS) private readonly limits: AdminTenantLimits,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     @InjectPinoLogger(AdminLogSourcesService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -507,12 +522,14 @@ export class AdminLogSourcesService {
     const stored = new Set(secrets.map((doc) => doc.id));
     const now = this.clock.now();
     const sources = [...snapshot.sources].map(([id, source]) =>
-      this.sourceView(id, source, reports.get(id), stored.has(id), tenant, snapshot.state),
+      this.sourceView(id, source, reports.get(id), stored.has(id), tenant, snapshot),
     );
     return {
       hosting,
       platform,
-      credentialKinds: ACCEPTED_CREDENTIAL_KINDS.filter((kind) => credentialKindAllowed(kind, platform)),
+      credentialKinds: ACCEPTED_CREDENTIAL_KINDS.filter(
+        (kind) => credentialKindAllowed(kind, platform) && !this.isOauthOnly(tenant, snapshot, kind),
+      ),
       generation: snapshot.generation,
       node: snapshot.state === undefined ? null : nodeViewOf(snapshot.state, platform, now),
       sources,
@@ -570,14 +587,7 @@ export class AdminLogSourcesService {
             ...(sealed === undefined ? {} : sealedDetails(sealed, 1)),
           });
           return {
-            source: this.sourceView(
-              sourceId,
-              source,
-              undefined,
-              sealed !== undefined,
-              tenant,
-              snapshot.state,
-            ),
+            source: this.sourceView(sourceId, source, undefined, sealed !== undefined, tenant, snapshot),
             generation,
           };
         });
@@ -660,7 +670,7 @@ export class AdminLogSourcesService {
             reportOf(tenant.id, sourceId, report),
             secret !== undefined,
             tenant,
-            snapshot.state,
+            snapshot,
           ),
           generation,
         };
@@ -687,7 +697,7 @@ export class AdminLogSourcesService {
         this.assertWritable(tenant);
         const plan = (snapshot: Snapshot, seal: boolean) => {
           const source = activeSource(snapshot, sourceId);
-          const sealed = this.seal(tenant, snapshot.state, sourceId, source.spec, input, seal);
+          const sealed = this.seal(tenant, snapshot, sourceId, source.spec, input, seal);
           return { source, sealed, revision: (source.credentialMeta?.revision ?? 0) + 1 };
         };
         plan(await this.snapshot(this.store, tenant.id), false);
@@ -723,7 +733,7 @@ export class AdminLogSourcesService {
               reportOf(tenant.id, sourceId, report),
               true,
               tenant,
-              snapshot.state,
+              snapshot,
             ),
             generation,
           };
@@ -780,7 +790,7 @@ export class AdminLogSourcesService {
             reportOf(tenant.id, sourceId, report),
             false,
             tenant,
-            snapshot.state,
+            snapshot,
           ),
           generation,
         };
@@ -831,12 +841,15 @@ export class AdminLogSourcesService {
     const collection = COLLECTIONS.nodeSync(tenantId);
     const stateData = await reader.get(collection, NODE_SYNC_STATE_DOC);
     const desiredData = await reader.get(collection, NODE_SYNC_DESIRED_DOC);
+    const oauthData = await reader.get(collection, NODE_SYNC_CLOUDFLARE_OAUTH_DOC);
     const sources = await readCollection(reader, COLLECTIONS.logSources(tenantId), logSourceSchema);
+    const state =
+      stateData === undefined
+        ? undefined
+        : parseDocument(nodeSyncStateSchema, collection, NODE_SYNC_STATE_DOC, stateData);
     return {
-      state:
-        stateData === undefined
-          ? undefined
-          : parseDocument(nodeSyncStateSchema, collection, NODE_SYNC_STATE_DOC, stateData),
+      state,
+      cloudflareOauth: announcesCloudflareOauth(state, oauthData),
       generation:
         desiredData === undefined
           ? 0
@@ -863,7 +876,7 @@ export class AdminLogSourcesService {
     if (duplicate) throw new LogSourceRefusal('source_exists');
     if (snapshot.sources.size >= NODE_SYNC_MAX_SOURCES) throw new LogSourceRefusal('source_limit');
     if (request.credential === undefined) return undefined;
-    return this.seal(tenant, snapshot.state, sourceId, spec, request.credential, seal);
+    return this.seal(tenant, snapshot, sourceId, spec, request.credential, seal);
   }
 
   /**
@@ -872,7 +885,7 @@ export class AdminLogSourcesService {
    */
   private seal(
     tenant: TenantRecord,
-    state: NodeSyncState | undefined,
+    snapshot: Snapshot,
     sourceId: string,
     spec: CloudAccountCreate,
     input: CloudCredentialInput,
@@ -885,6 +898,10 @@ export class AdminLogSourcesService {
     if (!credentialKindAllowed(input.kind, platform)) {
       throw new LogSourceRefusal('credential_kind_not_allowed', sourceId);
     }
+    if (this.isOauthOnly(tenant, snapshot, input.kind)) {
+      throw new LogSourceRefusal('cloudflare_oauth_only', sourceId);
+    }
+    const { state } = snapshot;
     const checked = nodeVaultOf(state, platform);
     if (!checked.ok) {
       if (checked.code === 'vault_key_invalid') {
@@ -915,6 +932,20 @@ export class AdminLogSourcesService {
       fingerprint: vault.fingerprint,
       nodeTenantId: vault.nodeTenantId,
     };
+  }
+
+  /**
+   * Token colado do Cloudflare num cliente que conecta por OAuth: liberado na configuração, no servidor gerenciado, e com
+   * o nó anunciando a conexão. Um nó que ainda não a conhece segue no token, como sempre.
+   */
+  private isOauthOnly(tenant: TenantRecord, snapshot: Snapshot, kind: CloudCredentialInput['kind']): boolean {
+    const settings = cloudflareOauthSettings(this.config);
+    return (
+      kind === 'cloudflare_api_token' &&
+      settings !== null &&
+      snapshot.cloudflareOauth &&
+      isTenantReleased(settings, tenant)
+    );
   }
 
   private writeSecret(
@@ -1011,8 +1042,9 @@ export class AdminLogSourcesService {
     stored: LogSourceReport | undefined,
     envelopeStored: boolean,
     tenant: TenantRecord,
-    state: NodeSyncState | undefined,
+    snapshot: Snapshot,
   ): LogSourceView {
+    const { state } = snapshot;
     const hosting = hostingOf(tenant);
     const { status, code, pending } = sourceStatusOf(source, stored?.report);
     const spec = source.spec;
@@ -1032,7 +1064,7 @@ export class AdminLogSourcesService {
     const egressIps =
       hosting === 'verax' ? natEgressIps(tenant) : (state?.egressIps ?? []).filter(isNodeEgressIp);
     const cloudflareToken: CloudflareTokenView | null =
-      spec.provider === 'cloudflare'
+      spec.provider === 'cloudflare' && !this.isOauthOnly(tenant, snapshot, 'cloudflare_api_token')
         ? { templateUrl: cloudflareTokenTemplateUrl(), tokenName: CLOUDFLARE_TOKEN_NAME, egressIps }
         : null;
     return {

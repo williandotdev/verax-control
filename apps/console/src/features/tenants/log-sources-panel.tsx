@@ -264,7 +264,13 @@ function credentialLines(source: LogSourceView, overview: NodeSyncOverview): str
   }
   if (lines.length > 0) return lines;
   const kind = PROVIDER_CREDENTIAL_KINDS[source.spec.provider];
-  if (!overview.credentialKinds.includes(kind)) return ['Sem chave (papel de leitura)'];
+  if (!overview.credentialKinds.includes(kind)) {
+    return [
+      source.spec.provider === 'cloudflare'
+        ? 'Sem token: o cliente conecta no painel dele'
+        : 'Sem chave (papel de leitura)',
+    ];
+  }
   return ['Nenhuma: o cliente cola no painel, ou envie daqui'];
 }
 

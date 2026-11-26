@@ -3,7 +3,6 @@ import { type ActiveException, matchingException } from '../alerts/exception-mat
 import type { FindingStore, LastEvents, PersistOutcome, SyncLease } from '../alerts/finding-store.js';
 import type { CollectorCursor, CollectorCursors, CursorKey } from '../collectors/collector-cursor.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
-import type { CloudflareToken } from '../credentials/credential-vault.js';
 import { UsageMeter } from '../usage/usage-meter.js';
 import {
   CloudflareApiError,
@@ -11,6 +10,7 @@ import {
   type GraphqlRequest,
   type GraphqlResult,
 } from './cloudflare.client.js';
+import type { CloudflareBearer } from './cloudflare-bearer.js';
 import {
   CLOUDFLARE_SECURITY_RULES,
   detectWindow,
@@ -54,6 +54,7 @@ import {
   type ZoneEvents,
   type ZoneLimits,
 } from './security-events.js';
+import { ZoneObserver } from './zone-health.js';
 
 /** Fluxo do cursor de cada conta: os eventos de segurança das zonas (GraphQL). */
 export const CLOUDFLARE_SECURITY_STREAM = 'cloudflare_security';
@@ -65,6 +66,20 @@ export const SECURITY_STATUS_RETRY_MS = 60 * 60 * 1000;
 
 /** Espera depois de um 429 sem `retry-after`: o Cloudflare bloqueia o token por 5 minutos. */
 const GRAPHQL_RATE_LIMIT_WAIT_MS = 5 * 60 * 1000;
+
+/** O menor orçamento de uma conta que divide a concessão: uma zona por consulta, com a base de 24 h (dois nós). */
+const MIN_SHARED_UNITS = 2;
+
+/**
+ * As contas que dividem a concessão por OAuth desta: o limite do Cloudflare é do acesso inteiro. Cada conta tem a parte
+ * dela do orçamento, e o gasto das outras (os baldes guardados no cursor de cada uma) conta no total.
+ */
+export interface GrantSharing {
+  /** Quantas contas ativas leem com a mesma concessão, com esta. */
+  accounts: number;
+  /** As continuações do fluxo das outras contas. */
+  continuations: readonly (string | null)[];
+}
 
 /** O orçamento acabou antes de um envio (a primeira tentativa ou uma nova): nada foi enviado. */
 class BudgetExhausted extends Error {
@@ -156,12 +171,17 @@ interface Zone {
 /** A sessão desta leitura: o token, o orçamento, o estado guardado e o relógio da execução. */
 interface Read {
   account: SecurityAccount;
-  token: CloudflareToken;
+  token: CloudflareBearer;
   key: CursorKey;
   context: SecurityRunContext;
   budget: QueryBudget;
+  /** O orçamento da concessão inteira, quando ela lê mais de uma conta. */
+  shared: QueryBudget | null;
+  zonesPerQuery: number;
   state: SecurityStreamState;
   usage: UsageMeter;
+  /** O que a leitura vê de cada zona (só em memória; a gravação é de quem chamou). */
+  seen: ZoneObserver;
   /** O horário da execução mais o tempo já passado nela (o gasto do orçamento cai no minuto certo). */
   clock: () => Date;
 }
@@ -191,7 +211,8 @@ const NO_ACCESS: ZoneLimits = { enabled: false, maxDuration: 0, maxPageSize: 0, 
  *    (`cf/<conta>/sec:<resumo>`) não deixa a releitura duplicar.
  * 5. **Orçamento:** cada zona de cada nó conta uma consulta, e o token gasta no máximo 250 a cada 5 min (o Cloudflare
  *    permite 300). O gasto é gravado antes de cada consulta; sem orçamento, a execução para e marca a próxima leitura
- *    para quando ele voltar.
+ *    para quando ele voltar. Na concessão por OAuth que lê mais de uma conta, as 250 são divididas entre elas
+ *    (`GrantSharing`), e a consulta leva menos zonas quando a parte da conta é pequena.
  * 6. **Medidor:** os bytes de cada resposta entram no uso do mês do cliente (`cloudflare`), depois de o cursor avançar.
  *    Só no mês (`add`), nunca no volume por dia da franquia (`addDaily`, CE-09): as respostas são agregados do tamanho
  *    da consulta da Verax, não o volume do cliente.
@@ -235,28 +256,48 @@ export class CloudflareSecurityEvents {
 
   async read(
     account: SecurityAccount,
-    token: CloudflareToken,
+    token: CloudflareBearer,
     cursor: CollectorCursor,
     key: CursorKey,
     context: SecurityRunContext,
+    sharing: GrantSharing | null = null,
+    seen: ZoneObserver = new ZoneObserver(),
   ): Promise<SecurityOutcome> {
     const { now } = context;
     const started = performance.now();
     const state = decodeState(cursor.continuation);
+    const units =
+      sharing === null
+        ? this.budgetUnits
+        : Math.max(MIN_SHARED_UNITS, Math.floor(this.budgetUnits / sharing.accounts));
     const read: Read = {
       account,
       token,
       key,
       context,
-      budget: new QueryBudget(this.budgetUnits, state.budget),
+      budget: new QueryBudget(units, state.budget),
+      shared:
+        sharing === null
+          ? null
+          : new QueryBudget(this.budgetUnits, [
+              ...state.budget,
+              ...sharing.continuations.flatMap((text) => decodeState(text).budget),
+            ]),
+      zonesPerQuery:
+        sharing === null
+          ? this.zonesPerQuery
+          : Math.min(this.zonesPerQuery, Math.max(1, Math.floor(units / 2))),
       state,
       usage: new UsageMeter(),
+      seen,
       clock: () => new Date(now.getTime() + Math.max(0, Math.round(performance.now() - started))),
     };
     try {
       return await this.collect(read, cursor);
     } catch (error) {
       if (!(error instanceof CloudflareApiError)) throw error;
+      // 403 na lista de zonas aparece com o mesmo código da conexão.
+      seen.failed(error.code === 'credential_forbidden' ? 'zones_forbidden' : error.code);
       return this.failed(read, error);
     }
   }
@@ -281,7 +322,13 @@ export class CloudflareSecurityEvents {
 
   /** Gasta o orçamento de um envio e grava o gasto antes dele; sem orçamento, quando ele volta. */
   private async spend(read: Read, units: number): Promise<Wait | null> {
+    if (read.shared !== null) {
+      const at = read.clock();
+      const free = read.shared.availableAt(units, at);
+      if (free.getTime() > at.getTime()) return { wait: free };
+    }
     if (!read.budget.take(units, read.clock())) return { wait: read.budget.availableAt(units, read.clock()) };
+    read.shared?.take(units, read.clock());
     await this.cursors.note(read.key, this.encode(read));
     read.context.report.securityQueries += 1;
     return null;
@@ -368,7 +415,15 @@ export class CloudflareSecurityEvents {
       .sort((a, b) => (a.name === b.name ? (a.tag < b.tag ? -1 : 1) : a.name < b.name ? -1 : 1));
     if (zones.length > SECURITY_MAX_ZONES)
       context.report.securitySkippedZones += zones.length - SECURITY_MAX_ZONES;
-    return zones.slice(0, SECURITY_MAX_ZONES);
+    const selected = zones.slice(0, SECURITY_MAX_ZONES);
+    read.seen.listed({
+      ids: listed.ids,
+      plans: listed.plans,
+      complete: listed.complete,
+      selected: selected.map((zone) => zone.tag),
+      overLimit: zones.slice(SECURITY_MAX_ZONES).map((zone) => zone.tag),
+    });
+    return selected;
   }
 
   /** Os limites de cada zona (nó `settings`), em lotes. Zona que o token não lê fica fora do mapa. */
@@ -376,11 +431,20 @@ export class CloudflareSecurityEvents {
     const limits = new Map<string, ZoneLimits>();
     for (const batch of chunk(
       zones.map((zone) => zone.tag),
-      this.zonesPerQuery,
+      read.zonesPerQuery,
     )) {
+      read.seen.asking(batch);
       const got = await this.settingsOf(read, batch);
+      read.seen.idle();
       if (isWait(got)) return got;
       for (const [tag, value] of got) limits.set(tag, value);
+      for (const tag of batch) {
+        const value = got.get(tag);
+        read.seen.access(
+          tag,
+          value === undefined ? 'forbidden' : usableLimits(value) ? 'usable' : 'not_entitled',
+        );
+      }
     }
     return limits;
   }
@@ -428,7 +492,7 @@ export class CloudflareSecurityEvents {
     const zones = usable.filter(
       (zone) => windowStart >= retentionFloor(limits.get(zone.tag) ?? NO_ACCESS, now),
     );
-    const batches = chunk(zones, this.zonesPerQuery);
+    const batches = chunk(zones, read.zonesPerQuery);
     const layout = batchLayout(batches.map((batch) => batch.map((zone) => zone.tag)));
     const saved = read.state.progress;
     const resume =
@@ -439,13 +503,20 @@ export class CloudflareSecurityEvents {
       const batch = batches[index] ?? [];
       read.state.progress = { windowStart, done: index, layout };
       const query = this.eventsQuery(batch, limits, windowStart, windowEnd, now);
+      read.seen.asking(query.zoneTags);
       const results = await this.queryEvents(read, query, batch.length * eventsQueryNodes(query));
       // Sem orçamento (no primeiro envio ou numa nova tentativa): o que já foi gravado fica, e a próxima execução
       // segue deste lote.
-      if (isWait(results)) return results;
+      if (isWait(results)) {
+        read.seen.idle();
+        return results;
+      }
       if (results !== null) {
         const login = await this.loginIps(read, results, query, limits);
         await this.persist(read, batch, results, query, login);
+        read.seen.read(query.zoneTags, read.clock());
+      } else {
+        read.seen.idle();
       }
       await this.lease.renew();
       const last = index + 1 === batches.length;

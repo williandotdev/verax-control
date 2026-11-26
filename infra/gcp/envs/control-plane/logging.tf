@@ -20,3 +20,20 @@ resource "google_logging_project_bucket_config" "default" {
 
   depends_on = [google_project_service.apis]
 }
+
+# O retorno do "Conectar com Cloudflare" traz o código de autorização na URL, e o log de requisição do Cloud Run gravaria a
+# URL inteira. Só esse caminho, só esse log, fica fora: o registro de acesso (data e hora, IP, caminho e resposta) continua
+# no log do próprio serviço, que descarta a query (`apps/control-plane/src/common/logger/logger.options.ts`). O código é de
+# uso único, vale minutos e não serve sem o verificador PKCE, que nunca sai do nó: a exclusão é uma camada a mais.
+resource "google_logging_project_exclusion" "cloudflare_callback" {
+  project     = var.project_id
+  name        = "cloudflare-oauth-callback"
+  description = "Log de requisição do retorno do Cloudflare: a URL traz o código de autorização."
+  filter      = <<-EOT
+    logName="projects/${var.project_id}/logs/run.googleapis.com%2Frequests"
+    resource.type="cloud_run_revision"
+    httpRequest.requestUrl:"/v1/public/cloudflare/callback"
+  EOT
+
+  depends_on = [google_project_service.apis]
+}

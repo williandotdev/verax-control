@@ -4,6 +4,7 @@ import {
   cloudAccountCreateSchema,
   cloudAccountUpdateSchema,
   cloudCredentialInputSchema,
+  CLOUDFLARE_OAUTH_RECONNECT_ERROR,
   CLOUDFLARE_TOKEN_PERMISSIONS,
   cloudflareTokenTemplateUrl,
   type CloudProvider,
@@ -63,6 +64,10 @@ import {
   PROVIDER_LABELS,
 } from '@/features/admin/labels';
 import { useAuthClientConfig } from '@/features/auth/client-config';
+import { useCloudflareConnectMode } from '@/features/cloudflare/cloudflare-oauth-api';
+import { CloudflareOauthSteps } from '@/features/cloudflare/cloudflare-oauth-steps';
+import { ConnectCloudflareButton } from '@/features/cloudflare/connect-button';
+import { CloudflareZoneHealth } from '@/features/cloudflare/zone-health';
 import { useMe } from '@/features/session/session';
 import { cn } from '@/lib/cn';
 import { formatRelative } from '@/lib/format';
@@ -129,6 +134,10 @@ export function CloudAccountsPage() {
   const { data: me } = useMe();
   const scope = me?.scopeTenantId ?? null;
   const canWrite = me?.permissions.includes('cloud_accounts:write') === true;
+  const canConnect = me?.permissions.includes('cloud_credentials:write') === true;
+  // No nó com o OAuth do Cloudflare ligado, o botão "Conectar com Cloudflare" cadastra a conta sozinho. Em qualquer outro
+  // (inclusive o nó anterior, que responde 404), nada muda.
+  const cloudflareOauth = useCloudflareConnectMode(scope !== null) === 'oauth';
   const [params, setParams] = useSearchParams();
   const page = Math.max(1, Number.parseInt(params.get('pagina') ?? '1', 10) || 1);
   const list = useCloudAccountList(page, scope !== null);
@@ -198,7 +207,20 @@ export function CloudAccountsPage() {
     <AdminShell
       title="Contas cloud"
       description="Contas AWS, projetos da GCP e contas do Cloudflare monitorados. O Verax Control só lê: na AWS, por um papel de leitura sem chave; o token do Cloudflare fica cifrado no cofre do nó, nunca no cadastro."
-      action={canWrite && <Button onClick={() => setOpen(NEW)}>Cadastrar conta</Button>}
+      action={
+        cloudflareOauth && canConnect ? (
+          <div className="flex flex-wrap items-start gap-2">
+            {canWrite && (
+              <Button variant="secondary" onClick={() => setOpen(NEW)}>
+                Cadastrar conta
+              </Button>
+            )}
+            <ConnectCloudflareButton>Conectar com Cloudflare</ConnectCloudflareButton>
+          </div>
+        ) : (
+          canWrite && <Button onClick={() => setOpen(NEW)}>Cadastrar conta</Button>
+        )
+      }
     >
       {deleted && (
         <p
@@ -278,7 +300,10 @@ function ConnectionErrorDetail({ account, code }: { account: CloudAccount; code:
   return (
     <>
       {hint && ` ${hint}`}
-      {stopped && ' A coleta está parada até um token válido ser colado abaixo.'}{' '}
+      {stopped &&
+        (code === CLOUDFLARE_OAUTH_RECONNECT_ERROR
+          ? ' A coleta está parada até a conta ser conectada de novo.'
+          : ' A coleta está parada até um token válido ser colado abaixo.')}{' '}
       {account.connection === 'connected' ? 'Tipo do aviso:' : 'Tipo do erro:'}{' '}
       <code className="font-mono">{code}</code>.
     </>
@@ -354,6 +379,7 @@ function createInput(values: CreateValues, bucketRows: readonly BucketRow[]) {
 }
 
 function CreateAccount() {
+  const cloudflareOauth = useCloudflareConnectMode() === 'oauth';
   const [values, setValues] = useState<CreateValues>({
     provider: 'aws',
     accountId: '',
@@ -484,6 +510,13 @@ function CreateAccount() {
       )}
       {values.provider === 'cloudflare' && (
         <>
+          {cloudflareOauth && (
+            <p className="text-sm text-muted-foreground">
+              Neste ambiente, a conta do Cloudflare é conectada pelo botão Conectar com Cloudflare, na tela de
+              contas: a conta é cadastrada sozinha, monitorando todas as zonas. Cadastre aqui só para conectar
+              depois.
+            </p>
+          )}
           <Field
             label="ID da conta do Cloudflare"
             hint="32 caracteres, na página inicial da conta no painel do Cloudflare."
@@ -697,8 +730,43 @@ function ProviderSteps({
       <GcpSteps account={account} canWrite={canEditSource} />
     );
   }
-  if (account.provider === 'cloudflare') return <CloudflareSteps account={account} canWrite={canWrite} />;
+  if (account.provider === 'cloudflare') {
+    return <CloudflareProviderSteps account={account} canWrite={canWrite} canEditSource={canEditSource} />;
+  }
   return null;
+}
+
+/**
+ * O Cloudflare: no nó com o OAuth ligado, a autorização (conectar, reconectar ou migrar o token); nos outros, o token
+ * colado, exatamente como antes. Enquanto o modo não é conhecido, nada (o nó anterior responde 404 logo). A saúde das
+ * zonas aparece abaixo quando o nó a informa.
+ */
+function CloudflareProviderSteps({
+  account,
+  canWrite,
+  canEditSource,
+}: {
+  account: CloudAccount;
+  canWrite: boolean;
+  canEditSource: boolean;
+}) {
+  const mode = useCloudflareConnectMode();
+  const { data: me } = useMe();
+  if (mode === undefined) return null;
+  const oauth = mode === 'oauth';
+  return (
+    <>
+      {oauth ? (
+        <CloudflareOauthSteps
+          account={account}
+          canConnect={me?.permissions.includes('cloud_credentials:write') === true}
+        />
+      ) : (
+        <CloudflareSteps account={account} canWrite={canWrite} />
+      )}
+      <CloudflareZoneHealth account={account} canEdit={canEditSource} quiet={!oauth} />
+    </>
+  );
 }
 
 /** No nó que não informa o próprio tópico (ambiente local), o comando sai com este no lugar. */

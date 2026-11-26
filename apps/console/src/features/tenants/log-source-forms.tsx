@@ -230,7 +230,9 @@ function CredentialSection({
       <p role="note" className="rounded-lg border p-3 text-sm text-muted-foreground">
         {provider === 'aws'
           ? 'No ambiente da Verax, a AWS é lida pelo papel sem chave: não há chave a colar. Depois de cadastrar, mande ao cliente a pilha do CloudFormation.'
-          : 'Este provedor não leva chave no servidor deste cliente.'}
+          : provider === 'cloudflare'
+            ? 'Neste cliente, o Cloudflare é conectado por ele mesmo, no painel ("Conectar com Cloudflare"): não há token a colar.'
+            : 'Este provedor não leva chave no servidor deste cliente.'}
       </p>
     );
   }

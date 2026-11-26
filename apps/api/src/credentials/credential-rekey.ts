@@ -1,3 +1,4 @@
+import { openCloudflareOauthTokens, sealCloudflareOauthTokens } from '@verax/vault-envelope';
 import { AuditService } from '../common/audit/audit.service.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
@@ -23,7 +24,18 @@ export async function lockCredential(tx: Prisma.TransactionClient, cloudAccountI
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:cloud-credential:${cloudAccountId}`}))`;
 }
 
-/** Contagens de uma execução (vão para o log do agendador; nenhum dado de cliente). */
+/**
+ * Lock transacional por concessão do Cloudflare (OAuth): a recifragem, a renovação e a revogação nunca gravam a mesma
+ * linha ao mesmo tempo. Só vale dentro de uma transação. Quem precisa dos dois pega o `lockCredential` da conta antes.
+ */
+export async function lockGrant(tx: Prisma.TransactionClient, grantId: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:cloudflare-grant:${grantId}`}))`;
+}
+
+/**
+ * Contagens de uma execução, das credenciais e das concessões do Cloudflare juntas (vão para o log do agendador; nenhum
+ * dado de cliente).
+ */
 export interface CredentialRekeyReport {
   /** Linhas encontradas com uma versão da chave mais antiga que a corrente, somadas todas as páginas. */
   stale: number;
@@ -49,7 +61,8 @@ type Outcome = 'rekeyed' | 'skipped';
 
 /** O que a busca de sistema lê de cada linha pendente: só as chaves (o conteúdo é lido depois, pelo escopo). */
 interface StaleRow {
-  cloudAccountId: string;
+  /** O ID da conta (na credencial) ou da concessão. */
+  id: string;
   tenantId: string;
 }
 
@@ -61,7 +74,11 @@ interface StaleRow {
  * Cada linha é recifrada numa transação própria, sob o lock da conta, pelo escopo do próprio cliente, com auditoria
  * (`cloud_credential.rekey`, só o tipo e as versões) na trilha dele. O texto claro só existe na memória do worker.
  *
- * A execução percorre todas as linhas pendentes, em páginas pelo ID da conta. Uma linha que não abre (versão da chave
+ * As concessões do Cloudflare por OAuth (`CloudflareGrant`) vêm depois das credenciais, do mesmo jeito: sob o lock da
+ * concessão, em qualquer situação (a que espera a revogação ainda precisa do token), sem mudar a `generation`, que é da
+ * renovação. A trilha grava `cloudflare_grant.rekey`.
+ *
+ * A execução percorre todas as linhas pendentes, em páginas pelo ID da linha. Uma linha que não abre (versão da chave
  * desativada, texto adulterado) continua pendente, mas o cursor passa por ela e a execução segue até a última linha:
  * ela não segura as seguintes, e é tentada de novo na execução seguinte. O sinal do agendador (orçamento de tempo,
  * parada do worker) é conferido a cada página e a cada linha.
@@ -83,26 +100,61 @@ export class CredentialRekey {
 
   async runOnce(signal?: AbortSignal): Promise<CredentialRekeyReport> {
     const report: CredentialRekeyReport = { stale: 0, rekeyed: 0, skipped: 0, failed: 0 };
-    // Busca de sistema, entre todos os clientes: só as chaves das linhas. A leitura do conteúdo é pelo escopo.
-    // O cursor é o último ID lido (`cloudAccountId > último`), não um deslocamento (a linha recifrada sai da busca e
-    // deslocaria as seguintes) nem o `cursor` do Prisma (que para se a linha do cursor sumir entre duas páginas).
+    await this.walk(
+      report,
+      (after) => this.staleCredentials(after),
+      (row) => this.rekey(row.tenantId, row.id),
+      signal,
+    );
+    await this.walk(
+      report,
+      (after) => this.staleGrants(after),
+      (row) => this.rekeyGrant(row.tenantId, row.id),
+      signal,
+    );
+    return report;
+  }
+
+  // Buscas de sistema, entre todos os clientes: só as chaves das linhas. A leitura do conteúdo é pelo escopo.
+  // O cursor é o último ID lido (`id > último`), não um deslocamento (a linha recifrada sai da busca e deslocaria as
+  // seguintes) nem o `cursor` do Prisma (que para se a linha do cursor sumir entre duas páginas).
+  private async staleCredentials(after: string | null): Promise<StaleRow[]> {
+    const rows = await this.prisma.cloudCredential.findMany({
+      where: {
+        keyVersion: { lt: this.keyring.current },
+        ...(after !== null && { cloudAccountId: { gt: after } }),
+      },
+      select: { cloudAccountId: true, tenantId: true },
+      orderBy: { cloudAccountId: 'asc' },
+      take: this.batch,
+    });
+    return rows.map(({ cloudAccountId, tenantId }) => ({ id: cloudAccountId, tenantId }));
+  }
+
+  private staleGrants(after: string | null): Promise<StaleRow[]> {
+    return this.prisma.cloudflareGrant.findMany({
+      where: { keyVersion: { lt: this.keyring.current }, ...(after !== null && { id: { gt: after } }) },
+      select: { id: true, tenantId: true },
+      orderBy: { id: 'asc' },
+      take: this.batch,
+    });
+  }
+
+  private async walk(
+    report: CredentialRekeyReport,
+    next: (after: string | null) => Promise<StaleRow[]>,
+    rekey: (row: StaleRow) => Promise<Outcome>,
+    signal?: AbortSignal,
+  ): Promise<void> {
     let after: string | null = null;
     for (;;) {
       signal?.throwIfAborted();
-      const page: StaleRow[] = await this.prisma.cloudCredential.findMany({
-        where: {
-          keyVersion: { lt: this.keyring.current },
-          ...(after !== null && { cloudAccountId: { gt: after } }),
-        },
-        select: { cloudAccountId: true, tenantId: true },
-        orderBy: { cloudAccountId: 'asc' },
-        take: this.batch,
-      });
+      const page = await next(after);
       report.stale += page.length;
       for (const row of page) {
         signal?.throwIfAborted();
         try {
-          report[await this.rekey(row.tenantId, row.cloudAccountId)] += 1;
+          report[await rekey(row)] += 1;
         } catch (error) {
           if (!(error instanceof CredentialVaultError)) throw error;
           report.failed += 1;
@@ -110,9 +162,43 @@ export class CredentialRekey {
         }
       }
       const last = page.at(-1);
-      if (last === undefined || page.length < this.batch) return report;
-      after = last.cloudAccountId;
+      if (last === undefined || page.length < this.batch) return;
+      after = last.id;
     }
+  }
+
+  private rekeyGrant(tenantId: string, grantId: string): Promise<Outcome> {
+    return this.prisma.$transaction(async (tx) => {
+      await lockGrant(tx, grantId);
+      const db = scopeToTenant(tx, tenantId);
+      const grant = await db.cloudflareGrant.findUnique({
+        where: { id: grantId },
+        select: { ciphertext: true, keyVersion: true, generation: true },
+      });
+      if (grant === null || grant.keyVersion >= this.keyring.current) return 'skipped';
+      const binding = { tenantId, subjectId: grantId };
+      const publicKey = this.keyring.publicKey();
+      const ciphertext = sealCloudflareOauthTokens(
+        publicKey,
+        binding,
+        openCloudflareOauthTokens(this.keyring, binding, grant.ciphertext),
+      );
+      const { count } = await db.cloudflareGrant.updateMany({
+        where: { id: grantId, generation: grant.generation, ciphertext: grant.ciphertext },
+        data: { ciphertext, keyVersion: publicKey.version },
+      });
+      if (count === 0) return 'skipped';
+      await this.audit.write(tx, {
+        actor: { type: 'system', tenantId },
+        action: 'cloudflare_grant.rekey',
+        outcome: 'success',
+        resourceType: 'cloudflare_grant',
+        resourceId: grantId,
+        before: { keyVersion: grant.keyVersion },
+        after: { keyVersion: publicKey.version },
+      });
+      return 'rekeyed';
+    });
   }
 
   private rekey(tenantId: string, cloudAccountId: string): Promise<Outcome> {

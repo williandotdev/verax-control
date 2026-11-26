@@ -583,3 +583,196 @@ run "turnstile_do_console_nao_vem_de_service_env" {
 
   expect_failures = [var.service_env]
 }
+
+# Conectar com Cloudflare por OAuth (cloudflare_oauth): nula, nenhum serviço recebe nada; preenchida, os três recebem o
+# mesmo, sem segredo montado. Escopo de escrita, sem renovação, ou lista de clientes fora do formato, recusados no plano.
+run "cloudflare_oauth_desligado_por_padrao" {
+  command = plan
+
+  variables {
+    services_enabled = true
+    admin_enabled    = true
+    owner_principals = ["user:responsavel@example.com"]
+  }
+
+  assert {
+    condition = (
+      length([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : "${env.name}=${env.value}" if startswith(env.name, "CLOUDFLARE_OAUTH_")]) == 0 &&
+      length([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : "${env.name}=${env.value}" if startswith(env.name, "CLOUDFLARE_OAUTH_")]) == 0 &&
+      length([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : "${env.name}=${env.value}" if startswith(env.name, "CLOUDFLARE_OAUTH_")]) == 0
+    )
+    error_message = "Sem cloudflare_oauth, nenhum serviço recebe a configuração."
+  }
+}
+
+run "cloudflare_oauth_igual_nos_tres_servicos" {
+  command = plan
+
+  variables {
+    services_enabled = true
+    admin_enabled    = true
+    owner_principals = ["user:responsavel@example.com"]
+    cloudflare_oauth = {
+      client_id    = "appdeexemplo0001"
+      scopes       = ["zone.read", "offline_access"]
+      tenant_slugs = ["cliente-demo-a", "cliente-demo-b"]
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      for envs in [
+        [for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : "${env.name}=${env.value}" if startswith(env.name, "CLOUDFLARE_OAUTH_")],
+        [for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : "${env.name}=${env.value}" if startswith(env.name, "CLOUDFLARE_OAUTH_")],
+        [for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : "${env.name}=${env.value}" if startswith(env.name, "CLOUDFLARE_OAUTH_")],
+        ] : toset(envs) == toset([
+          "CLOUDFLARE_OAUTH_CLIENT_ID=appdeexemplo0001",
+          "CLOUDFLARE_OAUTH_SCOPES=zone.read,offline_access",
+          "CLOUDFLARE_OAUTH_TENANT_SLUGS=cliente-demo-a,cliente-demo-b",
+      ])
+    ])
+    error_message = "Os três serviços recebem o mesmo app, os mesmos escopos e a mesma lista de clientes."
+  }
+}
+
+run "cloudflare_oauth_sem_cliente_liberado" {
+  command = plan
+
+  variables {
+    services_enabled = true
+    cloudflare_oauth = {
+      client_id    = "appdeexemplo0001"
+      scopes       = ["zone.read", "offline_access"]
+      tenant_slugs = []
+    }
+  }
+
+  assert {
+    condition     = !contains([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.name], "CLOUDFLARE_OAUTH_TENANT_SLUGS")
+    error_message = "Lista vazia: ninguém liberado (a variável não vai)."
+  }
+}
+
+run "cloudflare_oauth_recusa_escopo_de_escrita" {
+  command = plan
+
+  variables {
+    cloudflare_oauth = {
+      client_id    = "appdeexemplo0001"
+      scopes       = ["zone.read", "zone.write", "offline_access"]
+      tenant_slugs = []
+    }
+  }
+
+  expect_failures = [var.cloudflare_oauth]
+}
+
+run "cloudflare_oauth_recusa_sem_renovacao" {
+  command = plan
+
+  variables {
+    cloudflare_oauth = {
+      client_id    = "appdeexemplo0001"
+      scopes       = ["zone.read"]
+      tenant_slugs = []
+    }
+  }
+
+  expect_failures = [var.cloudflare_oauth]
+}
+
+run "cloudflare_oauth_recusa_so_renovacao" {
+  command = plan
+
+  variables {
+    cloudflare_oauth = {
+      client_id    = "appdeexemplo0001"
+      scopes       = ["offline_access"]
+      tenant_slugs = []
+    }
+  }
+
+  expect_failures = [var.cloudflare_oauth]
+}
+
+run "cloudflare_oauth_recusa_escopo_com_virgula" {
+  command = plan
+
+  variables {
+    cloudflare_oauth = {
+      client_id    = "appdeexemplo0001"
+      scopes       = ["zone.read,dns.read", "offline_access"]
+      tenant_slugs = []
+    }
+  }
+
+  expect_failures = [var.cloudflare_oauth]
+}
+
+run "cloudflare_oauth_recusa_client_id_invalido" {
+  command = plan
+
+  variables {
+    cloudflare_oauth = {
+      client_id    = "app com espaco"
+      scopes       = ["zone.read", "offline_access"]
+      tenant_slugs = []
+    }
+  }
+
+  expect_failures = [var.cloudflare_oauth]
+}
+
+run "cloudflare_oauth_recusa_todos_com_outro" {
+  command = plan
+
+  variables {
+    cloudflare_oauth = {
+      client_id    = "appdeexemplo0001"
+      scopes       = ["zone.read", "offline_access"]
+      tenant_slugs = ["*", "cliente-demo-a"]
+    }
+  }
+
+  expect_failures = [var.cloudflare_oauth]
+}
+
+run "cloudflare_oauth_recusa_slug_invalido" {
+  command = plan
+
+  variables {
+    cloudflare_oauth = {
+      client_id    = "appdeexemplo0001"
+      scopes       = ["zone.read", "offline_access"]
+      tenant_slugs = ["evil.example"]
+    }
+  }
+
+  expect_failures = [var.cloudflare_oauth]
+}
+
+run "cloudflare_oauth_recusa_slug_punycode" {
+  command = plan
+
+  variables {
+    cloudflare_oauth = {
+      client_id    = "appdeexemplo0001"
+      scopes       = ["zone.read", "offline_access"]
+      tenant_slugs = ["xn--demo"]
+    }
+  }
+
+  expect_failures = [var.cloudflare_oauth]
+}
+
+run "cloudflare_oauth_nao_vem_de_service_env" {
+  command = plan
+
+  variables {
+    service_env = {
+      CLOUDFLARE_OAUTH_SCOPES = "zone.write"
+    }
+  }
+
+  expect_failures = [var.service_env]
+}

@@ -94,24 +94,24 @@ enum EscalationContactState {
 }
 
 model Tenant {
-  id                       String                   @id @default(uuid(7)) @db.Uuid
-  name                     String                   @db.VarChar(120)
+  id                       String                     @id @default(uuid(7)) @db.Uuid
+  name                     String                     @db.VarChar(120)
   /// 14 caracteres, sem máscara (numérico ou alfanumérico).
-  cnpj                     String?                  @unique @db.VarChar(14)
-  plan                     String?                  @db.VarChar(60)
-  escalationName           String?                  @db.VarChar(120)
-  escalationEmail          String?                  @db.VarChar(254)
-  escalationPhone          String?                  @db.VarChar(20)
+  cnpj                     String?                    @unique @db.VarChar(14)
+  plan                     String?                    @db.VarChar(60)
+  escalationName           String?                    @db.VarChar(120)
+  escalationEmail          String?                    @db.VarChar(254)
+  escalationPhone          String?                    @db.VarChar(20)
   /// Estado do contato de escalonamento (D8): nulo sem contato. Endereço novo começa em `pending`, e só o `confirmed`
   /// recebe os avisos críticos.
   escalationState          EscalationContactState?
   /// Sobe a cada endereço novo e a cada confirmação pedida de novo: os links dos e-mails anteriores deixam de valer.
-  escalationGeneration     Int                      @default(0)
-  escalationConfirmedAt    DateTime?                @db.Timestamptz(3)
-  escalationUnsubscribedAt DateTime?                @db.Timestamptz(3)
-  status                   TenantStatus             @default(active)
-  createdAt                DateTime                 @default(now()) @db.Timestamptz(3)
-  updatedAt                DateTime                 @updatedAt @db.Timestamptz(3)
+  escalationGeneration     Int                        @default(0)
+  escalationConfirmedAt    DateTime?                  @db.Timestamptz(3)
+  escalationUnsubscribedAt DateTime?                  @db.Timestamptz(3)
+  status                   TenantStatus               @default(active)
+  createdAt                DateTime                   @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime                   @updatedAt @db.Timestamptz(3)
   users                    User[]
   cloudAccounts            CloudAccount[]
   protectedResources       ProtectedResource[]
@@ -135,10 +135,10 @@ model Tenant {
   noticeDigests            NotificationDigest[]
   escalationTokens         EscalationContactToken[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
-  activeSessions           Session[]                @relation("SessionActiveTenant")
+  activeSessions           Session[]                  @relation("SessionActiveTenant")
   /// Célula (CE-01): o endereço da API deste cliente e as sessões abertas nele.
   host                     TenantHost?
-  hostSessions             Session[]                @relation("SessionHostTenant")
+  hostSessions             Session[]                  @relation("SessionHostTenant")
   /// Plano do cliente (CE-02): no nó dedicado, semeado do `node.conf`; na célula, gravado pelo plano de controle.
   tenantPlan               TenantPlan?
   retentionStates          TenantRetentionState[]
@@ -151,6 +151,9 @@ model Tenant {
   /// Onboarding self-service da AWS: as execuções da descoberta e as fontes de log de cada conta.
   awsDiscoveryRuns         AwsDiscoveryRun[]
   awsSources               AwsSource[]
+  cloudflareAttempts       CloudflareConnectAttempt[]
+  cloudflareGrants         CloudflareGrant[]
+  cloudflareZones          CloudflareZone[]
   /// Casos (agrupamento dos alertas) e triagem em massa.
   alertCases               AlertCase[]
   triageOperations         TriageOperation[]
@@ -333,92 +336,216 @@ enum CloudAccountConnection {
 /// com o token que o Google assina para a conta de serviço dele; na GCP, o nó lê com a identidade dele, sem chave. Só
 /// o token do Cloudflare fica cifrado à parte, em `CloudCredential` (cofre do nó). Cada conta pertence a um só cliente.
 model CloudAccount {
-  id                       String                 @id @default(uuid(7)) @db.Uuid
-  tenantId                 String                 @db.Uuid
-  tenant                   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  provider                 CloudProvider          @default(aws)
+  id                       String                     @id @default(uuid(7)) @db.Uuid
+  tenantId                 String                     @db.Uuid
+  tenant                   Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  provider                 CloudProvider              @default(aws)
   /// 12 dígitos (AWS), ID do projeto (GCP, até 30) ou 32 hexadecimais (Cloudflare).
-  accountId                String                 @db.VarChar(32)
+  accountId                String                     @db.VarChar(32)
   /// AWS: regiões monitoradas.
   regions                  String[]
   /// Obsoleto (o ExternalId do conector antigo): a API não lê nem grava desde o PR-V3', e a migration dele apagou os
   /// valores. A coluna fica só para a versão anterior da API, numa volta de versão, encontrar o que ela lê; sai numa
   /// migration de contração.
-  externalId               String?                @db.VarChar(128)
+  externalId               String?                    @db.VarChar(128)
   /// AWS: buckets de onde o Wazuh lê os logs desta conta (T5.2 vincula cada alerta pelo bucket de origem).
-  cloudtrailBucket         String?                @db.VarChar(63)
-  guarddutyBucket          String?                @db.VarChar(63)
-  wafBucket                String?                @db.VarChar(63)
+  cloudtrailBucket         String?                    @db.VarChar(63)
+  guarddutyBucket          String?                    @db.VarChar(63)
+  wafBucket                String?                    @db.VarChar(63)
   /// GCP: assinatura do Pub/Sub que o nó lê, pelo nome completo (`projects/<projeto>/subscriptions/<id>`).
-  pubsubSubscription       String?                @db.VarChar(320)
+  pubsubSubscription       String?                    @db.VarChar(320)
   /// GCP, projeto de cliente: identidade de escrita do sink que o cliente criou no projeto dele, colada no painel
   /// (`serviceAccount:service-<número>@gcp-sa-logging.iam.gserviceaccount.com`). Não é segredo: é a quem o Terraform
   /// do nó deixa publicar no tópico do projeto.
-  sinkWriterIdentity       String?                @db.VarChar(128)
+  sinkWriterIdentity       String?                    @db.VarChar(128)
   /// Cloudflare: zonas (domínios) monitoradas.
-  zones                    String[]               @default([])
+  zones                    String[]                   @default([])
   /// Horário do alerta mais recente desta conta, gravado pelo sync (T5.3).
-  lastEventAt              DateTime?              @db.Timestamptz(3)
+  lastEventAt              DateTime?                  @db.Timestamptz(3)
   /// Estado da coleta, gravado pelo sync da conta (ver `CloudAccountConnection`).
-  connection               CloudAccountConnection @default(waiting)
+  connection               CloudAccountConnection     @default(waiting)
   /// Tipo do último erro de coleta (o nome da classe do erro). Nunca a mensagem, que pode carregar dado ou segredo.
-  connectionError          String?                @db.VarChar(64)
+  connectionError          String?                    @db.VarChar(64)
   /// AWS: aviso da coleta pelo Wazuh do nó (`aws_token_stale` ou `wazuh_apply_failed`, PR-V4'), à parte da conexão:
   /// só a tarefa `wazuh-config` do worker o grava, e a conferência da conexão (`aws-check`) só grava `connectionError`.
   /// Só conta AWS, e só os códigos da coleta (CHECK da migration).
-  collectionError          String?                @db.VarChar(64)
+  collectionError          String?                    @db.VarChar(64)
   /// Última leitura bem-sucedida da fonte desta conta, com ou sem evento. Só vale como sinal de vida na Torre nos
   /// provedores coletados por API (Cloudflare); na AWS e na GCP, o sinal é o evento.
-  lastCollectedAt          DateTime?              @db.Timestamptz(3)
+  lastCollectedAt          DateTime?                  @db.Timestamptz(3)
   /// AWS: "Verificar" pedido no painel e ainda não respondido pela tarefa `aws-check` do worker, que confere a entrada
   /// no papel e a leitura dos buckets e grava a conexão (`src/aws/aws-check.ts`). Null sem pedido pendente. A
   /// migration confere por CHECK que só conta AWS tem o pedido.
-  checkRequestedAt         DateTime?              @db.Timestamptz(3)
+  checkRequestedAt         DateTime?                  @db.Timestamptz(3)
   /// AWS: dia a partir do qual o Wazuh lê os logs dos buckets (`only_logs_after`): o da primeira verificação
   /// bem-sucedida, menos um dia. Gravado uma vez só, pelo worker; sem ele, o Wazuh leria todo o histórico do bucket.
   /// Só conta AWS (CHECK da migration).
-  ingestFrom               DateTime?              @db.Date
+  ingestFrom               DateTime?                  @db.Date
   /// AWS: o momento da primeira verificação bem-sucedida (CE-09), gravado uma vez só, junto com `ingestFrom`: o volume
   /// medido na origem (tarefa `aws-volume`) só conta objetos criados a partir dele, e o histórico anterior nunca é
   /// cobrado. Só conta AWS (CHECK da migration).
-  meteredFrom              DateTime?              @db.Timestamptz(3)
-  status                   CloudAccountStatus     @default(active)
+  meteredFrom              DateTime?                  @db.Timestamptz(3)
+  status                   CloudAccountStatus         @default(active)
   /// Quem cadastrou: o cliente no painel ou a Verax pelo console (a sincronização com o plano de controle, tarefa
   /// `control-plane-sync` do worker). A do console não muda pelo painel (409 `CONSOLE_MANAGED`).
-  origin                   ManagedOrigin          @default(panel)
+  origin                   ManagedOrigin              @default(panel)
   /// A última revisão do console aplicada no cadastro; só na conta do console (CHECK da migration).
   controlPlaneRevision     Int?
   /// AWS, onboarding self-service: quando o cliente clicou em "Conectar com AWS" pela última vez. O pedido de verificação
   /// com o mesmo horário (`checkRequestedAt`) é o da janela do "Conectar": a tarefa `aws-check` espera o papel por até
   /// 60 min antes de gravar `authorization_timeout`. Só conta AWS (CHECK da migration, como as quatro abaixo).
-  awsConnectRequestedAt    DateTime?              @db.Timestamptz(3)
+  awsConnectRequestedAt    DateTime?                  @db.Timestamptz(3)
   /// AWS: a versão do template do papel de leitura, pelas tags dele (`iam:GetRole` no próprio papel; na VM própria do
   /// cliente, `iam:GetUser` no usuário de leitura; sem tag, a 1). Null antes da primeira leitura.
   awsTemplateVersion       Int?
   /// AWS: as capacidades ligadas no papel (`discovery`, `service-logs`, `findings`, `log-groups`), pelas tags.
-  awsCapabilities          String[]               @default([])
+  awsCapabilities          String[]                   @default([])
   /// AWS: a última leitura das tags do papel (no "Verificar" e uma vez por dia).
-  awsCapabilitiesCheckedAt DateTime?              @db.Timestamptz(3)
+  awsCapabilitiesCheckedAt DateTime?                  @db.Timestamptz(3)
   /// AWS: as regiões com recurso ou fonte de log, pela última descoberta que entrou na conta.
-  awsDiscoveredRegions     String[]               @default([])
+  awsDiscoveredRegions     String[]                   @default([])
   /// AWS, onboarding self-service: as autorizações que o cliente marcou no painel na última vez em que as confirmou (no
   /// "Conectar com AWS" ou no "Verificar" depois de atualizar a pilha), separadas por espaço e na ordem do catálogo
   /// (`service-logs findings log-groups`; vazio: só a descoberta). Null sem escolha gravada. É só a escolha, para a tela
   /// devolver as mesmas caixas marcadas e avisar quando o papel na AWS ficou diferente dela: o que o papel pode ler
   /// está em `awsCapabilities`, pelas tags dele. Só conta AWS (CHECK da migration).
-  awsChosenCapabilities    String?                @db.VarChar(64)
-  createdAt                DateTime               @default(now()) @db.Timestamptz(3)
-  updatedAt                DateTime               @updatedAt @db.Timestamptz(3)
+  awsChosenCapabilities    String?                    @db.VarChar(64)
+  createdAt                DateTime                   @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime                   @updatedAt @db.Timestamptz(3)
   cursors                  CollectorCursor[]
   volumeObjects            AwsVolumeObject[]
   credential               CloudCredential?
   awsDiscoveryRuns         AwsDiscoveryRun[]
   awsSources               AwsSource[]
+  /// Cloudflare: a autorização por OAuth de onde a conta é lida; null na conta com token colado. Só conta do Cloudflare
+  /// (CHECK da migration). Chave estrangeira composta: o banco recusa a concessão de outro cliente e recusa apagar uma
+  /// concessão ainda em uso (quem apaga solta as contas antes).
+  cloudflareGrantId        String?                    @db.Uuid
+  cloudflareGrant          CloudflareGrant?           @relation(fields: [cloudflareGrantId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  cloudflareAttempts       CloudflareConnectAttempt[]
+  cloudflareZones          CloudflareZone[]
   webLogObjects            WebLogObject[]
 
   @@unique([provider, accountId])
   /// Alvo da chave estrangeira composta da `CloudCredential`: a credencial é sempre do mesmo cliente da conta.
   @@unique([id, tenantId])
+  @@index([tenantId])
+  @@index([cloudflareGrantId])
+}
+
+/// Uma tentativa de conectar o Cloudflare por OAuth (`packages/shared/src/cloudflare-oauth.ts`), do clique ao fim. Vale
+/// 10 minutos, uma vez, e só na sessão do usuário que a começou. O `state` só fica como SHA-256. O verificador do PKCE e
+/// o código de autorização ficam cifrados com a chave do nó (a API cifra e não abre), só enquanto a tentativa espera por
+/// eles (CHECK da migration): saem quando ela termina ou vence. A linha some 24 h depois de criada
+/// (`src/cloudflare/oauth/connect-attempts.ts`). Os valores de `status` e `errorCode` são os do contrato.
+model CloudflareConnectAttempt {
+  id                 String           @id @default(uuid(7)) @db.Uuid
+  tenantId           String           @db.Uuid
+  tenant             Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  /// Quem começou e em que sessão (o id da linha da sessão, que não é o segredo do cookie). Sem chave estrangeira: a
+  /// sessão pode sair antes da linha.
+  userId             String           @db.VarChar(64)
+  sessionId          String           @db.VarChar(64)
+  /// SHA-256 do `state`, em hexadecimal.
+  stateHash          String           @unique @db.VarChar(64)
+  verifierCiphertext String?          @db.VarChar(8192)
+  codeCiphertext     String?          @db.VarChar(8192)
+  /// Na reconexão ou na migração, a conta já cadastrada.
+  cloudAccountId     String?          @db.Uuid
+  cloudAccount       CloudAccount?    @relation(fields: [cloudAccountId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  /// A concessão que a troca do código criou.
+  grantId            String?          @db.Uuid
+  grant              CloudflareGrant? @relation(fields: [grantId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  status             String           @default("started") @db.VarChar(16)
+  errorCode          String?          @db.VarChar(64)
+  /// As contas da autorização (ID, nome e situação), para o cliente escolher. Nenhum segredo.
+  accounts           Json             @default("[]")
+  /// A configuração do app com que a tentativa começou (sem segredo): a troca usa a mesma, mesmo que ela mude no meio.
+  config             Json?
+  /// Quando o worker terminou de descobrir as contas: antes disso, `choosing` ainda é trabalho dele.
+  discoveredAt       DateTime?        @db.Timestamptz(3)
+  /// O Cloudflare não listou as contas: o cliente digita o ID.
+  accountIdRequired  Boolean          @default(false)
+  /// As contas que o cliente escolheu, para o worker provar e ligar.
+  chosenAccountIds   String[]         @default([])
+  expiresAt          DateTime         @db.Timestamptz(3)
+  /// Quando o retorno do Cloudflare foi aceito: vale uma vez.
+  consumedAt         DateTime?        @db.Timestamptz(3)
+  createdAt          DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime         @updatedAt @db.Timestamptz(3)
+
+  @@index([tenantId, userId, createdAt])
+  @@index([status, expiresAt])
+  @@index([createdAt])
+  @@index([grantId])
+  @@index([cloudAccountId])
+}
+
+/// A autorização do cliente no Cloudflare (OAuth): os tokens, cifrados com a chave do nó e amarrados a esta linha
+/// (`verax-cfoauth`, `packages/vault-envelope`). Só o worker abre, renova e revoga. Uma concessão pode servir várias contas
+/// do mesmo cliente (`CloudAccount.cloudflareGrantId`). `generation` sobe a cada renovação gravada: quem grava confere a
+/// que leu, para uma renovação nunca pisar em outra. A recifragem não a muda. Os valores de `status` são os do contrato.
+model CloudflareGrant {
+  id                String    @id @default(uuid(7)) @db.Uuid
+  tenantId          String    @db.Uuid
+  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  /// O app que emitiu os tokens: a renovação é sempre com ele, mesmo que a configuração mude depois. Não é segredo.
+  clientId          String    @db.VarChar(128)
+  /// `v<keyVersion>:<base64>`: o token de acesso, o da renovação e a validade, num envelope só.
+  ciphertext        String    @db.VarChar(8192)
+  keyVersion        Int
+  accessExpiresAt   DateTime  @db.Timestamptz(3)
+  /// Os escopos concedidos.
+  scopes            String[]
+  generation        Int       @default(1)
+  /// Uma renovação começou e ainda não foi gravada (o worker pode ter caído no meio).
+  refreshStartedAt  DateTime? @db.Timestamptz(3)
+  /// Quando o cliente autorizou, e o usuário do painel que conduziu.
+  consentedAt       DateTime  @db.Timestamptz(3)
+  consentedBy       String    @db.VarChar(64)
+  status            String    @default("active") @db.VarChar(16)
+  lastRefreshAt     DateTime? @db.Timestamptz(3)
+  /// Tipo do último erro da renovação (código), nunca a mensagem.
+  lastErrorKind     String?   @db.VarChar(64)
+  /// Desde quando espera a revogação no Cloudflare; só em `revoking`.
+  revokeRequestedAt DateTime? @db.Timestamptz(3)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(3)
+
+  cloudAccounts CloudAccount[]
+  attempts      CloudflareConnectAttempt[]
+
+  /// Alvo das chaves estrangeiras compostas: a conta e a tentativa são sempre do mesmo cliente da concessão.
+  @@unique([id, tenantId])
+  @@index([tenantId])
+  @@index([keyVersion])
+  @@index([status])
+}
+
+/// Uma zona (domínio) de uma conta do Cloudflare e a situação dela nos eventos de segurança. Só o worker grava
+/// (`SYSTEM_WRITTEN_MODELS`); o painel lê. Vale para a conta por OAuth e para a com token colado. A zona que some da conta
+/// fica, com `missingSince`. Os valores de `state` são os do contrato.
+model CloudflareZone {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  tenantId       String       @db.Uuid
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  cloudAccountId String       @db.Uuid
+  /// Chave estrangeira composta (conta e cliente): o banco recusa a zona de um cliente na conta de outro.
+  cloudAccount   CloudAccount @relation(fields: [cloudAccountId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  /// O ID da zona no Cloudflare (32 hexadecimais).
+  zoneId         String       @db.VarChar(32)
+  name           String       @db.VarChar(253)
+  plan           String?      @db.VarChar(64)
+  state          String       @default("pending") @db.VarChar(16)
+  lastReadAt     DateTime?    @db.Timestamptz(3)
+  lastErrorCode  String?      @db.VarChar(64)
+  firstSeenAt    DateTime     @default(now()) @db.Timestamptz(3)
+  lastSeenAt     DateTime     @default(now()) @db.Timestamptz(3)
+  missingSince   DateTime?    @db.Timestamptz(3)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@unique([cloudAccountId, zoneId])
   @@index([tenantId])
 }
 
@@ -1441,16 +1568,19 @@ model ControlPlaneSyncItem {
 /// controle recusa a repetida); `generation`, a última geração do estado desejado recebida. A próxima chamada e as
 /// falhas seguidas guardam a espera entre uma partida e outra do worker. Só o worker grava.
 model ControlPlaneSync {
-  id            String    @id @default("node") @db.VarChar(16)
-  sequence      BigInt    @default(0)
-  generation    Int?
-  lastAttemptAt DateTime? @db.Timestamptz(3)
-  lastSuccessAt DateTime? @db.Timestamptz(3)
-  lastErrorCode String?   @db.VarChar(64)
+  id              String    @id @default("node") @db.VarChar(16)
+  sequence        BigInt    @default(0)
+  generation      Int?
+  lastAttemptAt   DateTime? @db.Timestamptz(3)
+  lastSuccessAt   DateTime? @db.Timestamptz(3)
+  lastErrorCode   String?   @db.VarChar(64)
   /// Chamadas seguidas que falharam (a espera crescente com o plano de controle fora do ar).
-  failures      Int       @default(0)
+  failures        Int       @default(0)
   /// A próxima chamada (o `pollAfterSeconds` da resposta ou a espera depois de uma falha).
-  nextAttemptAt DateTime? @db.Timestamptz(3)
+  nextAttemptAt   DateTime? @db.Timestamptz(3)
+  /// A última configuração do "Conectar com Cloudflare" (o app, sem segredo) que o plano de controle mandou; null,
+  /// desligado. Conferida pelo contrato ao gravar e ao ler.
+  cloudflareOauth Json?
 }
 
 /// Estado do agente do Wazuh, como o manager do nó informa.

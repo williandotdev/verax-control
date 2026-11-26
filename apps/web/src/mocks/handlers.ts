@@ -5,6 +5,7 @@ import { createAdminHandlers, demoAdminStore } from './admin';
 import { createAgentsHandlers } from './agents-handlers';
 import { createAuditHandlers } from './audit-handlers';
 import { createAuthHandlers } from './auth-handlers';
+import { type CloudflareOauthScenario, createCloudflareOauthHandlers } from './cloudflare-oauth';
 import { addCaseFindings, createCaseHandlers, createCaseWorlds } from './cases-handlers';
 import { demoTower } from './fixtures';
 import { demoFindings } from './findings-fixtures';
@@ -59,6 +60,13 @@ export interface MockState {
    * com o relógio).
    */
   traffic?: MockTrafficMode;
+  /**
+   * O "Conectar com Cloudflare" no nó (`cloudflare-oauth.ts`): o que o Cloudflare de mentira autoriza, ou `null` (o nó sem
+   * OAuth). Sem informar, `localStorage['verax.mock.cloudflare-oauth']` ou desligado.
+   */
+  cloudflareOauth?: CloudflareOauthScenario | null;
+  /** A tentativa vence no retorno (`return`) ou na escolha (`choosing`). Sem informar, vem do `localStorage`. */
+  cloudflareOauthExpire?: string | null;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;
@@ -128,6 +136,7 @@ export function createHandlers(state: MockState) {
     }),
     ...createAuthHandlers(state),
     ...createAdminHandlers(state, admin),
+    ...createCloudflareOauthHandlers(state, admin),
     ...createFindingHandlers(state, findings),
     ...createCaseHandlers(state, findings, incidents, worlds),
     ...createIncidentHandlers(state, findings, incidents),

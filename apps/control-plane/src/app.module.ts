@@ -13,6 +13,7 @@ import {
   NodeEnrollmentModule,
   type NodeEnrollmentModuleOptions,
 } from './enrollment/node-enrollment.module.js';
+import { CloudflareOauthModule } from './cloudflare-oauth/cloudflare-oauth.module.js';
 import type { Clock } from './common/clock.js';
 import { type AppConfig, ConfigModule } from './common/config/config.module.js';
 import type { Role } from './common/config/env.schema.js';
@@ -106,6 +107,7 @@ function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMe
  * gatilho do plano B. Nenhum outro papel carrega estes módulos. O registro da VM do cliente segue o mesmo desenho: no
  * `cp-public`, `/v1/node-enrollment/*`, repassado ao cp-worker em `WORKER_URL` (`/internal/node-enrollment/*`), e a
  * sincronização do nó dedicado também: `/v1/node-sync` no cp-public, `/internal/node-sync/{managed,customer}` no cp-worker.
+ * O retorno do Cloudflare na conexão por OAuth (`/v1/public/cloudflare/callback`) é só do `cp-public`.
  */
 function accessModulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMetadata['imports']> {
   if (role === 'public') {
@@ -113,6 +115,7 @@ function accessModulesFor(role: Role, options: AppModuleOptions): NonNullable<Mo
       StatusModule.forRoot({ revealGateway: options.revealGateway }),
       NodeEnrollmentModule.forRoot({ enrollmentGateway: options.enrollmentGateway }),
       NodeSyncModule.forRoot({ nodeSyncGateway: options.nodeSyncGateway }),
+      CloudflareOauthModule,
     ];
   }
   if (role === 'worker') {

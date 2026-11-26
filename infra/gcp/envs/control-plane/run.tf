@@ -73,6 +73,17 @@ locals {
     FIREBASE_PANEL_PROJECTS = join(",", var.firebase_panel_projects)
     CLOUDFLARE_ACCOUNT_ID   = var.cloudflare_account_id
     CLOUDFLARE_ZONE_ID      = var.cloudflare_zone_id
+    # Conectar com Cloudflare por OAuth, iguais nos três serviços (o cp-admin, em admin.tf). Nada aqui é segredo.
+    CLOUDFLARE_OAUTH_CLIENT_ID    = local.cloudflare_oauth_env.CLOUDFLARE_OAUTH_CLIENT_ID
+    CLOUDFLARE_OAUTH_SCOPES       = local.cloudflare_oauth_env.CLOUDFLARE_OAUTH_SCOPES
+    CLOUDFLARE_OAUTH_TENANT_SLUGS = local.cloudflare_oauth_env.CLOUDFLARE_OAUTH_TENANT_SLUGS
+  }
+
+  # Sem `cloudflare_oauth`, as três ficam vazias (não vão).
+  cloudflare_oauth_env = {
+    CLOUDFLARE_OAUTH_CLIENT_ID    = var.cloudflare_oauth == null ? "" : var.cloudflare_oauth.client_id
+    CLOUDFLARE_OAUTH_SCOPES       = var.cloudflare_oauth == null ? "" : join(",", var.cloudflare_oauth.scopes)
+    CLOUDFLARE_OAUTH_TENANT_SLUGS = var.cloudflare_oauth == null ? "" : join(",", var.cloudflare_oauth.tenant_slugs)
   }
 
   # Uma variável vazia não vai: o schema do serviço trata ausência, não texto vazio.
