@@ -1,12 +1,11 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Verax Control - papel IAM somente leitura (verax-control-reader), sem chave: só o nó do Verax Control entra nele,
-  com um token de até 1 hora que o Google assina para a conta de serviço do nó, e só a partir do IP de saída do nó.
-  O papel enxerga o que a conta registra e lê só o que você autorizar: os logs que a AWS grava no S3 em
-  AWSLogs/<esta conta>/, os achados de segurança e os grupos do CloudWatch Logs com a etiqueta verax-control=leitura.
-  Duas políticas: a de leitura, que também é o limite de permissões do papel, e a de negação, que barra qualquer
-  chamada de fora do IP do nó, qualquer alteração de logs e qualquer ampliação do próprio acesso. Nada que já existe
-  na conta é alterado; a trilha do CloudTrail e o export do GuardDuty só são criados se pedidos (o padrão é não).
+  Verax Control - papel IAM de leitura (verax-control-reader), sem chave: só o nó do Verax Control entra nele, com
+  um token do Google para a conta de serviço do nó, e só do IP de saída do nó. Lê só o que você autorizar: os logs da
+  AWS em AWSLogs/<esta conta>/, os achados de segurança e os grupos do CloudWatch Logs com a etiqueta
+  verax-control=leitura. A política de leitura é também o limite do papel; a de negação barra chamadas de fora do IP
+  do nó, alteração de logs e ampliação do próprio acesso. Trilha, export do GuardDuty e o log de acesso dos ALB (que o
+  painel liga a seu pedido, num bucket novo) só se pedidos (o padrão é não); fora isso, nada que existe é alterado.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -19,6 +18,8 @@ Metadata:
         Parameters: [LogBucketArns, LogKmsKeyArns, LogObjectPrefix]
       - Label: { default: 'Opcional: criar a trilha e o export do GuardDuty (o padrão é não)' }
         Parameters: [CreateTrail, EnableGuardDutyExport, GuardDutyDetectorId, LogRetentionDays]
+      - Label: { default: 'Opcional: o Verax Control liga o log de acesso dos ALB (o padrão é não)' }
+        Parameters: [EnableAlbAccessLogs]
     ParameterLabels:
       NodeServiceAccountId: { default: ID da conta de serviço do nó (informado pelo painel) }
       NodeEgressIps: { default: IP de saída do nó (informado pelo painel) }
@@ -33,6 +34,7 @@ Metadata:
       EnableGuardDutyExport: { default: Exportar os findings do GuardDuty para S3 }
       GuardDutyDetectorId: { default: ID do detector do GuardDuty já ativo }
       LogRetentionDays: { default: Dias de retenção nos buckets criados }
+      EnableAlbAccessLogs: { default: Deixar o painel ligar o log de acesso dos ALB desta região }
 
 Parameters:
   NodeServiceAccountId:
@@ -134,6 +136,13 @@ Parameters:
     Default: 365
     MinValue: 90
     MaxValue: 3650
+  EnableAlbAccessLogs:
+    Type: String
+    Description: >-
+      true cria um bucket privado (SSE-S3) para o log de acesso dos ALB desta região e deixa o papel mudar os atributos
+      de um ALB desta região: o painel liga só o log, de um ALB por vez, quando alguém pede. false não dá a permissão.
+    AllowedValues: ['true', 'false']
+    Default: 'false'
 
 Rules:
   # Quem entra é obrigatório: sem a conta de serviço, o papel não teria a quem confiar, e sem o IP, um token vazado
@@ -181,6 +190,10 @@ Conditions:
   CreatesLogBucket: !Or
     - !Condition CreatesTrail
     - !Condition ExportsGuardDuty
+  ManagesAlbLogs: !Equals [!Ref EnableAlbAccessLogs, 'true']
+  ReadsCreatedBuckets: !Or
+    - !Condition CreatesLogBucket
+    - !Condition ManagesAlbLogs
 
 Resources:
   # --- Papel de leitura ---
@@ -199,9 +212,8 @@ Resources:
           # --- Descoberta e postura (sempre) ---
           # Nenhuma declaração deste grupo lê conteúdo: nem evento de log, nem achado, nem objeto, nem dado de banco.
 
-          # O papel lê as próprias etiquetas (a versão deste modelo e o que foi autorizado nele) e simula as próprias
-          # permissões, para o Verax Control avisar se ele tiver permissão demais. Só este papel: não lê nem simula
-          # nenhum outro papel ou usuário.
+          # O papel lê as próprias etiquetas e simula as próprias permissões (para avisar se tiver permissão demais).
+          # Só este papel.
           - Sid: AutoInspecao
             Effect: Allow
             Action: [iam:GetRole, iam:SimulatePrincipalPolicy]
@@ -217,9 +229,8 @@ Resources:
               - guardduty:GetDetector
               - guardduty:ListPublishingDestinations
               - guardduty:DescribePublishingDestination
-          # Ativos e Postura: usuários, chaves e MFA do IAM, instâncias e grupos de segurança do EC2, e a exposição dos
-          # buckets. Sem SecurityAudit e sem GenerateCredentialReport (que cria o relatório na conta). Das chaves de
-          # acesso, só os dados (idade e último uso), nunca o segredo.
+          # Ativos e Postura: IAM, EC2 e a exposição dos buckets. Sem SecurityAudit nem GenerateCredentialReport (que
+          # cria o relatório na conta). Das chaves de acesso, só idade e último uso, nunca o segredo.
           - Sid: PosturaEAtivos
             Effect: Allow
             Resource: '*'
@@ -241,11 +252,8 @@ Resources:
               - s3:GetBucketPublicAccessBlock
               - s3:GetAccountPublicAccessBlock
           # Descobre o que a conta já registra, para o painel mostrar as fontes sem ninguém digitar bucket, ARN ou
-          # região: flow logs e VPCs, as Web ACLs do WAF e o log de cada uma, os seletores das trilhas, se o Security
-          # Hub, o Inspector e o Access Analyzer estão ativos, o Config, os balanceadores e o log de acesso deles, os
-          # bancos do RDS (se são públicos e cifrados), os grupos do CloudWatch Logs (nome, tamanho, retenção e
-          # etiquetas) e a região e a cifragem de cada bucket (a chave KMS de um bucket de log). Só Describe, Get e List
-          # de configuração: nada é ligado, desligado nem alterado.
+          # região: flow logs, WAF, trilhas, Security Hub, Inspector, Access Analyzer, Config, balanceadores (e o log de
+          # acesso), RDS, grupos do CloudWatch Logs e a região e a cifragem dos buckets. Só Describe, Get e List.
           - Sid: DescobrirFontes
             Effect: Allow
             Resource: '*'
@@ -273,12 +281,9 @@ Resources:
 
           # --- Logs que a AWS grava no S3 para esta conta (ReadAwsServiceLogs) ---
 
-          # Lê, em qualquer bucket, só os objetos em AWSLogs/<esta conta>/ e, na trilha de organização, em
-          # AWSLogs/o-<organização>/<esta conta>/: é onde a AWS grava CloudTrail, VPC Flow Logs, WAF, export do
-          # GuardDuty, balanceadores e Config. Nenhum outro objeto de nenhum bucket é lido, nem os logs de outra conta
-          # no mesmo bucket. Num bucket de outra conta, a política do bucket ainda precisa liberar o papel. O IAM casa o
-          # * com qualquer texto, inclusive a /: um objeto com esse caminho mais adiante no nome também passa, e os logs
-          # gravados pela AWS nunca têm o caminho de outra conta assim.
+          # Lê, em qualquer bucket, só os objetos em AWSLogs/<esta conta>/ (e AWSLogs/o-<organização>/<esta conta>/, na
+          # trilha de organização), onde a AWS grava os logs dos serviços; nem os de outra conta no mesmo bucket. O * do
+          # IAM casa também a /, e os logs da AWS nunca têm o caminho de outra conta mais adiante no nome.
           - !If
             - ReadsServiceLogs
             - Sid: LerLogsDaAwsDestaConta
@@ -302,10 +307,8 @@ Resources:
                     - !Sub 'AWSLogs/${AWS::AccountId}/*'
                     - !Sub 'AWSLogs/o-*/${AWS::AccountId}/*'
             - !Ref AWS::NoValue
-          # Para achar a pasta AWSLogs, o coletor (Wazuh) lista o primeiro nível do bucket e o da pasta AWSLogs, sempre
-          # com o separador "/". Com isso o papel vê os nomes das pastas e dos arquivos da raiz de qualquer bucket e os
-          # IDs de conta e de organização dentro de AWSLogs/. Só nomes: não abre nenhuma outra pasta e não lê o conteúdo
-          # de nenhum objeto.
+          # Para achar a pasta AWSLogs, o coletor (Wazuh) lista, com o separador "/", o primeiro nível do bucket e o de
+          # AWSLogs/: só nomes, sem abrir outra pasta nem ler conteúdo.
           - !If
             - ReadsServiceLogs
             - Sid: VerPrimeiroNivelDosBuckets
@@ -317,9 +320,8 @@ Resources:
                   s3:delimiter: /
                   s3:prefix: ['', AWSLogs, AWSLogs/]
             - !Ref AWS::NoValue
-          # Decifra objetos com SSE-KMS só quando quem pede é o S3, em nome do papel (kms:ViaService): na prática, só
-          # os objetos que o papel já pode ler. Não decifra nada direto no KMS nem por outro serviço, e a política da
-          # chave ainda precisa permitir.
+          # Decifra só pelo S3 (kms:ViaService): na prática, só os objetos que o papel já lê. A política da chave ainda
+          # precisa permitir.
           - !If
             - ReadsServiceLogs
             - Sid: DecifrarLogsDaAwsSoPeloS3
@@ -333,9 +335,8 @@ Resources:
 
           # --- Achados de segurança (ReadSecurityFindings) ---
 
-          # Lê os achados do GuardDuty, do Security Hub (e os padrões ligados nele), do Inspector (e o que ele cobre) e
-          # do IAM Access Analyzer. Não ativa serviço, não arquiva, não altera nem apaga achado, e não manda nada para o
-          # Security Hub.
+          # Lê os achados do GuardDuty, do Security Hub, do Inspector e do Access Analyzer. Não ativa serviço nem
+          # arquiva, altera, apaga ou envia achado.
           - !If
             - ReadsFindings
             - Sid: LerAchadosDeSeguranca
@@ -354,10 +355,8 @@ Resources:
 
           # --- Grupos do CloudWatch Logs etiquetados (ReadTaggedLogGroups) ---
 
-          # Lê os eventos só dos grupos de log com a etiqueta verax-control = leitura, que você põe e tira grupo a
-          # grupo (aws logs tag-resource). Sem a etiqueta, o papel não lê nenhum evento do grupo: dele, só vê o nome e
-          # as etiquetas, pela descoberta. O papel não etiqueta nada (a negação abaixo). As duas formas do ARN cobrem o
-          # grupo e os streams dele.
+          # Lê os eventos só dos grupos de log com a etiqueta verax-control = leitura, que você põe e tira. Sem ela, só
+          # o nome e as etiquetas, pela descoberta; o papel não etiqueta nada. As duas formas do ARN: o grupo e os streams.
           - !If
             - ReadsLogGroups
             - Sid: LerGruposDeLogEtiquetados
@@ -405,24 +404,26 @@ Resources:
 
           # --- Criados por esta pilha (CreateTrail e EnableGuardDutyExport) ---
 
-          # Os buckets e a chave criados por esta pilha, se o cliente pediu a trilha ou o export.
+          # Os buckets e a chave criados por esta pilha, se o cliente pediu a trilha, o export ou o log dos ALB.
           - !If
-            - CreatesLogBucket
+            - ReadsCreatedBuckets
             - Sid: ListarBucketsCriados
               Effect: Allow
               Action: [s3:ListBucket, s3:GetBucketLocation]
               Resource:
                 - !If [CreatesTrail, !GetAtt TrailBucket.Arn, !Ref AWS::NoValue]
                 - !If [ExportsGuardDuty, !GetAtt GuardDutyBucket.Arn, !Ref AWS::NoValue]
+                - !If [ManagesAlbLogs, !GetAtt AlbLogsBucket.Arn, !Ref AWS::NoValue]
             - !Ref AWS::NoValue
           - !If
-            - CreatesLogBucket
+            - ReadsCreatedBuckets
             - Sid: LerObjetosCriados
               Effect: Allow
               Action: s3:GetObject
               Resource:
                 - !If [CreatesTrail, !Sub '${TrailBucket.Arn}/*', !Ref AWS::NoValue]
                 - !If [ExportsGuardDuty, !Sub '${GuardDutyBucket.Arn}/*', !Ref AWS::NoValue]
+                - !If [ManagesAlbLogs, !Sub '${AlbLogsBucket.Arn}/*', !Ref AWS::NoValue]
             - !Ref AWS::NoValue
           - !If
             - CreatesLogBucket
@@ -433,6 +434,15 @@ Resources:
               Condition:
                 StringEquals:
                   kms:ViaService: !Sub 's3.${AWS::Region}.amazonaws.com'
+            - !Ref AWS::NoValue
+          # Só com EnableAlbAccessLogs: os atributos de um ALB desta região (o IAM não filtra a chave do atributo). O nó
+          # só manda as do log de acesso (access_logs.s3.*), com o bucket desta pilha, quando alguém pede no painel.
+          - !If
+            - ManagesAlbLogs
+            - Sid: LigarLogDosAlb
+              Effect: Allow
+              Action: elasticloadbalancing:ModifyLoadBalancerAttributes
+              Resource: !Sub 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*'
             - !Ref AWS::NoValue
 
   # Negações explícitas: valem mesmo que alguém anexe outra política ao papel.
@@ -445,13 +455,8 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          # A sessão do papel só vale a partir do IP do nó, mesmo que as credenciais dela vazem: toda chamada feita
-          # direto com a sessão (aws:ViaAWSService falso) de outro IP é negada. A única chamada que fica de fora é a que
-          # um serviço da AWS faz em nome do papel, numa sessão de acesso encaminhada: o S3 pedindo ao KMS para decifrar
-          # um objeto que o papel leu. O guia do IAM diz que essa sessão preserva o IP de quem chamou o S3, mas a AWS
-          # documenta casos em que a negação por IP a barra (objeto com SSE-KMS), e a correção dela é esta condição. A
-          # chamada inicial ao S3 continua presa ao IP do nó: de outro IP, ninguém chega a acionar o serviço. O
-          # GetCallerIdentity não passa por política e não pode ser negado (só revela a conta e o ARN da sessão).
+          # Toda chamada direta (aws:ViaAWSService falso) de fora do IP do nó é negada, mesmo com a sessão vazada. Fica de
+          # fora só a de um serviço pelo papel (o S3 pedindo ao KMS o objeto lido), que a negação por IP barraria.
           - Sid: SoDoNoDaVerax
             Effect: Deny
             Action: '*'
@@ -512,9 +517,8 @@ Resources:
               - wafv2:Delete*
               - wafv2:Put*
               - wafv2:Update*
-          # As outras fontes que a descoberta enxerga e os serviços de achados: nada de ligar, desligar, criar ou
-          # alterar flow logs, o Config, os balanceadores (o log de acesso deles), o WAF, o Security Hub, o Inspector e
-          # o Access Analyzer. A lista acima é a mesma do conector; esta é a que o papel de leitura soma.
+          # As outras fontes da descoberta e os serviços de achados: nada de ligar, desligar, criar ou alterar (a lista
+          # acima é a do conector; esta, a que o papel de leitura soma).
           - Sid: NuncaAlterarOutrasFontes
             Effect: Deny
             Resource: '*'
@@ -531,7 +535,7 @@ Resources:
               - config:Stop*
               - ec2:CreateFlowLogs
               - ec2:DeleteFlowLogs
-              - elasticloadbalancing:Modify*
+              - !If [ManagesAlbLogs, !Ref AWS::NoValue, 'elasticloadbalancing:Modify*']
               - inspector2:Associate*
               - inspector2:BatchUpdate*
               - inspector2:Cancel*
@@ -561,6 +565,21 @@ Resources:
               - wafv2:Disassociate*
               - wafv2:Tag*
               - wafv2:Untag*
+          # Com EnableAlbAccessLogs, só o ModifyLoadBalancerAttributes de um ALB desta região sai da negação acima.
+          - !If
+            - ManagesAlbLogs
+            - Sid: NuncaAlterarBalanceadoresAlemDoLog
+              Effect: Deny
+              Action: elasticloadbalancing:Modify*
+              NotResource: !Sub 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*'
+            - !Ref AWS::NoValue
+          - !If
+            - ManagesAlbLogs
+            - Sid: NuncaAlterarOAlbAlemDosAtributos
+              Effect: Deny
+              Action: [elasticloadbalancing:ModifyCapacityReservation, elasticloadbalancing:ModifyIpPools]
+              Resource: '*'
+            - !Ref AWS::NoValue
           # As etiquetas do papel dizem ao painel a versão deste modelo e o que foi autorizado: o papel não as troca,
           # nem etiqueta nada no IAM. (Etiquetar um grupo de log para ganhar leitura já é negado acima, em logs:Tag*.)
           - Sid: NuncaTrocarAsPropriasEtiquetas
@@ -588,12 +607,8 @@ Resources:
               - sts:AssumeRoleWithSAML
               - sts:AssumeRoleWithWebIdentity
               - sts:GetFederationToken
-          # Com os prefixos, só os objetos que começam com um deles (arn:*:s3:::*/<prefixo>*, para cada prefixo). O IAM
-          # não cruza a lista de buckets com a de prefixos, então o * antes da / vale para qualquer bucket: um objeto com
-          # o prefixo mais adiante no nome também passa, e os logs gravados pela AWS nunca têm o caminho de outra conta
-          # assim. Ficam fora da regra os buckets criados por esta pilha, que são só desta conta, e, com a leitura dos
-          # logs da AWS autorizada, as pastas AWSLogs/<esta conta>/ de qualquer bucket: os prefixos estreitam só os
-          # buckets adicionais, e não tiram o que a outra autorização liberou.
+          # Com os prefixos, só os objetos que começam com um deles, em qualquer bucket (o IAM não cruza as listas). Os
+          # buckets desta pilha e, com os logs da AWS, AWSLogs/<esta conta>/ ficam fora: só os adicionais estreitam.
           - !If
             - HasObjectPrefix
             - Sid: SoOsPrefixosInformados
@@ -608,6 +623,7 @@ Resources:
                     - '*'
                     - !If [CreatesTrail, !Sub ',${TrailBucket.Arn}/*', '']
                     - !If [ExportsGuardDuty, !Sub ',${GuardDutyBucket.Arn}/*', '']
+                    - !If [ManagesAlbLogs, !Sub ',${AlbLogsBucket.Arn}/*', '']
                     - !If
                       - ReadsServiceLogs
                       - !Sub ',arn:${AWS::Partition}:s3:::*/AWSLogs/${AWS::AccountId}/*'
@@ -618,9 +634,8 @@ Resources:
                       - ''
             - !Ref AWS::NoValue
 
-  # O papel que o nó assume. Sem chave: o nó troca no STS (AssumeRoleWithWebIdentity) um token de até 1 hora, que o
-  # Google assina para a conta de serviço dele, por uma sessão de até 1 hora. Nome e caminho fixos (por isso o
-  # CAPABILITY_NAMED_IAM): o ARN, arn:aws:iam::<conta>:role/verax/verax-control-reader, sai só do ID da conta.
+  # O papel que o nó assume, sem chave: troca no STS um token do Google (até 1 hora) por uma sessão de até 1 hora. Nome e
+  # caminho fixos (CAPABILITY_NAMED_IAM): o ARN sai só do ID da conta.
   ReaderRole:
     Type: AWS::IAM::Role
     Properties:
@@ -632,9 +647,8 @@ Resources:
       ManagedPolicyArns:
         - !Ref ReaderPolicy
         - !Ref GuardrailsPolicy
-      # O que o nó lê do próprio papel (iam:GetRole) para saber o que esperar dele: a versão deste modelo e o que foi
-      # autorizado na pilha. Não dão permissão nenhuma (isso é das políticas acima); um papel sem elas é do modelo 1. A
-      # lista é separada por espaço: o IAM não aceita vírgula no valor de uma etiqueta.
+      # O que o nó lê do próprio papel (iam:GetRole): a versão deste modelo e o que foi autorizado. Não dão permissão;
+      # sem elas, é o modelo 1. Separadas por espaço: o IAM não aceita vírgula no valor.
       Tags:
         - Key: verax-control:template
           Value: '2'
@@ -645,10 +659,14 @@ Resources:
               - !If [ReadsServiceLogs, ' service-logs', '']
               - !If [ReadsFindings, ' findings', '']
               - !If [ReadsLogGroups, ' log-groups', '']
-      # Escrita à mão, e não pelo assistente "Web identity / Google" do console, que grava o audience pedido ao
-      # Google em accounts.google.com:aud: no token de uma conta de serviço, a AWS lê essa chave do campo azp (o ID
-      # da conta), e um papel feito pelo assistente nunca aceitaria o nó. O Google é um provedor embutido na AWS:
-      # não há provedor OIDC a criar no IAM.
+        # Com EnableAlbAccessLogs: <região>/<bucket> do log dos ALB, para onde o painel liga o log.
+        - !If
+          - ManagesAlbLogs
+          - Key: verax-control:alb-logs-bucket
+            Value: !Sub '${AWS::Region}/${AlbLogsBucket}'
+          - !Ref AWS::NoValue
+      # Escrita à mão: o assistente "Web identity / Google" do console grava o audience em accounts.google.com:aud, que
+      # num token de conta de serviço é o azp (o ID dela), e nunca aceitaria o nó. Não há provedor OIDC a criar.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -729,10 +747,8 @@ Resources:
       AliasName: alias/verax-control-logs
       TargetKeyId: !Ref LogsKey
 
-  # Log de acesso dos buckets de log (CIS: acesso ao bucket do CloudTrail registrado).
-  # Os três buckets ficam sem BucketName: o CloudFormation gera o nome, e as saídas da pilha o mostram. Como eles
-  # ficam na conta (Retain) quando a opção é desligada ou a pilha apagada, um nome fixo faria a criação seguinte
-  # falhar porque o bucket já existe.
+  # Log de acesso dos buckets de log (CIS). Os buckets desta pilha não têm BucketName: ficam na conta (Retain), e um
+  # nome fixo faria a criação seguinte falhar. As saídas da pilha mostram o nome gerado.
   AccessLogsBucket:
     Type: AWS::S3::Bucket
     Condition: CreatesLogBucket
@@ -989,6 +1005,65 @@ Resources:
         DestinationArn: !GetAtt GuardDutyBucket.Arn
         KmsKeyArn: !GetAtt LogsKey.Arn
 
+  # Só com EnableAlbAccessLogs: o destino do log dos ALB desta região (o ALB só grava em bucket da região dele, e com
+  # SSE-S3: não aceita chave do KMS). Bucket e política ficam (Retain) se a opção for desligada: nenhum ALB perde o log.
+  AlbLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: ManagesAlbLogs
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: É um bucket de log; a leitura pelo papel fica no CloudTrail.
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
+      VersioningConfiguration: { Status: Enabled }
+      LifecycleConfiguration:
+        Rules:
+          - Id: retencao
+            Status: Enabled
+            ExpirationInDays: !Ref LogRetentionDays
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }
+
+  AlbLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ManagesAlbLogs
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref AlbLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: [!GetAtt AlbLogsBucket.Arn, !Sub '${AlbLogsBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          # A política atual da AWS, que vale em toda região (a antiga, com a conta do ELB, só nas de antes de 08/2022).
+          - Sid: EntregaDoLogDosAlb
+            Effect: Allow
+            Principal:
+              Service: logdelivery.elasticloadbalancing.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${AlbLogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/*'
+
 Outputs:
   RoleArn:
     Description: >-
@@ -1011,3 +1086,7 @@ Outputs:
     Condition: CreatesLogBucket
     Description: Bucket com o log de acesso dos buckets criados pela pilha (o papel não o lê).
     Value: !GetAtt AccessLogsBucket.Arn
+  AlbLogsBucketName:
+    Condition: ManagesAlbLogs
+    Description: Bucket do log de acesso dos ALB desta região, que o painel liga a seu pedido.
+    Value: !Ref AlbLogsBucket

@@ -202,8 +202,9 @@ cortar de uma vez todas as sessões já emitidas, use o _Revoke active sessions_
 
 ### O que o papel nunca faz
 
-O papel não tem nenhuma permissão de escrita. O teste do template compara cada ação liberada com uma lista exata, e
-falha se aparecer qualquer outra. Além disso, a política `VeraxControlGuardrails` nega explicitamente, o que vale
+O papel não tem nenhuma permissão de escrita, a não ser a do log de acesso dos ALB, só se você pedir
+(`EnableAlbAccessLogs`, abaixo). O teste do template compara cada ação liberada com uma lista exata, e falha se
+aparecer qualquer outra. Além disso, a política `VeraxControlGuardrails` nega explicitamente, o que vale
 mesmo se alguém anexar outra política ao papel:
 
 - **qualquer chamada de fora do IP do nó** (`NodeEgressIps`), mesmo com uma sessão já emitida: as credenciais de uma
@@ -337,6 +338,30 @@ precisar mais dos logs deles.
 O WAF aceita um só destino de log por Web ACL, e a pilha nunca o troca. O log que o WAF já grava direto no S3 (num
 bucket `aws-waf-logs-*`, exigência da AWS) fica em `AWSLogs/<conta>/WAFLogs/` e é lido pela autorização dos logs da
 AWS, sem cadastrar o bucket.
+
+## Opcional: o painel liga o log de acesso dos ALB (`EnableAlbAccessLogs`)
+
+O padrão é não. Com `EnableAlbAccessLogs=true`, a pilha:
+
+- cria um bucket novo, só para o log de acesso dos balanceadores de aplicação (ALB) **desta região** (o ALB só grava
+  num bucket da região dele): privado, versionado, com SSE-S3 (o ALB não grava com chave do KMS) e retenção de
+  `LogRetentionDays` dias. A política do bucket só deixa a entrega de logs do ELB
+  (`logdelivery.elasticloadbalancing.amazonaws.com`, a política atual da AWS para toda região) gravar em
+  `AWSLogs/<sua conta>/`, e só para balanceadores desta região e conta. O papel lê esse bucket. Saída
+  `AlbLogsBucketName`;
+- deixa o papel chamar `elasticloadbalancing:ModifyLoadBalancerAttributes` nos ALB desta região
+  (`loadbalancer/app/*`). Toda outra ação de alteração do balanceador continua negada (`Modify*` nos ouvintes, regras,
+  grupos de destino e nos NLB, e a capacidade e os IPs do ALB). O IAM não filtra qual atributo muda: quem garante que
+  só o log muda é o código do nó, que só manda `access_logs.s3.enabled`, `access_logs.s3.bucket` (o bucket desta
+  pilha) e `access_logs.s3.prefix` (vazio), e só quando alguém do seu time clica em **Ligar logs** no painel;
+- põe no papel a etiqueta `verax-control:alb-logs-bucket` (`<região>/<bucket>`), que diz ao nó para onde ligar o log.
+
+O nó nunca troca o destino de um log que já está ligado, e o **Desligar logs** do painel só desliga o que o próprio
+painel ligou, se o destino ainda for este bucket. O log tem custo na AWS (o S3 grava e guarda os arquivos).
+
+Desligar a opção (ou apagar a pilha) tira a permissão, mas o bucket e a política dele ficam na conta, com os logs: um
+ALB que ainda grava nele não perde o log. Para parar de vez, desligue o log de cada ALB (no painel ou no console do
+EC2) antes de apagar o bucket: senão, a AWS pode gravar o log num bucket de mesmo nome que outra pessoa criar.
 
 ## Bucket com logs de várias contas
 

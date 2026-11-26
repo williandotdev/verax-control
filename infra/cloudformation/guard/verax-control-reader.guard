@@ -7,7 +7,9 @@
 # parâmetro true/false, as declarações dela só existem com ele ligado e são exatamente as esperadas (os objetos só em
 # AWSLogs/<esta conta>/, a listagem só dessas pastas e do primeiro nível, o Decrypt só pelo S3, os grupos de log só com
 # a etiqueta do cliente), e as etiquetas do papel dizem o modelo e o que foi autorizado. Fora dessas declarações, o
-# conteúdo de log nunca fica em "*". Os casos de verax-control-reader.tests.yaml conferem as regras.
+# conteúdo de log nunca fica em "*". A única escrita, opcional e desligada por padrão (EnableAlbAccessLogs), é o
+# ModifyLoadBalancerAttributes dos ALB da região, numa declaração exata. Os casos de verax-control-reader.tests.yaml
+# conferem as regras.
 #
 
 let papeis = Resources.*[ Type == 'AWS::IAM::Role' ]
@@ -149,7 +151,7 @@ rule leitura_so_le {
         NotResource !exists
         Action == /^[a-z0-9-]+:(Get|List|Describe|BatchGet|Search|SimulatePrincipalPolicy$|Decrypt$|FilterLogEvents$)/
     }
-    %condicionais {
+    %condicionais[ Sid != 'LigarLogDosAlb' ] {
         Effect == 'Allow'
         NotAction !exists
         NotResource !exists
@@ -360,8 +362,52 @@ rule etiquetas_do_papel {
                         ]
                     ]
                 }
+            },
+            {
+                'Fn::If': [
+                    'ManagesAlbLogs',
+                    {
+                        'Key': 'verax-control:alb-logs-bucket',
+                        'Value': { 'Fn::Sub': '${AWS::Region}/${AlbLogsBucket}' }
+                    },
+                    { 'Ref': 'AWS::NoValue' }
+                ]
             }
         ]
+    }
+}
+
+# A única escrita do papel: só com EnableAlbAccessLogs (um parâmetro true/false, desligado por padrão), o
+# ModifyLoadBalancerAttributes dos ALB desta região e desta conta, numa declaração exata e sob a condição dele. Nenhuma
+# outra declaração da leitura tem Modify do balanceador.
+rule escrita_do_alb_exata {
+    Parameters.EnableAlbAccessLogs.AllowedValues == [ 'true', 'false' ]
+    Parameters.EnableAlbAccessLogs.Default == 'false'
+    Conditions.ManagesAlbLogs == { 'Fn::Equals': [ { 'Ref': 'EnableAlbAccessLogs' }, 'true' ] }
+
+    %leitura !empty
+    let declaracoes = %leitura.Properties.PolicyDocument.Statement[ Effect exists ]
+    let condicionadas = %leitura.Properties.PolicyDocument.Statement[ 'Fn::If' exists ]
+    let escrita = %condicionadas[ 'Fn::If'[1].Sid == 'LigarLogDosAlb' ]
+    %declaracoes {
+        Sid != 'LigarLogDosAlb'
+        Action != /^elasticloadbalancing:Modify/
+    }
+    %escrita !empty
+    %escrita {
+        'Fn::If'[0] == 'ManagesAlbLogs'
+        'Fn::If'[1] == {
+            'Sid': 'LigarLogDosAlb',
+            'Effect': 'Allow',
+            'Action': 'elasticloadbalancing:ModifyLoadBalancerAttributes',
+            'Resource': {
+                'Fn::Sub': 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*'
+            }
+        }
+        'Fn::If'[2] == { 'Ref': 'AWS::NoValue' }
+    }
+    %condicionadas[ 'Fn::If'[1].Sid != 'LigarLogDosAlb' ] {
+        'Fn::If'[1].Action != /^elasticloadbalancing:Modify/
     }
 }
 
