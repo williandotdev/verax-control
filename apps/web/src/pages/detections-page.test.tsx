@@ -460,10 +460,26 @@ describe('Detecções: o resumo da situação', () => {
   it('o radar em destaque, o motivo em texto, as decisões com o atalho para a lista filtrada e a coleta numa gaveta', async () => {
     const router = renderAt('/');
     const strip = await screen.findByRole('region', { name: 'Situação agora' });
-    expect(await within(strip).findByRole('status', { name: /^Situação: / })).toHaveTextContent(
-      '1 incidente crítico aberto, 2 incidentes altos abertos, nota de postura 69, abaixo de 70 e coleta parada (GCP).',
+    const status = await within(strip).findByRole('status', { name: /^Situação: / });
+    // R-01: a frase completa para o leitor de tela; à vista, a manchete, e o resto nos botões e nas decisões logo abaixo.
+    expect(status).toHaveAccessibleName(
+      /^Situação: 1 incidente crítico aberto, 2 incidentes altos abertos, nota de postura 69, abaixo de 70 e coleta parada \(GCP\)\./,
     );
+    expect(status).toHaveTextContent(/^1 incidente crítico aberto e 2 incidentes altos abertos$/);
+    expect(status).toHaveAttribute('data-headline-severity', 'critical');
     const decisions = within(strip).getByRole('region', { name: 'Decisões pendentes' });
+    // A ordem do quadro: a manchete, a coleta e a postura, as decisões e só então o radar.
+    const order = [
+      status,
+      within(strip).getByRole('button', { name: /Coleta parada: GCP/ }),
+      decisions,
+      within(strip).getByRole('region', { name: 'Radar das últimas 24 horas' }),
+    ];
+    for (let i = 1; i < order.length; i += 1) {
+      expect(
+        order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
     expect(within(decisions).getByText('1 incidente sem responsável')).toBeInTheDocument();
     expect(within(decisions).getByText(/alertas? altos? ou críticos? para validar$/)).toBeInTheDocument();
     // Alerta sem dono é só do admin_verax.

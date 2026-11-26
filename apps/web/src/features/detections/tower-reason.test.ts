@@ -5,6 +5,7 @@ import {
   casePhrase,
   countsByCase,
   pendingCasesNote,
+  situationHeadline,
   towerReason,
   uncoveredPhrase,
   vulnerabilityPhrase,
@@ -221,5 +222,64 @@ describe('com os casos, a frase conta casos', () => {
     ).toBe(
       '1 caso pendente de vulnerabilidade e 1 de postura. O mais antigo de postura foi aberto há 5 dias.',
     );
+  });
+});
+
+describe('a manchete da situação (R-01)', () => {
+  const base = demoTower(alfa ?? '', { includeUnowned: false, untriagedFindings: 45 });
+
+  it('o incidente crítico em destaque, os altos na linha de baixo', () => {
+    expect(
+      situationHeadline({ ...base, reasons: ['critical_incident', 'high_incident', 'collection_stalled'] }),
+    ).toEqual({
+      severity: 'critical',
+      title: '1 incidente crítico aberto',
+      detail: 'e 2 incidentes altos abertos',
+    });
+  });
+
+  it('sem incidente, o motivo (a coleta parada) vira a manchete, com a severidade alta', () => {
+    expect(situationHeadline({ ...base, reasons: ['collection_stalled', 'low_posture'] })).toMatchObject({
+      severity: 'high',
+      title: 'Coleta parada (GCP) e nota de postura 69, abaixo de 70',
+    });
+  });
+
+  it('sem motivo e com alertas para validar: nada de "Tudo calmo"; a prova da coleta fica à vista', () => {
+    const now = new Date(base.generatedAt);
+    const headline = situationHeadline({ ...base, light: 'green', reasons: [] }, now);
+    expect(headline.severity).toBe('high');
+    expect(headline.title).toBe('45 alertas altos ou críticos para validar.');
+    expect(headline.detail).toMatch(/^Coleta ativa em \d+ de \d+ fontes/);
+    expect(`${headline.title} ${headline.detail}`).not.toMatch(/calmo/i);
+  });
+
+  it('"Tudo calmo" só com a prova: todas as fontes coletando e nada para decidir', () => {
+    const calm = demoTower(alfa ?? '', { includeUnowned: false, untriagedFindings: 0 });
+    const collecting = {
+      ...calm,
+      light: 'green' as const,
+      reasons: [],
+      pendingDecisions: [],
+      coverage: {
+        ...calm.coverage,
+        sources: calm.coverage.sources?.map((source) =>
+          source.state === 'not_configured' ? source : { ...source, state: 'collecting' as const },
+        ),
+      },
+    };
+    expect(situationHeadline(collecting).severity).toBe('ok');
+    expect(situationHeadline(collecting).title).toMatch(/^Tudo calmo\./);
+    const stalled = {
+      ...collecting,
+      coverage: {
+        ...collecting.coverage,
+        sources: collecting.coverage.sources?.map((source) =>
+          source.source === 'gcp' ? { ...source, state: 'stalled' as const } : source,
+        ),
+      },
+    };
+    expect(situationHeadline(stalled).title).not.toMatch(/calmo/i);
+    expect(situationHeadline(stalled).severity).toBe('low');
   });
 });

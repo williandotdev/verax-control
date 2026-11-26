@@ -37,6 +37,7 @@ import {
   casePhrase,
   countsByCase,
   pendingCasesNote,
+  situationHeadline,
   towerReason,
   uncoveredPhrase,
   validationPhrase,
@@ -172,44 +173,55 @@ function ExpandedSituation({ summary, stacked }: { summary: TowerSummary; stacke
   };
   return (
     <div className="space-y-4">
-      {/* O motivo, em texto: o que antes acompanhava a cor do semáforo. */}
-      <p
-        role="status"
-        aria-label={`Situação: ${towerReason(summary)}`}
-        className="text-sm text-muted-foreground"
-      >
-        {towerReason(summary)}
-      </p>
-      <div
-        className={cn(
-          'grid gap-6',
-          summary.radar &&
-            !stacked &&
-            'lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,28rem)_minmax(0,1fr)]',
-        )}
-      >
-        {summary.radar && (
-          <section
-            data-tour="deteccoes-radar"
-            aria-labelledby="deteccoes-radar"
-            className="min-w-0 space-y-2"
-          >
-            <h3 id="deteccoes-radar" className="text-sm font-semibold">
-              Radar das últimas {summary.radar.windowHours} horas
-            </h3>
-            <DetectionRadar radar={summary.radar} generatedAt={summary.generatedAt} links={links} compact />
-          </section>
-        )}
-        {/* Contêiner: as decisões ficam em duas colunas só quando a coluna ao lado do radar tem largura para isso. */}
-        <div className="@container min-w-0 space-y-4">
-          <PendingDecisions summary={summary} />
-          <div className="flex flex-wrap gap-2">
-            <CollectionIndicator summary={summary} />
-            <PostureChip posture={summary.posture} />
-          </div>
-        </div>
+      {/* R-01: a resposta em destaque, depois a coleta e a postura, as decisões e só então o radar. */}
+      <Headline summary={summary} />
+      <div className="flex flex-wrap gap-2">
+        <CollectionIndicator summary={summary} />
+        <PostureChip posture={summary.posture} />
       </div>
+      {/* Contêiner: as decisões ficam em duas colunas só quando há largura para isso. */}
+      <div className="@container min-w-0">
+        <PendingDecisions summary={summary} />
+      </div>
+      {summary.radar && (
+        <section
+          data-tour="deteccoes-radar"
+          aria-labelledby="deteccoes-radar"
+          className={cn('min-w-0 space-y-2', !stacked && 'max-w-md')}
+        >
+          <h3 id="deteccoes-radar" className="text-sm font-semibold">
+            Radar das últimas {summary.radar.windowHours} horas
+          </h3>
+          <DetectionRadar radar={summary.radar} generatedAt={summary.generatedAt} links={links} compact />
+        </section>
+      )}
     </div>
+  );
+}
+
+/**
+ * A manchete da situação: o mais grave, com o ícone da severidade, na letra maior da tela depois do título. O que ela não
+ * repete (a coleta parada, a postura, os alertas para validar) está logo abaixo, nos botões e nas decisões; o leitor de
+ * tela ouve a frase completa, como antes.
+ */
+function Headline({ summary }: { summary: TowerSummary }) {
+  const headline = situationHeadline(summary);
+  const { icon: Icon, tone } = SEVERITY_STYLES[headline.severity];
+  return (
+    <p
+      role="status"
+      aria-label={`Situação: ${towerReason(summary)}`}
+      data-headline-severity={headline.severity}
+      className="flex items-start gap-2.5"
+    >
+      <Icon aria-hidden className={cn('mt-0.5 size-5 shrink-0', tone)} />
+      <span className="min-w-0">
+        <span className="block text-lg leading-snug font-semibold text-foreground">{headline.title}</span>
+        {headline.detail && (
+          <span className="mt-0.5 block text-sm text-muted-foreground"> {headline.detail}</span>
+        )}
+      </span>
+    </p>
   );
 }
 
