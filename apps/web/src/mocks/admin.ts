@@ -52,8 +52,20 @@ import {
   userListQuerySchema,
   userSchema,
   userUpdateSchema,
+  alertExceptionRuleTitlesQuerySchema,
+  alertExceptionRuleTitlesSchema,
+  cloudAccountSourceAttentionSchema,
+  needsAwsSourceAttention,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
+import { demoFindings } from './findings-fixtures';
+
+/** Os achados da demonstração, montados uma vez só: a fonte dos títulos das regras das exceções (E-09). */
+let ruleTitleSource: ReturnType<typeof demoFindings> | null = null;
+function demoRuleTitleSource(): ReturnType<typeof demoFindings> {
+  ruleTitleSource ??= demoFindings();
+  return ruleTitleSource;
+}
 import { API_URL } from '@/lib/env';
 import {
   advanceAwsAccount,
@@ -806,6 +818,18 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       const items = accounts.filter((account) => !query.data.status || account.status === query.data.status);
       return HttpResponse.json(paginate(items, query.data.page, query.data.pageSize));
     }),
+    // E-08: quantas fontes autorizadas de cada conta AWS pedem atenção (a mesma regra da API).
+    http.get(url('/v1/cloud-accounts/source-attention'), () => {
+      const scope = scoped('cloud_accounts:read');
+      if (!scope.ok) return scope.error;
+      const items = listOf(store.accounts, scope.tenantId).flatMap((account) => {
+        if (account.provider !== 'aws') return [];
+        advanceAwsAccount(store.awsOnboarding, account);
+        const count = awsFakeOf(store.awsOnboarding, account).sources.filter(needsAwsSourceAttention).length;
+        return count > 0 ? [{ cloudAccountId: account.id, sourcesNeedingAttention: count }] : [];
+      });
+      return HttpResponse.json(cloudAccountSourceAttentionSchema.parse({ items }));
+    }),
     http.post(url('/v1/cloud-accounts'), async ({ request }) => {
       const scope = scoped('cloud_accounts:write', request);
       if (!scope.ok) return scope.error;
@@ -1106,6 +1130,19 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
           (!query.data.active || String(item.active) === query.data.active),
       );
       return HttpResponse.json(paginate(items, query.data.page, query.data.pageSize));
+    }),
+    // E-09: o título de cada regra, o do alerta mais recente dela no cliente (a mesma regra da API).
+    http.get(url('/v1/alert-exceptions/rule-titles'), ({ request }) => {
+      const scope = scoped('alert_exceptions:read');
+      if (!scope.ok) return scope.error;
+      const query = alertExceptionRuleTitlesQuerySchema.safeParse(queryOf(request));
+      if (!query.success) return problem(400, 'Regras inválidas');
+      const findings = demoRuleTitleSource().get(scope.tenantId) ?? [];
+      const items = [...new Set(query.data.ruleIds)].flatMap((ruleId) => {
+        const title = findings.find((finding) => finding.ruleId === ruleId)?.title;
+        return title ? [{ ruleId, title }] : [];
+      });
+      return HttpResponse.json(alertExceptionRuleTitlesSchema.parse({ items }));
     }),
     http.post(url('/v1/alert-exceptions'), async ({ request }) => {
       const scope = scoped('alert_exceptions:write', request);

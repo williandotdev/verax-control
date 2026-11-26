@@ -333,6 +333,13 @@ describe('cp-worker: sincronização do nó dedicado', () => {
     return (await audit.listForTenant(tenantId)).map((record) => record.action);
   }
 
+  it('conexão do Cloudflare por OAuth desligada (o padrão): quem anuncia recebe null', async () => {
+    const node = await managed();
+    const response = await syncManaged(node, { capabilities: ['log_sources', 'users', 'cloudflare_oauth'] });
+    expect(response.status).toBe(200);
+    expect(nodeSyncResponseSchema.parse(response.body).cloudflareOauth).toBeNull();
+  });
+
   it('primeira chamada do nó gerenciado: grava o estado do nó e responde o desejado vazio', async () => {
     const node = await managed();
     const token = nodeToken(node);

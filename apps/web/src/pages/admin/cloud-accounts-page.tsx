@@ -4,6 +4,7 @@ import {
   cloudAccountCreateSchema,
   cloudAccountUpdateSchema,
   cloudCredentialInputSchema,
+  CLOUDFLARE_OAUTH_RECONNECT_ERROR,
   CLOUDFLARE_TOKEN_PERMISSIONS,
   cloudflareTokenTemplateUrl,
   type CloudProvider,
@@ -26,10 +27,12 @@ import { type Column, DataTable } from '@/components/data-table';
 import { Button } from '@/components/ui/button';
 import { Field, Textarea } from '@/components/ui/field';
 import { Sheet } from '@/components/ui/sheet';
-import { SEVERITY_STYLES } from '@/design/severity';
+import { Notice, Tag, ToneBadge, ToneIcon } from '@/components/ui/status';
+import { type SEVERITY_STYLES } from '@/design/severity';
 import {
   ADMIN_PAGE_SIZE,
   useCloudAccountList,
+  useCloudAccountSourceAttention,
   useCloudCredential,
   useCreateCloudAccount,
   useUpdateCloudAccount,
@@ -43,6 +46,7 @@ import {
 } from '@/features/admin/aws-log-buckets';
 import { AwsLogBuckets, LogBucketsEditor } from '@/features/admin/aws-log-buckets-editor';
 import { AWS_DEFAULT_REGION, AWS_REGION_OPTIONS } from '@/features/admin/aws-onboarding-labels';
+import { AWS_ACCOUNT_FACTS_ID, useAwsAccountTab } from '@/features/admin/aws-account-view';
 import { AwsOnboardingSection } from '@/features/admin/aws-onboarding-section';
 import { CommandBlock } from '@/features/admin/command-block';
 import { DeleteCloudAccount } from '@/features/admin/delete-cloud-account';
@@ -59,12 +63,16 @@ import {
   cloudflareConnectionErrorHint,
   CONNECTION_LABELS,
   connectionHint,
+  connectionListHint,
   gcpConnectionErrorHint,
   PROVIDER_LABELS,
 } from '@/features/admin/labels';
 import { useAuthClientConfig } from '@/features/auth/client-config';
+import { useCloudflareConnectMode } from '@/features/cloudflare/cloudflare-oauth-api';
+import { CloudflareOauthSteps } from '@/features/cloudflare/cloudflare-oauth-steps';
+import { ConnectCloudflareButton } from '@/features/cloudflare/connect-button';
+import { CloudflareZoneHealth } from '@/features/cloudflare/zone-health';
 import { useMe } from '@/features/session/session';
-import { cn } from '@/lib/cn';
 import { formatRelative } from '@/lib/format';
 
 const NEW = 'nova';
@@ -94,11 +102,7 @@ const isManagedByVerax = (account: CloudAccount) => account.managedBy === 'verax
 
 /** O selo da conta do console. */
 function ManagedBadge() {
-  return (
-    <span className="inline-block rounded-full border px-1.5 py-0.5 text-[0.7rem] font-medium leading-none">
-      Cadastrada pela Verax
-    </span>
-  );
+  return <Tag>Cadastrada pela Verax</Tag>;
 }
 
 function scopeOf(account: CloudAccount): string | null {
@@ -129,21 +133,27 @@ export function CloudAccountsPage() {
   const { data: me } = useMe();
   const scope = me?.scopeTenantId ?? null;
   const canWrite = me?.permissions.includes('cloud_accounts:write') === true;
+  const canConnect = me?.permissions.includes('cloud_credentials:write') === true;
+  // No nó com o OAuth do Cloudflare ligado, o botão "Conectar com Cloudflare" cadastra a conta sozinho. Em qualquer outro
+  // (inclusive o nó anterior, que responde 404), nada muda.
+  const cloudflareOauth = useCloudflareConnectMode(scope !== null) === 'oauth';
   const [params, setParams] = useSearchParams();
   const page = Math.max(1, Number.parseInt(params.get('pagina') ?? '1', 10) || 1);
   const list = useCloudAccountList(page, scope !== null);
+  const attention = useCloudAccountSourceAttention(scope !== null);
   const open = params.get('conta');
   const setOpen = (value: string | null) =>
     setParams((previous) => {
       const next = new URLSearchParams(previous);
       if (value) next.set('conta', value);
       else next.delete('conta');
+      next.delete('aba');
       return next;
     });
   const selected = list.data?.items.find((account) => account.id === open) ?? null;
   // O aviso da conta excluída: o painel fecha, a linha sai da tabela e o foco vem para cá.
   const [deleted, setDeleted] = useState<CloudAccount | null>(null);
-  const deletedNotice = useRef<HTMLParagraphElement>(null);
+  const deletedNotice = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (deleted) deletedNotice.current?.focus();
   }, [deleted]);
@@ -155,6 +165,7 @@ export function CloudAccountsPage() {
   const columns: Column<CloudAccount>[] = [
     {
       key: 'conta',
+      card: 'title',
       header: 'Conta',
       cell: (row) => (
         <button type="button" className="text-left hover:underline" onClick={() => setOpen(row.id)}>
@@ -174,7 +185,14 @@ export function CloudAccountsPage() {
       cell: (row) =>
         scopeOf(row) ?? <span className="text-muted-foreground">{MISSING_SCOPE[row.provider]}</span>,
     },
-    { key: 'conexao', header: 'Conexão', cell: (row) => <ConnectionBadge account={row} /> },
+    {
+      key: 'conexao',
+      card: 'status',
+      header: 'Conexão',
+      cell: (row) => <ConnectionCell account={row} attention={attention?.get(row.id) ?? null} />,
+      cardCell: (row) => <ConnectionBadge account={row} />,
+      cardDetail: (row) => <ConnectionDetail account={row} attention={attention?.get(row.id) ?? null} />,
+    },
     {
       key: 'evento',
       header: 'Último evento',
@@ -189,6 +207,8 @@ export function CloudAccountsPage() {
     {
       key: 'status',
       header: 'Status',
+      // No cartão do celular, "Ativa" é o normal e não ocupa espaço; "Inativa" aparece.
+      cardOmit: (row) => row.status === 'active',
       cell: (row) =>
         row.status === 'active' ? 'Ativa' : <span className="text-muted-foreground">Inativa</span>,
     },
@@ -198,20 +218,30 @@ export function CloudAccountsPage() {
     <AdminShell
       title="Contas cloud"
       description="Contas AWS, projetos da GCP e contas do Cloudflare monitorados. O Verax Control só lê: na AWS, por um papel de leitura sem chave; o token do Cloudflare fica cifrado no cofre do nó, nunca no cadastro."
-      action={canWrite && <Button onClick={() => setOpen(NEW)}>Cadastrar conta</Button>}
+      action={
+        cloudflareOauth && canConnect ? (
+          <div className="flex flex-wrap items-start gap-2">
+            {canWrite && (
+              <Button variant="secondary" onClick={() => setOpen(NEW)}>
+                Cadastrar conta
+              </Button>
+            )}
+            <ConnectCloudflareButton>Conectar com Cloudflare</ConnectCloudflareButton>
+          </div>
+        ) : (
+          canWrite && <Button onClick={() => setOpen(NEW)}>Cadastrar conta</Button>
+        )
+      }
     >
       {deleted && (
-        <p
-          ref={deletedNotice}
-          role="status"
-          tabIndex={-1}
-          className="rounded-md border border-ok/50 bg-ok/10 p-3 text-sm focus:outline-none"
-        >
-          {ACCOUNT_NOUNS[deleted.provider].noun} {deleted.accountId}{' '}
-          {ACCOUNT_NOUNS[deleted.provider].registered.replace('cadastrad', 'excluíd')}. Os achados, os
-          incidentes e o histórico já registrados continuam no painel, e o mesmo ID pode ser cadastrado de
-          novo.
-        </p>
+        <Notice ref={deletedNotice} tone="ok" role="status" tabIndex={-1} className="focus:outline-none">
+          <p>
+            {ACCOUNT_NOUNS[deleted.provider].noun} {deleted.accountId}{' '}
+            {ACCOUNT_NOUNS[deleted.provider].registered === 'cadastrada' ? 'excluída' : 'excluído'}. Os
+            achados, os incidentes e o histórico já registrados continuam no painel, e o mesmo ID pode ser
+            cadastrado de novo.
+          </p>
+        </Notice>
       )}
       <DataTable
         caption="Contas cloud do cliente"
@@ -278,7 +308,10 @@ function ConnectionErrorDetail({ account, code }: { account: CloudAccount; code:
   return (
     <>
       {hint && ` ${hint}`}
-      {stopped && ' A coleta está parada até um token válido ser colado abaixo.'}{' '}
+      {stopped &&
+        (code === CLOUDFLARE_OAUTH_RECONNECT_ERROR
+          ? ' A coleta está parada até a conta ser conectada de novo.'
+          : ' A coleta está parada até um token válido ser colado abaixo.')}{' '}
       {account.connection === 'connected' ? 'Tipo do aviso:' : 'Tipo do erro:'}{' '}
       <code className="font-mono">{code}</code>.
     </>
@@ -287,12 +320,47 @@ function ConnectionErrorDetail({ account, code }: { account: CloudAccount; code:
 
 /** Selo "Aguardando / Conectada / Erro": a cor vem com ícone e texto, nunca só a cor. */
 function ConnectionBadge({ account }: { account: CloudAccount }) {
-  const { icon: Icon, tone } = SEVERITY_STYLES[CONNECTION_SEVERITY[account.connection]];
   return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap text-sm">
-      <Icon aria-hidden className={cn('size-4', tone)} />
+    <ToneBadge tone={CONNECTION_SEVERITY[account.connection]} className="whitespace-nowrap">
       {CONNECTION_LABELS[account.connection]}
+    </ToneBadge>
+  );
+}
+
+const numberFormat = new Intl.NumberFormat('pt-BR');
+
+/**
+ * A conexão na lista (E-08): o selo e, abaixo de "Erro" ou "Aguardando", o motivo curto, o mesmo do detalhe. Na conta
+ * AWS conectada com fontes autorizadas que pedem atenção, quantas são, com o ícone de atenção (nunca só a cor). Sem a
+ * contagem (num nó de antes), só o selo.
+ */
+function ConnectionCell({ account, attention }: { account: CloudAccount; attention: number | null }) {
+  return (
+    <span className="block space-y-0.5">
+      <ConnectionBadge account={account} />
+      <ConnectionDetail account={account} attention={attention} />
     </span>
+  );
+}
+
+/** O que vem abaixo do selo: o motivo curto e, na conta AWS conectada, quantas fontes pedem atenção. No cartão do celular, na largura toda. */
+function ConnectionDetail({ account, attention }: { account: CloudAccount; attention: number | null }) {
+  const hint = connectionListHint(account);
+  const flagged =
+    account.provider === 'aws' && account.connection === 'connected' && attention !== null && attention > 0;
+  if (!hint && !flagged) return null;
+  return (
+    <>
+      {hint && <span className="block max-w-80 text-xs text-muted-foreground">{hint}</span>}
+      {flagged && (
+        <span className="flex items-center gap-1 text-xs">
+          <ToneIcon tone="medium" className="size-3.5" />
+          {attention === 1
+            ? '1 fonte precisa de atenção'
+            : `${numberFormat.format(attention ?? 0)} fontes precisam de atenção`}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -303,15 +371,13 @@ function ConnectionBadge({ account }: { account: CloudAccount }) {
 function CollectionWarning({ account }: { account: CloudAccount }) {
   const hint = awsCollectionErrorHint(account.collectionError);
   if (account.provider !== 'aws' || hint === null) return null;
-  const { icon: Icon, tone } = SEVERITY_STYLES.medium;
   return (
     <>
       <dt className="text-muted-foreground">Coleta no nó</dt>
       <dd className="space-y-0.5">
-        <span className="inline-flex items-center gap-1 whitespace-nowrap text-sm">
-          <Icon aria-hidden className={cn('size-4', tone)} />
+        <ToneBadge tone="medium" className="whitespace-nowrap">
           Aviso
-        </span>
+        </ToneBadge>
         <p className="text-xs text-muted-foreground">
           {hint} Tipo do aviso: <code className="font-mono">{account.collectionError}</code>.
         </p>
@@ -354,6 +420,7 @@ function createInput(values: CreateValues, bucketRows: readonly BucketRow[]) {
 }
 
 function CreateAccount() {
+  const cloudflareOauth = useCloudflareConnectMode() === 'oauth';
   const [values, setValues] = useState<CreateValues>({
     provider: 'aws',
     accountId: '',
@@ -484,6 +551,13 @@ function CreateAccount() {
       )}
       {values.provider === 'cloudflare' && (
         <>
+          {cloudflareOauth && (
+            <p className="text-sm text-muted-foreground">
+              Neste ambiente, a conta do Cloudflare é conectada pelo botão Conectar com Cloudflare, na tela de
+              contas: a conta é cadastrada sozinha, monitorando todas as zonas. Cadastre aqui só para conectar
+              depois.
+            </p>
+          )}
           <Field
             label="ID da conta do Cloudflare"
             hint="32 caracteres, na página inicial da conta no painel do Cloudflare."
@@ -522,6 +596,21 @@ function AccountDetail({
   // credencial e o "Verificar" continuam com o cliente.
   const managed = isManagedByVerax(account);
   const canEditSource = canWrite && !managed;
+  const [tab, setTab] = useAwsAccountTab();
+  const monitoring = canWrite && (
+    <div className="space-y-2">
+      <Button
+        variant="secondary"
+        disabled={managed || update.isPending}
+        onClick={() => update.mutate({ status: account.status === 'active' ? 'inactive' : 'active' })}
+      >
+        {account.status === 'active' ? 'Desativar monitoramento' : 'Reativar monitoramento'}
+      </Button>
+      <FormError error={update.error} />
+    </div>
+  );
+  // Excluir vale também na conta que a Verax cadastrou: a Verax é avisada pela sincronização do nó.
+  const deletion = canWrite && <DeleteCloudAccount account={account} onDeleted={onDeleted} />;
   return (
     <div className="space-y-5">
       {managed && (
@@ -533,56 +622,66 @@ function AccountDetail({
           </p>
         </div>
       )}
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-        <dt className="text-muted-foreground">Conexão</dt>
-        <dd className="space-y-0.5">
-          <ConnectionBadge account={account} />
-          <p className="text-xs text-muted-foreground">
-            {connectionHint(account)}
-            {account.connectionError && (
-              <ConnectionErrorDetail account={account} code={account.connectionError} />
-            )}
-          </p>
-        </dd>
-        <CollectionWarning account={account} />
-        <dt className="text-muted-foreground">Última coleta</dt>
-        <dd>{account.lastCollectedAt ? formatRelative(account.lastCollectedAt) : 'nenhuma ainda'}</dd>
-        <dt className="text-muted-foreground">Último evento</dt>
-        <dd>{account.lastEventAt ? formatRelative(account.lastEventAt) : 'nenhum ainda'}</dd>
-        <dt className="text-muted-foreground">{SCOPE_LABELS[account.provider]}</dt>
-        <dd className="break-all">{scopeOf(account) ?? MISSING_SCOPE[account.provider]}</dd>
-        {account.readerRoleArn && (
-          <>
-            <dt className="text-muted-foreground">Papel de leitura</dt>
-            <dd className="break-all font-mono text-xs">{account.readerRoleArn}</dd>
-          </>
-        )}
-      </dl>
       {account.provider === 'aws' ? (
-        <>
-          {/* Conectar, descobrir e autorizar as fontes são do cliente também na conta que a Verax cadastrou. */}
-          <AwsOnboardingSection account={account} canWrite={canWrite} />
-          <AwsAdvancedBuckets account={account} canWrite={canEditSource} managed={managed} />
-        </>
+        // Conectar, descobrir e autorizar as fontes são do cliente também na conta que a Verax cadastrou. Na conta já
+        // conectada, os dados abaixo vão para a aba "Conexão e pilha" e o fim do detalhe, para "Avançado" (E-04).
+        <AwsOnboardingSection
+          account={account}
+          canWrite={canWrite}
+          layout={{
+            tab,
+            onTabChange: setTab,
+            facts: <AccountFacts account={account} />,
+            advanced: (
+              <>
+                <AwsAdvancedBuckets account={account} canWrite={canEditSource} managed={managed} />
+                {monitoring}
+                {deletion}
+              </>
+            ),
+          }}
+        />
       ) : (
-        <ProviderSteps account={account} canWrite={canWrite} canEditSource={canEditSource} />
+        <>
+          <AccountFacts account={account} />
+          <ProviderSteps account={account} canWrite={canWrite} canEditSource={canEditSource} />
+          {canWrite && <EditSource account={account} disabled={managed} />}
+          {monitoring}
+          {deletion}
+        </>
       )}
-      {canWrite && account.provider !== 'aws' && <EditSource account={account} disabled={managed} />}
-      {canWrite && (
-        <div className="space-y-2">
-          <Button
-            variant="secondary"
-            disabled={managed || update.isPending}
-            onClick={() => update.mutate({ status: account.status === 'active' ? 'inactive' : 'active' })}
-          >
-            {account.status === 'active' ? 'Desativar monitoramento' : 'Reativar monitoramento'}
-          </Button>
-          <FormError error={update.error} />
-        </div>
-      )}
-      {/* Excluir vale também na conta que a Verax cadastrou: a Verax é avisada pela sincronização do nó. */}
-      {canWrite && <DeleteCloudAccount account={account} onDeleted={onDeleted} />}
     </div>
+  );
+}
+
+/** Os dados da conta: a conexão (com o motivo do erro), a coleta no nó, as datas, o escopo e o papel de leitura. */
+function AccountFacts({ account }: { account: CloudAccount }) {
+  return (
+    <dl id={AWS_ACCOUNT_FACTS_ID} className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+      <dt className="text-muted-foreground">Conexão</dt>
+      <dd className="space-y-0.5">
+        <ConnectionBadge account={account} />
+        <p className="text-xs text-muted-foreground">
+          {connectionHint(account)}
+          {account.connectionError && (
+            <ConnectionErrorDetail account={account} code={account.connectionError} />
+          )}
+        </p>
+      </dd>
+      <CollectionWarning account={account} />
+      <dt className="text-muted-foreground">Última coleta</dt>
+      <dd>{account.lastCollectedAt ? formatRelative(account.lastCollectedAt) : 'nenhuma ainda'}</dd>
+      <dt className="text-muted-foreground">Último evento</dt>
+      <dd>{account.lastEventAt ? formatRelative(account.lastEventAt) : 'nenhum ainda'}</dd>
+      <dt className="text-muted-foreground">{SCOPE_LABELS[account.provider]}</dt>
+      <dd className="break-all">{scopeOf(account) ?? MISSING_SCOPE[account.provider]}</dd>
+      {account.readerRoleArn && (
+        <>
+          <dt className="text-muted-foreground">Papel de leitura</dt>
+          <dd className="break-all font-mono text-xs">{account.readerRoleArn}</dd>
+        </>
+      )}
+    </dl>
   );
 }
 
@@ -697,8 +796,43 @@ function ProviderSteps({
       <GcpSteps account={account} canWrite={canEditSource} />
     );
   }
-  if (account.provider === 'cloudflare') return <CloudflareSteps account={account} canWrite={canWrite} />;
+  if (account.provider === 'cloudflare') {
+    return <CloudflareProviderSteps account={account} canWrite={canWrite} canEditSource={canEditSource} />;
+  }
   return null;
+}
+
+/**
+ * O Cloudflare: no nó com o OAuth ligado, a autorização (conectar, reconectar ou migrar o token); nos outros, o token
+ * colado, exatamente como antes. Enquanto o modo não é conhecido, nada (o nó anterior responde 404 logo). A saúde das
+ * zonas aparece abaixo quando o nó a informa.
+ */
+function CloudflareProviderSteps({
+  account,
+  canWrite,
+  canEditSource,
+}: {
+  account: CloudAccount;
+  canWrite: boolean;
+  canEditSource: boolean;
+}) {
+  const mode = useCloudflareConnectMode();
+  const { data: me } = useMe();
+  if (mode === undefined) return null;
+  const oauth = mode === 'oauth';
+  return (
+    <>
+      {oauth ? (
+        <CloudflareOauthSteps
+          account={account}
+          canConnect={me?.permissions.includes('cloud_credentials:write') === true}
+        />
+      ) : (
+        <CloudflareSteps account={account} canWrite={canWrite} />
+      )}
+      <CloudflareZoneHealth account={account} canEdit={canEditSource} quiet={!oauth} />
+    </>
+  );
 }
 
 /** No nó que não informa o próprio tópico (ambiente local), o comando sai com este no lugar. */

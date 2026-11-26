@@ -484,6 +484,98 @@ describe('loadConfig (CP-01)', () => {
       ]);
     });
 
+    describe('conexão do Cloudflare por OAuth (CLOUDFLARE_OAUTH_*)', () => {
+      const oauthEnv = {
+        CLOUDFLARE_OAUTH_CLIENT_ID: 'appdetestedemo01',
+        CLOUDFLARE_OAUTH_SCOPES: 'account-settings.read, zone.read,analytics.read,offline_access',
+      };
+      const roles = [validEnv, { ROLE: 'worker', NODE_ENV: 'development' }, adminEnv];
+
+      it('desligada por padrão nos três papéis; ligada, os três recebem o mesmo', () => {
+        for (const env of roles) {
+          const off = loadConfig(env, () => undefined);
+          expect(off.CLOUDFLARE_OAUTH_CLIENT_ID).toBeUndefined();
+          expect(off.CLOUDFLARE_OAUTH_SCOPES).toBeUndefined();
+          expect(off.CLOUDFLARE_OAUTH_TENANT_SLUGS).toBeUndefined();
+          expect(
+            warningsOf({ ...env, ...oauthEnv, CLOUDFLARE_OAUTH_TENANT_SLUGS: 'cliente-demo-a' }),
+          ).toEqual([]);
+          const on = loadConfig(
+            { ...env, ...oauthEnv, CLOUDFLARE_OAUTH_TENANT_SLUGS: 'cliente-demo-a, cliente-demo-b' },
+            () => undefined,
+          );
+          expect(on.CLOUDFLARE_OAUTH_SCOPES).toEqual([
+            'account-settings.read',
+            'zone.read',
+            'analytics.read',
+            'offline_access',
+          ]);
+          expect(on.CLOUDFLARE_OAUTH_TENANT_SLUGS).toEqual(['cliente-demo-a', 'cliente-demo-b']);
+        }
+      });
+
+      it('o app e os escopos andam juntos', () => {
+        expect(
+          problemsOf({ ...validEnv, CLOUDFLARE_OAUTH_CLIENT_ID: oauthEnv.CLOUDFLARE_OAUTH_CLIENT_ID }),
+        ).toEqual(['CLOUDFLARE_OAUTH_SCOPES: obrigatória e não definida']);
+        expect(
+          problemsOf({ ...validEnv, CLOUDFLARE_OAUTH_SCOPES: oauthEnv.CLOUDFLARE_OAUTH_SCOPES }),
+        ).toEqual(['CLOUDFLARE_OAUTH_CLIENT_ID: obrigatória e não definida']);
+      });
+
+      it('escopo de escrita, desconhecido, sem o da renovação ou sem leitura: não sobe', () => {
+        for (const scopes of [
+          'zone.write,offline_access',
+          'zone.read,zone.edit,offline_access',
+          'zone.admin,offline_access',
+          'account.zone.read,offline_access',
+          'zone:read,offline_access',
+          'zone.read',
+          'offline_access',
+          'openid,zone.read,offline_access',
+          '',
+        ]) {
+          expect(
+            problemsOf({ ...validEnv, ...oauthEnv, CLOUDFLARE_OAUTH_SCOPES: scopes }).join(),
+            scopes,
+          ).toContain('CLOUDFLARE_OAUTH_SCOPES');
+        }
+      });
+
+      it('os clientes liberados: subdomínios válidos, vazio (ninguém) ou só o *', () => {
+        const slugs = (value: string) =>
+          loadConfig({ ...validEnv, ...oauthEnv, CLOUDFLARE_OAUTH_TENANT_SLUGS: value }, () => undefined)
+            .CLOUDFLARE_OAUTH_TENANT_SLUGS;
+        expect(slugs('')).toEqual([]);
+        expect(slugs('*')).toEqual(['*']);
+        for (const bad of ['*,cliente-demo-a', 'Cliente', 'a.b', 'xn--demo', 'cliente-demo-a/..', '**']) {
+          expect(
+            problemsOf({ ...validEnv, ...oauthEnv, CLOUDFLARE_OAUTH_TENANT_SLUGS: bad }),
+            bad,
+          ).toHaveLength(1);
+        }
+      });
+
+      it('client_id fora do formato e origem que não serve de retorno: não sobe', () => {
+        for (const bad of ['', 'curto', 'com espaço aqui', 'a'.repeat(129), 'https://exemplo']) {
+          expect(
+            problemsOf({ ...validEnv, ...oauthEnv, CLOUDFLARE_OAUTH_CLIENT_ID: bad }).join(),
+            bad,
+          ).toContain('CLOUDFLARE_OAUTH_CLIENT_ID');
+        }
+        const bare = { NODE_SYNC_AUDIENCE: 'https://conta/v1/node-sync' };
+        expect(problemsOf({ ...validEnv, ...oauthEnv, ...bare })).toEqual([
+          'NODE_SYNC_AUDIENCE: com CLOUDFLARE_OAUTH_CLIENT_ID, a origem deve ser um domínio público em minúsculas',
+        ]);
+        // Desligada, a mesma origem continua valendo, como antes.
+        expect(loadConfig({ ...validEnv, ...bare }, () => undefined).NODE_SYNC_AUDIENCE).toBe(
+          bare.NODE_SYNC_AUDIENCE,
+        );
+        // Um endereço inválido é um problema de configuração, nunca um erro solto.
+        expect(problemsOf({ ...validEnv, ...oauthEnv, NODE_SYNC_AUDIENCE: 'nada' })).toHaveLength(1);
+      });
+    });
+
     describe('entrada única no SIEM (SSO_ISSUER e SSO_REDIRECT_URIS)', () => {
       const issuer = 'https://admin.example.com';
       const callback = 'https://api-equipe.example.com/v1/auth/sso/callback';

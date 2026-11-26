@@ -6565,6 +6565,76 @@ log-source-labels.ts`, `lib/api-types.ts` e `log-sources.test.tsx`; `apps/contro
   encontrado ao gravar o resultado (nada é recriado). Na conta do console recriada por uma revisão maior, a credencial
   só volta se o console ainda tiver o envelope (o consumido precisa ser reenviado).
 
+## Cloudflare por OAuth: base (CF-1 e CF-2, 23/11/2026)
+
+- **O que mudou:** só a base da conexão do Cloudflare por OAuth, sem rota, tela ou coletor: nada muda no
+  comportamento, e nenhum nó anuncia a capacidade nova.
+  - **CF-1:** `packages/shared/src/cloudflare-oauth.ts` (tentativa, conclusão, escolha de contas, conexão, zonas, modo
+    de conexão e escopos por lista do que pode: só `<recurso>.read` e o da renovação); a capacidade `cloudflare_oauth`
+    aceita e a seção opcional `cloudflareOauth` em `node-sync.ts`; `packages/vault-envelope/src/cloudflare-oauth.ts`
+    (rótulo `verax-cfoauth:v1`, um por uso). Decisões: OAuth só no servidor gerenciado e com a configuração ligada; com
+    ele ligado, token colado novo é recusado e os existentes seguem; na VM do cliente, só o token.
+  - **CF-2:** migration `20261125120000_cloudflare_oauth` (só acrescenta: `CloudflareConnectAttempt`,
+    `CloudflareGrant`, `CloudflareZone` e `CloudAccount.cloudflareGrantId`), escopo do cliente (a zona, só leitura), a
+    recifragem das concessões na tarefa `credential-rekey` (`lockGrant`) e a tarefa `cloudflare-oauth-purge`, de hora
+    em hora.
+- **Fora do contrato de propósito:** nenhum valor novo em `CloudCredentialKind` nem campo em `cloudAccountSchema` (os
+  dois são estritos do outro lado); `oauth_reconnect_required` entra em `CLOUDFLARE_BLOCKING_ERRORS` com o coletor e a
+  explicação no painel.
+- **Dependências:** nenhuma.
+- **Riscos:** os escopos, a renovação sem segredo e a leitura da auditoria e do GraphQL por OAuth dependem de um app
+  registrado no Cloudflare e não foram conferidos. O plano de controle grava as capacidades de cada nó num schema
+  estrito: voltar a versão dele depois de um nó anunciar `cloudflare_oauth` recusaria a leitura.
+
+## Cloudflare por OAuth: coletor (CF-3, 23/11/2026)
+
+- **O que mudou:** o coletor do Cloudflare lê a credencial por uma origem só (`apps/api/src/cloudflare/cloudflare-credentials.ts`):
+  o token colado ou a concessão por OAuth. Nenhuma conta tem concessão ainda (a conexão é do CF-4).
+  - **Renovação** (`oauth/cloudflare-grants.ts` e `oauth/oauth-tokens.ts`): intenção gravada sob `lockGrant`, pedido fora de
+    transação, sem repetir e sem o sinal da parada, e gravação condicional pela geração, tentada de novo e guardada na
+    memória se o banco não volta. O acesso novo só é usado depois de gravado. O 401 da API vale uma renovação e um novo envio.
+  - **Limites da concessão:** o 429 adia todas as contas dela, e o orçamento do GraphQL é dividido entre elas, com o gasto
+    das outras contando no total.
+  - **Códigos:** `oauth_reconnect_required` (para a coleta, em `CLOUDFLARE_BLOCKING_ERRORS`), `oauth_client_rejected`,
+    `oauth_refresh_unavailable` e `oauth_unreadable`, com explicação no painel. `connectionError` é texto livre no contrato:
+    painel, console e plano de controle anteriores mostram só o código.
+- **Conta com token colado:** comparada lado a lado com o coletor anterior em 28 cenários (pedidos HTTP, consultas,
+  cursores, conexão, credencial, achados, fila sem dono, uso e relatório), sem diferença; os testes dela não mudaram.
+- **Dependências:** nenhuma.
+- **Riscos:** só um app registrado confirma a renovação sem segredo, a troca do token a cada uso e o 401. Uma queda entre a
+  resposta do Cloudflare e a gravação pede a reconexão. O CF-4, ao reconectar na mesma concessão, precisa aumentar a
+  `generation`, para uma renovação atrasada não gravar por cima.
+
+## Cloudflare por OAuth: conexão no nó (CF-4, 23/11/2026) ⚠️ autenticação/sessão
+
+- **O que mudou:** o "Conectar com Cloudflare" do lado do nó, ainda sem tela e desligado: sem a configuração que o plano de
+  controle manda (CF-5), as rotas respondem 404 e tudo segue como hoje.
+  - **API** (`cloud-accounts/cloudflare-oauth.controller.ts`, `cloudflare/oauth/cloudflare-connect.service.ts`): opções,
+    início, retorno, acompanhamento e escolha das contas, com a permissão do token colado. O retorno só vale para o mesmo
+    cliente, usuário e sessão, uma vez, no prazo e com o emissor exato; a recusa é sempre a mesma, e o motivo vai só à
+    trilha. Até 10 tentativas por hora por usuário e 30 por cliente. A API só cifra: nenhum token passa por ela.
+  - **Worker** (`cloudflare/oauth/connect-job.ts`, tarefa `cloudflare-oauth`): a troca do código, as provas (leitura da
+    auditoria), a descoberta das contas, a ligação (`link-accounts.ts`, tudo ou nada) e a revogação no Cloudflare, com
+    desistência depois de 24 h. Todo token emitido fica com dono: o recusado (escopo, sem renovação, tentativa vencida)
+    nasce numa concessão que só espera a revogação, também na renovação que amplia escopos.
+  - **Quem já usa token:** o token só sai do cofre depois da prova da mesma conta, na transação que a liga; cursores, zonas,
+    achados e incidentes não são tocados. Com o OAuth ligado, token novo é recusado no painel (409
+    `CLOUDFLARE_OAUTH_ONLY`) e no console (`credential_kind_not_allowed`). Conta conectada por OAuth não é trocada pelo
+    token do console (`origin_conflict`).
+  - **Desativar, excluir e a lápide do console** soltam a conta da concessão; a última conta manda revogar.
+  - **Sincronização:** o nó gerenciado de cliente, com o cofre e o coletor, anuncia `cloudflare_oauth`. Plano de controle
+    anterior (400): refaz na hora sem ela e fica 1 h sem anunciar. Seção ausente mantém a última configuração; `null`
+    desliga novas conexões; retorno de outro endereço desliga.
+- **Migration:** `20261126120000_cloudflare_oauth_connect` (só colunas novas em `ControlPlaneSync` e
+  `CloudflareConnectAttempt`).
+- **Fora:** VM do cliente, célula e `PLAN=interno`. Reconectar cria sempre outra concessão, e só as contas provadas passam
+  para ela; a antiga, sem contas, é revogada.
+- **Dependências:** nenhuma.
+- **Teste manual:** só com um app registrado no Cloudflare (homologação do CF-9).
+- **Riscos:** nada foi exercitado contra o Cloudflare. Se revogar a autorização antiga derrubar a nova do mesmo usuário, a
+  reconexão pede outra. Uma queda entre a resposta da troca e a gravação deixa o token emitido sem dono até vencer; a nova
+  tentativa do mesmo código costuma derrubá-lo (RFC 6749), o que só o app confirma.
+
 ## Detecções: a lista ao lado do radar no computador (pedido do responsável de 23/11/2026)
 
 - **O que muda:** da largura de 80rem (1280 px) para cima, a lista de alertas e incidentes fica ao lado do radar, sem aba própria; as análises ficam embaixo, a começar pelo Resumo. O detalhe abre no lugar do radar e devolve o radar ao fechar. Com o resumo recolhido, a lista usa a largura toda, com o detalhe ao lado, como antes. Abaixo de 80rem, nada muda.
@@ -6573,6 +6643,14 @@ log-source-labels.ts`, `lib/api-types.ts` e `log-sources.test.tsx`; `apps/contro
 - **Corrigido junto:** os textos só para leitor de tela saíam da área que rola e alargavam a página.
 - **Dependências novas:** nenhuma. Sem mudança na API.
 - **Testes:** web 742 (6 novos); navegador nas telas tocadas, com acessibilidade nos dois temas.
+
+## Cloudflare por OAuth: saúde por zona (CF-7, 24/11/2026)
+
+- **Arquivos novos:** `apps/api/src/cloudflare/{zone-health,cloudflare-streams}.ts`, `apps/api/src/cloud-accounts/cloudflare-account.{controller,service}.ts`, `apps/api/test/cloudflare-zone-health.test.ts`. **Alterados:** `cloudflare-security-sync.ts` e `cloudflare-audit-sync.ts` (só anotações em memória e a gravação à parte), `cloudflare.client.ts` (o plano da zona, informativo), `worker.ts` (o logger), o contrato das zonas em `packages/shared`, o Cloudflare falso.
+- **O que faz:** o worker grava em `CloudflareZone` a situação de cada zona, para conta por OAuth e por token colado, do que o coletor já lê: nenhuma consulta a mais. A gravação roda fora da coleta, num comando só com as linhas que mudaram, limitada no banco; a falha vai só ao log, por código. Zona que some fica com a data; além das 50 lidas, `over_limit`.
+- **Rotas (leitura):** `GET /v1/cloud-accounts/:id/cloudflare-connection` e `/cloudflare-zones`, com `cloud_accounts:read`, em todo nó. "Monitorar todas" e "só as marcadas" usam o `PATCH` da conta (`zones`), sem rota nova. A auditoria, que é da conta, tem a própria linha.
+- **Dependências novas:** nenhuma. Sem migration.
+- **Limite conhecido:** a lista de zonas é lida até 1.000 por conta; além disso, as zonas a mais não aparecem e nenhuma é dada como sumida.
 
 ## Fila honesta e MITRE ATT&CK das fontes da AWS (pedido do responsável de 24/11/2026)
 
@@ -7695,6 +7773,78 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
   um**, com a estimativa de volume; todo balanceador começa só observando, por 72 horas. `false` desliga; a célula continua sem.
 - A versão 1.4.0 já saiu com os contratos. Depois de existir achado `alb`, não se volta para antes dela.
 
+## Cloudflare por OAuth: painel e documentação (CF-8 e CF-9, 25/11/2026)
+
+- **O que mudou (CF-8, painel):** o "Conectar com Cloudflare" na tela. Só aparece com `GET /v1/cloudflare-oauth/options`
+  respondendo `oauth`; no nó sem OAuth ou anterior (404), Contas cloud fica exatamente como antes.
+  - **Botão** ao lado de "Cadastrar conta" (permissão `cloud_credentials:write`): começa a tentativa e navega só para a
+    URL de autorização do Cloudflare (conferida pelo contrato também no painel).
+  - **Retorno** `/conexao-cloudflare` (`CLOUDFLARE_OAUTH_PANEL_PATH`, o mesmo que o plano de controle usa no repasse),
+    fora do `RequireSession`: lê o fragmento uma vez, apaga da barra de endereço antes de chamar a API, aceita só os
+    campos exatos (o `iss` junto do erro é descartado), conclui, troca o endereço por `?tentativa=<id>` e acompanha.
+    Sem sessão, o retorno é descartado. Código, `state` e tokens não vão para armazenamento, log nem cache de mutações.
+  - **Estados:** conferindo, escolha das contas (nome e ID como texto, ambiente do Verax, conta sem permissão desligada,
+    ID digitado quando o Cloudflare não lista), pronta (lembrete de apagar o token antigo), falha (texto fixo por código)
+    e vencida, com "Começar de novo"; a mensagem de cada estado recebe o foco.
+  - **Detalhe da conta:** a conexão por OAuth (situação, renovação, escopos, contas na mesma autorização, "Conectar de
+    novo"), a **migração** da conta com token colado ("Migrar para Conectar com Cloudflare") e o que é desconectar
+    (desativar ou excluir, que soltam a concessão). A **saúde das zonas** (auditoria, todas ou lista, zonas além do limite
+    nomeadas, situação de cada zona, "Monitorar todas as zonas"); no nó sem OAuth, só aparece com os dados já lidos.
+  - **Demonstração:** `mocks/cloudflare-oauth.ts`, desligada por padrão (`verax.mock.cloudflare-oauth`: `one`, `multi`,
+    `manual` ou `legacy`).
+- **O que mudou (CF-9, documentação):** `docs/ARQUITETURA.md` (seção "Conectar com Cloudflare (OAuth, CF-1 a CF-9)") e
+  `docs/runbooks/cloudflare-oauth.md` (registro do app e 22 conferências de homologação, HC-01 a HC-22, sem ID ou segredo
+  real).
+- **Arquivos:** novos `apps/web/src/features/cloudflare/{cloudflare-oauth-api.ts,connect-button.tsx,
+cloudflare-oauth-steps.tsx,zone-health.tsx,labels.ts,oauth-return.ts,oauth-return.test.ts}`,
+  `apps/web/src/pages/cloudflare-return-page{.tsx,.test.tsx}`, `apps/web/src/mocks/cloudflare-oauth.ts`,
+  `apps/web/e2e/cloudflare-oauth.mock.spec.ts`, `docs/runbooks/cloudflare-oauth.md`; alterados
+  `apps/web/src/pages/admin/cloud-accounts-page.tsx`, `apps/web/src/routes/router.tsx`, `apps/web/src/mocks/handlers.ts`,
+  `docs/ARQUITETURA.md`. **Sem mudança na API** (o CF-4 e o CF-7 já dão tudo o que a tela usa), sem migration, sem
+  `infra/`, `.github/`, `auth` ou `.claude/`.
+- **Dependências:** nenhuma.
+- **Testes:** painel (vitest), 86 arquivos e 1277 testes (21 novos: leitura do fragmento e a página de retorno, com a
+  URL limpa antes da chamada, uma chamada só, sem sessão nada enviado, recusa única, nomes como texto, reconexão e o nó
+  sem OAuth). Navegador (projeto `mock`, portas 5381/5382), 11 de 11: retorno com sucesso, recusa, vencido no retorno e na
+  escolha, `state` de outra tentativa, emissor errado, repetição do mesmo fragmento, fragmento alterado sem chamada à
+  API, escolha pelo teclado, ID digitado, migração e nó anterior; acessibilidade (WCAG 2.2 AA) nos dois temas em 360, 768
+  e 1280 px. Junto, os e2e que abrem Contas cloud (`cloud-account-delete`, `pages`, `aws-buckets`, `aws-onboarding`,
+  `web-attacks`): 112 de 112 com os novos. `pnpm lint` (sem aviso) e `pnpm typecheck` (todos os pacotes), limpos. API não
+  mudou: nenhuma suíte dela rodou, e nenhum PostgreSQL foi criado.
+- **Teste manual:** `pnpm --filter @verax/web dev:mock` com `localStorage['verax.mock.cloudflare-oauth'] = 'multi'`, como
+  administrador do cliente: Contas cloud, "Conectar com Cloudflare" (sem o Cloudflare de mentira, o navegador vai ao
+  Cloudflare de verdade e para lá), e o detalhe da conta do Cloudflare da Alfa (migração e zonas).
+- **O que continua sem conferência (não existe app registrado no Cloudflare):** nada do fluxo foi exercitado contra o
+  Cloudflare. Pontos do desenho em aberto, cada um com a conferência do runbook:
+  1. nomes dos escopos e se cobrem auditoria v2, zonas e `firewallEventsAdaptiveGroups`; escopo só de `Audit Logs Read`
+     (HC-01);
+  2. Bearer OAuth aceito no REST e no GraphQL; formato e tamanho dos tokens (HC-03);
+  3. renovação com o método `none`; rotação; reuso; prazo do refresh; `expires_in` (HC-04, HC-05);
+  4. `/accounts` e `/zones` limitados às contas escolhidas no consentimento (HC-07);
+  5. `iss` sempre presente (com código e com erro), `response_mode=form_post`, validade do código, `error` possíveis
+     (HC-06); o painel aceita o `iss` ausente só no erro e recusa o código sem ele;
+  6. reconsentimento: cria, troca ou invalida a concessão anterior; a revogação afeta as outras do mesmo usuário (HC-13,
+     HC-14);
+  7. limite de requisições por token ou por usuário (HC-16);
+  8. a perda do filtro de IP do token (HC-17);
+  9. o que a autorização gera na auditoria do cliente (regra 990311) e o que ocorre quando quem autorizou sai da conta
+     (HC-18);
+  10. "Public OAuth App access" desligado pelo administrador do cliente: qual erro chega (HC-19);
+  11. o nome do menu e os campos de registro do app no painel do Cloudflare (seção 2 do runbook), e se o app sem segredo
+      recebe a renovação;
+  12. o retorno pelo navegador real, com o repasse do plano de controle (o e2e usa um Cloudflare de mentira que devolve o
+      fragmento direto ao painel).
+- **`infra/` (revisão linha a linha):** `google_logging_project_exclusion.cloudflare_callback` tira do Cloud Logging só o log de
+  requisição de `/v1/public/cloudflare/callback` (a URL traz o `code`). O registro de acesso continua no log do serviço, sem a query.
+  `terraform test`: 69 de 69. Ainda não aplicada; o runbook manda conferir antes do primeiro clique.
+- **Riscos e dúvidas:**
+  - Sem sessão, o cliente HTTP leva ao login (como em todo o painel), e a página não chega a dizer "comece de novo": o
+    retorno é descartado e a pessoa recomeça pela tela de contas.
+  - A tela de "pronta" não sabe se a tentativa era uma migração (o contrato não diz): o lembrete de apagar o token aparece
+    sempre, como condicional.
+  - A escolha de contas não mostra o nome das contas depois de ligadas (a tentativa só devolve os IDs internos): os links
+    levam ao detalhe, que mostra o ID do Cloudflare.
+
 ## Cobertura de detecção, UC-1: contratos, catálogo inicial e validação (25/11/2026)
 
 - **O que foi feito:** os contratos da Cobertura de detecção em `packages/shared` (schemas zod estritos do cenário e da
@@ -7768,3 +7918,37 @@ prioridade nem na prévia da triagem em massa, porque as amostras não guardavam
 - **Riscos:** o filtro "Tipo" depende dos casos (o alerta ainda sem caso não aparece com o tipo escolhido; a tela diz
   isso); quem filtrava muito no celular ganha um toque ("Filtros"); "Anexar" e "Marcar como resolvido" ficam a um clique
   ("Mais opções").
+
+## Auditoria de UX: contas, exceções e cadastros (E-08, E-04, E-10, E-05, E-09, E-13, E-12, E-11) (26/11/2026)
+
+- **O que mudou:** as propostas aprovadas da auditoria de UX de 25/11/2026 nas telas de contas, exceções e cadastros
+  (detalhe em `docs/ARQUITETURA.md`, "Contas, exceções e cadastros depois da auditoria de UX"). E-08: o motivo do erro
+  na lista de Contas cloud e "N fontes precisam de atenção" na conta AWS conectada. E-04: o detalhe da conta AWS
+  conectada abre numa visão geral, com o resto em abas, e o que é igual para um tipo de fonte é dito uma vez. E-10: "O
+  que você autoriza" em linhas com rótulo. E-05: as tabelas de cadastro viram cartões abaixo de 768 px. E-09: o título
+  da regra em Exceções. E-13: uma tela por arquivo e as bibliotecas à parte. E-12 (primeira parte): selo, aviso e
+  etiqueta em `components/ui/status.tsx`, usados em Contas cloud e Exceções. E-11 (nestas telas): 44 px no celular.
+- **API e contratos (compatíveis nos dois sentidos):** duas rotas novas, só de leitura e no escopo da sessão:
+  `GET /v1/cloud-accounts/source-attention` e `GET /v1/alert-exceptions/rule-titles?ruleIds=`. Os contratos estritos da
+  conta e da exceção não ganharam campo (um painel de antes perderia a tela); num nó de antes, as rotas novas dão 404 e
+  o painel mostra o que mostrava. Sem migration.
+- **E-10, as frases do consentimento:** só a forma mudou. "Permite ler …" virou o rótulo "Lê" seguido de "os logs …",
+  "os achados …" e "só os grupos …"; na descoberta, o "Não lê" do começo da segunda frase virou o rótulo. As demais frases
+  foram só agrupadas sob um rótulo, sem mudar nenhuma palavra (o teste remonta o texto de antes e compara). Pede a revisão
+  de quem cuida do DPA e da política de privacidade.
+- **Primeira carga (E-13):** antes, um arquivo de 1.331,6 kB (400,3 kB gzip); depois, o login baixa 718,2 kB (226,0 kB
+  gzip), e Detecções e Contas cloud só quando abertas (250,8 e 180,2 kB). Os links do e-mail de escalonamento ficaram no
+  arquivo principal (leem o token do endereço e o apagam: nenhuma recarga pode perdê-lo). A CSP não muda; o build e o build da
+  demonstração passam pela varredura de segredos.
+- **Dependências novas:** nenhuma.
+- **Testes:** lint (max-warnings 0), formato e tipos sem erros. Contrato: 39 arquivos, 669 testes. API (Postgres
+  próprio, descartado no fim): `cloud-accounts` e `alert-exceptions`, 81 testes (4 novos, com o isolamento por cliente).
+  Painel: a suíte inteira (ver a resposta da tarefa para os números e os testes instáveis sob carga) e os testes de
+  navegador das telas tocadas (onboarding da AWS, buckets, exclusão, ataques web, páginas, exceções de caso, plano,
+  escalonamento, admin master).
+- **Teste manual:** abrir a conta AWS conectada no celular e no computador, nos dois temas; seguir "Ver na tabela" e
+  "Ver a conferência"; conectar uma conta nova até autorizar as primeiras fontes (a passagem para as abas); revisar as
+  linhas de "O que você autoriza".
+- **O que ficou de fora:** E-12 nas outras áreas (Detecções, casos, layout) e E-11 fora destas telas (botões do
+  cabeçalho, filtros e paginação das listas de Detecções). "Como liberar a leitura deste grupo" continua por grupo de
+  logs, porque o comando de cada um é diferente.

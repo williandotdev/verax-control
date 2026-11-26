@@ -109,6 +109,28 @@ describe('fontes de log', () => {
     ).toBeInTheDocument();
   });
 
+  it('Cloudflare por OAuth: o cadastro não pede token e a fonte sem credencial diz que o cliente conecta', async () => {
+    const state = stateAt();
+    state.logSources.cloudflareOauth = true;
+    const sync = state.logSources.tenants.get(ACTIVE_ID);
+    if (sync === undefined) throw new Error('cliente de exemplo ausente');
+    sync.sources.set(
+      '00000000-0000-4000-8000-0000000000cf',
+      source({ provider: 'cloudflare', accountId: 'd'.repeat(32) }),
+    );
+    const { user } = renderConsole(`/clientes/${ACTIVE_ID}`, state);
+    const region = await logSources();
+    const detail = await openSource(user, region, `Cloudflare ${'d'.repeat(32)}`);
+    expect(within(detail).getByText('Sem token: o cliente conecta no painel dele')).toBeInTheDocument();
+    expect(within(detail).queryByRole('button', { name: 'Enviar chave…' })).not.toBeInTheDocument();
+
+    await user.click(within(region).getByRole('button', { name: 'Cadastrar fonte…' }));
+    const form = within(region).getByRole('form', { name: 'Cadastrar fonte de log' });
+    await user.selectOptions(within(form).getByLabelText('Provedor'), 'cloudflare');
+    expect(within(form).queryByLabelText('Token de API do Cloudflare')).not.toBeInTheDocument();
+    expect(within(form).getByRole('note')).toHaveTextContent('não há token a colar');
+  });
+
   it('nunca sincronizou (infraestrutura da Verax): o caminho é promover a versão', async () => {
     renderConsole(`/clientes/${NEVER_ID}`, stateAt());
     const region = await logSources();
@@ -786,6 +808,7 @@ describe('fontes de log', () => {
       'vault_key_invalid',
       'gcp_unsupported_managed',
       'credential_kind_not_allowed',
+      'cloudflare_oauth_only',
       'credential_provider_mismatch',
       'confirmation_mismatch',
       'rate_limited',

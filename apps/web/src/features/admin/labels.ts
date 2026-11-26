@@ -81,7 +81,7 @@ export function connectionHint(
 /**
  * O que o código do erro de coleta do Cloudflare quer dizer, quando há uma explicação para quem administra a conta
  * (fase 2, PR-12 e PR-13). Os demais códigos aparecem só como tipo do erro. Os que param a coleta
- * (`isCloudflareBlockingError`) pedem outro token.
+ * (`isCloudflareBlockingError`) pedem outro token ou, na conta conectada por OAuth, conectar de novo.
  */
 const CLOUDFLARE_CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
   credential_rejected: 'O Cloudflare recusou o token (inválido ou revogado).',
@@ -90,6 +90,13 @@ const CLOUDFLARE_CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
   credential_expired: 'O token venceu.',
   credential_disabled: 'O token foi desativado no Cloudflare.',
   credential_unreadable: 'O nó não conseguiu abrir o token guardado. Cole o token de novo.',
+  oauth_reconnect_required:
+    'A autorização no Cloudflare foi revogada ou venceu, e o Verax não consegue renovar o token de acesso dela.',
+  oauth_client_rejected:
+    'O Cloudflare recusou o aplicativo da Verax ao renovar o acesso. É com a Verax: a coleta tenta de novo a cada hora.',
+  oauth_refresh_unavailable:
+    'O Cloudflare não renovou o acesso agora; a coleta tenta de novo em alguns minutos.',
+  oauth_unreadable: 'O nó não conseguiu abrir a autorização guardada. Fale com a Verax.',
   rate_limited:
     'O Cloudflare limitou as requisições deste token; a coleta volta depois da espera pedida por ele.',
   timeout: 'O Cloudflare não respondeu a tempo; a coleta tenta de novo em instantes.',
@@ -161,6 +168,28 @@ const GCP_CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
 /** O que fazer diante do erro da leitura de um projeto da GCP; null para um código sem explicação. */
 export function gcpConnectionErrorHint(code: string): string | null {
   return Object.hasOwn(GCP_CONNECTION_ERROR_HINTS, code) ? (GCP_CONNECTION_ERROR_HINTS[code] ?? null) : null;
+}
+
+/**
+ * A explicação curta da conexão na própria lista de Contas cloud (E-08), abaixo de "Erro" ou "Aguardando": a mesma que
+ * o detalhe da conta mostra ao lado de "Conexão". No Cloudflare e na GCP, o erro com explicação própria diz o motivo
+ * ("O token venceu."); sem ela, o texto geral do provedor. Conectada, nada: o selo basta.
+ */
+export function connectionListHint(
+  account: Pick<
+    CloudAccount,
+    'provider' | 'connection' | 'connectionError' | 'checkRequestedAt' | 'ingestFrom'
+  >,
+): string | null {
+  if (account.connection === 'connected') return null;
+  const code = account.connection === 'error' ? account.connectionError : null;
+  if (code !== null && account.provider === 'cloudflare') {
+    return cloudflareConnectionErrorHint(code) ?? connectionHint(account);
+  }
+  if (code !== null && account.provider === 'gcp') {
+    return gcpConnectionErrorHint(code) ?? connectionHint(account);
+  }
+  return connectionHint(account);
 }
 
 /**

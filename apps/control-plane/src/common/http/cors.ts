@@ -6,13 +6,15 @@ export const CREDENTIALED_PATH = '/v1/public/status';
 /**
  * Rotas chamadas de servidor para servidor, nunca por um navegador: sem CORS nenhum, nem para a origem do site (plano
  * §2.3, webhook da Stripe "sem CORS"; o registro da VM do cliente, `enrollment/`; a sincronização do nó, `node-sync/`). Repetido de `webhook/raw-body.ts`
- * para este arquivo não depender do webhook.
+ * para este arquivo não depender do webhook. O retorno do Cloudflare (`cloudflare-oauth/`) também fica sem: o navegador
+ * chega nele por navegação, e nenhuma página tem o que ler dali.
  */
 export const NO_CORS_PATHS: ReadonlySet<string> = new Set([
   '/v1/stripe/webhook',
   '/v1/node-enrollment/claim',
   '/v1/node-enrollment/report',
   '/v1/node-sync',
+  '/v1/public/cloudflare/callback',
 ]);
 
 /** O subconjunto das opções do pacote `cors` que o serviço usa. */

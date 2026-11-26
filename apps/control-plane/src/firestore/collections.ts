@@ -94,7 +94,8 @@ export const COLLECTIONS = {
    * Sincronização do nó dedicado com o plano de controle (`node-sync/`; docs/ARQUITETURA.md, "Sincronização com o plano
    * de controle"), tudo sob o cliente e apagado pelo passo `deletion.node_sync`:
    * - `nodeSync/state` (o que o nó disse de si na última chamada, gravado pelo cp-worker) e `nodeSync/desired` (a
-   *   geração do estado desejado, gravada pelo console);
+   *   geração do estado desejado, gravada pelo console); `nodeSync/cloudflareOauth`, só do nó que anuncia a conexão do
+   *   Cloudflare por OAuth (gravado pelo cp-worker com o estado);
    * - `logSources/{id}` e `nodeUsers/{id}`: o que o responsável cadastrou no console (o id da fonte é um UUID; o do
    *   pedido de usuário, um ULID);
    * - `logSourceSecrets/{id}` e `nodeUserSecrets/{id}`: o envelope cifrado para o cofre do nó, apagado pelo cp-worker

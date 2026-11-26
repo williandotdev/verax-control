@@ -61,7 +61,9 @@ const veraxIn = (tenantId: string | undefined) =>
 /** A página carregada: a moldura com o título, já sem o "Carregando". */
 async function page() {
   const heading = await screen.findByRole('heading', { level: 1, name: 'Plano e uso' });
-  await screen.findByRole('heading', { name: /^Plano / });
+  // O cartão do plano (o título da tela também começa com "Plano"): com a tela carregada por import() (E-13), o
+  // título chega antes dos dados.
+  await screen.findByRole('region', { name: /^Plano (?!e uso)/ });
   return heading.closest('section') as HTMLElement;
 }
 

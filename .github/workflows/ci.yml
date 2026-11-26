@@ -189,7 +189,8 @@ jobs:
   e2e:
     name: Testes de navegador
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 301 testes em 2 workers já levavam ~29 min; 45 dá folga até dividir o job em dois (mock e real).
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5

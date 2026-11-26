@@ -6,6 +6,7 @@ import {
   type CloudCredentialInput,
   CREDENTIAL_KIND_PROVIDERS,
   type CloudProvider,
+  CLOUDFLARE_OAUTH_ONLY_CODE,
   credentialKindAllowed,
   type NodePlatform,
 } from '@verax/shared';
@@ -13,6 +14,8 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AwsAccessKeyCheck } from '../aws/aws-key-check.js';
 import { CloudAccountsService, RESET_CONNECTION } from '../cloud-accounts/cloud-accounts.service.js';
 import { CloudflareTokenCheck } from '../cloudflare/cloudflare-token-check.js';
+import { detachAccount } from '../cloudflare/oauth/grant-store.js';
+import { CloudflareOauthSettings } from '../cloudflare/oauth/oauth-settings.js';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
@@ -167,14 +170,16 @@ interface KindHandler {
  * `DELETE /v1/cloud-accounts/:id/credential`, na transação do `AuditInterceptor`.
  *
  * No `PUT`, nesta ordem:
- * 1. o tipo precisa valer na plataforma do nó (400, sem tocar em nada) e o cofre precisa estar ligado no nó (a API tem
- *    a chave pública);
+ * 1. o tipo precisa valer na plataforma do nó (400, sem tocar em nada), o Cloudflare não pode ser conectado por OAuth neste
+ *    nó (409 `CLOUDFLARE_OAUTH_ONLY`: token novo não entra, e quem já usa token segue coletando) e o cofre precisa estar
+ *    ligado (a API tem a chave pública);
  * 2. lock das tentativas do cliente da sessão (uma conferência por vez; esperando demais, 429), lock da conta (o
  *    mesmo da recifragem do worker) e a conta pelo escopo do cliente: de outro cliente, 404 sem chamar a origem; de
  *    outro provedor ou inativa, 400;
  * 3. limite de tentativas recusadas (429);
  * 4. a conferência na origem, na memória da API (recusa: 400, gravada na trilha no mesmo commit; origem fora: 503);
- * 5. cifra com a chave pública (a API não decifra), grava a linha e volta a conexão para "aguardando";
+ * 5. cifra com a chave pública (a API não decifra), grava a linha e volta a conexão para "aguardando"; a conta que era
+ *    lida por OAuth (com o OAuth desligado depois) solta a concessão: vale a credencial colada por último;
  * 6. auditoria `cloud_credential.set` ou `.rotate`, só com tipo, `keyIdSuffix` e validade.
  *
  * O texto claro nunca vai para o banco, o log, a auditoria nem a resposta, e o logger o esquece no fim
@@ -193,6 +198,7 @@ export class CredentialIntakeService {
     cloudflare: CloudflareTokenCheck,
     awsKeys: AwsAccessKeyCheck,
     gcpKeys: GcpServiceAccountKeyCheck,
+    private readonly cloudflareOauth: CloudflareOauthSettings,
     @Inject(APP_CONFIG) config: Pick<AppConfig, 'credentialsPublicKey' | 'NODE_PLATFORM'>,
     @InjectPinoLogger(CredentialIntakeService.name) private readonly logger: PinoLogger,
   ) {
@@ -243,6 +249,13 @@ export class CredentialIntakeService {
         HttpStatus.BAD_REQUEST,
         'Este nó lê esta nuvem sem chave: siga as instruções de conexão da conta.',
         'CREDENTIAL_KIND_NOT_ALLOWED',
+      );
+    }
+    if (input.kind === 'cloudflare_api_token' && (await this.cloudflareOauth.current()) !== null) {
+      throw new ApiError(
+        HttpStatus.CONFLICT,
+        'Neste ambiente, a conta do Cloudflare é conectada pelo botão Conectar com Cloudflare, sem token.',
+        CLOUDFLARE_OAUTH_ONLY_CODE,
       );
     }
     const publicKey = this.publicKey;
@@ -324,6 +337,14 @@ export class CredentialIntakeService {
         update: data,
         select: SUMMARY_SELECT,
       });
+      const detached = await detachAccount(this.prisma.db(), account, new Date());
+      if (detached !== null && detached.released) {
+        this.audit.also({
+          action: 'cloudflare_grant.release',
+          resourceType: 'cloudflare_grant',
+          resourceId: detached.grantId,
+        });
+      }
       // Credencial nova é leitura nova: a conexão espera a próxima coleta confirmar.
       await db.cloudAccount.update({ where: { id }, data: RESET_CONNECTION, select: { id: true } });
       this.audit.describe({ action, before: current ? summary(current) : null, after: summary(saved) });

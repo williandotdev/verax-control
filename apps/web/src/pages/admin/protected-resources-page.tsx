@@ -52,6 +52,7 @@ export function ProtectedResourcesPage() {
     { key: 'tipo', header: 'Tipo', cell: (row) => PROTECTED_TYPE_LABELS[row.type] },
     {
       key: 'item',
+      card: 'title',
       header: 'Item',
       cell: (row) => (
         <button

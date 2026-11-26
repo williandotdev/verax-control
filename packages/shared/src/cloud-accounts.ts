@@ -27,12 +27,16 @@ export const CONSOLE_MANAGED_CODE = 'CONSOLE_MANAGED';
  * (inválido ou revogado), o token não lê a auditoria desta conta (permissão ou filtro de IP), venceu ou foi desativado.
  * O worker não chama mais o Cloudflare com aquele token; a coleta volta quando um admin cola outro token (ou o mesmo,
  * depois de corrigido no Cloudflare), o que recomeça a conexão.
+ *
+ * `oauth_reconnect_required` é o da conta conectada por OAuth (`CLOUDFLARE_OAUTH_RECONNECT_ERROR`): a autorização acabou,
+ * e só o cliente conectando de novo a recomeça. Um painel ou um plano de controle anteriores mostram só o código.
  */
 export const CLOUDFLARE_BLOCKING_ERRORS = [
   'credential_rejected',
   'credential_forbidden',
   'credential_expired',
   'credential_disabled',
+  'oauth_reconnect_required',
 ] as const;
 export type CloudflareBlockingError = (typeof CLOUDFLARE_BLOCKING_ERRORS)[number];
 

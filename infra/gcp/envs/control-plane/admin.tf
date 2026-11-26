@@ -51,6 +51,10 @@ locals {
     # (secrets.tf), lida pela API. Sem a chave do site, as duas ficam vazias (não vão), e o login segue sem o desafio.
     ADMIN_TURNSTILE_SITE_KEY = var.admin_turnstile_site_key
     ADMIN_CONSOLE_HOSTNAME   = var.admin_turnstile_site_key != "" ? var.admin_hosting_domain : ""
+    # Conectar com Cloudflare por OAuth (run.tf): sem elas, o console seguiria aceitando token colado.
+    CLOUDFLARE_OAUTH_CLIENT_ID    = local.cloudflare_oauth_env.CLOUDFLARE_OAUTH_CLIENT_ID
+    CLOUDFLARE_OAUTH_SCOPES       = local.cloudflare_oauth_env.CLOUDFLARE_OAUTH_SCOPES
+    CLOUDFLARE_OAUTH_TENANT_SLUGS = local.cloudflare_oauth_env.CLOUDFLARE_OAUTH_TENANT_SLUGS
   }
 }
 

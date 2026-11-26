@@ -515,6 +515,44 @@ export const awsSourceSchema = z.strictObject({
 export type AwsSource = z.infer<typeof awsSourceSchema>;
 
 /**
+ * Os estados de uma fonte autorizada que pedem alguém (E-08 e E-04 da auditoria de UX): parada, sem permissão, com erro
+ * de leitura ou que sumiu da conta. São os mesmos em que "Tentar de novo" pode destravá-la.
+ */
+export const AWS_SOURCE_ATTENTION_STATES = [
+  'stalled',
+  'permission_error',
+  'ingestion_error',
+  'source_missing',
+] as const satisfies readonly AwsSourceState[];
+
+/** A fonte tem a autorização valendo e está num estado que pede alguém? */
+export function needsAwsSourceAttention(source: Pick<AwsSource, 'state' | 'authorization'>): boolean {
+  return (
+    source.authorization.authorizedAt !== null &&
+    source.authorization.revokedAt === null &&
+    (AWS_SOURCE_ATTENTION_STATES as readonly string[]).includes(source.state)
+  );
+}
+
+/**
+ * `GET /v1/cloud-accounts/source-attention`: quantas fontes autorizadas de cada conta AWS pedem atenção, para a lista
+ * de Contas cloud dizer "Conectada · 7 fontes precisam de atenção" sem abrir cada conta. É uma rota à parte da lista
+ * (o contrato da conta é estrito: um painel de antes perderia a tela com um campo novo), e só as contas com alguma
+ * fonte nessa situação aparecem. Num nó de antes, 404, e a lista mostra só o selo.
+ */
+export const cloudAccountSourceAttentionSchema = z.strictObject({
+  items: z
+    .array(
+      z.strictObject({
+        cloudAccountId: z.uuid(),
+        sourcesNeedingAttention: z.number().int().min(1),
+      }),
+    )
+    .max(10_000),
+});
+export type CloudAccountSourceAttention = z.infer<typeof cloudAccountSourceAttentionSchema>;
+
+/**
  * O estado de uma fonte que não está autorizada, pelo que a descoberta viu: o tipo ainda não coletado e a fonte que não
  * dá para ler ficam `unavailable`; a que existe e o papel lê, `available`; a que existe sem a permissão, `needs_permission`.
  */

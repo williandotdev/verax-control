@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ControlPlaneNodeKey } from '../common/config/control-plane-sync.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
+import type { VaultKeyring } from '../credentials/credential-keys.js';
 import { fixedTenantPlans } from '../plan/tenant-plan.js';
 import { SOURCE_RETRY_MAX_MS, sourceRetryDelayMs } from './apply-source.js';
 import {
@@ -11,12 +12,14 @@ import {
   failureRetryDelayMs,
   vaultKeyOf,
 } from './control-plane-sync.js';
-import { controlPlaneSyncTask } from './control-plane-sync-task.js';
+import { announcesCloudflareOauth, controlPlaneSyncTask } from './control-plane-sync-task.js';
 
 const silent = { info: () => undefined, warn: () => undefined, error: () => undefined };
 const deps = { prisma: {} as PrismaService, plans: fixedTenantPlans(null), logger: silent };
 const base = {
   NODE_PLATFORM: 'gcp' as const,
+  PLAN: 'essencial' as const,
+  SYNC_SOURCES: ['gcp' as const, 'wazuh' as const, 'cloudflare' as const],
   credentialsKeyring: null,
   NODE_EGRESS_IPS: undefined,
   NODE_SA_UNIQUE_ID: '123456789012345678901',
@@ -55,6 +58,16 @@ describe('tarefa control-plane-sync no agendador do worker', () => {
       });
       expect(CONTROL_PLANE_SYNC_TICK_MS).toBeLessThan(CONTROL_PLANE_SYNC_BUDGET_MS);
     }
+  });
+
+  it('anuncia o OAuth do Cloudflare só no nó gerenciado de cliente, com o cofre e o coletor', () => {
+    const keyring = {} as VaultKeyring;
+    const managed = { ...base, credentialsKeyring: keyring };
+    expect(announcesCloudflareOauth(managed)).toBe(true);
+    expect(announcesCloudflareOauth(base)).toBe(false);
+    expect(announcesCloudflareOauth({ ...managed, NODE_PLATFORM: 'vm' })).toBe(false);
+    expect(announcesCloudflareOauth({ ...managed, PLAN: 'interno' })).toBe(false);
+    expect(announcesCloudflareOauth({ ...managed, SYNC_SOURCES: ['gcp', 'wazuh'] })).toBe(false);
   });
 
   it('esperas: 1, 2, 4... minutos, até 30', () => {

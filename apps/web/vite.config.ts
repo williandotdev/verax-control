@@ -65,22 +65,45 @@ export default defineConfig(({ mode }) => {
       ...(mode === 'mock' ? [msw()] : [mswOutsideMockMode()]),
     ],
     resolve: {
-      alias: {
-        '@': fileURLToPath(new URL('./src', import.meta.url)),
-        '@verax/shared': fileURLToPath(new URL('../../packages/shared/src/index.ts', import.meta.url)),
-      },
+      alias: [
+        // Só no Vitest: o roteador dos testes de tela carrega as telas antes (`src/test/router.ts`, E-13).
+        ...(process.env['VITEST']
+          ? [
+              {
+                find: /^@\/routes\/router$/,
+                replacement: fileURLToPath(new URL('./src/test/router.ts', import.meta.url)),
+              },
+            ]
+          : []),
+        {
+          find: '@verax/shared',
+          replacement: fileURLToPath(new URL('../../packages/shared/src/index.ts', import.meta.url)),
+        },
+        { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
+      ],
     },
     build: {
       // Sem sourcemap público: o código-fonte não fica exposto no CDN.
       sourcemap: false,
+      rolldownOptions: {
+        output: {
+          // As bibliotecas num arquivo à parte (E-13): ele só muda quando uma dependência muda, e continua no cache do
+          // navegador entre uma versão do painel e a outra. As telas vêm cada uma no seu arquivo (`routes/router.tsx`).
+          codeSplitting: { groups: [{ name: 'vendor', test: /[\\/]node_modules[\\/]/ }] },
+        },
+      },
     },
     // `msw/browser` só é importado de dentro do módulo virtual do plugin do MSW, que a varredura de dependências não
     // enxerga: sem esta linha, o Vite o descobria na primeira página aberta, otimizava de novo e recarregava a página.
     ...(mode === 'mock' && { optimizeDeps: { include: ['msw/browser'] } }),
     server: {
       // Transforma o app (a entrada e tudo o que ela importa) assim que o servidor de desenvolvimento sobe, em vez de
-      // esperar o primeiro navegador pedir: os testes de navegador abrem 6 páginas ao mesmo tempo logo no início.
-      warmup: { clientFiles: ['./src/main.tsx'] },
+      // esperar o primeiro navegador pedir: os testes de navegador abrem 6 páginas ao mesmo tempo logo no início. As
+      // telas carregadas por import() (E-13) entram também: sem isso, a primeira abertura de cada uma compilava no meio
+      // do teste.
+      warmup: {
+        clientFiles: ['./src/main.tsx', './src/pages/**/*-page.tsx'],
+      },
     },
     // No build único, o preview manda a política-modelo, com `{tenant}`: a de cada site sai na publicação, e o e2e
     // `test:e2e:sites` serve o mesmo `dist` como o Firebase Hosting, um site por cliente.
