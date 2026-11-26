@@ -8,6 +8,7 @@ import { AlertSync } from '../src/alerts/alert-sync.js';
 import { wazuhFindingKey } from '../src/alerts/finding-draft.js';
 import { parseWazuhAlert } from '../src/alerts/wazuh-alert.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
+import { Prisma } from '../src/generated/prisma/client.js';
 import { cloudTrailAlert } from './alerts/fixtures.js';
 import { createSignedInUser, createTenant } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
@@ -252,7 +253,10 @@ describe('alteração do evento no alerta', () => {
       prisma.finding.update({ where: { id: finding.id }, data: { change: huge } }),
     ).rejects.toThrow();
     await expect(
-      prisma.finding.update({ where: { id: finding.id }, data: { change: null, changeSubject: 'x' } }),
+      prisma.finding.update({
+        where: { id: finding.id },
+        data: { change: Prisma.DbNull, changeSubject: 'x' },
+      }),
     ).rejects.toThrow();
   });
 

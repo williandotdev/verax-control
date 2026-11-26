@@ -142,7 +142,17 @@ function separators(value: unknown): number {
 
 /** O tamanho do JSON como o banco o mede (`octet_length("change"::text)`), sem depender do `Buffer` do Node. */
 export function changeBytes(change: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(change)).length + separators(change);
+  return utf8Length(JSON.stringify(change)) + separators(change);
+}
+
+/** Bytes em UTF-8, por ponto de código (o pacote não tem os tipos do `TextEncoder` nem do `Buffer`). */
+function utf8Length(value: string): number {
+  let bytes = 0;
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
