@@ -14,6 +14,7 @@ import { ScoreMeter } from '@/components/security/score-meter';
 import { ScoreTrend } from '@/components/security/score-trend';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
+import { Explainer } from '@/components/ui/explainer';
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
 import { SelectField } from '@/components/ui/select-field';
 import { Sheet } from '@/components/ui/sheet';
@@ -483,11 +484,15 @@ function PostureShell({ children }: { children: ReactNode }) {
     <section className="space-y-6">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">Postura cloud</h1>
-        <p className="text-sm text-muted-foreground">
-          A configuração das contas AWS, conferida todo dia pelo papel somente leitura, com o catálogo próprio
-          do Verax Control: IAM, EC2, S3, CloudTrail e GuardDuty. A nota é a taxa de aprovação das checagens,
-          ponderada pela gravidade; o que a AWS recusou ler fica fora da nota.
-        </p>
+        {/* R-04: a frase curta à vista; como a nota é calculada, a um clique. */}
+        <p className="text-sm text-muted-foreground">A configuração das contas AWS, conferida todo dia.</p>
+        <Explainer label="Como a nota é calculada">
+          <p>
+            A leitura é feita pelo papel somente leitura, com o catálogo próprio do Verax Control: IAM, EC2,
+            S3, CloudTrail e GuardDuty. A nota é a taxa de aprovação das checagens, ponderada pela gravidade;
+            o que a AWS recusou ler fica fora da nota.
+          </p>
+        </Explainer>
       </header>
       {children}
     </section>

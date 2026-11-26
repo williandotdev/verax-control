@@ -11,6 +11,7 @@ import { type FormEvent, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
 import { Button } from '@/components/ui/button';
+import { Explainer } from '@/components/ui/explainer';
 import { Field } from '@/components/ui/field';
 import { Sheet } from '@/components/ui/sheet';
 import {
@@ -104,9 +105,17 @@ export function UsersPage() {
   return (
     <AdminShell
       title="Usuários"
-      description="Quem acessa o painel deste cliente. Toda conta nasce com uma senha temporária: no primeiro acesso, a pessoa troca a senha e cadastra o MFA. Os avisos por e-mail vão para administradores e analistas ativos, com MFA, e cada pessoa escolhe os dela em Minha conta."
+      description="Quem acessa o painel deste cliente."
       action={canWrite && <Button onClick={() => setOpen(NEW)}>Criar usuário</Button>}
     >
+      {/* R-04: o resto da explicação do topo, a um clique. */}
+      <Explainer about="Usuários" className="-mt-3">
+        <p>
+          Toda conta nasce com uma senha temporária: no primeiro acesso, a pessoa troca a senha e cadastra o
+          MFA. Os avisos por e-mail vão para administradores e analistas ativos, com MFA, e cada pessoa
+          escolhe os dela em Minha conta.
+        </p>
+      </Explainer>
       <DataTable
         caption="Usuários do cliente"
         columns={columns}
