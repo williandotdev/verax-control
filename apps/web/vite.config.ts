@@ -73,6 +73,13 @@ export default defineConfig(({ mode }) => {
     build: {
       // Sem sourcemap público: o código-fonte não fica exposto no CDN.
       sourcemap: false,
+      rolldownOptions: {
+        output: {
+          // As bibliotecas num arquivo à parte (E-13): ele só muda quando uma dependência muda, e continua no cache do
+          // navegador entre uma versão do painel e a outra. As telas vêm cada uma no seu arquivo (`routes/router.tsx`).
+          codeSplitting: { groups: [{ name: 'vendor', test: /[\\/]node_modules[\\/]/ }] },
+        },
+      },
     },
     // `msw/browser` só é importado de dentro do módulo virtual do plugin do MSW, que a varredura de dependências não
     // enxerga: sem esta linha, o Vite o descobria na primeira página aberta, otimizava de novo e recarregava a página.
