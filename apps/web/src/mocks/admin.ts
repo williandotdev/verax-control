@@ -18,6 +18,7 @@ import {
   CREDENTIAL_KIND_PROVIDERS,
   credentialStatus,
   type EscalationContact,
+  type FindingDetail,
   type EscalationContactInput,
   escalationContactInputSchema,
   escalationLinkSchema,
@@ -54,6 +55,7 @@ import {
   userUpdateSchema,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
+import { alertMatch, resolveOpen, withOpenAlerts } from './exception-open-alerts';
 import { API_URL } from '@/lib/env';
 import {
   advanceAwsAccount,
@@ -549,7 +551,11 @@ type Denied = { ok: false; error: Response };
 type Allowed = { ok: true; me: Me };
 type Scoped = { ok: true; me: Me; tenantId: string };
 
-export function createAdminHandlers(state: MockState, store: AdminStore) {
+export function createAdminHandlers(
+  state: MockState,
+  store: AdminStore,
+  findings: Map<string, FindingDetail[]> = new Map(),
+) {
   /** Permissão de leitura ou escrita (com CSRF) e, quando pedido, o cliente da sessão. */
   const guard = (permission: Permission, request?: Request): Denied | Allowed => {
     if (!state.me) return { ok: false, error: problem(401, 'Não autenticado') };
@@ -1125,7 +1131,10 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         updatedAt: now,
       });
       listOf(store.exceptions, scope.tenantId).push(item);
-      return HttpResponse.json(item, { status: 201 });
+      // Os alertas em aberto que ela cobre são resolvidos junto; a contagem só vai para quem a pede.
+      const open = resolveOpen(findings.get(scope.tenantId) ?? [], alertMatch(input.data), author(scope.me));
+      item.matchedCount = open.resolved;
+      return HttpResponse.json(withOpenAlerts(request, item, open), { status: 201 });
     }),
     http.patch(url('/v1/alert-exceptions/:id'), async ({ params, request }) => {
       const scope = scoped('alert_exceptions:write', request);

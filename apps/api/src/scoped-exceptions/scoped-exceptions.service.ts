@@ -2,9 +2,14 @@ import { ForbiddenException, HttpStatus, Injectable } from '@nestjs/common';
 import {
   ALERT_EXCEPTION_VALUE_MAX,
   type AlertExceptionBatch,
+  type AlertExceptionBatchCreated,
   type AlertExceptionBatchResult,
   canWriteScopedExceptions,
   type CaseExceptionDraft,
+  EXCEPTION_OPEN_RESOLVE_MAX,
+  type ExceptionCreateQuery,
+  type ExceptionOpenPreview,
+  type ExceptionOpenResolution,
   type FindingSeverity,
   MAX_ACTIVE_SCOPED_EXCEPTIONS,
   MAX_ALERT_EXCEPTIONS_PER_REQUEST,
@@ -13,12 +18,23 @@ import {
   SCOPED_EXCEPTION_PREVIEW_DAYS,
   SCOPED_EXCEPTION_SEVERITIES,
   type ScopedException,
+  type ScopedExceptionCreated,
   type ScopedExceptionCreateParsed,
   type ScopedExceptionListQuery,
   type ScopedExceptionPreview,
   type ScopedExceptionPreviewQuery,
   type ScopedExceptionSeverity,
 } from '@verax/shared';
+import {
+  alertExceptionComment,
+  alertExceptionTarget,
+  type OpenAlertTarget,
+  previewOpenAlerts,
+  resolveOpenAlerts,
+  scopedExceptionComment,
+  scopedExceptionTarget,
+} from '../alerts/exception-open-alerts.js';
+import { lockFindingsBriefly } from '../cases/triage-store.js';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
 import { ApiError } from '../common/http/api-error.js';
@@ -77,6 +93,19 @@ function likeLiteral(prefix: string): string {
 function severitiesUpTo(max: ScopedExceptionSeverity): ScopedExceptionSeverity[] {
   return SCOPED_EXCEPTION_SEVERITIES.slice(0, SCOPED_EXCEPTION_SEVERITIES.indexOf(max) + 1);
 }
+
+/** Um registro na trilha para o lote inteiro de alertas em aberto resolvidos, com as contagens. */
+function openAudit(id: string, resolution: ExceptionOpenResolution, extra: object = {}) {
+  return {
+    action: 'alert_exception.resolve_open',
+    resourceType: 'alert_exception',
+    resourceId: id,
+    after: { exceptionId: id, ...extra, ...resolution },
+  };
+}
+
+const touched = (resolution: ExceptionOpenResolution): boolean =>
+  resolution.resolved > 0 || resolution.keptInIncident > 0;
 
 /** Só os administradores (D8). Sem permissão nova no `/v1/me`: a recusa é 403, e a escrita recusada vai para a trilha. */
 function assertAdmin(auth: RequestAuth): void {
@@ -143,7 +172,39 @@ export class ScopedExceptionsService {
     return { days: SCOPED_EXCEPTION_PREVIEW_DAYS, matched, high };
   }
 
-  async create(auth: RequestAuth, input: ScopedExceptionCreateParsed): Promise<ScopedException> {
+  /**
+   * "Vai resolver N alertas em aberto (M em incidentes ficam)": os alertas em aberto que a exceção ampla resolveria se
+   * fosse criada agora, pela mesma regra da chegada (crítico nunca, a severidade máxima, as regras bloqueadas). Só leitura.
+   */
+  async previewOpen(auth: RequestAuth, target: ScopedExceptionPreviewQuery): Promise<ExceptionOpenPreview> {
+    assertAdmin(auth);
+    const now = new Date();
+    return previewOpenAlerts(
+      this.prisma.scoped(),
+      scopedExceptionTarget({
+        id: '',
+        ruleId: target.ruleId,
+        logSource: target.logSource,
+        accountId: target.accountId,
+        eventName: target.eventName ?? null,
+        resourcePrefix: target.resourcePrefix ?? null,
+        maxSeverity: target.maxSeverity,
+        // Ainda não existe: vale como se fosse criada agora.
+        expiresAt: new Date(now.getTime() + DAY_MS),
+      }),
+      now,
+    );
+  }
+
+  /**
+   * Cria a exceção ampla e resolve os alertas em aberto que ela cobre (decisão do dono de 26/11/2026), na mesma transação.
+   * A contagem só vai na resposta para quem a pede (`openAlerts=true`).
+   */
+  async create(
+    auth: RequestAuth,
+    input: ScopedExceptionCreateParsed,
+    query: ExceptionCreateQuery = {},
+  ): Promise<ScopedException | ScopedExceptionCreated> {
     assertAdmin(auth);
     const now = new Date();
     const expiresAt = new Date(input.expiresAt);
@@ -178,14 +239,68 @@ export class ScopedExceptionsService {
       } as Prisma.ScopedExceptionUncheckedCreateInput,
       select: exceptionSelect,
     });
-    const exception = toException(row, now);
+    const settled = await this.resolveScoped(auth, row, now);
+    const exception = toException(settled.row, now);
     this.audit.describe({
       action: 'alert_exception.scoped_create',
       resourceType: 'alert_exception',
       resourceId: exception.id,
       after: exception,
     });
-    return exception;
+    if (touched(settled.resolution)) this.audit.also(openAudit(exception.id, settled.resolution));
+    return query.openAlerts === 'true' ? { ...exception, openAlerts: settled.resolution } : exception;
+  }
+
+  /** "Resolver os próximos" da exceção ampla em vigor: a criação parou no teto da requisição. */
+  async resolveOpenAgain(auth: RequestAuth, id: string): Promise<ExceptionOpenResolution> {
+    assertAdmin(auth);
+    const row = await this.prisma
+      .scoped()
+      .scopedException.findUnique({ where: { id }, select: exceptionSelect });
+    if (!row) throw new ApiError(HttpStatus.NOT_FOUND, NOT_FOUND);
+    if (!toException(row).active) {
+      throw new ApiError(HttpStatus.CONFLICT, 'Esta exceção não está mais em vigor');
+    }
+    const { resolution } = await this.resolveScoped(auth, row, new Date());
+    this.audit.describe(openAudit(id, resolution));
+    return resolution;
+  }
+
+  /** Os alertas em aberto que a ampla cobre viram legítimos, e a contagem dela sobe com eles. */
+  private async resolveScoped(
+    auth: RequestAuth,
+    row: ExceptionRow,
+    now: Date,
+  ): Promise<{ row: ExceptionRow; resolution: ExceptionOpenResolution }> {
+    const exception = { ...row, maxSeverity: row.maxSeverity as ScopedExceptionSeverity };
+    const resolution = await this.resolve(
+      auth,
+      scopedExceptionTarget(exception),
+      scopedExceptionComment(exception, row.createdBy.name),
+      now,
+    );
+    if (resolution.resolved === 0) return { row, resolution };
+    const updated = await this.prisma.scoped().scopedException.update({
+      where: { id: row.id },
+      data: { matchedCount: { increment: resolution.resolved }, lastMatchedAt: now },
+      select: exceptionSelect,
+    });
+    return { row: updated, resolution };
+  }
+
+  private resolve(
+    auth: RequestAuth,
+    target: OpenAlertTarget,
+    body: string,
+    now: Date,
+    max = EXCEPTION_OPEN_RESOLVE_MAX,
+  ): Promise<ExceptionOpenResolution> {
+    return resolveOpenAlerts(this.prisma.scoped(), target, {
+      now,
+      max,
+      comment: { authorId: auth.userId, body },
+      lock: () => lockFindingsBriefly(this.prisma.db(), this.prisma.scopeTenantId()),
+    });
   }
 
   /** Revogar não apaga: a exceção para de valer na hora e fica listada, com quem revogou. */
@@ -298,9 +413,11 @@ export class ScopedExceptionsService {
     auth: RequestAuth,
     caseId: string,
     input: AlertExceptionBatch,
-  ): Promise<AlertExceptionBatchResult> {
+    query: ExceptionCreateQuery = {},
+  ): Promise<AlertExceptionBatchResult | AlertExceptionBatchCreated> {
     await this.assertCase(caseId);
-    const { count } = await this.prisma.scoped().alertException.createMany({
+    const db = this.prisma.scoped();
+    const created = await db.alertException.createManyAndReturn({
       data: input.values.map(
         (value) =>
           ({
@@ -313,15 +430,51 @@ export class ScopedExceptionsService {
           }) as Prisma.AlertExceptionCreateManyInput,
       ),
       skipDuplicates: true,
+      select: {
+        id: true,
+        ruleId: true,
+        field: true,
+        value: true,
+        expiresAt: true,
+        createdBy: { select: { name: true } },
+      },
     });
-    const result = { created: count, existing: input.values.length - count };
+    const result = { created: created.length, existing: input.values.length - created.length };
+    // Os alertas em aberto de cada exceção criada agora (a que já existia fica como estava), com um teto só para o lote.
+    const now = new Date();
+    const resolution: ExceptionOpenResolution = { resolved: 0, keptInIncident: 0, more: false };
+    for (const exception of created) {
+      const room = EXCEPTION_OPEN_RESOLVE_MAX - resolution.resolved;
+      if (room <= 0) {
+        resolution.more = true;
+        break;
+      }
+      const one = await this.resolve(
+        auth,
+        alertExceptionTarget(exception),
+        alertExceptionComment(exception, exception.createdBy.name),
+        now,
+        room,
+      );
+      if (one.resolved > 0) {
+        await db.alertException.update({
+          where: { id: exception.id },
+          data: { matchedCount: { increment: one.resolved }, lastMatchedAt: now },
+          select: { id: true },
+        });
+      }
+      resolution.resolved += one.resolved;
+      resolution.keptInIncident += one.keptInIncident;
+      resolution.more ||= one.more;
+    }
     this.audit.describe({
       action: 'alert_exception.create_batch',
       resourceType: 'alert_exception',
       resourceId: caseId,
       after: { caseId, ...input, ...result },
     });
-    return result;
+    if (touched(resolution)) this.audit.also(openAudit(caseId, resolution, { caseId }));
+    return query.openAlerts === 'true' ? { ...result, openAlerts: resolution } : result;
   }
 
   private async assertCase(caseId: string): Promise<void> {

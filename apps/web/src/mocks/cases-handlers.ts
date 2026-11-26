@@ -30,6 +30,7 @@ import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import type { AdminStore } from './admin';
 import { DEMO_VULNERABILITIES, demoCaseFindings } from './case-fixtures';
+import { alertMatch, resolveOpen, scopedMatch, withOpenAlerts } from './exception-open-alerts';
 import { DemoCases, isPending } from './case-store';
 import type { MockState } from './handlers';
 import { DEMO_ASSIGNEES, type IncidentState, incidentSummaries, newIncidentId } from './incidents-handlers';
@@ -472,7 +473,21 @@ export function createCaseHandlers(
       if (!scope.cases.byId(String(params['id']))) return problem(404, 'Caso não encontrado');
       const parsed = alertExceptionBatchSchema.safeParse(await request.json());
       if (!parsed.success) return problem(400, 'Dados inválidos');
-      return HttpResponse.json({ created: parsed.data.values.length, existing: 0 }, { status: 201 });
+      const author = { id: scope.me.userId, name: 'Você (demonstração)' };
+      const open = { resolved: 0, keptInIncident: 0, more: false };
+      for (const value of parsed.data.values) {
+        const one = resolveOpen(
+          findings.get(scope.tenantId) ?? [],
+          alertMatch({ ruleId: parsed.data.ruleId, field: parsed.data.field, value }),
+          author,
+        );
+        open.resolved += one.resolved;
+        open.keptInIncident += one.keptInIncident;
+      }
+      return HttpResponse.json(
+        withOpenAlerts(request, { created: parsed.data.values.length, existing: 0 }, open),
+        { status: 201 },
+      );
     }),
 
     http.get(url('/v1/scoped-exceptions'), ({ request }) => {
@@ -529,8 +544,14 @@ export function createCaseHandlers(
         revokedAt: null,
         revokedBy: null,
       };
+      const open = resolveOpen(
+        findings.get(scope.tenantId) ?? [],
+        scopedMatch(parsed.data),
+        created.createdBy,
+      );
+      created.matchedCount = open.resolved;
       wide.set(scope.tenantId, [created, ...(wide.get(scope.tenantId) ?? [])]);
-      return HttpResponse.json(created, { status: 201 });
+      return HttpResponse.json(withOpenAlerts(request, created, open), { status: 201 });
     }),
 
     http.post(url('/v1/scoped-exceptions/:id/revoke'), ({ params, request }) => {

@@ -2677,8 +2677,8 @@ cria a fonte (`ScopedExceptionSource`) com `CASES_MODE=on`; os coletores a repas
 exceção de sempre, a fonte devolve a lista do cliente (guardada por 30 s) e, se uma casa, confere no banco que ela ainda vale
 (a revogação vale na hora). Tudo isso fora da transação do alerta: uma leitura que falha vira lista vazia e um aviso no log, só
 com o tipo do erro, e o alerta entra na fila. Só o alerta **novo** (e a recorrência nova do GuardDuty) é marcado: nasce
-`legitimate`, com `scopedExceptionId`, sem aviso, e a contagem da exceção sobe na mesma transação. O alerta que já existe nunca
-é tocado. Se a origem revisa um alerta marcado e a severidade passa da máxima (ou vira crítica), ele volta para `new`, sem a
+`legitimate`, com `scopedExceptionId`, sem aviso, e a contagem da exceção sobe na mesma transação. Na coleta, o alerta que
+já existe nunca é tocado; os que estão em aberto quando a exceção nasce, a própria criação os resolve (seção seguinte). Se a origem revisa um alerta marcado e a severidade passa da máxima (ou vira crítica), ele volta para `new`, sem a
 exceção, e avisa como qualquer subida.
 
 **Migration `20261204120000_scoped_exceptions`**, só acrescenta: a tabela, `Finding.scopedExceptionId` (anulável, sem valor
@@ -2690,6 +2690,49 @@ para a fila: o lado seguro.
 **No painel:** o diálogo (`features/cases/case-exception-dialog.tsx`) e a seção "Exceções amplas" na tela Exceções
 (`pages/admin/scoped-exceptions-section.tsx`), com a lista e o revogar. Com os casos desligados, ou um nó de antes (404), a tela é
 a de sempre, sem pedido a mais. Tudo o que veio dos logs (evento, recurso, usuário, IP) é texto.
+
+### Exceção nova resolve os alertas em aberto (`apps/api/src/alerts/exception-open-alerts.ts`)
+
+Decisão do dono (26/11/2026): criar uma exceção, de usuário, IP ou recurso (`POST /v1/alert-exceptions`, e o lote a partir de um
+caso) ou ampla (`POST /v1/scoped-exceptions`), resolve também os alertas que estão **em aberto** (`new` ou `investigating`) e que
+ela teria marcado se tivessem chegado depois dela. O contrato está em `packages/shared/src/exception-open-alerts.ts`.
+
+- **A regra é a da chegada.** Quem decide é o mesmo comparador do sync (`matchingException` e `matchingScopedException`), com
+  todas as travas das amplas: crítico nunca, a severidade máxima, as regras bloqueadas, o evento e o começo do recurso. O banco
+  só estreita a leitura (a regra, o valor igual, as severidades possíveis, o evento); o IP com faixa e o prefixo, só o comparador.
+- **O que fica.** O alerta num incidente, ou num caso promovido a incidente (`AlertCase.incidentId`), foi julgado ameaça por uma
+  pessoa: casa, mas fica, e é contado (`keptInIncident`, "N ficaram porque estão em incidente"). O já tratado (legítimo ou
+  resolvido) nem é lido.
+- **O que muda no alerta:** `legitimate`, `exceptionId` (ou `scopedExceptionId`; nunca os dois, como na chegada), `triageOpId`
+  nulo (o desfazer da triagem em massa não o mexe mais) e `triagedAt` na primeira saída de `new`, como na tela. Um comentário
+  em cada um, com o autor da requisição: "Resolvido automaticamente pela exceção … (id), criada por …". A contagem da
+  exceção (`matchedCount`, `lastMatchedAt`) sobe com o que mudou. As contagens dos casos acompanham pelos gatilhos; a Torre, as
+  listas e os incidentes leem do banco (o painel invalida as mesmas chaves da triagem em massa).
+- **Lotes e teto.** Tudo roda na transação da requisição (a da auditoria, de até 15 s): a leitura anda pelo id, de 500 em 500,
+  e cada lote é uma gravação (`updateManyAndReturn`, que repete a conferência do status, do incidente e do caso) mais os
+  comentários. Antes da primeira gravação, e só se houver o que gravar, o lock dos alertas do cliente com espera curta por
+  linha (`lockFindingsBriefly`, o mesmo de incidente e triagem). No máximo 2.000 alertas por requisição
+  (`EXCEPTION_OPEN_RESOLVE_MAX`; 2.150 levaram 2,5 s no teste, com a inserção): o resto fica para "Resolver os próximos"
+  (`POST /v1/alert-exceptions/:id/resolve-open` e `POST /v1/scoped-exceptions/:id/resolve-open`, só a exceção em vigor; 409
+  na vencida ou revogada). **Idempotente:** rodar de novo sem nada em aberto não muda nada nem conta duas vezes.
+- **Prévia** (só leitura, até 50.000 candidatos; acima disso, "pelo menos"): `GET /v1/alert-exceptions/open-alerts?ruleId&field&value`
+  (quem escreve exceções) e `GET /v1/scoped-exceptions/open-alerts` (o mesmo alvo da prévia da ampla; só administradores).
+  "Vai resolver N alertas em aberto (M ficam porque estão em incidente)".
+- **Auditoria:** um registro para o lote inteiro, `alert_exception.resolve_open`, com `resolved`, `keptInIncident` e `more`
+  (na criação, como registro adicional; no "resolver os próximos", o principal), na trilha do cliente.
+- **Versões diferentes.** As respostas de criar são estritas no painel de antes: a contagem só vem para quem a pede
+  (`?openAlerts=true`, campo `openAlerts`). O painel de antes não pede e recebe a resposta de sempre, e os alertas em aberto
+  são resolvidos do mesmo jeito. Um nó de antes recusa o pedido com 400 antes de gravar (a rota não aceitava query), e o painel
+  novo cria de novo sem ele (só quando a recusa é da query, sem campo). A prévia num nó de antes dá 400 ou 404: a linha só não
+  aparece.
+- **Revogar não reabre.** Revogar a ampla, vencer ou apagar a de usuário, IP ou recurso não devolve nada para a fila. Os alertas
+  continuam filtráveis pela exceção (`GET /v1/findings?exception=<id>`, que vale para as duas: os marcados na chegada e os
+  resolvidos na criação). A de usuário, IP ou recurso **apagada** perde o vínculo (a chave estrangeira de sempre,
+  `ON DELETE SET NULL`); o comentário, com o id dela, fica.
+- **Sem migration:** usa as colunas que já existiam (`exceptionId`, `scopedExceptionId`, `matchedCount`) e os comentários.
+- **No painel** (`features/exception-open-alerts/`): a linha da prévia na oferta do detalhe do alerta, na nova exceção da tela
+  Exceções e na prévia da ampla; depois de criar, quantos resolveu, quantos ficaram e, se parou no teto, "Resolver os
+  próximos".
 
 ## Ataques web pelos logs do ALB: o que fica guardado (`apps/api/src/weblogs/`)
 

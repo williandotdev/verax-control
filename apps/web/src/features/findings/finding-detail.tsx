@@ -12,6 +12,8 @@ import { SeverityBadge } from '@/components/security/severity-badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/field';
 import { FindingTriageTrail } from '@/features/cases/finding-triage-trail';
+import { useAlertExceptionOpenPreview } from '@/features/exception-open-alerts/open-alerts-api';
+import { OpenAlertsPreview, OpenAlertsResult } from '@/features/exception-open-alerts/open-alerts-view';
 import { selectionSearch } from '@/features/detections/url-state';
 import { AlertValidation } from '@/features/incidents/incident-actions';
 import { usePlanHistory } from '@/features/plan/plan-history';
@@ -258,13 +260,24 @@ function ExceptionOffer({ finding, onDone }: { finding: FindingDetail; onDone: (
   const [reason, setReason] = useState('');
   const create = useCreateAlertException();
   const chosen = options.find((option) => option.field === field);
+  const preview = useAlertExceptionOpenPreview(
+    chosen && !create.isSuccess ? { ruleId: finding.ruleId, field: chosen.field, value: chosen.value } : null,
+  );
 
   if (create.isSuccess) {
     return (
-      <p role="status" className="rounded-md border border-ok/50 bg-ok/10 p-3 text-sm">
-        Exceção criada: alertas da regra {finding.ruleId} com {chosen?.label.toLowerCase()} {chosen?.value}{' '}
-        passam a ser marcados como esperados.
-      </p>
+      <div className="space-y-2 rounded-md border border-ok/50 bg-ok/10 p-3">
+        <p role="status" className="text-sm">
+          Exceção criada: alertas da regra {finding.ruleId} com {chosen?.label.toLowerCase()} {chosen?.value}{' '}
+          passam a ser marcados como esperados.
+        </p>
+        <OpenAlertsResult
+          resolution={create.data.openAlerts}
+          kind="alert"
+          exceptionId={create.data.id}
+          nested
+        />
+      </div>
     );
   }
   if (options.length === 0) return null;
@@ -285,6 +298,7 @@ function ExceptionOffer({ finding, onDone }: { finding: FindingDetail; onDone: (
       <p className="text-sm font-medium">Criar exceção para alertas iguais?</p>
       <p className="text-xs text-muted-foreground">
         Alertas futuros da regra {finding.ruleId} com o mesmo valor entram como esperados, sem pedir decisão.
+        Os que estão em aberto agora são resolvidos junto; os que estão em incidente ficam.
       </p>
       <fieldset className="space-y-1">
         <legend className="text-xs text-muted-foreground">Comparar por</legend>
@@ -310,6 +324,9 @@ function ExceptionOffer({ finding, onDone }: { finding: FindingDetail; onDone: (
           onChange={(event) => setReason(event.target.value)}
           maxLength={500}
         />
+      </div>
+      <div aria-live="polite">
+        <OpenAlertsPreview preview={preview.data} />
       </div>
       {create.error && (
         <p role="alert" className="text-sm text-critical-text">
