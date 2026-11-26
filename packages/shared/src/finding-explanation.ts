@@ -97,6 +97,20 @@ const capitalize = (value: string): string => value.charAt(0).toUpperCase() + va
 const plural = (count: number, one: string, many: string): string => `${count} ${count === 1 ? one : many}`;
 const quoted = (value: string): string => `"${value}"`;
 
+const CONTRACTIONS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  a: { o: 'ao', a: 'à' },
+  de: { o: 'do', a: 'da' },
+  em: { o: 'no', a: 'na' },
+};
+
+/** A preposição antes do objeto, com a contração do artigo: "de" + "o usuário" é "do usuário". */
+function prep(preposition: 'a' | 'de' | 'em', phrase: string): string {
+  const space = phrase.indexOf(' ');
+  const article = space < 0 ? '' : phrase.slice(0, space);
+  const joined = CONTRACTIONS[preposition]?.[article];
+  return joined === undefined ? `${preposition} ${phrase}` : `${joined}${phrase.slice(space)}`;
+}
+
 /** Uma lista curta em português: "a, b e c". */
 function joinList(items: readonly string[]): string {
   if (items.length <= 1) return items.join('');
@@ -197,7 +211,7 @@ export function describeActor(
     if (via === 'cli' || via === 'sdk' || via === 'terraform') {
       return {
         kind: 'unknown',
-        text: `o usuário IAM ${name}, por linha de comando ou programa (pode ser uma pessoa ou uma automação)`,
+        text: `o usuário IAM ${name} (por linha de comando ou programa: pode ser uma pessoa ou uma automação)`,
       };
     }
     return { kind: 'unknown', text: `o usuário IAM ${name}` };
@@ -564,8 +578,8 @@ function iamFamily(event: string, change: FindingChange | null, resource: string
         family: 'iam',
         action:
           event === 'DeleteAccessKey'
-            ? `apagou uma chave de acesso de ${subject}.`
-            : `mudou o status de uma chave de acesso de ${subject}${status ? ` para ${status === 'Active' ? 'ativa' : 'inativa'}` : ''}.`,
+            ? `apagou uma chave de acesso ${prep('de', subject)}.`
+            : `mudou o status de uma chave de acesso ${prep('de', subject)}${status ? ` para ${status === 'Active' ? 'ativa' : 'inativa'}` : ''}.`,
         facts,
         why: 'Chaves de acesso são credenciais de programa; reativar uma chave antiga devolve um acesso que estava fechado.',
         check: 'Confirme se a mudança foi pedida pelo dono da chave.',
@@ -576,7 +590,7 @@ function iamFamily(event: string, change: FindingChange | null, resource: string
     case 'AttachGroupPolicy':
       return {
         family: 'iam',
-        action: `deu a política ${policyArn?.split('/').at(-1) ?? ''} a ${subject}${admin ? ' (acesso de administrador)' : ''}.`,
+        action: `deu a política ${policyArn?.split('/').at(-1) ?? ''} ${prep('a', subject)}${admin ? ' (acesso de administrador)' : ''}.`,
         facts,
         why: permissionWhy,
         check: permissionCheck,
@@ -586,7 +600,7 @@ function iamFamily(event: string, change: FindingChange | null, resource: string
     case 'DetachGroupPolicy':
       return {
         family: 'iam',
-        action: `retirou a política ${policyArn?.split('/').at(-1) ?? ''} de ${subject}.`,
+        action: `retirou a política ${policyArn?.split('/').at(-1) ?? ''} ${prep('de', subject)}.`,
         facts,
         why: 'Retirar uma política costuma ser limpeza, mas também pode tirar uma trava ou fazer parte de uma troca de permissões.',
         check: 'Confirme se a mudança foi planejada.',
@@ -596,7 +610,7 @@ function iamFamily(event: string, change: FindingChange | null, resource: string
     case 'PutGroupPolicy':
       return {
         family: 'iam',
-        action: `gravou a política embutida ${policyName ?? ''} em ${subject}.${everything ? ' Ela permite qualquer ação em qualquer recurso (acesso total).' : ''}`,
+        action: `gravou a política embutida ${policyName ?? ''} ${prep('em', subject)}.${everything ? ' Ela permite qualquer ação em qualquer recurso (acesso total).' : ''}`,
         facts,
         why: permissionWhy,
         check: permissionCheck,
@@ -606,7 +620,7 @@ function iamFamily(event: string, change: FindingChange | null, resource: string
     case 'DeleteGroupPolicy':
       return {
         family: 'iam',
-        action: `apagou a política embutida ${policyName ?? ''} de ${subject}.`,
+        action: `apagou a política embutida ${policyName ?? ''} ${prep('de', subject)}.`,
         facts,
         why: 'Apagar uma política costuma ser limpeza, mas também pode tirar uma trava.',
         check: 'Confirme se a mudança foi planejada.',
@@ -616,7 +630,7 @@ function iamFamily(event: string, change: FindingChange | null, resource: string
       const asDefault = value(change, 'setAsDefault') === true;
       return {
         family: 'iam',
-        action: `${event === 'CreatePolicyVersion' ? 'criou uma versão nova de' : 'trocou a versão em uso de'} ${subject}${event === 'CreatePolicyVersion' && asDefault ? ' e a colocou em uso' : ''}.${everything ? ' A versão nova permite qualquer ação em qualquer recurso (acesso total).' : ''}`,
+        action: `${event === 'CreatePolicyVersion' ? 'criou uma versão nova' : 'trocou a versão em uso'} ${prep('de', subject)}${event === 'CreatePolicyVersion' && asDefault ? ' e a colocou em uso' : ''}.${everything ? ' A versão nova permite qualquer ação em qualquer recurso (acesso total).' : ''}`,
         facts,
         why: 'Mudar a versão de uma política muda, de uma vez, o que todas as identidades que a usam podem fazer.',
         check: permissionCheck,
@@ -647,7 +661,7 @@ function iamFamily(event: string, change: FindingChange | null, resource: string
     case 'DeleteLoginProfile':
       return {
         family: 'iam',
-        action: `${event === 'UpdateRole' ? 'alterou' : event === 'DeleteLoginProfile' ? 'apagou a senha de console de' : 'apagou'} ${subject}.`,
+        action: `${event === 'UpdateRole' ? `alterou ${subject}` : event === 'DeleteLoginProfile' ? `apagou a senha de console ${prep('de', subject)}` : `apagou ${subject}`}.`,
         facts,
         why: 'Mudanças em identidades mudam quem consegue entrar na conta e o que pode fazer.',
         check: 'Confirme se a mudança foi planejada.',
@@ -657,7 +671,7 @@ function iamFamily(event: string, change: FindingChange | null, resource: string
       const reset = value(change, 'passwordResetRequired');
       return {
         family: 'iam',
-        action: `${event === 'CreateLoginProfile' ? 'criou a senha de console de' : 'trocou a senha de console de'} ${subject}.${reset === true ? ' A pessoa terá de trocar a senha no próximo login.' : ''}`,
+        action: `${event === 'CreateLoginProfile' ? 'criou a senha de console' : 'trocou a senha de console'} ${prep('de', subject)}.${reset === true ? ' A pessoa terá de trocar a senha no próximo login.' : ''}`,
         facts,
         why: 'Quem define a senha de outro usuário consegue entrar no console como ele.',
         check: 'Confirme com o dono do usuário se ele pediu a troca.',
@@ -678,7 +692,7 @@ function iamFamily(event: string, change: FindingChange | null, resource: string
     case 'DeleteVirtualMFADevice':
       return {
         family: 'iam',
-        action: `desativou o MFA (segundo fator de login) de ${subject}.`,
+        action: `desativou o MFA (segundo fator de login) ${prep('de', subject)}.`,
         facts,
         why: 'Sem o MFA, só a senha protege o login; quem a descobrir entra.',
         check: 'Confirme com o dono do usuário e ative o MFA de novo.',
@@ -686,7 +700,7 @@ function iamFamily(event: string, change: FindingChange | null, resource: string
     default:
       return {
         family: 'iam',
-        action: `fez ${event} em ${subject}.`,
+        action: `fez ${event} ${prep('em', subject)}.`,
         facts,
         why: permissionWhy,
         check: 'Confirme se a mudança foi planejada e por quem.',
@@ -937,17 +951,17 @@ function kmsFamily(event: string, change: FindingChange | null): FamilyText {
   const grantee = textValue(change, 'grantee');
   const operations = list(change, 'operations')?.items ?? [];
   const actions: Readonly<Record<string, string>> = {
-    ScheduleKeyDeletion: `agendou a exclusão de ${subject}${typeof days === 'number' ? ` em ${plural(days, 'dia', 'dias')}` : ''}`,
+    ScheduleKeyDeletion: `agendou a exclusão ${prep('de', subject)}${typeof days === 'number' ? ` em ${plural(days, 'dia', 'dias')}` : ''}`,
     DisableKey: `desativou ${subject}`,
     EnableKey: `reativou ${subject}`,
-    CancelKeyDeletion: `cancelou a exclusão de ${subject}`,
-    DisableKeyRotation: `desligou a troca automática de ${subject}`,
-    PutKeyPolicy: `trocou a política de ${subject}${value(change, 'grantsAnyone') === true ? '; a nova política permite o uso por qualquer um' : ''}`,
-    CreateGrant: `deu permissão de uso de ${subject}${grantee ? ` a ${grantee}` : ''}${operations.length > 0 ? ` (operações: ${joinList(operations)})` : ''}`,
+    CancelKeyDeletion: `cancelou a exclusão ${prep('de', subject)}`,
+    DisableKeyRotation: `desligou a troca automática ${prep('de', subject)}`,
+    PutKeyPolicy: `trocou a política ${prep('de', subject)}${value(change, 'grantsAnyone') === true ? '; a nova política permite o uso por qualquer um' : ''}`,
+    CreateGrant: `deu permissão de uso ${prep('de', subject)}${grantee ? ` a ${grantee}` : ''}${operations.length > 0 ? ` (operações: ${joinList(operations)})` : ''}`,
   };
   return {
     family: 'kms',
-    action: `${actions[event] ?? `fez ${event} em ${subject}`}.`,
+    action: `${actions[event] ?? `fez ${event} ${prep('em', subject)}`}.`,
     why:
       event === 'ScheduleKeyDeletion' || event === 'DisableKey'
         ? 'Dados cifrados com a chave ficam ilegíveis enquanto ela estiver desativada e, depois da exclusão, para sempre. É tática de sabotagem e de sequestro de dados.'
