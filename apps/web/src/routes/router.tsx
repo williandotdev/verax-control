@@ -22,7 +22,7 @@ import { NotFoundPage } from '@/pages/not-found-page';
 import { PlaceholderPage } from '@/pages/placeholder-page';
 import { SetPasswordPage } from '@/pages/set-password-page';
 import { RequirePermission, RequireSession } from './guards';
-import { lazyPage } from './lazy-page';
+import { lazyPage, preloadPages } from './lazy-page';
 import { Loaded } from './loaded';
 
 const DetectionsPage = lazyPage(
@@ -197,3 +197,8 @@ export const routes: RouteObject[] = [
 export function createAppRouter() {
   return createBrowserRouter(routes);
 }
+
+// No servidor de desenvolvimento (e na demonstração dos testes de navegador), cada tela sob demanda compila na primeira
+// abertura, e com vários testes em paralelo a espera passava do prazo. Lá todas carregam no começo, como antes do E-13; o
+// build publicado continua baixando cada tela só quando ela abre.
+if (import.meta.env.DEV) void preloadPages();
