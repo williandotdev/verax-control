@@ -1,9 +1,4 @@
-import {
-  type Finding,
-  type FindingDetail,
-  type IncidentDetail,
-  MAX_INCIDENT_FINDINGS_PER_REQUEST,
-} from '@verax/shared';
+import { type Finding, type FindingDetail, MAX_INCIDENT_FINDINGS_PER_REQUEST } from '@verax/shared';
 import { X } from 'lucide-react';
 import { Dialog } from 'radix-ui';
 import { type FormEvent, useId, useState } from 'react';
@@ -12,7 +7,6 @@ import { SeverityBadge } from '@/components/security/severity-badge';
 import { Button } from '@/components/ui/button';
 import { SelectField } from '@/components/ui/select-field';
 import { withChanges } from '@/features/detections/url-state';
-import { FindingStatusBadge } from '@/features/findings/finding-status-badge';
 import { useRelatedFindings } from '@/features/findings/findings-api';
 import { FINDING_SOURCE_LABELS } from '@/features/findings/labels';
 import { errorMessage } from '@/lib/errors';
@@ -20,7 +14,6 @@ import { formatRelative, plural } from '@/lib/format';
 import {
   useAttachFindings,
   useCreateIncident,
-  useDetachFinding,
   useIncidentAssignees,
   useOpenIncidents,
 } from './incidents-api';
@@ -302,50 +295,5 @@ function AttachForm({ finding, onCancel }: { finding: FindingDetail; onCancel: (
         </Button>
       </div>
     </form>
-  );
-}
-
-/**
- * Os alertas do incidente, cada um com "Remover do incidente" (volta para a lista de alertas a validar). Só para quem
- * opera incidentes, e só no incidente que não está resolvido; o último alerta não sai.
- */
-export function IncidentAlerts({ incident }: { incident: IncidentDetail }) {
-  const headingId = useId();
-  const detach = useDetachFinding(incident.id);
-  const last = incident.findings.length <= 1;
-  return (
-    <section aria-labelledby={headingId} className="space-y-2">
-      <h3 id={headingId} className="text-sm font-semibold">
-        Alertas do incidente
-      </h3>
-      {last && (
-        <p className="text-xs text-muted-foreground">
-          O incidente precisa de pelo menos um alerta. Para encerrá-lo, mude o status para resolvido.
-        </p>
-      )}
-      <ul className="divide-y rounded-md border">
-        {[...incident.findings].reverse().map((finding) => (
-          <li key={finding.id} className="flex flex-wrap items-start gap-2 px-3 py-2 text-sm">
-            <AlertLine finding={finding} />
-            <FindingStatusBadge status={finding.status} />
-            {!last && (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={detach.isPending}
-                onClick={() => detach.mutate(finding.id)}
-              >
-                Remover do incidente<span className="sr-only">: {finding.title}</span>
-              </Button>
-            )}
-          </li>
-        ))}
-      </ul>
-      {detach.error && (
-        <p role="alert" className="text-sm text-critical-text">
-          {errorMessage(detach.error)}
-        </p>
-      )}
-    </section>
   );
 }

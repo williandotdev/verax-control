@@ -357,6 +357,7 @@ describe('Detecções: o detalhe e a triagem', () => {
     expect(within(dialog).queryByRole('combobox', { name: 'Status' })).toBeNull();
     expect(within(dialog).getByText('Equipe Verax')).toBeInTheDocument();
     expect(within(dialog).queryByRole('button', { name: /^Remover do incidente/ })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Editar alertas do incidente' })).toBeNull();
   });
 
   it('quem só lê não vê "Promover a incidente" nem "Anexar"', async () => {
@@ -426,6 +427,15 @@ describe('Detecções: o detalhe e a triagem', () => {
       expect(
         await within(incident).findByRole('heading', { name: /Linha do tempo \(4 alertas\)/ }, SLOW),
       ).toBeInTheDocument();
+      // R-06: a linha do tempo é a única lista dos alertas; "Remover" aparece depois de "Editar alertas do incidente".
+      expect(within(incident).queryByRole('heading', { name: 'Alertas do incidente' })).toBeNull();
+      expect(within(incident).queryByRole('button', { name: /^Remover do incidente/ })).toBeNull();
+      const edit = within(incident).getByRole('button', { name: 'Editar alertas do incidente' });
+      await userEvent.click(edit);
+      expect(within(incident).getByRole('button', { name: 'Concluir a edição dos alertas' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
       await userEvent.click(
         within(incident).getByRole('button', {
           name: 'Remover do incidente: Política de bucket alterada para permitir leitura pública',
