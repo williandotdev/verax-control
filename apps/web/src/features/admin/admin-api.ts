@@ -7,6 +7,7 @@ import {
   type CloudAccountCreate,
   type CloudAccountDelete,
   cloudAccountSchema,
+  cloudAccountSourceAttentionSchema,
   type CloudAccountUpdate,
   type CloudCredentialInput,
   type Paginated,
@@ -131,6 +132,24 @@ export const useCloudAccountList = (page: number, enabled: boolean) =>
     intervalMs: AWS_CHECK_POLL_MS,
     item: (account) => account.checkRequestedAt !== null,
   });
+/** A chave da contagem de fontes que pedem atenção: à parte da lista, que tem outro formato no cache. */
+export const SOURCE_ATTENTION_KEY = 'admin-cloud-accounts-attention';
+
+/**
+ * Quantas fontes autorizadas de cada conta AWS pedem atenção (E-08), por conta. Null enquanto não chega, num nó de antes
+ * (404) ou com erro: a lista mostra então só o selo da conexão, como antes.
+ */
+export function useCloudAccountSourceAttention(enabled: boolean): ReadonlyMap<string, number> | null {
+  const query = useQuery({
+    queryKey: [SOURCE_ATTENTION_KEY],
+    queryFn: () => api.get('/v1/cloud-accounts/source-attention', cloudAccountSourceAttentionSchema),
+    enabled,
+    retry: false,
+  });
+  if (!query.data) return null;
+  return new Map(query.data.items.map((item) => [item.cloudAccountId, item.sourcesNeedingAttention]));
+}
+
 export const useCreateCloudAccount = () =>
   useWrite(['admin-cloud-accounts', 'cloud-accounts'], (input: CloudAccountCreate) =>
     api.post('/v1/cloud-accounts', input, cloudAccountSchema),
@@ -161,7 +180,7 @@ export function useDeleteCloudAccount(id: string, onDeleted: () => void) {
             },
       );
       onDeleted();
-      for (const key of ['admin-cloud-accounts', 'cloud-accounts', 'plan']) {
+      for (const key of ['admin-cloud-accounts', SOURCE_ATTENTION_KEY, 'cloud-accounts', 'plan']) {
         void queryClient.invalidateQueries({ queryKey: [key] });
       }
     },

@@ -1,11 +1,13 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import {
   AWS_READER_AUDIENCE,
+  AWS_SOURCE_ATTENTION_STATES,
   type AwsConnect,
   type CloudAccount,
   type CloudAccountCreate,
   type CloudAccountDelete,
   type CloudAccountListQuery,
+  type CloudAccountSourceAttention,
   type CloudAccountUpdate,
   CONSOLE_MANAGED_CODE,
   DELETE_CONFIRMATION_MISMATCH_CODE,
@@ -138,6 +140,30 @@ export class CloudAccountsService {
       total,
       query,
     );
+  }
+
+  /**
+   * Quantas fontes autorizadas de cada conta AWS do cliente pedem atenção (paradas, sem permissão, com erro de leitura
+   * ou que sumiram): uma consulta agrupada para a lista inteira, em vez de um onboarding por conta. Só as contas com
+   * alguma fonte nessa situação entram.
+   */
+  async sourceAttention(): Promise<CloudAccountSourceAttention> {
+    const groups = await this.prisma.scoped().awsSource.groupBy({
+      by: ['cloudAccountId'],
+      where: {
+        authorizedAt: { not: null },
+        revokedAt: null,
+        state: { in: [...AWS_SOURCE_ATTENTION_STATES] },
+      },
+      _count: { _all: true },
+      orderBy: { cloudAccountId: 'asc' },
+    });
+    return {
+      items: groups.map((group) => ({
+        cloudAccountId: group.cloudAccountId,
+        sourcesNeedingAttention: group._count._all,
+      })),
+    };
   }
 
   async get(id: string): Promise<CloudAccount> {

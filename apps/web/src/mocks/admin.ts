@@ -52,6 +52,8 @@ import {
   userListQuerySchema,
   userSchema,
   userUpdateSchema,
+  cloudAccountSourceAttentionSchema,
+  needsAwsSourceAttention,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
@@ -805,6 +807,18 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       for (const account of accounts) advanceAwsAccount(store.awsOnboarding, account);
       const items = accounts.filter((account) => !query.data.status || account.status === query.data.status);
       return HttpResponse.json(paginate(items, query.data.page, query.data.pageSize));
+    }),
+    // E-08: quantas fontes autorizadas de cada conta AWS pedem atenção (a mesma regra da API).
+    http.get(url('/v1/cloud-accounts/source-attention'), () => {
+      const scope = scoped('cloud_accounts:read');
+      if (!scope.ok) return scope.error;
+      const items = listOf(store.accounts, scope.tenantId).flatMap((account) => {
+        if (account.provider !== 'aws') return [];
+        advanceAwsAccount(store.awsOnboarding, account);
+        const count = awsFakeOf(store.awsOnboarding, account).sources.filter(needsAwsSourceAttention).length;
+        return count > 0 ? [{ cloudAccountId: account.id, sourcesNeedingAttention: count }] : [];
+      });
+      return HttpResponse.json(cloudAccountSourceAttentionSchema.parse({ items }));
     }),
     http.post(url('/v1/cloud-accounts'), async ({ request }) => {
       const scope = scoped('cloud_accounts:write', request);

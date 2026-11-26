@@ -767,11 +767,19 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     const rowOf = (id: string) => rows.find((row) => row.textContent?.includes(id)) as HTMLElement;
     // A terceira coluna é a da conexão.
     const badge = (id: string) => within(rowOf(id)).getAllByRole('cell')[2];
-    expect(badge(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(/^Conectada$/);
+    expect(badge(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(/^Conectada/);
     // As leituras da assinatura da GCP da demonstração falham (a coleta parada da Torre).
-    expect(badge(DEMO_ACCOUNTS.alfaGcp)).toHaveTextContent(/^Erro$/);
-    expect(badge(DEMO_ACCOUNTS.alfaHomologacao)).toHaveTextContent(/^Erro$/);
-    expect(badge(DEMO_ACCOUNTS.alfaCloudflare)).toHaveTextContent(/^Aguardando$/);
+    expect(badge(DEMO_ACCOUNTS.alfaGcp)).toHaveTextContent(/^Erro/);
+    expect(badge(DEMO_ACCOUNTS.alfaHomologacao)).toHaveTextContent(/^Erro/);
+    expect(badge(DEMO_ACCOUNTS.alfaCloudflare)).toHaveTextContent(/^Aguardando/);
+    // E-08: o motivo curto fica na própria lista, abaixo do selo: o mesmo do detalhe.
+    expect(badge(DEMO_ACCOUNTS.alfaHomologacao)).toHaveTextContent(
+      'ErroA última conferência do papel de leitura falhou.',
+    );
+    expect(badge(DEMO_ACCOUNTS.alfaGcp)).toHaveTextContent('ErroA última leitura falhou.');
+    expect(badge(DEMO_ACCOUNTS.alfaCloudflare)).toHaveTextContent(
+      'AguardandoAguardando a configuração: a conta conecta na primeira leitura bem-sucedida.',
+    );
 
     await userEvent.click(
       within(rowOf(DEMO_ACCOUNTS.alfaHomologacao)).getByRole('button', {
@@ -787,6 +795,57 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     expect(within(sheet).getByText('Último evento', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
       'ontem',
     );
+  });
+
+  describe('E-08: fontes que pedem atenção na lista', () => {
+    const attentionUrl = `${API_URL}/v1/cloud-accounts/source-attention`;
+    const cellOf = async (id: string) => {
+      const rows = await rowsOf('Contas cloud do cliente');
+      const row = rows.find((candidate) => candidate.textContent?.includes(id)) as HTMLElement;
+      return within(row).getAllByRole('cell')[2] as HTMLElement;
+    };
+
+    it('a conta AWS conectada diz quantas fontes autorizadas pedem atenção', async () => {
+      renderAt('/cadastros/contas', undefined, undefined, [
+        http.get(attentionUrl, () =>
+          HttpResponse.json({ items: [{ cloudAccountId: DEMO_AWS_ALFA_ID, sourcesNeedingAttention: 7 }] }),
+        ),
+      ]);
+      await waitFor(async () =>
+        expect(await cellOf(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(
+          'Conectada7 fontes precisam de atenção',
+        ),
+      );
+    });
+
+    it('uma fonte fica no singular; a conta em erro não ganha a contagem, só o motivo', async () => {
+      renderAt('/cadastros/contas', undefined, undefined, [
+        http.get(attentionUrl, () =>
+          HttpResponse.json({
+            items: [
+              { cloudAccountId: DEMO_AWS_ALFA_ID, sourcesNeedingAttention: 1 },
+              { cloudAccountId: DEMO_AWS_HOMOLOGACAO_ID, sourcesNeedingAttention: 3 },
+            ],
+          }),
+        ),
+      ]);
+      await waitFor(async () =>
+        expect(await cellOf(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(
+          'Conectada1 fonte precisa de atenção',
+        ),
+      );
+      expect(await cellOf(DEMO_ACCOUNTS.alfaHomologacao)).not.toHaveTextContent('precisam de atenção');
+    });
+
+    it('num nó de antes (404), a lista mostra só o selo e o motivo, como no detalhe', async () => {
+      renderAt('/cadastros/contas', undefined, undefined, [
+        http.get(attentionUrl, () => HttpResponse.json({ title: 'Não encontrado' }, { status: 404 })),
+      ]);
+      expect(await cellOf(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(/^Conectada$/);
+      expect(await cellOf(DEMO_ACCOUNTS.alfaHomologacao)).toHaveTextContent(
+        'ErroA última conferência do papel de leitura falhou.',
+      );
+    });
   });
 
   it('GCP: conecta quando o primeiro evento chega; trocar a assinatura volta para Aguardando', async () => {

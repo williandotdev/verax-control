@@ -30,6 +30,7 @@ import { SEVERITY_STYLES } from '@/design/severity';
 import {
   ADMIN_PAGE_SIZE,
   useCloudAccountList,
+  useCloudAccountSourceAttention,
   useCloudCredential,
   useCreateCloudAccount,
   useUpdateCloudAccount,
@@ -59,6 +60,7 @@ import {
   cloudflareConnectionErrorHint,
   CONNECTION_LABELS,
   connectionHint,
+  connectionListHint,
   gcpConnectionErrorHint,
   PROVIDER_LABELS,
 } from '@/features/admin/labels';
@@ -132,6 +134,7 @@ export function CloudAccountsPage() {
   const [params, setParams] = useSearchParams();
   const page = Math.max(1, Number.parseInt(params.get('pagina') ?? '1', 10) || 1);
   const list = useCloudAccountList(page, scope !== null);
+  const attention = useCloudAccountSourceAttention(scope !== null);
   const open = params.get('conta');
   const setOpen = (value: string | null) =>
     setParams((previous) => {
@@ -174,7 +177,11 @@ export function CloudAccountsPage() {
       cell: (row) =>
         scopeOf(row) ?? <span className="text-muted-foreground">{MISSING_SCOPE[row.provider]}</span>,
     },
-    { key: 'conexao', header: 'Conexão', cell: (row) => <ConnectionBadge account={row} /> },
+    {
+      key: 'conexao',
+      header: 'Conexão',
+      cell: (row) => <ConnectionCell account={row} attention={attention?.get(row.id) ?? null} />,
+    },
     {
       key: 'evento',
       header: 'Último evento',
@@ -292,6 +299,35 @@ function ConnectionBadge({ account }: { account: CloudAccount }) {
     <span className="inline-flex items-center gap-1 whitespace-nowrap text-sm">
       <Icon aria-hidden className={cn('size-4', tone)} />
       {CONNECTION_LABELS[account.connection]}
+    </span>
+  );
+}
+
+const numberFormat = new Intl.NumberFormat('pt-BR');
+
+/**
+ * A conexão na lista (E-08): o selo e, abaixo de "Erro" ou "Aguardando", o motivo curto, o mesmo do detalhe. Na conta
+ * AWS conectada com fontes autorizadas que pedem atenção, quantas são, com o ícone de atenção (nunca só a cor). Sem a
+ * contagem (num nó de antes), só o selo.
+ */
+function ConnectionCell({ account, attention }: { account: CloudAccount; attention: number | null }) {
+  const hint = connectionListHint(account);
+  const { icon: WarnIcon, tone } = SEVERITY_STYLES.medium;
+  return (
+    <span className="block space-y-0.5">
+      <ConnectionBadge account={account} />
+      {hint && <span className="block max-w-80 text-xs text-muted-foreground">{hint}</span>}
+      {account.provider === 'aws' &&
+        account.connection === 'connected' &&
+        attention !== null &&
+        attention > 0 && (
+          <span className="flex items-center gap-1 text-xs">
+            <WarnIcon aria-hidden className={cn('size-3.5 shrink-0', tone)} />
+            {attention === 1
+              ? '1 fonte precisa de atenção'
+              : `${numberFormat.format(attention)} fontes precisam de atenção`}
+          </span>
+        )}
     </span>
   );
 }

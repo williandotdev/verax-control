@@ -4,10 +4,12 @@ import {
   type AwsOnboarding,
   type AwsOnboardingState,
   type CloudAccount,
+  needsAwsSourceAttention,
 } from '@verax/shared';
 import { useCallback, useEffect, useRef } from 'react';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
+import { SOURCE_ATTENTION_KEY } from '@/features/admin/admin-api';
 import { useAwsChoice } from '@/features/admin/aws-choice';
 import { AwsConnectPanel, AwsWaitingPanel } from '@/features/admin/aws-connect-panel';
 import { AwsDiscoveryResults } from '@/features/admin/aws-discovery-results';
@@ -31,7 +33,7 @@ const OUTSIDE_STATES: readonly AwsOnboardingState[] = [
 ];
 
 /** As listas de contas mostram a conexão e as regiões, que mudam junto com o estado do onboarding. */
-const ACCOUNT_LIST_KEYS = ['admin-cloud-accounts', 'cloud-accounts'] as const;
+const ACCOUNT_LIST_KEYS = ['admin-cloud-accounts', SOURCE_ATTENTION_KEY, 'cloud-accounts'] as const;
 
 /**
  * Quando o estado da conta, a descoberta ou as regiões mudam numa releitura, as listas de contas são relidas: o selo da
@@ -42,7 +44,7 @@ function useAccountListRefresh(onboarding: AwsOnboarding | undefined): void {
   const signature =
     onboarding === undefined
       ? null
-      : `${onboarding.state}|${onboarding.discovery.run?.status ?? ''}|${onboarding.discovery.regions.join(',')}`;
+      : `${onboarding.state}|${onboarding.discovery.run?.status ?? ''}|${onboarding.discovery.regions.join(',')}|${onboarding.sources.filter(needsAwsSourceAttention).length}`;
   const previous = useRef<string | null>(null);
   useEffect(() => {
     if (signature === null) return;
