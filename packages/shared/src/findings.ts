@@ -112,13 +112,15 @@ export const FINDING_TYPES = ['detection', 'posture', 'vulnerability'] as const;
 export type FindingType = (typeof FINDING_TYPES)[number];
 
 /**
- * A lista de alertas. `sort` e `type` (E-06) são opcionais: o painel de antes não os manda, e um nó de antes os recusa
- * (a query é estrita), o que o painel novo trata pedindo de novo sem eles.
+ * A lista de alertas. Opcionais (o painel de antes não os manda, e um nó de antes os recusa, porque a query é estrita):
+ * `sort` e `type` (E-06), e a exceção que os marcou (`exception`, o id de uma de usuário, IP ou recurso ou de uma ampla):
+ * os alertas que ela marcou na chegada e os que estavam em aberto e ela resolveu ao ser criada.
  */
 export const findingListQuerySchema = withPagination({
   ...findingFilterShape,
   sort: z.enum(FINDING_SORTS).optional(),
   type: z.enum(FINDING_TYPES).optional(),
+  exception: z.uuid().optional(),
 }).superRefine(checkCustomRange);
 export type FindingListQuery = z.infer<typeof findingListQuerySchema>;
 

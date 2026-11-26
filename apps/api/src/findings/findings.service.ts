@@ -131,7 +131,14 @@ export class FindingsService {
   ) {}
 
   async list(query: FindingListQuery, now = new Date()): Promise<Paginated<Finding>> {
-    const where = findingWhere(query, now);
+    const where: Prisma.FindingWhereInput = {
+      ...findingWhere(query, now),
+      // A exceção que marcou o alerta, na chegada ou ao ser criada (os em aberto que ela resolveu). Num `AND`, para não
+      // trocar o `OR` da busca.
+      ...(query.exception !== undefined && {
+        AND: [{ OR: [{ exceptionId: query.exception }, { scopedExceptionId: query.exception }] }],
+      }),
+    };
     const db = this.prisma.scoped();
     const [rows, total] = await Promise.all([
       db.finding.findMany({

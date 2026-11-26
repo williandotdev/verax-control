@@ -5,6 +5,7 @@ import { createAdminHandlers, demoAdminStore } from './admin';
 import { createAgentsHandlers } from './agents-handlers';
 import { createAuditHandlers } from './audit-handlers';
 import { createAuthHandlers } from './auth-handlers';
+import { createExceptionOpenAlertHandlers } from './exception-open-alerts';
 import { type CloudflareOauthScenario, createCloudflareOauthHandlers } from './cloudflare-oauth';
 import { addCaseFindings, createCaseHandlers, createCaseWorlds } from './cases-handlers';
 import { demoTower } from './fixtures';
@@ -135,7 +136,8 @@ export function createHandlers(state: MockState) {
       );
     }),
     ...createAuthHandlers(state),
-    ...createAdminHandlers(state, admin),
+    ...createExceptionOpenAlertHandlers(state, findings),
+    ...createAdminHandlers(state, admin, findings),
     ...createCloudflareOauthHandlers(state, admin),
     ...createFindingHandlers(state, findings),
     ...createCaseHandlers(state, findings, incidents, worlds),

@@ -2,11 +2,23 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import type {
   AlertException,
   AlertExceptionCreate,
+  AlertExceptionCreated,
   AlertExceptionListQuery,
   AlertExceptionRuleTitles,
+  AlertExceptionOpenPreviewQuery,
   AlertExceptionUpdate,
+  ExceptionCreateQuery,
+  ExceptionOpenPreview,
+  ExceptionOpenResolution,
   Paginated,
 } from '@verax/shared';
+import {
+  alertExceptionComment,
+  alertExceptionTarget,
+  previewOpenAlerts,
+  resolveOpenAlerts,
+} from '../alerts/exception-open-alerts.js';
+import { lockFindingsBriefly } from '../cases/triage-store.js';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
 import { ApiError } from '../common/http/api-error.js';
@@ -49,6 +61,16 @@ function toDate(value: string | null | undefined): Date | null | undefined {
 }
 
 const NOT_FOUND = 'Exceção não encontrada';
+
+/** Um registro na trilha para o lote inteiro, com as contagens. */
+function openAudit(id: string, resolution: ExceptionOpenResolution) {
+  return {
+    action: 'alert_exception.resolve_open',
+    resourceType: 'alert_exception',
+    resourceId: id,
+    after: { exceptionId: id, ...resolution },
+  };
+}
 
 /** Exceções de alerta do cliente da sessão (T3.5). Toda alteração vai para a auditoria. */
 @Injectable()
@@ -109,7 +131,28 @@ export class AlertExceptionsService {
     return toException(await this.find(id));
   }
 
-  async create(auth: RequestAuth, input: AlertExceptionCreate): Promise<AlertException> {
+  /**
+   * "Vai resolver N alertas em aberto (M em incidentes ficam)": os alertas em aberto que a exceção resolveria se fosse
+   * criada agora, pela mesma regra da chegada. Só leitura.
+   */
+  async previewOpen(query: AlertExceptionOpenPreviewQuery): Promise<ExceptionOpenPreview> {
+    const now = new Date();
+    return previewOpenAlerts(
+      this.prisma.scoped(),
+      alertExceptionTarget({ id: '', ...query, expiresAt: null }),
+      now,
+    );
+  }
+
+  /**
+   * Cria a exceção e resolve os alertas em aberto que ela cobre (decisão do dono de 26/11/2026), na mesma transação. A
+   * contagem só vai na resposta para quem a pede (`openAlerts=true`): a resposta de sempre é estrita no painel de antes.
+   */
+  async create(
+    auth: RequestAuth,
+    input: AlertExceptionCreate,
+    query: ExceptionCreateQuery = {},
+  ): Promise<AlertException | AlertExceptionCreated> {
     let row: ExceptionRow;
     try {
       row = await this.prisma.scoped().alertException.create({
@@ -130,14 +173,53 @@ export class AlertExceptionsService {
       }
       throw error;
     }
-    const exception = toException(row);
+    const settled = await this.resolveOpen(auth, row, new Date());
+    const exception = toException(settled.row);
     this.audit.describe({
       action: 'alert_exception.create',
       resourceType: 'alert_exception',
       resourceId: exception.id,
       after: exception,
     });
-    return exception;
+    if (settled.resolution.resolved > 0 || settled.resolution.keptInIncident > 0) {
+      this.audit.also(openAudit(exception.id, settled.resolution));
+    }
+    return query.openAlerts === 'true' ? { ...exception, openAlerts: settled.resolution } : exception;
+  }
+
+  /**
+   * "Resolver os próximos": a criação parou no teto da requisição, e esta resolve mais um tanto, pela mesma regra. Só a
+   * exceção em vigor. Rodar de novo sem nada em aberto não muda nada.
+   */
+  async resolveOpenAgain(auth: RequestAuth, id: string): Promise<ExceptionOpenResolution> {
+    const row = await this.find(id);
+    if (!toException(row).active) {
+      throw new ApiError(HttpStatus.CONFLICT, 'Esta exceção não está mais em vigor');
+    }
+    const { resolution } = await this.resolveOpen(auth, row, new Date());
+    this.audit.describe(openAudit(id, resolution));
+    return resolution;
+  }
+
+  /** Os alertas em aberto que a exceção cobre viram legítimos, e a contagem dela sobe com eles. */
+  private async resolveOpen(
+    auth: RequestAuth,
+    row: ExceptionRow,
+    now: Date,
+  ): Promise<{ row: ExceptionRow; resolution: ExceptionOpenResolution }> {
+    const db = this.prisma.scoped();
+    const resolution = await resolveOpenAlerts(db, alertExceptionTarget(row), {
+      now,
+      comment: { authorId: auth.userId, body: alertExceptionComment(row, row.createdBy.name) },
+      lock: () => lockFindingsBriefly(this.prisma.db(), this.prisma.scopeTenantId()),
+    });
+    if (resolution.resolved === 0) return { row, resolution };
+    const updated = await db.alertException.update({
+      where: { id: row.id },
+      data: { matchedCount: { increment: resolution.resolved }, lastMatchedAt: now },
+      select: exceptionSelect,
+    });
+    return { row: updated, resolution };
   }
 
   async update(id: string, input: AlertExceptionUpdate): Promise<AlertException> {

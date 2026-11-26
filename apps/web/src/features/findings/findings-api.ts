@@ -2,7 +2,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import type { z } from 'zod';
 import {
   type AlertExceptionCreate,
-  alertExceptionSchema,
+  alertExceptionCreatedSchema,
   cloudAccountSchema,
   findingCommentSchema,
   findingDetailSchema,
@@ -15,6 +15,10 @@ import {
 } from '@verax/shared';
 import { invalidateCases } from '@/features/cases/cases-api';
 import { toSearch } from '@/features/detections/detections-api';
+import {
+  createWithOpenAlerts,
+  useInvalidateOpenAlerts,
+} from '@/features/exception-open-alerts/open-alerts-api';
 import { api } from '@/lib/api';
 import { ApiRequestError } from '@/lib/api-client';
 
@@ -126,9 +130,12 @@ export function useAddFindingComment(id: string) {
 
 /** Exceção oferecida ao marcar um achado como legítimo (T3.5): alertas iguais passam a ser esperados. */
 export function useCreateAlertException() {
+  const invalidate = useInvalidateOpenAlerts();
   return useMutation({
     mutationFn: (exception: AlertExceptionCreate) =>
-      api.post('/v1/alert-exceptions', exception, alertExceptionSchema),
+      createWithOpenAlerts('/v1/alert-exceptions', exception, alertExceptionCreatedSchema),
+    // Os alertas em aberto que ela cobre foram resolvidos junto.
+    onSuccess: invalidate,
   });
 }
 

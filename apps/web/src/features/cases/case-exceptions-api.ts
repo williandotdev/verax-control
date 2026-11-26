@@ -1,13 +1,18 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   type AlertExceptionBatch,
-  alertExceptionBatchResultSchema,
+  alertExceptionBatchCreatedSchema,
   caseExceptionDraftSchema,
   paginatedSchema,
   type ScopedExceptionCreate,
+  scopedExceptionCreatedSchema,
   scopedExceptionPreviewSchema,
   scopedExceptionSchema,
 } from '@verax/shared';
+import {
+  createWithOpenAlerts,
+  useInvalidateOpenAlerts,
+} from '@/features/exception-open-alerts/open-alerts-api';
 import { api } from '@/lib/api';
 
 const id = (value: string) => encodeURIComponent(value);
@@ -25,11 +30,16 @@ export const useCaseExceptionDraft = (caseId: string) =>
 
 /** As exceções de usuário, IP ou recurso do caso, de uma vez (até 20). */
 export function useCreateExceptionBatch(caseId: string) {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateOpenAlerts();
   return useMutation({
     mutationFn: (input: AlertExceptionBatch) =>
-      api.post(`/v1/cases/${id(caseId)}/alert-exceptions`, input, alertExceptionBatchResultSchema),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['admin-exceptions'] }),
+      createWithOpenAlerts(
+        `/v1/cases/${id(caseId)}/alert-exceptions`,
+        input,
+        alertExceptionBatchCreatedSchema,
+      ),
+    // As exceções novas e os alertas em aberto que elas resolveram.
+    onSuccess: invalidate,
   });
 }
 
@@ -44,11 +54,11 @@ export const useScopedPreview = () =>
   });
 
 export function useCreateScoped() {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateOpenAlerts();
   return useMutation({
     mutationFn: (input: ScopedExceptionCreate) =>
-      api.post('/v1/scoped-exceptions', input, scopedExceptionSchema),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['scoped-exceptions'] }),
+      createWithOpenAlerts('/v1/scoped-exceptions', input, scopedExceptionCreatedSchema),
+    onSuccess: invalidate,
   });
 }
 

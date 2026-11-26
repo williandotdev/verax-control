@@ -68,7 +68,8 @@ describe('exceções amplas (CASES_MODE=on)', () => {
 
   afterAll(async () => {
     await cleanCases(prisma, tenants);
-    await prisma.finding.deleteMany({ where: { tenantId: { in: tenants } } });
+    // O alerta resolvido pela exceção ao ser criada tem o comentário dela, que não sai (só pelo expurgo): fica.
+    await prisma.finding.deleteMany({ where: { tenantId: { in: tenants }, comments: { none: {} } } });
     await prisma.scopedException.deleteMany({ where: { tenantId: { in: tenants } } });
     await app.close();
   }, 60_000);
