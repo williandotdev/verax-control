@@ -39,7 +39,8 @@ import {
   isRecommendedSource,
 } from '@/features/admin/aws-sources';
 import { Notice, Section, Tag } from '@/features/admin/aws-ui';
-import { AlbLoggingSteps, UnsupportedBalancerReason } from '@/features/web-attacks/alb-logging-steps';
+import { AlbLoggingControl, AlbLoggingOwned } from '@/features/web-attacks/alb-logging-control';
+import { UnsupportedBalancerReason } from '@/features/web-attacks/alb-logging-steps';
 import {
   acknowledgementOf,
   acknowledgementText,
@@ -474,6 +475,9 @@ export function AwsSourceGroups({
                   {balancer && (
                     <EstimateStep source={source} web={webById.get(source.id)} canWrite={canAuthorize} />
                   )}
+                  {balancer && web.data != null && (
+                    <AlbLoggingOwned source={source} canWrite={canAuthorize} />
+                  )}
                   {source.authorization.revokedAt !== null && (
                     <p className="text-xs text-muted-foreground">
                       Autorização retirada em {formatDate(source.authorization.revokedAt)}. Pode ser
@@ -589,7 +593,7 @@ export function AwsSourceGroups({
       <SourceGroup
         title="Não habilitadas na AWS"
         count={groups.not_enabled.length}
-        description='Ligar um destes serviços tem custo na AWS, e a decisão é sua: o Verax nunca liga nada na sua conta. Se você ligar um deles, clique em Descobrir de novo, em "O que encontramos": a fonte passa a aparecer entre as disponíveis.'
+        description='Ligar um destes serviços tem custo na AWS, e a decisão é sua: o Verax só liga, a seu pedido, o log de acesso de um balanceador, e nada mais. Se você ligar um deles, clique em Descobrir de novo, em "O que encontramos": a fonte passa a aparecer entre as disponíveis.'
       >
         <SourceList label="Fontes não habilitadas na AWS">
           {groups.not_enabled.map((source) => (
@@ -600,7 +604,12 @@ export function AwsSourceGroups({
               </p>
               <SourceNotes source={source} omit={source.notes.filter((note) => !isAwsCostNote(note))} />
               {source.kind === 'elb_logs' && source.availability === 'no_destination' && (
-                <AlbLoggingSteps source={source} account={account} />
+                <AlbLoggingControl
+                  source={source}
+                  account={account}
+                  onboarding={onboarding}
+                  canWrite={canWrite}
+                />
               )}
             </li>
           ))}

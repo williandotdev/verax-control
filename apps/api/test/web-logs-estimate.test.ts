@@ -349,6 +349,7 @@ describe('estimativa de volume de um balanceador', () => {
       expect(tasks.map(({ name, intervalMs, budgetMs }) => ({ name, intervalMs, budgetMs }))).toEqual([
         { name: 'web-logs', intervalMs: 120_000, budgetMs: 480_000 },
         { name: 'web-logs-estimate', intervalMs: 30_000, budgetMs: 240_000 },
+        { name: 'web-logs-alb-logging', intervalMs: 15_000, budgetMs: 120_000 },
       ]);
       await close();
     });

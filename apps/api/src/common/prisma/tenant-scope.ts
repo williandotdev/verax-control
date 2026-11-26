@@ -61,6 +61,8 @@ export const TENANT_SCOPED_MODELS = [
   'webSourceSettings',
   // O pedido é do painel; o resultado, do worker (como nas fontes).
   'webSourceEstimate',
+  // O log de acesso do ALB ligado pelo painel: o pedido é do painel; o resultado, do worker (como na estimativa).
+  'webAlbLogging',
   'webTrustedSource',
   'webRoute',
   'webLogObject',

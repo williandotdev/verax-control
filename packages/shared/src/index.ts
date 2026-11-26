@@ -41,5 +41,6 @@ export * from './triage-operations.js';
 export * from './unowned-alerts.js';
 export * from './usage-day.js';
 export * from './users.js';
+export * from './web-alb-logging.js';
 export * from './web-logs.js';
 export * from './web-traffic.js';

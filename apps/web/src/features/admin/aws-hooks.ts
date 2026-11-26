@@ -2,6 +2,7 @@ import { AWS_SOURCE_RETRY_INTERVAL_MS, type AwsOnboardingErrorCode, type CloudAc
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   type AwsAuthorizationChoice,
+  type AwsStackOptions,
   type PrefilledTemplate,
   prefilledReaderTemplate,
 } from '@/features/admin/aws-connect';
@@ -40,13 +41,15 @@ export function useAwsStackFile(
   account: CloudAccount,
   choice: AwsAuthorizationChoice,
   enabled = true,
+  options: AwsStackOptions = {},
 ): AwsStackFile {
   const template = useAwsReaderTemplate(enabled);
   const text = template.data;
+  const albLogs = options.albLogs === true;
   const build = useCallback(
     (chosen: AwsAuthorizationChoice) =>
-      text === undefined ? null : prefilledReaderTemplate(text, account, chosen),
-    [text, account],
+      text === undefined ? null : prefilledReaderTemplate(text, account, chosen, { albLogs }),
+    [text, account, albLogs],
   );
   const file = useMemo(() => build(choice), [build, choice]);
   return {

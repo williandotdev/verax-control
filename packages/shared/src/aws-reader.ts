@@ -1,4 +1,5 @@
 import { bucketNameProblem, isAwsRegion, LOG_SOURCES, type LogSource } from './cloud-accounts.js';
+import { AWS_READER_ALB_LOGS_PARAMETER } from './web-alb-logging.js';
 
 /**
  * Papel de leitura sem chave na conta AWS do cliente (fase 2, PR-V2' e PR-V3'; `docs/ARQUITETURA.md`, "Por que papel
@@ -334,6 +335,11 @@ export interface AwsReaderStackValues {
   buckets: readonly string[];
   /** As autorizações dadas na pilha; sem o campo, as três (o padrão do template). A descoberta vale sempre. */
   capabilities?: readonly AwsReaderCapability[];
+  /**
+   * `true` liga `EnableAlbAccessLogs` (o painel liga o log de acesso dos ALB). Sem o campo, o template fica como está
+   * (desligado na pilha nova) e o comando não o menciona: a atualização de uma pilha existente mantém o valor dela.
+   */
+  albLogs?: boolean;
 }
 
 /** O valor (`true` ou `false`) do parâmetro de cada autorização, na ordem do template. */
@@ -427,6 +433,7 @@ export function awsReaderDeployCommand(
   ];
   const arns = awsLogBucketArns(values.buckets);
   overrides.push(`LogBucketArns=${arns.length > 0 ? arns.join(',') : '""'}`);
+  if (values.albLogs === true) overrides.push(`${AWS_READER_ALB_LOGS_PARAMETER}=true`);
   return [
     `aws cloudformation deploy --stack-name ${AWS_READER_STACK_NAME} \\`,
     `  --template-file ${templateFile} --capabilities CAPABILITY_NAMED_IAM \\`,
@@ -510,6 +517,8 @@ function prefillDefaults(values: AwsReaderStackValues): Map<string, string> {
   // Os buckets adicionais só entram quando a conta os tem: sem eles, a linha do template fica como está (vazia).
   const arns = awsLogBucketArns(values.buckets);
   if (arns.length > 0) defaults.set('LogBucketArns', arns.join(','));
+  // O log dos ALB só quando pedido: sem ele, a linha do template fica como está (desligada).
+  if (values.albLogs === true) defaults.set(AWS_READER_ALB_LOGS_PARAMETER, 'true');
   // A última trava antes de escrever: as regras acima já só deixam passar ASCII sem aspas, e esta conferência vale
   // mesmo que uma delas mude.
   for (const value of defaults.values()) {

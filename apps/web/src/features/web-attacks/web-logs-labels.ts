@@ -1,5 +1,6 @@
 import {
   isAwsSourcePermissionDetail,
+  type WebAlbLoggingFailure,
   WEB_LOGS_ERROR_CODES,
   type WebLogsErrorCode,
   type WebRouteKind,
@@ -144,6 +145,13 @@ export const WEB_LOGS_ERROR_TEXTS: Readonly<Record<WebLogsErrorCode, string>> = 
     'Esta rota já está declarada, com o mesmo host, método e caminho. Altere a que existe.',
   WEB_ESTIMATE_RATE_LIMITED:
     'A estimativa deste balanceador acabou de ser pedida. Só é possível pedir outra 5 minutos depois.',
+  WEB_ALB_LOGGING_PENDING: 'Já há um pedido para o log deste balanceador. Aguarde a resposta.',
+  WEB_ALB_LOGGING_ALREADY_ON: 'O log de acesso deste balanceador já está ligado. Rode a descoberta de novo.',
+  WEB_ALB_LOGGING_NOT_ALB: 'Só o log de um balanceador de aplicação (ALB) pode ser ligado pelo painel.',
+  WEB_ALB_LOGGING_NOT_VERAX:
+    'O Verax só desliga o log que ele mesmo ligou. Este, desligue no console da AWS, se quiser.',
+  WEB_ALB_LOGGING_SOURCE_AUTHORIZED:
+    'Retire a autorização deste balanceador antes de desligar o log dele: sem o log, a leitura pararia com aviso.',
 };
 
 function isWebLogsCode(code: string): code is WebLogsErrorCode {
@@ -162,6 +170,30 @@ export function webLogsErrorText(error: unknown): string {
   }
   return errorMessage(error);
 }
+
+// --- O log de acesso do ALB ligado pelo painel ---
+
+/** Por que o Verax não mudou o log (o resultado `failed` do worker). Nada mudou na conta em nenhum destes casos. */
+export const ALB_LOGGING_FAILURE_TEXTS: Readonly<Record<WebAlbLoggingFailure, string>> = {
+  stack_update_required:
+    'A pilha da Verax nesta conta ainda não deixa o Verax ligar o log. Atualize a pilha, abaixo, e peça de novo.',
+  permission_denied:
+    'A AWS negou a mudança. Atualize a pilha da Verax, abaixo; se ela já está atual, uma política da sua organização (SCP) pode estar negando.',
+  other_region:
+    'O bucket que a pilha criou fica em outra região, e o balanceador só grava o log num bucket da região dele. Para este, faça você mesmo, abaixo.',
+  bucket_rejected:
+    'A AWS não conseguiu gravar no bucket da pilha: a política dele foi mudada, ou ele foi apagado. Atualize a pilha e peça de novo.',
+  balancer_missing: 'O balanceador não foi encontrado na AWS. Rode a descoberta de novo.',
+  account_not_connected:
+    'A conta não estava conectada quando o Verax foi ligar o log. Confira a conexão e peça de novo.',
+  throttled: 'A AWS limitou as chamadas da conta naquele momento. Peça de novo em alguns minutos.',
+  failed:
+    'O Verax não conseguiu concluir a mudança, e nada foi alterado. Peça de novo; se continuar, fale com o suporte.',
+};
+
+/** O código pede a pilha atualizada (o caminho do arquivo preenchido). */
+export const isAlbStackUpdateFailure = (code: WebAlbLoggingFailure | null): boolean =>
+  code === 'stack_update_required' || code === 'permission_denied' || code === 'bucket_rejected';
 
 // --- Rotas declaradas ---
 

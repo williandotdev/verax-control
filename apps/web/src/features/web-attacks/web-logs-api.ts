@@ -1,6 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AWS_MAX_SOURCES_PER_ACCOUNT,
+  type WebAlbLogging,
+  type WebAlbLoggingAction,
+  webAlbLoggingSchema,
   type WebLogSource,
   webLogSourceListSchema,
   webLogSourceSchema,
@@ -48,7 +51,11 @@ export const webLogsKeys = {
   health: (sourceId: string) => ['web-logs', 'health', sourceId] as const,
   routes: (sourceId: string) => ['web-logs', 'routes', sourceId] as const,
   trusted: ['web-logs', 'trusted'] as const,
+  albLogging: (sourceId: string) => ['web-logs', 'alb-logging', sourceId] as const,
 };
+
+/** Com um pedido de ligar ou desligar o log do ALB esperando o worker: de quanto em quanto tempo a leitura se repete. */
+export const ALB_LOGGING_POLL_MS = 4_000;
 
 /** A resposta, ou `null` quando a API diz 404 (a funcionalidade não existe neste nó, ou o item saiu). */
 async function orMissing<T>(read: Promise<T>): Promise<T | null> {
@@ -156,6 +163,33 @@ export function useWebHealth(sourceId: string, enabled = true) {
     queryFn: () => orMissing(api.get(sourcePath(sourceId, '/health'), webSourceHealthSchema)),
     enabled,
     refetchInterval: WEB_HEALTH_POLL_MS,
+  });
+}
+
+// --- O log de acesso do ALB ligado pelo painel ---
+
+/**
+ * O log de acesso do balanceador ligado pelo painel; `null` no nó que não tem a rota (o de antes, ou com os ataques web
+ * desligados): aí a tela mostra o caminho de antes, os comandos. Com um pedido pendente, relê até o worker responder.
+ */
+export function useAlbLogging(sourceId: string, enabled = true) {
+  return useQuery({
+    queryKey: webLogsKeys.albLogging(sourceId),
+    queryFn: () => orMissing(api.get(sourcePath(sourceId, '/access-logs'), webAlbLoggingSchema)),
+    enabled,
+    refetchInterval: (query) => (query.state.data?.pending != null ? ALB_LOGGING_POLL_MS : false),
+  });
+}
+
+/** Pede ao worker que ligue (ou desligue) o log; a resposta é o pedido gravado, que entra no cache. */
+export function useRequestAlbLogging(sourceId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (action: WebAlbLoggingAction) =>
+      api.post(sourcePath(sourceId, `/access-logs/${action}`), { confirm: true }, webAlbLoggingSchema),
+    onSuccess: (state: WebAlbLogging) => {
+      queryClient.setQueryData(webLogsKeys.albLogging(sourceId), state);
+    },
   });
 }
 

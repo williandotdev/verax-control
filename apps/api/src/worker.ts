@@ -222,7 +222,8 @@ async function awsConnectionSetup(
  *
  * Com `AWS_WEB_LOGS_ENABLED` (desligada por padrão) e a mesma identidade, fora da célula, entram as dos ataques web pelos logs
  * do ALB (`weblogs/collect/`): `web-logs` (a cada 2 min) lê do S3 os logs dos balanceadores autorizados, e
- * `web-logs-estimate` (a cada 30 s) responde às estimativas de volume pedidas no painel.
+ * `web-logs-estimate` (a cada 30 s) responde às estimativas de volume pedidas no painel, e `web-logs-alb-logging` (a cada
+ * 15 s) liga ou desliga o log de acesso de um ALB, a pedido no painel (só com a pilha com `EnableAlbAccessLogs`).
  *
  * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
  * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos

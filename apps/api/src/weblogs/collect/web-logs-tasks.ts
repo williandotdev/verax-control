@@ -28,7 +28,8 @@ export interface WebLogsTasks {
 const NONE: WebLogsTasks = { tasks: [], close: () => Promise.resolve() };
 
 /**
- * As tarefas dos ataques web pelos logs do ALB (`web-logs` e `web-logs-estimate`). Desligados no nó (o padrão, e sempre na
+ * As tarefas dos ataques web pelos logs do ALB (`web-logs`, `web-logs-estimate` e `web-logs-alb-logging`, a que liga o log de
+ * acesso a pedido no painel). Desligados no nó (o padrão, e sempre na
  * célula) ou sem identidade na AWS, não existem: nenhum módulo delas é carregado e nenhuma chamada sai para o S3.
  */
 export async function webLogsTasks(
@@ -36,9 +37,10 @@ export async function webLogsTasks(
   { prisma, credentials, notices, scopedExceptions, logger }: WebLogsTaskDeps,
 ): Promise<WebLogsTasks> {
   if (!awsSourceFeatures(config).webLogs || credentials === null) return NONE;
-  const [job, estimate, { sdkDiscoveryClients }, countries] = await Promise.all([
+  const [job, estimate, albLogging, { sdkDiscoveryClients }, countries] = await Promise.all([
     import('./web-logs-job.js'),
     import('./web-estimate-job.js'),
+    import('../alb-logging/web-alb-logging-job.js'),
     import('../../aws/discovery/sdk-clients.js'),
     loadCountries(logger),
   ]);
@@ -51,6 +53,7 @@ export async function webLogsTasks(
     },
   });
   const estimator = new estimate.WebLogsEstimator(prisma, credentials, sdkDiscoveryClients);
+  const albLogs = new albLogging.WebAlbLoggingTask(prisma, credentials, sdkDiscoveryClients);
   return {
     tasks: [
       {
@@ -64,6 +67,12 @@ export async function webLogsTasks(
         intervalMs: estimate.WEB_ESTIMATE_TICK_MS,
         budgetMs: estimate.WEB_ESTIMATE_BUDGET_MS,
         run: (signal) => estimator.runOnce(signal),
+      },
+      {
+        name: albLogging.WEB_ALB_LOGGING_SYNC,
+        intervalMs: albLogging.WEB_ALB_LOGGING_TICK_MS,
+        budgetMs: albLogging.WEB_ALB_LOGGING_BUDGET_MS,
+        run: (signal) => albLogs.runOnce(signal),
       },
     ],
     close: () => collector.close(),
