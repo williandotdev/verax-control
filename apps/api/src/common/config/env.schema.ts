@@ -521,8 +521,12 @@ export function requiresVerifiedTls(databaseUrl: string): boolean {
   }
 }
 
-/** `CASES_MODE`, igual na API e no worker. Sem a linha, a medição: ninguém do cliente vê os casos, e os e-mails não mudam. */
-const casesModeFromEnv = z.enum(CASES_MODES, { error: 'use off, shadow ou on' }).default('shadow');
+/**
+ * `CASES_MODE`, igual na API e no worker. Sem a linha, ligados (desde a 1.7.0, depois da medição em `shadow` na 1.5.0 e
+ * na 1.6.0): o cliente vê os casos, trata em massa, e os e-mails dos alertas são por caso. O nó gerenciado não recebe
+ * configuração remota, então é este padrão que liga; voltar é uma versão com outro padrão.
+ */
+const casesModeFromEnv = z.enum(CASES_MODES, { error: 'use off, shadow ou on' }).default('on');
 
 /**
  * Variáveis de ambiente da API. A API não sobe se alguma obrigatória faltar ou for inválida.

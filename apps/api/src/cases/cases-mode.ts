@@ -4,9 +4,9 @@ import { CASE_MODES, type Role } from '@verax/shared';
  * `CASES_MODE`, a chave dos casos. A mesma no ambiente do worker e no da API, conferida na partida:
  * - `off`: no worker, nenhuma tarefa dos casos roda, e o nó fica como antes deles; na API, as rotas dos casos
  *   não existem para ninguém;
- * - `shadow` (padrão): os alertas ganham caso, e só a equipe da Verax lê os casos, para conferir a medição no nó piloto;
- * - `on`: todos os papéis leem os casos do próprio cliente, quem faz triagem opera em massa, e os avisos por e-mail dos
- *   alertas são por caso, e não mais um por alerta.
+ * - `shadow`: os alertas ganham caso, e só a equipe da Verax lê os casos, para conferir a medição num nó;
+ * - `on` (padrão desde a 1.7.0): todos os papéis leem os casos do próprio cliente, quem faz triagem opera em massa, e os
+ *   avisos por e-mail dos alertas são por caso, e não mais um por alerta.
  */
 export const CASES_MODES = CASE_MODES;
 export type CasesMode = (typeof CASES_MODES)[number];
