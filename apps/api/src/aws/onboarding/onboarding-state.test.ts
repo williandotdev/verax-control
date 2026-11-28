@@ -29,7 +29,7 @@ function account(overrides: Partial<OnboardingAccountFacts> = {}): OnboardingAcc
     collectionError: null,
     checkRequestedAt: null,
     awsConnectRequestedAt: T0,
-    awsTemplateVersion: 2,
+    awsTemplateVersion: 3,
     awsCapabilitiesCheckedAt: later(1),
     ...overrides,
   };

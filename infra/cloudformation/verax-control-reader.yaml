@@ -293,8 +293,7 @@ Resources:
                 - !Sub 'arn:${AWS::Partition}:s3:::*/AWSLogs/${AWS::AccountId}/*'
                 - !Sub 'arn:${AWS::Partition}:s3:::*/AWSLogs/o-*/${AWS::AccountId}/*'
             - !Ref AWS::NoValue
-          # Lista os nomes dos objetos dessas mesmas pastas: a listagem precisa pedir um prefixo dentro delas. Não
-          # lista nenhuma outra pasta e não lê conteúdo.
+          # Lista só os nomes dessas mesmas pastas, também atrás de um prefixo (o log do ALB com prefixo).
           - !If
             - ReadsServiceLogs
             - Sid: ListarLogsDaAwsDestaConta
@@ -306,6 +305,7 @@ Resources:
                   s3:prefix:
                     - !Sub 'AWSLogs/${AWS::AccountId}/*'
                     - !Sub 'AWSLogs/o-*/${AWS::AccountId}/*'
+                    - !Sub '*/AWSLogs/${AWS::AccountId}/*'
             - !Ref AWS::NoValue
           # Para achar a pasta AWSLogs, o coletor (Wazuh) lista, com o separador "/", o primeiro nível do bucket e o de
           # AWSLogs/: só nomes, sem abrir outra pasta nem ler conteúdo.
@@ -651,7 +651,7 @@ Resources:
       # sem elas, é o modelo 1. Separadas por espaço: o IAM não aceita vírgula no valor.
       Tags:
         - Key: verax-control:template
-          Value: '2'
+          Value: '3'
         - Key: verax-control:capabilities
           Value: !Join
             - ''

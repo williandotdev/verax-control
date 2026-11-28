@@ -352,10 +352,10 @@ describe('o usuário IAM de leitura da AWS', () => {
     expect(commands).toContain('aws iam create-access-key --user-name verax-control-reader');
     // As etiquetas do usuário são as do papel: o modelo e o que foi autorizado, separado por espaço.
     expect(commands).toContain(
-      " --tags Key=verax-control:template,Value=2 'Key=verax-control:capabilities,Value=discovery service-logs findings log-groups'\n",
+      " --tags Key=verax-control:template,Value=3 'Key=verax-control:capabilities,Value=discovery service-logs findings log-groups'\n",
     );
     expect(awsReaderUserCommands('111111111111', ['findings'])).toContain(
-      " --tags Key=verax-control:template,Value=2 'Key=verax-control:capabilities,Value=discovery findings'\n",
+      " --tags Key=verax-control:template,Value=3 'Key=verax-control:capabilities,Value=discovery findings'\n",
     );
     // Um texto qualquer na lista não entra no comando que o cliente cola no terminal.
     const hostile = awsReaderUserCommands('111111111111', [
@@ -375,11 +375,11 @@ describe('o usuário IAM de leitura da AWS', () => {
   it('os comandos de atualização gravam uma versão nova da política de leitura e as etiquetas do usuário', () => {
     expect(awsReaderUserUpdateCommands('111111111111').split('\n')).toEqual([
       'aws iam create-policy-version --policy-arn arn:aws:iam::111111111111:policy/verax/VeraxControlReader --policy-document file://verax-control-reader.json --set-as-default',
-      "aws iam tag-user --user-name verax-control-reader --tags Key=verax-control:template,Value=2 'Key=verax-control:capabilities,Value=discovery service-logs findings log-groups'",
+      "aws iam tag-user --user-name verax-control-reader --tags Key=verax-control:template,Value=3 'Key=verax-control:capabilities,Value=discovery service-logs findings log-groups'",
     ]);
     // Com as autorizações escolhidas, a etiqueta diz só as escolhidas (a descoberta vale sempre).
     expect(awsReaderUserUpdateCommands('111111111111', ['findings'])).toContain(
-      " --tags Key=verax-control:template,Value=2 'Key=verax-control:capabilities,Value=discovery findings'",
+      " --tags Key=verax-control:template,Value=3 'Key=verax-control:capabilities,Value=discovery findings'",
     );
     expect(awsReaderUserUpdateCommands('111111111111', [])).toContain(
       "'Key=verax-control:capabilities,Value=discovery'",

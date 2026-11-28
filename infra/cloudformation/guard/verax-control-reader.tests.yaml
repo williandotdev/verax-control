@@ -66,6 +66,7 @@
                         s3:prefix:
                           - Fn::Sub: 'AWSLogs/${AWS::AccountId}/*'
                           - Fn::Sub: 'AWSLogs/o-*/${AWS::AccountId}/*'
+                          - Fn::Sub: '*/AWSLogs/${AWS::AccountId}/*'
                   - { Ref: AWS::NoValue }
               - Fn::If:
                   - ReadsServiceLogs
@@ -153,7 +154,7 @@
           PermissionsBoundary: { Ref: ReaderPolicy }
           ManagedPolicyArns: [{ Ref: ReaderPolicy }, { Ref: GuardrailsPolicy }]
           Tags:
-            - { Key: 'verax-control:template', Value: '2' }
+            - { Key: 'verax-control:template', Value: '3' }
             - Key: 'verax-control:capabilities'
               Value:
                 Fn::Join:
@@ -1877,7 +1878,7 @@
         Properties:
           RoleName: verax-control-reader
           Tags:
-            - { Key: 'verax-control:template', Value: '2' }
+            - { Key: 'verax-control:template', Value: '3' }
             - Key: 'verax-control:capabilities'
               Value:
                 Fn::Join:
@@ -1919,7 +1920,7 @@
         Properties:
           RoleName: verax-control-reader
           Tags:
-            - { Key: 'verax-control:template', Value: '2' }
+            - { Key: 'verax-control:template', Value: '3' }
             - Key: 'verax-control:capabilities'
               Value:
                 Fn::Join:
@@ -1940,7 +1941,7 @@
         Properties:
           RoleName: verax-control-reader
           Tags:
-            - { Key: 'verax-control:template', Value: '2' }
+            - { Key: 'verax-control:template', Value: '3' }
             - Key: 'verax-control:capabilities'
               Value:
                 Fn::Join:

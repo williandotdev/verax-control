@@ -301,7 +301,8 @@ function serviceLogStatements(accountId: string): IamStatement[] {
       Effect: 'Allow',
       Action: 's3:ListBucket',
       Resource: 'arn:aws:s3:::*',
-      Condition: { StringLike: { 's3:prefix': [own, organization] } },
+      // A terceira é a mesma pasta atrás de um prefixo (o log do ALB com prefixo), que o GetObject acima já alcança.
+      Condition: { StringLike: { 's3:prefix': [own, organization, `*/${own}`] } },
     },
     {
       Sid: 'VerPrimeiroNivelDosBuckets',

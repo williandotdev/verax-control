@@ -1229,7 +1229,7 @@ describe('pilha na AWS: a versão do modelo e as autorizações', () => {
       }),
     );
     const stack = await screen.findByRole('region', { name: 'Pilha na AWS' });
-    expect(stack).toHaveTextContent('versão 1 (anterior: a atual é a 2)');
+    expect(stack).toHaveTextContent('versão 1 (anterior: a atual é a 3)');
     expect(stack).toHaveTextContent('Logs de serviços da AWS no S3: desligada');
     expect(stack).toHaveTextContent('Atualize a pilha');
     expect(stack).toHaveTextContent('A pilha desta conta foi criada com o modelo anterior.');

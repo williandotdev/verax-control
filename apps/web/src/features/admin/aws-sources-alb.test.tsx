@@ -516,7 +516,7 @@ describe('balanceadores: os que não dá para ler', () => {
         albFixture('legado', {
           ...denied,
           permissionDetail: 'outside_awslogs_prefix',
-          notes: ['high_volume', 'additional_bucket_required'],
+          notes: ['high_volume'],
           details: { customPrefix: 'balanceadores' },
         }),
         albFixture('parceiros', { ...denied, permissionDetail: 'bucket_denied' }),
@@ -526,8 +526,9 @@ describe('balanceadores: os que não dá para ler', () => {
     const [prefixed, other] = within(region)
       .getAllByRole('listitem')
       .filter((item) => item.textContent?.includes('Balanceador'));
-    expect(prefixed).toHaveTextContent('Tire o prefixo na configuração do log de acesso');
-    expect(prefixed).toHaveTextContent('Key=access_logs.s3.prefix,Value=');
+    expect(prefixed).toHaveTextContent('a pilha da Verax na sua conta ainda não lista essa pasta');
+    expect(prefixed).toHaveTextContent('Nada muda no balanceador nem no bucket');
+    expect(prefixed).not.toHaveTextContent('access_logs.s3.prefix');
     expect(prefixed).not.toHaveTextContent('buckets fora do padrão');
     expect(other).toHaveTextContent(
       'a política do bucket precisa citar arn:aws:iam::111111111111:role/verax/verax-control-reader',

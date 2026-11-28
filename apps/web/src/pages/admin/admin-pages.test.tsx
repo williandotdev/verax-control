@@ -570,7 +570,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
         { timeout: 10_000 },
       );
       expect(within(detail).getByRole('region', { name: 'Pilha na AWS' })).toHaveTextContent(
-        'versão 2 (atual)',
+        'versão 3 (atual)',
       );
     },
     AWS_CHECK_TIMEOUT,

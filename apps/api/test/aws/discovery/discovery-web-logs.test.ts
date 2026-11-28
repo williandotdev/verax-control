@@ -210,12 +210,12 @@ describe('balanceadores na descoberta: ataques web ligados', () => {
       permission: 'granted',
       details: { internetFacing: false },
     });
-    // O prefixo antes de AWSLogs/ fica fora do que o papel lê: pede o bucket nos adicionais, sem chamada.
+    // O prefixo antes de AWSLogs/: o papel do modelo 3 lista a pasta atrás dele, sondada como as outras.
     expect(byName(balancers, 'prefixo')).toMatchObject({
       availability: 'available',
-      notes: ['high_volume', 'additional_bucket_required'],
-      permission: 'missing',
-      permissionDetail: 'outside_awslogs_prefix',
+      notes: ['high_volume'],
+      permission: 'granted',
+      permissionDetail: null,
       details: { customPrefix: 'logs/alb', prefix: `logs/alb/${PREFIX}` },
     });
     // Sem log: o aviso de custo, sem bucket e sem sondagem.
@@ -296,6 +296,19 @@ describe('balanceadores na descoberta: ataques web ligados', () => {
       ON,
     );
     expect(denied.balancers[0]).toMatchObject({ permission: 'missing', permissionDetail: 'bucket_denied' });
+    // Com prefixo, a recusa é a da pilha anterior ao modelo 3, que só lista AWSLogs/ na raiz: pede a pilha nova.
+    const oldStack = await discover(
+      accountWith([ALB_PREFIX], {
+        ListObjectsV2Command: () => {
+          throw awsError('AccessDenied', 403);
+        },
+      }),
+      ON,
+    );
+    expect(oldStack.balancers[0]).toMatchObject({
+      permission: 'missing',
+      permissionDetail: 'outside_awslogs_prefix',
+    });
     const gone = await discover(
       accountWith([ALB_FACING], {
         ListObjectsV2Command: () => {

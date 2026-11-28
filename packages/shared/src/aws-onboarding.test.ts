@@ -246,7 +246,7 @@ describe('onboarding da AWS: enumerações do contrato', () => {
 
 describe('versão do template e tag de leitura dos grupos de logs', () => {
   it('desatualizado: versão menor que a deste código; null (ainda não lido, ou a tag que não é um número) não é', () => {
-    expect(AWS_READER_TEMPLATE_VERSION).toBe(2);
+    expect(AWS_READER_TEMPLATE_VERSION).toBe(3);
     expect(isAwsTemplateOutdated(1)).toBe(true);
     expect(isAwsTemplateOutdated(AWS_READER_TEMPLATE_VERSION)).toBe(false);
     expect(isAwsTemplateOutdated(3)).toBe(false);

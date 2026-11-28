@@ -3,7 +3,6 @@ import {
   ALB_LOG_DELIVERY_PRINCIPAL,
   albBucketPolicy,
   albTarget,
-  clearPrefixCommand,
   createBucketCommand,
   enableAccessLogsCommand,
   loadBalancerType,
@@ -89,7 +88,6 @@ describe('ligar o log de acesso do ALB: o que o cliente copia', () => {
     expect(enable).toContain('Key=access_logs.s3.enabled,Value=true');
     expect(enable).toContain("Key=access_logs.s3.bucket,Value='logs-da-loja'");
     expect(enable).not.toContain('prefix');
-    expect(clearPrefixCommand(target())).toMatch(/Key=access_logs\.s3\.prefix,Value=$/);
     // A política vai inteira entre aspas simples, sem nenhuma dentro dela.
     const put = putBucketPolicyCommand(target(), 'logs-da-loja') ?? '';
     const [, policy = ''] = put.split("--policy '");

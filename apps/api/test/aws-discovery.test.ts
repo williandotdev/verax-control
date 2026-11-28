@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { randomInt } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { awsInfrastructureSummarySchema } from '@verax/shared';
+import { AWS_READER_TEMPLATE_VERSION, awsInfrastructureSummarySchema } from '@verax/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   AWS_DISCOVERY_BACKOFF,
@@ -102,7 +102,7 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
         regions: ['sa-east-1'],
         connection: 'connected',
         ingestFrom: new Date('2026-11-21T00:00:00.000Z'),
-        awsTemplateVersion: 2,
+        awsTemplateVersion: 3,
         awsCapabilities: ['discovery', 'service-logs', 'findings', 'log-groups'],
         awsCapabilitiesCheckedAt: START,
         ...data,
@@ -647,7 +647,7 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
       }
       // As tags novas ficam na conta, junto com o resultado, e a mudança entra na trilha do cliente.
       const after = await accountOf(cloud.id);
-      expect(after).toMatchObject({ awsTemplateVersion: 2, awsCapabilitiesCheckedAt: clock.now() });
+      expect(after).toMatchObject({ awsTemplateVersion: 3, awsCapabilitiesCheckedAt: clock.now() });
       expect([...after.awsCapabilities].sort()).toEqual([
         'discovery',
         'findings',
@@ -659,7 +659,7 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
           tenantId: tenant,
           actorType: 'system',
           before: { awsTemplateVersion: 1, awsCapabilities: ['discovery'] },
-          after: { awsTemplateVersion: 2 },
+          after: { awsTemplateVersion: 3 },
         },
       ]);
       // A execução já rodou com as tags novas: nenhuma outra descoberta é pedida por causa delas.
@@ -700,7 +700,7 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
       });
       // Nada muda na conta.
       expect(await accountOf(cloud.id)).toMatchObject({
-        awsTemplateVersion: 2,
+        awsTemplateVersion: 3,
         awsCapabilities: ['discovery', 'findings'],
         awsCapabilitiesCheckedAt: START,
       });
@@ -730,7 +730,7 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
       });
       expect(await templateAuditOf(cloud.id)).toMatchObject([
         {
-          before: { awsTemplateVersion: 2 },
+          before: { awsTemplateVersion: 3 },
           after: { awsTemplateVersion: 1, awsCapabilities: ['discovery'] },
         },
       ]);
@@ -848,7 +848,7 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
     expect(await sourcesOf(cloud.id)).toEqual({});
     // As tags do papel também foram recusadas, mas isso não diz que o papel é do template v1: a conta fica como está.
     const after = await accountOf(cloud.id);
-    expect(after).toMatchObject({ awsTemplateVersion: 2, awsCapabilitiesCheckedAt: START });
+    expect(after).toMatchObject({ awsTemplateVersion: 3, awsCapabilitiesCheckedAt: START });
     expect(after.awsCapabilities).toHaveLength(4);
     expect(await templateAuditOf(cloud.id)).toEqual([]);
   });
@@ -1144,7 +1144,7 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
       expect(await sourceOf(untouched.id)).toEqual(untouched);
       // As tags do papel não mudaram: só o horário da leitura, sem trilha e sem descoberta nova.
       expect(await accountOf(cloud.id)).toMatchObject({
-        awsTemplateVersion: 2,
+        awsTemplateVersion: 3,
         awsCapabilitiesCheckedAt: clock.now(),
       });
       expect(await runsOf(cloud.id)).toEqual([]);
@@ -1285,7 +1285,7 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
       });
       // As capacidades novas ficam gravadas na conta, com a trilha do cliente e uma descoberta para as outras fontes.
       const after = await accountOf(cloud.id);
-      expect(after.awsTemplateVersion).toBe(2);
+      expect(after.awsTemplateVersion).toBe(AWS_READER_TEMPLATE_VERSION);
       expect([...after.awsCapabilities].sort()).toEqual([
         'discovery',
         'findings',
@@ -1300,7 +1300,7 @@ describe('tarefa aws-discovery: a descoberta das fontes de log da conta AWS (onb
       expect(entry).toMatchObject({
         tenantId: tenant,
         actorType: 'system',
-        before: { awsTemplateVersion: 2, awsCapabilities: ['discovery'] },
+        before: { awsTemplateVersion: 3, awsCapabilities: ['discovery'] },
       });
       expect(await runsOf(cloud.id)).toMatchObject([{ trigger: 'scheduled', status: 'pending' }]);
     });

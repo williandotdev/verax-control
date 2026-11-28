@@ -408,7 +408,7 @@ describe('ataques web pelos logs do ALB: configuração (ligados)', () => {
             permission: 'missing',
             permissionDetail: 'outside_awslogs_prefix',
             state: 'needs_permission',
-            notes: ['high_volume', 'additional_bucket_required'],
+            notes: ['high_volume'],
           },
           'SOURCE_PERMISSION_MISSING',
         ],
