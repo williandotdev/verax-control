@@ -108,7 +108,7 @@ export function trafficLight(
     stalledSources?: readonly CollectionSource[];
     /**
      * Alertas altos ou críticos ainda em "novo" (a decisão `untriaged_finding`; com os casos, as três que a dividem); sem
-     * informar, nenhum.
+     * informar, nenhum. Sem as vulnerabilidades, que são risco mapeado e não pintam o semáforo.
      */
     untriagedFindings?: number;
   },

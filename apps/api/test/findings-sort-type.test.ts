@@ -15,7 +15,8 @@ const HOUR = 3_600_000;
 
 /**
  * E-06: a lista de alertas ordenada pela gravidade (`sort=severity`) e filtrada pelo tipo (`type`, a fila do caso). Os
- * dois são opcionais: sem eles, a lista é a de sempre; valor desconhecido é recusado, como qualquer filtro.
+ * dois são opcionais: sem eles, a lista é a de sempre, menos as vulnerabilidades (decisão de 27/11/2026), que só vêm com
+ * `type=vulnerability`; valor desconhecido é recusado, como qualquer filtro.
  */
 describe('alertas: ordem por gravidade e filtro por tipo (E-06)', () => {
   let app: NestExpressApplication;
@@ -135,26 +136,93 @@ describe('alertas: ordem por gravidade e filtro por tipo (E-06)', () => {
     expect(first.items[0]?.severity).toBe('critical');
   });
 
+  /** Uma vulnerabilidade em pacote do Inspector, como a coleta grava. */
+  const inspectorRow = (overrides: Partial<Prisma.FindingUncheckedCreateInput> = {}) => ({
+    source: 'aws',
+    sourceEventId: `arn:aws:inspector2:sa-east-1:111122223333:finding/${randomUUID()}`,
+    logSource: 'inspector',
+    ruleId: '990511',
+    title: 'Vulnerabilidade em pacote: CVE-2026-0001 - openssl',
+    eventName: 'CVE-2026-0001',
+    ...overrides,
+  });
+
   it('`type` filtra pela fila do caso do alerta; o alerta sem caso não entra', async () => {
-    const vulnerabilityCase = await insertCase(tenantA, 'vulnerability');
     const postureCase = await insertCase(tenantA, 'posture');
-    const vulnerability = await insertFinding(tenantA, { caseId: vulnerabilityCase });
+    const detectionCase = await insertCase(tenantA, 'detection');
     const posture = await insertFinding(tenantA, { caseId: postureCase });
+    const detection = await insertFinding(tenantA, { caseId: detectionCase });
     const loose = await insertFinding(tenantA);
 
     const ofType = async (type: string) => ids(analystA, `type=${type}&pageSize=100`);
-    expect(await ofType('vulnerability')).toEqual([vulnerability]);
     expect(await ofType('posture')).toEqual([posture]);
+    expect(await ofType('detection')).toContain(detection);
     expect(await ofType('detection')).not.toContain(loose);
+  });
+
+  it('a vulnerabilidade sai da lista sem tipo e só vem com `type=vulnerability`, com caso ou sem', async () => {
+    const vulnerabilityCase = await insertCase(tenantA, 'vulnerability');
+    const inCase = await insertFinding(tenantA, inspectorRow({ caseId: vulnerabilityCase }));
+    const loose = await insertFinding(tenantA, inspectorRow({ ruleId: '990513', severity: 'critical' }));
+    const agent = await insertFinding(tenantA, {
+      logSource: 'wazuh_agent',
+      ruleId: '23505',
+      title: 'CVE-2026-0002 affects openssl',
+      eventName: 'json',
+    });
+    const copy = await insertFinding(tenantA, {
+      source: 'aws',
+      sourceEventId: `securityhub/${randomUUID()}`,
+      logSource: 'security_hub',
+      ruleId: '990502',
+      title: 'Achado do Security Hub (Inspector): CVE-2026-0003 - zlib',
+      eventName: 'Software and Configuration Checks/Vulnerabilities/CVE',
+    });
+    // Quase iguais, mas não são vulnerabilidade: a porta alcançável (postura) e a cópia de outro tipo.
+    const reachable = await insertFinding(
+      tenantA,
+      inspectorRow({ ruleId: '990512', title: 'Porta alcançável' }),
+    );
+    const otherCopy = await insertFinding(tenantA, {
+      source: 'aws',
+      sourceEventId: `securityhub/${randomUUID()}`,
+      logSource: 'security_hub',
+      ruleId: '990502',
+      title: 'Achado do Security Hub (Inspector): rede',
+      eventName: null,
+    });
+    const vulnerabilities = [inCase, loose, agent, copy];
+
+    const all = await ids(analystA, 'pageSize=100');
+    expect(all.filter((id) => vulnerabilities.includes(id))).toEqual([]);
+    expect(all).toEqual(expect.arrayContaining([reachable, otherCopy]));
+    expect((await ids(analystA, 'type=vulnerability&pageSize=100')).sort()).toEqual(
+      [...vulnerabilities].sort(),
+    );
     // Combina com a ordem e com os outros filtros.
-    expect(await ids(analystA, 'type=vulnerability&sort=severity&severity=high&pageSize=100')).toEqual([
-      vulnerability,
+    expect(await ids(analystA, 'type=vulnerability&sort=severity&severity=critical&pageSize=100')).toEqual([
+      loose,
     ]);
+    expect(await ids(analystA, 'type=vulnerability&q=zlib&pageSize=100')).toEqual([copy]);
+    // A contagem segue a lista.
+    const page = findingPage.parse((await get(analystA, '/v1/findings?pageSize=1').expect(200)).body);
+    expect(page.total).toBe(all.length);
+    // Nem a vulnerabilidade num caso de detecção (um caso de antes) aparece fora do tipo dela.
+    const detectionCase = await insertCase(tenantA, 'detection');
+    const misplaced = await insertFinding(tenantA, inspectorRow({ caseId: detectionCase }));
+    expect(await ids(analystA, 'type=detection&pageSize=100')).not.toContain(misplaced);
+    // A unificada (incidentes e alertas avulsos) também não a traz.
+    const detections = (await get(analystA, '/v1/detections?pageSize=100').expect(200)).body as {
+      items: { kind: string; finding?: { id: string } }[];
+    };
+    const listed = detections.items.flatMap((row) => (row.finding ? [row.finding.id] : []));
+    expect(listed.filter((id) => [...vulnerabilities, misplaced].includes(id))).toEqual([]);
+    expect(listed).toContain(reachable);
   });
 
   it('o cliente B não vê os alertas do cliente A, com ou sem os filtros novos', async () => {
     const caseA = await insertCase(tenantA, 'vulnerability');
-    const findingA = await insertFinding(tenantA, { caseId: caseA, severity: 'critical' });
+    const findingA = await insertFinding(tenantA, inspectorRow({ caseId: caseA, severity: 'critical' }));
     for (const query of ['sort=severity', 'type=vulnerability', 'type=vulnerability&sort=severity']) {
       expect(await ids(analystB, `${query}&pageSize=100`)).not.toContain(findingA);
     }

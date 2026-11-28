@@ -105,8 +105,10 @@ export const FINDING_SORTS = ['recent', 'severity'] as const;
 export type FindingSort = (typeof FINDING_SORTS)[number];
 
 /**
- * O tipo do alerta (E-06): a fila do caso em que ele entrou, as mesmas três dos casos (`CASE_QUEUES`). Vem do caso: o
- * alerta que ainda não entrou em caso nenhum (casos desligados, ou à espera do agrupamento) não entra no filtro.
+ * O tipo do alerta (E-06): a fila do caso em que ele entrou, as mesmas três dos casos (`CASE_QUEUES`). Detecção e postura
+ * vêm do caso: o alerta que ainda não entrou em caso nenhum (casos desligados, ou à espera do agrupamento) não entra nelas.
+ * A vulnerabilidade vem da regra do alerta, com caso ou sem, e só aparece com este filtro: sem `type`, a lista a deixa de
+ * fora (risco mapeado, não ataque; decisão de 27/11/2026).
  */
 export const FINDING_TYPES = ['detection', 'posture', 'vulnerability'] as const;
 export type FindingType = (typeof FINDING_TYPES)[number];

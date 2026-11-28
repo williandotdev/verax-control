@@ -1,4 +1,5 @@
 import type { FindingDraft, FindingSeverity } from '../alerts/finding-draft.js';
+import { isVulnerabilityFinding, type VulnerabilityFindingInput } from '../cases/vulnerability-finding.js';
 
 /**
  * Correlação de alertas (achados) e resumo de incidentes (T5.6, regra v1). Desde a decisão de 17/11/2026 (alerta →
@@ -8,6 +9,8 @@ import type { FindingDraft, FindingSeverity } from '../alerts/finding-draft.js';
  *
  * - Só alertas do **mesmo cliente** são candidatos, nem com o mesmo IP um de outro cliente entra.
  * - Alerta sem nenhuma chave não tem relacionado.
+ * - A vulnerabilidade (`cases/vulnerability-finding.ts`) é risco mapeado, não ataque: nem sugere nem é sugerida
+ *   (decisão de 27/11/2026). Ela só vai importar quando alguém a explorar, e aí o alerta é o da exploração.
  */
 
 export type CorrelationKind = 'user' | 'key' | 'ip' | 'resource';
@@ -28,9 +31,10 @@ export function correlationKeys(finding: CorrelatedFields): CorrelationKey[] {
   return keys;
 }
 
-/** Um alerta candidato a relacionado: o id, o cliente, o horário e os campos que viram chave. */
+/** Um alerta candidato a relacionado: o id, o cliente, o horário, os campos que viram chave e os que dizem o que ele é. */
 export type RelatedCandidate = { id: string } & Pick<FindingDraft, 'tenantId' | 'occurredAt'> &
-  CorrelatedFields;
+  CorrelatedFields &
+  VulnerabilityFindingInput;
 
 /**
  * Os alertas relacionados a `anchor` (a sugestão ao promover): do mesmo cliente, outro que não ele, com uma chave em
@@ -42,7 +46,7 @@ export function relatedFindings<T extends RelatedCandidate>(
   windowMinutes = DEFAULT_GROUPING_WINDOW_MINUTES,
 ): T[] {
   const keys = new Set<string>(correlationKeys(anchor));
-  if (keys.size === 0) return [];
+  if (keys.size === 0 || isVulnerabilityFinding(anchor)) return [];
   const at = Date.parse(anchor.occurredAt);
   const window = windowMinutes * 60 * 1000;
   return candidates
@@ -52,6 +56,7 @@ export function relatedFindings<T extends RelatedCandidate>(
         candidate.id !== anchor.id &&
         candidate.tenantId === anchor.tenantId &&
         Math.abs(when - at) <= window &&
+        !isVulnerabilityFinding(candidate) &&
         correlationKeys(candidate).some((key) => keys.has(key))
       );
     })

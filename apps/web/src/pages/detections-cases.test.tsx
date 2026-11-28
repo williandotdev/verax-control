@@ -141,7 +141,9 @@ describe('o tipo do alerta (E-06)', () => {
       casePath('/v1/findings?').every((path) => !path.includes('type=') || path.includes('sort=severity')),
     ).toBe(true);
     expect(screen.getByLabelText('Tipo')).toHaveValue('vulnerabilidade');
-    expect(screen.getByLabelText('Tipo')).toHaveAccessibleDescription(/Pelo caso do alerta/);
+    expect(screen.getByLabelText('Tipo')).toHaveAccessibleDescription(
+      /risco mapeado, não ataque.*caso do alerta/,
+    );
   });
 });
 
@@ -228,9 +230,14 @@ describe('a lista de casos', () => {
     const page = casePageSchema.parse(
       await (await fetch(`${API_URL}/v1/cases?pageSize=100&state=all`)).json(),
     );
-    const total = page.items.reduce((sum, row) => sum + row.counts.total, 0);
-    const alerts = (await (await fetch(`${API_URL}/v1/findings?pageSize=1`)).json()) as { total: number };
-    expect(total).toBe(alerts.total);
+    const totalOf = (rows: typeof page.items) => rows.reduce((sum, row) => sum + row.counts.total, 0);
+    const alertsOf = async (query: string) =>
+      ((await (await fetch(`${API_URL}/v1/findings?pageSize=1${query}`)).json()) as { total: number }).total;
+    // A vulnerabilidade sai da lista sem tipo (risco mapeado, não ataque) e vem só com o tipo dela.
+    const vulnerabilities = page.items.filter((row) => row.queue === 'vulnerability');
+    expect(vulnerabilities).not.toHaveLength(0);
+    expect(totalOf(page.items.filter((row) => row.queue !== 'vulnerability'))).toBe(await alertsOf(''));
+    expect(totalOf(vulnerabilities)).toBe(await alertsOf('&type=vulnerability'));
     for (const row of page.items) {
       const { new: fresh, investigating, legitimate, resolved, incident } = row.counts;
       expect(fresh + investigating + legitimate + resolved + incident).toBe(row.counts.total);

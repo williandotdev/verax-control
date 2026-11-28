@@ -26,6 +26,7 @@ import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { relatedFindings } from '../incidents/correlation.js';
 import { webEvidenceSchema } from '../weblogs/evidence.js';
+import { isVulnerabilityFinding, notVulnerabilityFindingWhere } from '../cases/vulnerability-finding.js';
 import { findingWhere } from './finding-filters.js';
 import { RAW_EVENT_READER, type RawEventReader } from './raw-events.js';
 
@@ -80,6 +81,11 @@ const relatedSelect = {
   accessKeyId: true,
   sourceIp: true,
   resource: true,
+  // O que diz se é vulnerabilidade, que nem sugere nem é sugerida.
+  logSource: true,
+  ruleId: true,
+  title: true,
+  eventName: true,
 } as const satisfies Prisma.FindingSelect;
 
 export type FindingRow = Prisma.FindingGetPayload<{ select: typeof findingSelect }>;
@@ -136,12 +142,14 @@ export class FindingsService {
 
   async list(query: FindingListQuery, now = new Date()): Promise<Paginated<Finding>> {
     const where: Prisma.FindingWhereInput = {
-      ...findingWhere(query, now),
-      // A exceção que marcou o alerta, na chegada ou ao ser criada (os em aberto que ela resolveu). Num `AND`, para não
-      // trocar o `OR` da busca.
-      ...(query.exception !== undefined && {
-        AND: [{ OR: [{ exceptionId: query.exception }, { scopedExceptionId: query.exception }] }],
-      }),
+      AND: [
+        findingWhere(query, now),
+        // A exceção que marcou o alerta, na chegada ou ao ser criada (os em aberto que ela resolveu). À parte, para não
+        // trocar o `OR` da busca nem o `AND` do tipo.
+        ...(query.exception === undefined
+          ? []
+          : [{ OR: [{ exceptionId: query.exception }, { scopedExceptionId: query.exception }] }]),
+      ],
     };
     const db = this.prisma.scoped();
     const [rows, total] = await Promise.all([
@@ -175,6 +183,7 @@ export class FindingsService {
     const db = this.prisma.scoped();
     const anchor = await db.finding.findUnique({ where: { id }, select: relatedSelect });
     if (!anchor) throw new ApiError(HttpStatus.NOT_FOUND, NOT_FOUND);
+    if (isVulnerabilityFinding(anchor)) return { items: [] };
     const shared: Prisma.FindingWhereInput[] = [
       ...(anchor.actorUser === null ? [] : [{ actorUser: anchor.actorUser }]),
       ...(anchor.accessKeyId === null ? [] : [{ accessKeyId: anchor.accessKeyId }]),
@@ -191,6 +200,8 @@ export class FindingsService {
         status: { in: ['new', 'investigating'] },
         occurredAt: { gte: new Date(at - window), lte: new Date(at + window) },
         OR: shared,
+        // A vulnerabilidade não é ataque: não entra no incidente pela sugestão (decisão de 27/11/2026).
+        ...notVulnerabilityFindingWhere,
       },
       select: { ...findingSelect, ...relatedSelect },
       orderBy: [{ occurredAt: 'desc' }, { id: 'asc' }],
