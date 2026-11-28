@@ -40,7 +40,8 @@ import { ReadOnlyViolation } from './read-only.js';
  *   permissão que falta (`logs:ListTagsForResource`), e não a tag.
  *
  * Sem chamada nenhuma: a capacidade do tipo desligada no papel (`capability_off`), o grupo sem a tag (`tag_missing`), e
- * o bucket com prefixo antes de `AWSLogs/` que não está nos buckets do cadastro (`outside_awslogs_prefix`).
+ * o bucket com prefixo antes de `AWSLogs/` que não está nos buckets do cadastro (`outside_awslogs_prefix`), fora o log
+ * do ALB: esse é sondado no prefixo, e a recusa vira `outside_awslogs_prefix` (a pilha anterior ao modelo 3).
  *
  * **A fonte e as capacidades têm de ter sido lidas agora.** Esses três atalhos decidem pelo que a fonte e o contexto
  * dizem (a tag do grupo, o destino, as capacidades do papel), sem perguntar de novo à AWS. Na descoberta, tudo isso
@@ -191,8 +192,10 @@ async function probeBucketSource(
   if (bucket === undefined) return FAILED;
   const customPrefix = source.details.customPrefix ?? null;
   const legacy = isLegacyBucket(bucket, context);
-  // O papel só lista o que começa em `AWSLogs/<conta>/`: com um prefixo antes, o bucket precisa estar nos adicionais.
-  if (customPrefix !== null && !legacy) return missing('outside_awslogs_prefix');
+  // O papel lista `AWSLogs/<conta>/` e, desde o modelo 3, `<prefixo>/AWSLogs/<conta>/`. O Wazuh só lê o prefixo de um
+  // bucket adicional; o log do ALB, que o próprio Verax coleta, é sondado no prefixo e, recusado, pede a pilha nova.
+  const prefixedAlb = customPrefix !== null && !legacy && source.kind === 'elb_logs';
+  if (customPrefix !== null && !legacy && !prefixedAlb) return missing('outside_awslogs_prefix');
   let prefix = source.details.prefix ?? '';
   let found: Partial<AwsSourceDetails> | undefined;
   if (source.kind === 'cloudtrail' && source.details.organizationTrail === true) {
@@ -217,7 +220,9 @@ async function probeBucketSource(
   // O objeto mais recente primeiro (o de hoje ou o de ontem): é a chave KMS de agora que importa.
   const prefixes =
     prefix.length === 0 ? [''] : [`${prefix}${dayPath(today)}`, `${prefix}${dayPath(yesterday)}`, prefix];
-  const result = await probeObjects(clients, bucket, prefixes, options.signal);
+  const probed = await probeObjects(clients, bucket, prefixes, options.signal);
+  const result =
+    prefixedAlb && probed.permissionDetail === 'bucket_denied' ? missing('outside_awslogs_prefix') : probed;
   options.cache?.set(cacheKey, result);
   return { ...result, ...(found !== undefined && { details: found }) };
 }

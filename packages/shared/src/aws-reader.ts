@@ -31,9 +31,10 @@ export function awsReaderRoleArn(accountId: string): string {
 
 /**
  * A versão do modelo do papel (`verax-control-reader.yaml`), gravada na etiqueta `verax-control:template` do papel.
- * O modelo 1 não tem etiqueta. O 2 trouxe a descoberta das fontes e as três autorizações do cliente.
+ * O modelo 1 não tem etiqueta. O 2 trouxe a descoberta das fontes e as três autorizações do cliente. O 3 lista também
+ * `<prefixo>/AWSLogs/<conta>/` (o log do ALB gravado com um prefixo) e liga o log do ALB pelo painel.
  */
-export const AWS_READER_TEMPLATE_VERSION = 2;
+export const AWS_READER_TEMPLATE_VERSION = 3;
 
 /**
  * O que o papel pode fazer, como a etiqueta `verax-control:capabilities` dele diz:

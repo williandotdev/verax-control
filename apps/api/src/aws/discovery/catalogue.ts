@@ -226,7 +226,9 @@ function bucketNotes(
   context: CatalogueContext,
 ): AwsSourceNote[] {
   const notes: AwsSourceNote[] = [];
-  if (customPrefix !== null && !isLegacyBucket(bucket, context)) notes.push('additional_bucket_required');
+  // O log do ALB com prefixo o papel lê desde o modelo 3, sem o bucket nos adicionais.
+  if (customPrefix !== null && kind !== 'elb_logs' && !isLegacyBucket(bucket, context))
+    notes.push('additional_bucket_required');
   if (coveredByLegacy(kind, bucket, context)) notes.push('covered_by_legacy');
   return notes;
 }

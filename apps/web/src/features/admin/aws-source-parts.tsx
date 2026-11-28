@@ -225,7 +225,7 @@ export function PermissionFix({
       </>
     );
   } else if (detail === 'outside_awslogs_prefix' && source.kind === 'elb_logs') {
-    fix = <AlbPrefixFix source={source} account={account} again={again} />;
+    fix = <AlbPrefixFix source={source} again={again} />;
   } else if (detail === 'outside_awslogs_prefix') {
     fix = (
       <p>

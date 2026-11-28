@@ -81,7 +81,7 @@ describe('onboarding self-service da AWS: estado, descoberta manual e autorizaç
         regions: ['sa-east-1'],
         connection: 'connected',
         ingestFrom: VERIFIED,
-        awsTemplateVersion: 2,
+        awsTemplateVersion: 3,
         awsCapabilities: ['discovery', 'service-logs', 'findings', 'log-groups'],
         awsCapabilitiesCheckedAt: VERIFIED,
         ...data,
@@ -192,7 +192,7 @@ describe('onboarding self-service da AWS: estado, descoberta manual e autorizaç
         state: 'authenticated',
         credentialMode: 'role',
         template: {
-          version: 2,
+          version: 3,
           capabilities: ['discovery', 'service-logs', 'findings', 'log-groups'],
           outdated: false,
           checkedAt: VERIFIED.toISOString(),

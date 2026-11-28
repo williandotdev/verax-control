@@ -87,7 +87,7 @@ describe('contas da demonstração', () => {
     expect(alfa.state).toBe('permission_error');
     expect(alfa.credentialMode).toBe('role');
     expect(alfa.template).toMatchObject({
-      version: 2,
+      version: 3,
       outdated: false,
       capabilities: ['discovery', 'service-logs', 'findings'],
     });
@@ -328,7 +328,7 @@ describe('uma conta nova, do "Conectar com AWS" até coletar', () => {
     pass(DEMO_AWS_CONNECT_DELAY_MS);
     const authenticated = await view(id);
     expect(authenticated.state).toBe('authenticated');
-    expect(authenticated.template).toMatchObject({ version: 2, outdated: false });
+    expect(authenticated.template).toMatchObject({ version: 3, outdated: false });
     expect(authenticated.connect.waitingUntil).toBeNull();
 
     pass(DEMO_AWS_DISCOVERY_REQUEST_MS);
@@ -656,7 +656,7 @@ describe('recusas, como as da API', () => {
     pass(DEMO_AWS_CHECK_DELAY_MS);
     // A demonstração acha a pilha no modelo atual: as autorizações mudaram, e a descoberta roda de novo.
     const verified = await view(BETA);
-    expect(verified.template).toMatchObject({ version: 2, outdated: false });
+    expect(verified.template).toMatchObject({ version: 3, outdated: false });
     expect(verified.template.capabilities).toHaveLength(4);
     pass(DEMO_AWS_DISCOVERY_REQUEST_MS);
     expect((await view(BETA)).discovery.run?.status).toBe('pending');
@@ -680,7 +680,7 @@ describe('a escolha das autorizações, as conferências com as fontes e a desco
     pass(DEMO_AWS_CONNECT_DELAY_MS);
     const connected = await view(account.id);
     // A pilha "criada" tem a descoberta e só o que foi escolhido: nunca as três por conta própria.
-    expect(connected.template).toMatchObject({ version: 2, capabilities: ['discovery', 'service-logs'] });
+    expect(connected.template).toMatchObject({ version: 3, capabilities: ['discovery', 'service-logs'] });
     expect(connected.connect.capabilities).toEqual(['service-logs']);
     // Fora do contrato: 400, como na API.
     for (const body of [

@@ -101,8 +101,3 @@ export function enableAccessLogsCommand(target: AlbTarget, bucket: string): stri
   if (bucketNameProblem(bucket) !== null) return null;
   return `aws elbv2 modify-load-balancer-attributes --region ${target.region} --load-balancer-arn '${target.arn}' --attributes Key=access_logs.s3.enabled,Value=true Key=access_logs.s3.bucket,Value='${bucket}'`;
 }
-
-/** Tira o prefixo do log de acesso: os arquivos novos passam a ficar em `AWSLogs/`, na raiz do bucket. */
-export function clearPrefixCommand(target: AlbTarget): string {
-  return `aws elbv2 modify-load-balancer-attributes --region ${target.region} --load-balancer-arn '${target.arn}' --attributes Key=access_logs.s3.prefix,Value=`;
-}

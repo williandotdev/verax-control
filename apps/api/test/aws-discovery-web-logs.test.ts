@@ -7,6 +7,7 @@ import { AwsDiscovery } from '../src/aws/discovery/discovery-job.js';
 import { requestAwsDiscovery } from '../src/aws/discovery/discovery-runs.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { fakeDiscovery, type FakeDiscoveryAccount } from './aws/discovery/fake-discovery.js';
+import { awsError } from './inventory/fake-aws.js';
 import { clockAt, FakeCredentials } from './inventory/fake-job.js';
 import { createTenant } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
@@ -168,10 +169,10 @@ describe('tarefa aws-discovery: balanceadores', () => {
       },
       prefixo: {
         availability: 'available',
-        state: 'needs_permission',
+        state: 'available',
         stateCode: null,
-        permission: 'missing',
-        notes: ['high_volume', 'additional_bucket_required'],
+        permission: 'granted',
+        notes: ['high_volume'],
         method: 's3',
       },
       semlog: {
@@ -223,8 +224,12 @@ describe('tarefa aws-discovery: balanceadores', () => {
     };
     await discover(accountWith(FLEET), ON);
     expect(await state()).toEqual(['collecting', null]);
+    // Um prefixo novo com a pilha anterior ao modelo 3, que recusa a listagem atrás dele.
     await discover(
-      accountWith({ ...FLEET, loja: { type: 'app', logs: { bucket: 'acessos', prefix: 'novo' } } }),
+      {
+        ...accountWith({ ...FLEET, loja: { type: 'app', logs: { bucket: 'acessos', prefix: 'novo' } } }),
+        deny: { 's3:*': awsError('AccessDenied', 403) },
+      },
       ON,
     );
     expect(await state()).toEqual(['permission_error', 'outside_awslogs_prefix']);

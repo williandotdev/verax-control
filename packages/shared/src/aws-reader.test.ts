@@ -367,9 +367,9 @@ describe('papel de leitura sem chave (PR-V3)', () => {
   });
 });
 
-describe('modelo 2 do papel de leitura: versão, capacidades e etiquetas', () => {
+describe('modelo 3 do papel de leitura: versão, capacidades e etiquetas', () => {
   it('as constantes são as do template: a versão, as capacidades na ordem da etiqueta e o parâmetro de cada autorização', () => {
-    expect(AWS_READER_TEMPLATE_VERSION).toBe(2);
+    expect(AWS_READER_TEMPLATE_VERSION).toBe(3);
     expect(AWS_READER_CAPABILITIES).toEqual(['discovery', 'service-logs', 'findings', 'log-groups']);
     expect(AWS_READER_AUTHORIZATIONS).toEqual(['service-logs', 'findings', 'log-groups']);
     expect(AWS_READER_CAPABILITY_PARAMETERS).toEqual({
@@ -451,7 +451,7 @@ describe('modelo 2 do papel de leitura: versão, capacidades e etiquetas', () =>
         { Key: AWS_READER_ROLE_TAGS.capabilities, Value: awsReaderCapabilitiesTagValue(granted) },
       ];
       expect(parseReaderRoleTags(tags)).toEqual({
-        templateVersion: 2,
+        templateVersion: 3,
         capabilities: ['discovery', ...granted],
       });
     }

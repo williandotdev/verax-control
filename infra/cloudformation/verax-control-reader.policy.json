@@ -107,7 +107,7 @@
         "Resource": "arn:aws:s3:::*",
         "Condition": {
           "StringLike": {
-            "s3:prefix": ["AWSLogs/111111111111/*", "AWSLogs/o-*/111111111111/*"]
+            "s3:prefix": ["AWSLogs/111111111111/*", "AWSLogs/o-*/111111111111/*", "*/AWSLogs/111111111111/*"]
           }
         }
       },

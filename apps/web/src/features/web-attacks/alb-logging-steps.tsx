@@ -7,7 +7,6 @@ import { CommandBlock } from '@/features/admin/command-block';
 import {
   albBucketPolicy,
   albTarget,
-  clearPrefixCommand,
   createBucketCommand,
   enableAccessLogsCommand,
   loadBalancerType,
@@ -145,50 +144,27 @@ export function UnsupportedBalancerReason({ source }: { source: AwsSource }) {
 }
 
 /**
- * O log do ALB gravado atrás de um prefixo, fora do que o papel de leitura alcança. Os "buckets fora do padrão" são de outras
- * fontes: aqui, o caminho é tirar o prefixo.
+ * O log do ALB gravado atrás de um prefixo, que o papel só lista a partir do modelo 3 da pilha. O caminho é atualizar a
+ * pilha: o balanceador e o bucket do cliente ficam como estão.
  */
-export function AlbPrefixFix({
-  source,
-  account,
-  again,
-}: {
-  source: AwsSource;
-  account: CloudAccount;
-  again: string;
-}) {
-  const target = albTarget(source, account.accountId);
+export function AlbPrefixFix({ source, again }: { source: AwsSource; again: string }) {
   const { customPrefix } = source.details;
   return (
-    <>
-      <p>
-        O log deste balanceador é gravado atrás de um prefixo antes de{' '}
-        <code className="font-mono">AWSLogs/</code>
-        {customPrefix !== undefined && (
-          <>
-            {' '}
-            (<code className="break-all font-mono">{customPrefix}</code>)
-          </>
-        )}
-        , fora do que o Verax lê. Tire o prefixo na configuração do log de acesso do balanceador (no console
-        do EC2, em <ConsoleTerm pt="Atributos" en="Attributes" />, deixe só{' '}
-        <code className="break-all font-mono">s3://{source.details.bucket ?? 'NOME_DO_BUCKET'}</code>
-        ). A política do bucket precisa aceitar{' '}
-        <code className="break-all font-mono">AWSLogs/{account.accountId}/*</code>, sem o prefixo.
-      </p>
-      {target !== null && (
+    <p>
+      O log deste balanceador é gravado atrás de um prefixo antes de{' '}
+      <code className="font-mono">AWSLogs/</code>
+      {customPrefix !== undefined && (
         <>
-          <p>Ou, pela linha de comando:</p>
-          <CommandBlock
-            command={clearPrefixCommand(target)}
-            label={`Copiar o comando que tira o prefixo do log do ${awsSourceName(source)}`}
-          />
+          {' '}
+          (<code className="break-all font-mono">{customPrefix}</code>)
         </>
       )}
-      <p>
-        Depois, clique em Descobrir de novo, em &ldquo;O que encontramos&rdquo;, e em {again}. O que já foi
-        gravado com o prefixo continua no seu bucket, sem ser lido.
-      </p>
-    </>
+      , e a pilha da Verax na sua conta ainda não lista essa pasta.{' '}
+      <a href="#aws-pilha" className="underline">
+        Atualize a pilha
+      </a>{' '}
+      com o arquivo desta tela e clique em {again}. Nada muda no balanceador nem no bucket: o log continua
+      onde está.
+    </p>
   );
 }

@@ -252,7 +252,8 @@ rule objetos_so_em_awslogs_desta_conta {
     }
 }
 
-# A listagem dessas mesmas pastas: só com um prefixo dentro delas (a condição inteira é comparada).
+# A listagem dessas mesmas pastas: só com um prefixo dentro delas (a condição inteira é comparada). A terceira é a
+# pasta desta conta atrás de um prefixo, que o GetObject de cima já alcança (o log do ALB com prefixo).
 rule listagem_so_das_pastas_desta_conta {
     %leitura !empty
     let condicionais = %leitura.Properties.PolicyDocument.Statement[ 'Fn::If' exists ].'Fn::If'[1]
@@ -266,7 +267,8 @@ rule listagem_so_das_pastas_desta_conta {
             'StringLike': {
                 's3:prefix': [
                     { 'Fn::Sub': 'AWSLogs/${AWS::AccountId}/*' },
-                    { 'Fn::Sub': 'AWSLogs/o-*/${AWS::AccountId}/*' }
+                    { 'Fn::Sub': 'AWSLogs/o-*/${AWS::AccountId}/*' },
+                    { 'Fn::Sub': '*/AWSLogs/${AWS::AccountId}/*' }
                 ]
             }
         }
@@ -348,7 +350,7 @@ rule etiquetas_do_papel {
     %papeis !empty
     %papeis {
         Properties.Tags == [
-            { 'Key': 'verax-control:template', 'Value': '2' },
+            { 'Key': 'verax-control:template', 'Value': '3' },
             {
                 'Key': 'verax-control:capabilities',
                 'Value': {

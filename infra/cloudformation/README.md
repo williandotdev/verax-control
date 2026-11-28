@@ -401,7 +401,7 @@ Com o `jq` (já instalado no AWS CloudShell):
 conta=$(aws sts get-caller-identity --query Account --output text)
 aws iam create-policy --path /verax/ --policy-name VeraxControlReader --policy-document "$(jq -c .VeraxControlReader verax-control-reader.policy.json)"
 aws iam create-policy --path /verax/ --policy-name VeraxControlGuardrails --policy-document "$(jq -c .VeraxControlGuardrails verax-control-reader.policy.json)"
-aws iam create-role --path /verax/ --role-name verax-control-reader --max-session-duration 3600 --permissions-boundary "arn:aws:iam::$conta:policy/verax/VeraxControlReader" --assume-role-policy-document "$(jq -c .AssumeRolePolicyDocument verax-control-reader.policy.json)" --tags Key=verax-control:template,Value=2 'Key=verax-control:capabilities,Value=discovery service-logs findings log-groups'
+aws iam create-role --path /verax/ --role-name verax-control-reader --max-session-duration 3600 --permissions-boundary "arn:aws:iam::$conta:policy/verax/VeraxControlReader" --assume-role-policy-document "$(jq -c .AssumeRolePolicyDocument verax-control-reader.policy.json)" --tags Key=verax-control:template,Value=3 'Key=verax-control:capabilities,Value=discovery service-logs findings log-groups'
 aws iam attach-role-policy --role-name verax-control-reader --policy-arn "arn:aws:iam::$conta:policy/verax/VeraxControlReader"
 aws iam attach-role-policy --role-name verax-control-reader --policy-arn "arn:aws:iam::$conta:policy/verax/VeraxControlGuardrails"
 ```
