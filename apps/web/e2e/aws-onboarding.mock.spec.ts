@@ -187,7 +187,7 @@ test.describe('onboarding self-service da AWS (modo mock)', () => {
       // Sem clique nenhum: a pilha "fica pronta", o Verax entra, descobre a conta e espera a escolha das fontes.
       await expect(status).toContainText('Aguardando autorização de fontes', { timeout: STEP_TIMEOUT });
       await expect(waiting).toHaveCount(0);
-      await expect(sheet.getByRole('region', { name: 'Pilha na AWS' })).toContainText('versão 2 (atual)');
+      await expect(sheet.getByRole('region', { name: 'Pilha na AWS' })).toContainText('versão 3 (atual)');
       const found = sheet.getByRole('region', { name: 'O que encontramos' });
       await expect(found).toContainText('Última descoberta: completa');
       await expect(found).toContainText('Instâncias (EC2)');
