@@ -104,7 +104,7 @@ ALL_OFF = dict.fromkeys(CAPABILITIES, "false")
 ALWAYS_SIDS = {"AutoInspecao", "ValidarFontes", "PosturaEAtivos", "DescobrirFontes"}
 # A etiqueta dos grupos do CloudWatch Logs que o cliente autoriza (a mesma do painel, AWS_LOG_GROUP_TAG).
 LOG_GROUP_TAG = ("verax-control", "leitura")
-TEMPLATE_VERSION = "2"
+TEMPLATE_VERSION = "3"
 # O que o IAM aceita no valor de uma etiqueta (API_Tag): letras, números, espaço e _ . : / = + - @. Vírgula, não.
 IAM_TAG_VALUE = re.compile(r"[\w .:/=+\-@]{0,256}")
 
@@ -384,7 +384,11 @@ EXPECTED_CAPABILITY_STATEMENTS = {
         "Effect": "Allow",
         "Action": "s3:ListBucket",
         "Resource": ANY_BUCKET,
-        "Condition": {"StringLike": {"s3:prefix": [{"Fn::Sub": OWN_LOGS}, {"Fn::Sub": ORGANIZATION_LOGS}]}},
+        "Condition": {
+            "StringLike": {
+                "s3:prefix": [{"Fn::Sub": OWN_LOGS}, {"Fn::Sub": ORGANIZATION_LOGS}, {"Fn::Sub": f"*/{OWN_LOGS}"}]
+            }
+        },
     },
     "VerPrimeiroNivelDosBuckets": {
         "Sid": "VerPrimeiroNivelDosBuckets",
@@ -1529,7 +1533,7 @@ class ReaderTemplateTest(unittest.TestCase):
         )
         self.assertEqual(
             by_sid["ListarLogsDaAwsDestaConta"]["Condition"],
-            {"StringLike": {"s3:prefix": [f"AWSLogs/{ACCOUNT}/*", f"AWSLogs/o-*/{ACCOUNT}/*"]}},
+            {"StringLike": {"s3:prefix": [f"AWSLogs/{ACCOUNT}/*", f"AWSLogs/o-*/{ACCOUNT}/*", f"*/AWSLogs/{ACCOUNT}/*"]}},
         )
         self.assertEqual(
             by_sid["VerPrimeiroNivelDosBuckets"]["Condition"],
@@ -1636,11 +1640,13 @@ class ReaderTemplateTest(unittest.TestCase):
             ("a pasta de outra conta na organização", {"prefix": "AWSLogs/o-exemplo123/222222222222/"}),
             ("a pasta desta conta sem a barra", {"prefix": f"AWSLogs/{ACCOUNT}", "delimiter": "/"}),
             ("um ID que só começa igual", {"prefix": f"AWSLogs/{ACCOUNT}0/"}),
-            ("um prefixo próprio antes de AWSLogs", {"prefix": f"empresa/AWSLogs/{ACCOUNT}/CloudTrail/"}),
+            ("um prefixo próprio antes da pasta de outra conta", {"prefix": "empresa/AWSLogs/222222222222/"}),
             ("um prefixo próprio, primeiro nível", {"prefix": "empresa/", "delimiter": "/"}),
         ):
             with self.subTest(case=case):
                 self.assertFalse(stack.lists(bucket, **arguments))
+        # A pasta desta conta atrás de um prefixo (o log do ALB com prefixo, modelo 3): o GetObject já a alcançava.
+        self.assertTrue(stack.lists(bucket, prefix=f"empresa/AWSLogs/{ACCOUNT}/elasticloadbalancing/us-east-1/"))
         # A listagem de versões é outra ação, fora da política.
         self.assertFalse(
             stack.allows("s3:ListBucketVersions", f"arn:aws:s3:::{bucket}", s3_prefix="", s3_delimiter="/")
