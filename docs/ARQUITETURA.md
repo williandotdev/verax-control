@@ -3339,8 +3339,14 @@ sempre à vista. O que mudou é a apresentação:
 - **Lista de alertas por gravidade e por tipo** (`GET /v1/findings`): `sort` (`recent` | `severity`) e `type`
   (`detection` | `posture` | `vulnerability`), opcionais e estritos. A mais grave primeiro e, nela, a mais recente (o enum
   do Prisma é declarado do mais grave ao menos grave, e o índice `(tenantId, status, severity)` serve à fila "novo"). O
-  tipo é a fila do caso do alerta (`alertCase.queue`): o alerta sem caso não entra; por isso o painel só oferece o filtro
-  com os casos ligados ou em medição, com a nota na tela. Sem migração. Compatibilidade: o painel de antes não manda os
+  tipo é a fila do caso do alerta (`alertCase.queue`): o alerta sem caso não entra; por isso o painel só oferece detecção e
+  postura com os casos ligados ou em medição, com a nota na tela. A vulnerabilidade é a exceção (decisão de 27/11/2026): é
+  risco mapeado, não ataque, e sai da lista sem `type` (e da unificada, `GET /v1/detections`); com `type=vulnerability`,
+  vem pela regra do alerta (`cases/vulnerability-finding.ts`: Inspector 990511 e 990513, a cópia do Inspector no Security
+  Hub, 990502 do tipo `Software and Configuration Checks/Vulnerabilities`, e o detector do agente Wazuh, 23501 a 23508),
+  com caso ou sem, e o painel a oferece sempre. A mesma regra tira a vulnerabilidade do semáforo e das decisões da Torre
+  (a fila de vulnerabilidades dos casos fica como era), da sugestão de relacionados e dos avisos por e-mail alerta por
+  alerta (na chegada e na subida de severidade). Sem migração. Compatibilidade: o painel de antes não manda os
   parâmetros; o nó de antes os recusa (400, a query é estrita), e o painel novo pede de novo sem eles e diz na tela que a
   lista veio sem a ordem e sem o tipo; o CSV faz o mesmo. Na URL do painel: `?ordem=severidade` e `?tipo=vulnerabilidade`.
 

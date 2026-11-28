@@ -24,6 +24,7 @@ import {
 import { radarCaseSelect, toRadarCase } from '../cases/case-radar.js';
 import { pendingCases, radarCases } from '../cases/case-summary-store.js';
 import { casesOperable, casesVisibleTo } from '../cases/cases-mode.js';
+import { notVulnerabilityFindingWhere } from '../cases/vulnerability-finding.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
 import { TenantCache } from '../common/cache/tenant-cache.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
@@ -203,10 +204,13 @@ export class TowerService {
     const [unassignedIncidents, untriaged, unownedAlerts] = await Promise.all([
       db.incident.count({ where: { status: { not: 'resolved' }, assigneeId: null } }),
       // Todos os alertas altos ou críticos ainda em "novo", dentro ou fora de incidente: cada um é uma validação pendente.
-      // Com os casos, a mesma conta vem junto da deles, do mesmo retrato do banco.
+      // A vulnerabilidade não: é risco mapeado, não ataque, e não pinta o semáforo (decisão de 27/11/2026). Com os casos, a
+      // mesma conta vem junto da deles, do mesmo retrato do banco.
       withCases
         ? pendingCases(this.prisma.db(), this.prisma.scopeTenantId())
-        : db.finding.count({ where: { status: 'new', severity: { in: ['critical', 'high'] } } }),
+        : db.finding.count({
+            where: { status: 'new', severity: { in: ['critical', 'high'] }, ...notVulnerabilityFindingWhere },
+          }),
       // A fila sem dono não é de cliente nenhum: só a equipe da Verax vê, e só ela recebe a contagem.
       includeUnowned
         ? this.prisma.db().unownedAlert.count({

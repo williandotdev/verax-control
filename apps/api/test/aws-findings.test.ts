@@ -1241,7 +1241,7 @@ describe('tarefa aws-findings: os achados das fontes autorizadas lidas por API',
   // --- Inspector ---
 
   describe('Inspector', () => {
-    it('o CRITICAL vira achado crítico, com aviso; o filtro pede os ativos atualizados na janela', async () => {
+    it('o CRITICAL vira achado crítico, sem aviso (vulnerabilidade é risco mapeado); o filtro pede os ativos atualizados na janela', async () => {
       const tenant = await createTenant(app, 'Cliente Demo A (achados, Inspector)');
       const cloud = await connectedAccount(tenant);
       await source(cloud, 'inspector');
@@ -1289,8 +1289,8 @@ describe('tarefa aws-findings: os achados das fontes autorizadas lidas por API',
         resource: 'ec2:i-0abc1234def567890',
         sourceEventId: `aws/${account}/inspector:${String(findings[0]?.['findingArn'])}`,
       });
-      const notices = await prisma.notification.findMany({ where: { tenantId: tenant } });
-      expect(notices.map((notice) => notice.kind).sort()).toEqual(['critical_finding', 'high_finding']);
+      // A vulnerabilidade não avisa alerta por alerta (decisão de 27/11/2026); a porta alcançável é média.
+      expect(await prisma.notification.count({ where: { tenantId: tenant } })).toBe(0);
     });
 
     it('a permissão negada fica na fonte, com a ação e o recuo; de volta à coleta, é lida já', async () => {
@@ -2327,7 +2327,7 @@ describe('tarefa aws-findings: os achados das fontes autorizadas lidas por API',
       return draft;
     };
 
-    it('a versão igual ou mais antiga não muda nada; a mais nova só atualiza; a severidade que cai não avisa', async () => {
+    it('a versão igual ou mais antiga não muda nada; a mais nova só atualiza; a vulnerabilidade não avisa', async () => {
       const tenant = await createTenant(app, 'Cliente Demo A (achados, versão)');
       const account = accountId();
       const owner = { tenantId: tenant, accountId: account };
@@ -2360,7 +2360,8 @@ describe('tarefa aws-findings: os achados das fontes autorizadas lidas por API',
       });
       expect(await prisma.notification.count({ where: { tenantId: tenant } })).toBe(0);
 
-      // A versão mais nova, crítica: o mesmo achado, com a severidade e o título novos, e o aviso sai agora.
+      // A versão mais nova, crítica: o mesmo achado, com a severidade e o título novos. Sem aviso: a vulnerabilidade
+      // reclassificada é risco mapeado, não ataque (decisão de 27/11/2026).
       expect(
         await store.persist(version(10, 'CRITICAL', 'CVE-2026-0001 - openssl (exploit)'), null, START),
       ).toBe('duplicate');
@@ -2373,18 +2374,16 @@ describe('tarefa aws-findings: os achados das fontes autorizadas lidas por API',
         occurredAt: at(0),
         status: 'new',
       });
-      expect(
-        (await prisma.notification.findMany({ where: { tenantId: tenant } })).map((notice) => notice.kind),
-      ).toEqual(['critical_finding']);
+      expect(await prisma.notification.count({ where: { tenantId: tenant } })).toBe(0);
 
-      // A severidade que cai acompanha, sem aviso novo.
+      // A severidade que cai acompanha, também sem aviso.
       expect(await store.persist(version(20, 'LOW'), null, START)).toBe('duplicate');
       expect(await prisma.finding.findUniqueOrThrow({ where: key })).toMatchObject({
         severity: 'low',
         ruleLevel: 3,
         lastSeenAt: at(20),
       });
-      expect(await prisma.notification.count({ where: { tenantId: tenant } })).toBe(1);
+      expect(await prisma.notification.count({ where: { tenantId: tenant } })).toBe(0);
       expect(await prisma.finding.count({ where: { tenantId: tenant } })).toBe(1);
     });
 
