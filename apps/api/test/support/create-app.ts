@@ -70,7 +70,7 @@ export interface CreateAppOptions {
   };
   /** O `API_ORIGIN` do nó dedicado (o endereço do retorno da entrada única); sem informar, `http://localhost:3000`. */
   apiOrigin?: string;
-  /** Casos (`CASES_MODE`); sem informar, `off` (o padrão da versão é `shadow`). */
+  /** Casos (`CASES_MODE`); sem informar, `off` (o padrão da versão é `on`). */
   casesMode?: AppConfig['CASES_MODE'];
   /** Onde o nó roda (`NODE_PLATFORM`): `vm`, a VM própria do cliente; sem informar, `gcp` (como sem a linha). */
   nodePlatform?: 'gcp' | 'vm';
