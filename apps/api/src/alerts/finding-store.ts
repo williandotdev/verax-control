@@ -1,5 +1,6 @@
 import { type ScopedExceptionSeverity, severityWithin } from '@verax/shared';
 import { boundedCaseGroup } from '../cases/case-key.js';
+import { isVulnerabilityFinding } from '../cases/vulnerability-finding.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type {
@@ -307,7 +308,8 @@ export class FindingStore {
     });
     await this.saveEvidence(tx, draft, current.id);
     const rose = SEVERITY_RANK[draft.severity] > SEVERITY_RANK[current.severity];
-    if (rose && status !== 'legitimate') {
+    // A vulnerabilidade reclassificada pelo fornecedor não avisa: é risco mapeado, não ataque (`vulnerability-finding.ts`).
+    if (rose && status !== 'legitimate' && !isVulnerabilityFinding(draft)) {
       const pending = status === 'new' || status === 'investigating';
       await this.notices.enqueue(db, {
         tenantId: draft.tenantId,
@@ -362,7 +364,11 @@ export class FindingStore {
       return 'excepted' as const;
     }
     const id = await this.findingId(db, draft.source, sourceEventId);
-    await this.notices.enqueue(db, { tenantId: draft.tenantId, id, severity: draft.severity });
+    // A vulnerabilidade não avisa alerta por alerta: é risco mapeado, não ataque (`vulnerability-finding.ts`). Com os
+    // casos ligados, a fila de vulnerabilidades tem o resumo dela.
+    if (!isVulnerabilityFinding(draft)) {
+      await this.notices.enqueue(db, { tenantId: draft.tenantId, id, severity: draft.severity });
+    }
     await this.saveEvidence(tx, draft, id);
     return 'created' as const;
   }

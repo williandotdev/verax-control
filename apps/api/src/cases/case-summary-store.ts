@@ -1,6 +1,7 @@
 import type { CaseQueueName, MitreCount } from '@verax/shared';
 import type { Prisma } from '../generated/prisma/client.js';
 import { caseSetWhere } from './case-read-store.js';
+import { VULNERABILITY_FINDING_SQL } from './vulnerability-finding.js';
 
 /**
  * O SQL dos casos no resumo da situação, no radar e nos relatórios. As mesmas regras de `case-read-store.ts`: tudo em
@@ -29,9 +30,12 @@ export interface PendingCasesRow {
 export interface PendingCases {
   /** Só as filas com caso pendente. */
   queues: PendingCasesRow[];
-  /** Todos os alertas altos ou críticos em "novo", em caso ou não, dentro ou fora de incidente: o que o semáforo olha. */
+  /**
+   * Todos os alertas altos ou críticos em "novo", em caso ou não, dentro ou fora de incidente: o que o semáforo olha. Fora
+   * as vulnerabilidades (`vulnerability-finding.ts`), que são risco mapeado e ficam só nos casos da fila delas.
+   */
   untriagedFindings: number;
-  /** Deles, os que nenhum caso pendente cobre: ainda sem caso, ou dentro de um incidente. */
+  /** Deles, os que nenhum caso pendente cobre: ainda sem caso, ou dentro de um incidente. Também sem as vulnerabilidades. */
   uncovered: number;
 }
 
@@ -85,16 +89,18 @@ export async function pendingCases(db: Db, tenantId: string): Promise<PendingCas
       (
         SELECT count(*)::integer FROM "Finding" AS f
         WHERE f."tenantId" = ${tenantId}::uuid AND f."status" = 'new' AND f."severity" IN ('critical', 'high')
+          AND NOT ${VULNERABILITY_FINDING_SQL}
       ) AS "untriagedFindings",
       (
         SELECT count(*)::integer FROM "Finding" AS f
         WHERE f."tenantId" = ${tenantId}::uuid
           AND f."caseId" IS NULL AND f."incidentId" IS NULL AND f."status" IN ('new', 'investigating')
-          AND f."status" = 'new' AND f."severity" IN ('critical', 'high')
+          AND f."status" = 'new' AND f."severity" IN ('critical', 'high') AND NOT ${VULNERABILITY_FINDING_SQL}
       ) + (
         SELECT count(*)::integer FROM "Incident" AS i
         JOIN "Finding" AS f ON f."incidentId" = i."id" AND f."tenantId" = ${tenantId}::uuid
         WHERE i."tenantId" = ${tenantId}::uuid AND f."status" = 'new' AND f."severity" IN ('critical', 'high')
+          AND NOT ${VULNERABILITY_FINDING_SQL}
       ) AS "uncovered"`;
   return row ?? { queues: [], untriagedFindings: 0, uncovered: 0 };
 }

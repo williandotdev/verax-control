@@ -36,8 +36,11 @@ import {
  * inclusivos) e `findingStatus = ACTIVE`, 100 por página.
  *
  * É a API, e não o Wazuh, que lê o Inspector porque as regras de fábrica do Wazuh não acusam a severidade `CRITICAL`:
- * aqui ela vira achado crítico, com aviso por e-mail. O achado fechado (`CLOSED`: corrigido) ou suprimido na origem
- * deixa de ser listado; nada é fechado sozinho no painel.
+ * aqui ela vira achado crítico. A vulnerabilidade (de pacote e no código) é risco mapeado, não ataque: não avisa por
+ * e-mail alerta por alerta, não pinta o semáforo nem entra na lista padrão de alertas (`cases/vulnerability-finding.ts`,
+ * decisão de 27/11/2026); fica na fila de vulnerabilidades e no filtro `type=vulnerability`. A porta alcançável de fora
+ * (990512) é postura e segue como sempre. O achado fechado (`CLOSED`: corrigido) ou suprimido na origem deixa de ser
+ * listado; nada é fechado sozinho no painel.
  *
  * **Chave:** o `findingArn` (`arn:aws:inspector2:<região>:<conta>:finding/<id>`), que cabe inteiro.
  */

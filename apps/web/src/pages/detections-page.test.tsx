@@ -292,8 +292,29 @@ describe('Detecções: a lista de alertas por gravidade (E-06)', () => {
       .map((row) => order.findIndex((label) => row.textContent?.includes(label)));
     expect(severities).toEqual([...severities].sort((a, b) => a - b));
     expect(screen.getByLabelText('Ordem')).toHaveValue('severidade');
-    // Sem os casos, não há o filtro de tipo (o tipo vem do caso do alerta).
-    expect(screen.queryByLabelText('Tipo')).toBeNull();
+    // Sem os casos, o filtro de tipo só tem a vulnerabilidade, que vem da regra do alerta e fica fora da lista sem tipo.
+    expect(
+      within(screen.getByLabelText('Tipo'))
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['Todos, sem vulnerabilidades', 'Vulnerabilidade']);
+    server.events.removeAllListeners();
+  });
+
+  it('sem os casos, "Vulnerabilidade" pede o tipo à API: as vulnerabilidades saem da lista sem tipo e só vêm assim', async () => {
+    const asked: string[] = [];
+    server.events.on('request:start', ({ request }) => {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith('/v1/findings')) asked.push(url.search);
+    });
+    renderAt('/?tipo=vulnerabilidade');
+    await waitFor(
+      () => expect(asked.some((search) => search.includes('type=vulnerability'))).toBe(true),
+      SLOW,
+    );
+    expect(asked.every((search) => search.includes('type=vulnerability'))).toBe(true);
+    expect(await screen.findByLabelText('Tipo', {}, SLOW)).toHaveValue('vulnerabilidade');
+    expect(screen.getByLabelText('Tipo')).toHaveAccessibleDescription(/risco mapeado, não ataque/);
     server.events.removeAllListeners();
   });
 

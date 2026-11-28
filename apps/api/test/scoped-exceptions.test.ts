@@ -424,9 +424,16 @@ describe('exceções amplas (CASES_MODE=on)', () => {
     it('a severidade que sobe acima da máxima devolve o alerta para a fila e avisa; a que fica dentro, não', async () => {
       const tenantId = await createTenant(app, 'Cliente Demo A (subiu)');
       tenants.push(tenantId);
-      await exception(tenantId);
+      // A porta alcançável de fora (postura): a vulnerabilidade que sobe não avisa (risco mapeado, 27/11/2026).
+      const reachable = { ruleId: '990512', eventName: 'TCP/22' };
+      await exception(tenantId, reachable);
       const at = (ms: number) => new Date(Date.now() - ms).toISOString();
-      const first = draft(tenantId, { severity: 'low', revision: { lastSeenAt: at(30_000) } });
+      const first = draft(tenantId, {
+        ...reachable,
+        title: 'Porta alcançável de fora da rede',
+        severity: 'low',
+        revision: { lastSeenAt: at(30_000) },
+      });
       expect(await store.persist(first, null, new Date())).toBe('excepted');
       await store.persist(
         { ...first, severity: 'medium', revision: { lastSeenAt: at(20_000) } },

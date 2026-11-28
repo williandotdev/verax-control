@@ -5,7 +5,9 @@ import type { Prisma } from '../generated/prisma/client.js';
  * Avisos por e-mail de alertas e incidentes (fase 2, PR-16; regras de 17/11/2026, alerta → validação → incidente).
  *
  * - Alerta que chega (decidido na mesma transação que grava o achado, em `FindingStore`; todo coletor ganha o aviso sem
- *   mudança): alto avisa (`high_finding`), crítico avisa (`critical_finding`). Médio e baixo, não.
+ *   mudança): alto avisa (`high_finding`), crítico avisa (`critical_finding`). Médio e baixo, não. A vulnerabilidade
+ *   (`cases/vulnerability-finding.ts`) nunca avisa assim, nem na chegada nem quando a severidade sobe na origem: é risco
+ *   mapeado, não ataque (decisão de 27/11/2026).
  * - Incidente confirmado por uma pessoa (promover alertas, `IncidentsService`): avisa em qualquer severidade
  *   (`incident_opened`).
  * - Incidente que sobe para alto ou crítico ao receber alertas (anexar): avisa (`incident_escalated`), de médio para

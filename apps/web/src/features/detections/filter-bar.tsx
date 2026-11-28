@@ -39,6 +39,10 @@ const STATUS_LABELS_INCIDENTS: Readonly<Partial<Record<(typeof FINDING_STATUSES)
   resolved: 'Resolvido',
 };
 
+/** Por que a vulnerabilidade não está na lista sem tipo (decisão de 27/11/2026). */
+const VULNERABILITY_HINT =
+  'Vulnerabilidade (CVE, falha no código) é risco mapeado, não ataque: só aparece com este tipo.';
+
 /**
  * Uma barra de filtros só, para a lista e as análises: a busca, o período (com o intervalo personalizado), a
  * severidade e o status sempre à vista; a fonte, a conta, o MITRE, o responsável e a ordem em "Mais filtros". Tudo
@@ -53,7 +57,10 @@ export function FilterBar({
   types = false,
 }: {
   state: DetectionState;
-  /** Com os casos (ligados ou em medição), o filtro "Tipo" (E-06): o tipo vem do caso do alerta. */
+  /**
+   * Com os casos (ligados ou em medição), o filtro "Tipo" (E-06) tem os três tipos: detecção e postura vêm do caso do
+   * alerta. Sem eles, só "Vulnerabilidade", que vem da regra do alerta e não precisa de caso.
+   */
   types?: boolean;
   params: URLSearchParams;
   /** Os períodos que cabem no histórico do plano. */
@@ -219,21 +226,24 @@ export function FilterBar({
                   { value: 'severidade', label: 'Mais graves primeiro' },
                 ]}
               />
-              {types && (
-                <SelectField
-                  label="Tipo"
-                  value={state.findingType ? findingTypeSlug(state.findingType) : ''}
-                  onChange={(value) => onChange({ type: value || null })}
-                  hint="Pelo caso do alerta: o que ainda não entrou em caso não aparece com o tipo escolhido."
-                  options={[
-                    { value: '', label: 'Todos' },
-                    ...FINDING_TYPES.map((type) => ({
-                      value: findingTypeSlug(type),
-                      label: FINDING_TYPE_LABELS[type],
-                    })),
-                  ]}
-                />
-              )}
+              {/* As vulnerabilidades são risco mapeado, não ataque: ficam fora da lista sem tipo e só aparecem aqui. */}
+              <SelectField
+                label="Tipo"
+                value={state.findingType ? findingTypeSlug(state.findingType) : ''}
+                onChange={(value) => onChange({ type: value || null })}
+                hint={
+                  types
+                    ? `${VULNERABILITY_HINT} Detecção e postura vêm do caso do alerta: o que ainda não entrou em caso não aparece nelas.`
+                    : VULNERABILITY_HINT
+                }
+                options={[
+                  { value: '', label: 'Todos, sem vulnerabilidades' },
+                  ...FINDING_TYPES.filter((type) => types || type === 'vulnerability').map((type) => ({
+                    value: findingTypeSlug(type),
+                    label: FINDING_TYPE_LABELS[type],
+                  })),
+                ]}
+              />
             </>
           )}
           {view === 'incidents' && (

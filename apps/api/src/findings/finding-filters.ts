@@ -1,4 +1,5 @@
 import { filterWindow, type FindingListQuery } from '@verax/shared';
+import { notVulnerabilityFindingWhere, vulnerabilityFindingWhere } from '../cases/vulnerability-finding.js';
 import type { Prisma } from '../generated/prisma/client.js';
 
 /** Os filtros de achados, sem a paginação: os da lista de achados e os da tela Detecções. */
@@ -56,7 +57,22 @@ export function findingWhere(filters: FindingFilters, now: Date): Prisma.Finding
       },
     }),
     ...findingContentWhere(filters),
-    // O tipo (E-06) vem da fila do caso do alerta: sem caso, o alerta não entra no filtro.
-    ...(filters.type !== undefined && { alertCase: { is: { queue: filters.type } } }),
+    ...findingTypeWhere(filters),
+  };
+}
+
+/**
+ * O tipo (E-06). A vulnerabilidade é risco mapeado, não ataque (`cases/vulnerability-finding.ts`): sai da lista sem tipo e
+ * só aparece com `type=vulnerability`, pela regra do alerta e não pelo caso (com os casos em medição ou desligados, o
+ * cliente ainda a encontra). Detecção e postura vêm da fila do caso do alerta: sem caso, o alerta não entra nelas. Fica num
+ * `AND`/`NOT` próprio, para não trocar o `OR` da busca. A lista pela exceção (`exception`), sem tipo, é a dos alertas que
+ * ela marcou, vulnerabilidade ou não: a exceção ampla costuma ser justamente a de um pacote.
+ */
+function findingTypeWhere({ type, exception }: FindingFilters): Prisma.FindingWhereInput {
+  if (type === 'vulnerability') return { AND: [vulnerabilityFindingWhere] };
+  if (type === undefined && exception !== undefined) return {};
+  return {
+    ...notVulnerabilityFindingWhere,
+    ...(type !== undefined && { alertCase: { is: { queue: type } } }),
   };
 }

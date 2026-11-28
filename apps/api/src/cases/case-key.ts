@@ -333,7 +333,9 @@ function agentVulnerabilityTitle(title: string): VulnerabilityTitle {
   return { id, packageName: present(text.slice(at + verb.length).trim()) };
 }
 
-const SECURITY_HUB_PRODUCT = `${AWS_FINDING_RULES.securityHubProduct.title} (`;
+export const SECURITY_HUB_PRODUCT = `${AWS_FINDING_RULES.securityHubProduct.title} (`;
+/** O produto da cópia de um achado do Inspector no Security Hub. */
+export const INSPECTOR_PRODUCT = 'Inspector';
 
 /** O produto de um achado do Security Hub e o título na origem: `Achado do Security Hub (Macie): ...`. */
 function securityHubTitle(title: string): { product: string | null; rest: string } {
@@ -389,7 +391,7 @@ export const HOST_LOGIN_RULES: ReadonlySet<string> = new Set([
 ]);
 
 /** As regras do detector de vulnerabilidades do Wazuh 4.14.9 (`0520-vulnerability-detector_rules.xml`). */
-const HOST_VULNERABILITY_RULE = /^2350[1-8]$/;
+export const HOST_VULNERABILITY_RULE = /^2350[1-8]$/;
 /** As da avaliação de configuração (`0570-sca_rules.xml`): 19000 a 19015. As 191xx são do VMware. */
 const HOST_CONFIGURATION_RULE = /^190(?:0\d|1[0-5])$/;
 
@@ -398,7 +400,7 @@ const POSTURE_NAMESPACES: ReadonlySet<string> = new Set([
   'Software and Configuration Checks',
   'Sensitive Data Identifications',
 ]);
-const VULNERABILITY_TYPE = 'Software and Configuration Checks/Vulnerabilities';
+export const VULNERABILITY_TYPE = 'Software and Configuration Checks/Vulnerabilities';
 
 /** `S3.1`, `EC2.19`: o serviço do controle. */
 const CONTROL_ID = /^([A-Za-z][A-Za-z0-9]{0,31})\.\d{1,4}$/;
@@ -487,7 +489,7 @@ function securityHub(finding: CaseKeyInput): Grouping {
   // As cópias do GuardDuty e do Inspector caem no caso do achado do próprio serviço.
   if (product === 'GuardDuty') return guardDuty(finding, copiedGuardDutyType(finding.eventName));
   if (
-    product === 'Inspector' &&
+    product === INSPECTOR_PRODUCT &&
     type !== null &&
     (type === VULNERABILITY_TYPE || type.startsWith(`${VULNERABILITY_TYPE}/`))
   ) {
