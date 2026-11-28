@@ -1507,8 +1507,8 @@ describe('case-assign', () => {
       DATABASE_URL: 'postgresql://verax:secret@localhost:5432/verax',
     };
 
-    it('shadow é o padrão; off não cria tarefa nenhuma: nenhum alerta ganha caso e nada é gravado', async () => {
-      expect(loadWorkerConfig(env).CASES_MODE).toBe('shadow');
+    it('on é o padrão; off não cria tarefa nenhuma: nenhum alerta ganha caso e nada é gravado', async () => {
+      expect(loadWorkerConfig(env).CASES_MODE).toBe('on');
       const tenantId = await customer('desligado');
       const id = await insert(tenantId, { createdAt: at(0) });
       const before = await prisma.finding.findUniqueOrThrow({ where: { id } });
