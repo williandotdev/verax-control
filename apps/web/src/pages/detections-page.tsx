@@ -230,10 +230,13 @@ function DetectionsContent({
     },
     ready && listing && view === 'incidents',
   );
-  // E-06: a ordem por gravidade e o tipo (só com os casos: o tipo vem do caso do alerta).
+  // E-06: a ordem por gravidade e o tipo. Detecção e postura só com os casos (vêm do caso do alerta); a vulnerabilidade
+  // sempre, porque vem da regra do alerta e fica fora da lista sem tipo.
+  const findingType =
+    cases.mode !== 'off' || state.findingType === 'vulnerability' ? state.findingType : undefined;
   const findingExtras = {
     ...(state.sort === 'severity' && { sort: 'severity' as const }),
-    ...(cases.mode !== 'off' && state.findingType !== undefined && { type: state.findingType }),
+    ...(findingType !== undefined && { type: findingType }),
   };
   const findings = useFindings(
     { ...findingFilters, ...findingExtras, page: state.page, pageSize: PAGE_SIZE },

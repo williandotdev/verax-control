@@ -83,10 +83,13 @@ export function createFindingHandlers(
       const now = new Date();
       // A mesma regra da API (`findingMatchesFilters`), do mais recente para trás.
       // E-06: o tipo é a fila do caso do alerta (na demonstração, a mesma chave dos casos); a ordem por gravidade, a mais
-      // grave primeiro e, nela, a mais recente.
+      // grave primeiro e, nela, a mais recente. A vulnerabilidade só vem com o tipo dela, como na API (27/11/2026).
       const items = scope.findings
         .filter((finding) => findingMatchesFilters(finding, filters, now))
-        .filter((finding) => type === undefined || keyOf(finding).queue === type)
+        .filter((finding) => {
+          const queue = keyOf(finding).queue;
+          return type === undefined ? queue !== 'vulnerability' : queue === type;
+        })
         .sort(
           (a, b) =>
             (sort === 'severity'

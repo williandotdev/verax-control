@@ -8090,3 +8090,40 @@ cloudflare-oauth-steps.tsx,zone-health.tsx,labels.ts,oauth-return.ts,oauth-retur
   - O lock dos alertas do cliente fica preso até o fim da requisição (no máximo alguns segundos com o teto): os coletores daquele
     cliente esperam.
   - O filtro por exceção existe só na API; a tela de alertas ainda não o oferece (um link a partir da exceção seria o próximo passo).
+
+## Vulnerabilidade fora dos alertas (decisão do responsável de 27/11/2026)
+
+- **O que mudou:** a vulnerabilidade (CVE de pacote e falha no código) é risco mapeado, não ataque: sai do fluxo de alertas e
+  incidentes, e só vai importar como alerta quando alguém a explorar (trabalho futuro). Nenhum dado é apagado. A regra é uma
+  só, `apps/api/src/cases/vulnerability-finding.ts` (`isVulnerabilityFinding`, o `where` do Prisma e o SQL do resumo da
+  Torre): Inspector 990511 e 990513, a cópia do Inspector no Security Hub (990502, produto `Inspector`, tipo
+  `Software and Configuration Checks/Vulnerabilities`) e o detector do agente Wazuh (23501 a 23508). É a mesma fila de
+  vulnerabilidade da chave dos casos, conferida no teste, mas sem depender de caso nenhum (casos em medição ou desligados).
+  - Lista de alertas (`GET /v1/findings`) e a unificada (`GET /v1/detections`): sem `type`, sem vulnerabilidades. Com
+    `type=vulnerability`, elas vêm pela regra do alerta, com caso ou sem; detecção e postura seguem pelo caso e nunca trazem
+    vulnerabilidade. A lista pela exceção (`?exception=`) sem tipo continua com tudo o que a exceção marcou.
+  - Painel: o filtro "Tipo" aparece sempre na lista de alertas; sem os casos, só com "Vulnerabilidade". "Todos" virou
+    "Todos, sem vulnerabilidades", com a nota explicando. O CSV segue a lista. O mock segue a API.
+  - Torre: a vulnerabilidade não pinta o semáforo nem entra em `untriaged_finding` (nem em `uncovered`, com os casos). A fila
+    de vulnerabilidades dos casos (`untriaged_vulnerability_case`) ficou como era.
+  - E-mail: nem o aviso do alerta alto ou crítico que chega nem o da severidade que sobe na origem saem para vulnerabilidade.
+  - Relacionados (`GET /v1/findings/:id/related`): a vulnerabilidade nem é sugerida nem sugere.
+- **Arquivos:** `apps/api/src/cases/vulnerability-finding.ts` (novo, com teste), `cases/case-key.ts` (constantes exportadas),
+  `cases/case-summary-store.ts`, `findings/finding-filters.ts`, `findings/findings.service.ts`, `incidents/correlation.ts`,
+  `alerts/finding-store.ts`, `notifications/finding-notices.ts`, `tower/tower.service.ts`, `tower/tower-rules.ts`,
+  `aws/findings/inspector.ts` (comentário); testes `test/vulnerability-out-of-alerts.test.ts` (novo),
+  `findings-sort-type.test.ts`, `aws-findings.test.ts`, `tower-posture-assets.test.ts`, `scoped-exceptions.test.ts`;
+  `packages/shared/src/findings.ts` (comentário); `apps/web/src/features/detections/filter-bar.tsx`,
+  `pages/detections-page.tsx`, `mocks/findings-handlers.ts` e os testes de Detecções; `docs/ARQUITETURA.md`.
+- **Migration:** nenhuma. **Dependências novas:** nenhuma.
+- **Decisões minhas:**
+  - `type=vulnerability` passou a vir da regra do alerta, e não do caso: sem isso, o cliente com casos em medição (o padrão,
+    em que o painel não vê os casos) não teria como achar as vulnerabilidades.
+  - A vulnerabilidade num caso de detecção (de antes) não aparece em `type=detection`: as listas são uma partição.
+  - O alerta de vulnerabilidade como âncora não tem relacionados.
+  - A porta alcançável de fora (990512) é postura e segue como sempre (avisa, conta no semáforo).
+- **Testes:** API com o Postgres descartável (porta 55442): a suíte inteira antes dos últimos ajustes (8 falhas, todas
+  esperadas ou de tempo); depois, os 20 arquivos tocados ou afetados verdes (o `cases-gaps.test.ts` derrubou o worker do
+  Windows uma vez, 0xC0000409, e passou ao repetir, como no `main`). Painel: Detecções e casos.
+- **Riscos:** num nó de antes, o painel novo com `?tipo=vulnerabilidade` e os casos desligados recebe a lista vazia (o nó de
+  antes filtra pelo caso); com os casos em medição, funciona.
