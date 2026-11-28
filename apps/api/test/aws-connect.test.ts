@@ -67,7 +67,7 @@ class FakeTaggedChecker extends FakeAwsChecker {
     return Promise.resolve(
       answer !== undefined
         ? answer
-        : { templateVersion: 2, capabilities: ['discovery', 'service-logs', 'findings', 'log-groups'] },
+        : { templateVersion: 3, capabilities: ['discovery', 'service-logs', 'findings', 'log-groups'] },
     );
   }
 }
@@ -872,7 +872,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
         { capabilities: ['resposta'] },
         { capabilities: 'findings' },
         { capabilities: null },
-        { capabilities: ['findings'], templateVersion: 2 },
+        { capabilities: ['findings'], templateVersion: 3 },
         { awsCapabilities: ['findings'] },
       ]) {
         await connect(adminA, account.id).send(body).expect(400);
@@ -1170,7 +1170,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
       const account = await awsAccount(adminA, { cloudtrail: trail });
       const requestedAt = await connected(adminA, account.id);
       const checker = new FakeTaggedChecker();
-      checker.tag(account.accountId, { templateVersion: 2, capabilities: ['discovery', 'findings'] });
+      checker.tag(account.accountId, { templateVersion: 3, capabilities: ['discovery', 'findings'] });
       const now = new Date(requestedAt.getTime() + 3 * MINUTE);
       expect(await new AwsCheck(prisma, checker, { now: () => now }).runOnce()).toEqual({
         pending: 1,
@@ -1186,7 +1186,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
         // O horário do clique fica: é o histórico de quando o cliente conectou.
         awsConnectRequestedAt: requestedAt,
         ingestFrom: ingestDayFor(now),
-        awsTemplateVersion: 2,
+        awsTemplateVersion: 3,
         awsCapabilities: ['discovery', 'findings'],
         awsCapabilitiesCheckedAt: now,
       });
@@ -1215,7 +1215,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
       });
       expect(audit.after).toMatchObject({
         connection: 'connected',
-        awsTemplateVersion: 2,
+        awsTemplateVersion: 3,
         awsCapabilities: ['discovery', 'findings'],
         discoveryRequested: true,
       });
@@ -1225,7 +1225,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
         state: 'discovering',
         connect: { requestedAt: requestedAt.toISOString(), waitingUntil: null },
         template: {
-          version: 2,
+          version: 3,
           capabilities: ['discovery', 'findings'],
           outdated: false,
           checkedAt: now.toISOString(),
@@ -1281,7 +1281,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
       expect(await runsOf(account.id)).toHaveLength(1);
 
       // O cliente desligou uma capacidade na pilha: o que o papel pode ler mudou.
-      checker.tag(account.accountId, { templateVersion: 2, capabilities: ['discovery', 'service-logs'] });
+      checker.tag(account.accountId, { templateVersion: 3, capabilities: ['discovery', 'service-logs'] });
       const third = await requested(adminA, account.id);
       await new AwsCheck(prisma, checker, { now: () => new Date(third.getTime() + MINUTE) }).runOnce();
       expect(await runsOf(account.id)).toHaveLength(2);
@@ -1299,7 +1299,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
         where: { id: account.id },
         data: {
           ingestFrom: new Date('2026-11-01T00:00:00.000Z'),
-          awsTemplateVersion: 2,
+          awsTemplateVersion: 3,
           awsCapabilities: ['discovery', 'findings'],
           awsCapabilitiesCheckedAt: new Date('2026-11-10T00:00:00.000Z'),
         },
@@ -1310,7 +1310,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
       await new AwsCheck(prisma, checker, { now: () => new Date(first.getTime() + MINUTE) }).runOnce();
       expect(await connectRow(account.id)).toMatchObject({
         connection: 'connected',
-        awsTemplateVersion: 2,
+        awsTemplateVersion: 3,
         awsCapabilities: ['discovery', 'findings'],
         awsCapabilitiesCheckedAt: new Date('2026-11-10T00:00:00.000Z'),
       });
